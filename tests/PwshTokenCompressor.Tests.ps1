@@ -89,13 +89,32 @@ Describe 'ptk dispatcher' {
     }
 
     It 'does not embed the temp path as a literal in the generated script' {
-        # Capture the generated script by inspecting env var approach:
-        # We set a sentinel env var before the call; if the env-var fix is in place,
-        # PTC_TEMP will be set during execution. We verify the function succeeds
-        # (i.e., doesn't crash) when the system temp path is used — structural guard.
-        $result = Invoke-PtcRun -Command 'Write-Output "env-var-fix-ok"'
+        # Guard for the env-var injection fix: intercept Start-Process to capture the
+        # -EncodedCommand argument, then base64-decode it and assert the literal temp
+        # path does NOT appear in the generated script. If the fix were reverted (i.e.,
+        # the path were interpolated into the script string), the decoded script would
+        # contain the literal path and this test would fail.
+        $capturedScript = $null
+        Mock -ModuleName PwshTokenCompressor Start-Process {
+            # Find the encoded command argument (the element after '-EncodedCommand')
+            $idx = $ArgumentList.IndexOf('-EncodedCommand')
+            if ($idx -ge 0 -and $idx + 1 -lt $ArgumentList.Count) {
+                $encoded = $ArgumentList[$idx + 1]
+                $script:capturedScript = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))
+            }
+            # Return a fake process object with ExitCode 0
+            [pscustomobject]@{ ExitCode = 0 }
+        } -Verifiable
 
-        $result | Should -Match 'env-var-fix-ok'
+        # Also mock Test-Path and Import-Clixml so we don't need a real temp file
+        Mock -ModuleName PwshTokenCompressor Test-Path { $false } -Verifiable
+
+        Invoke-PtcRun -Command 'Write-Output "injection-guard"'
+
+        # The generated script must not contain the literal temp path; it should only
+        # reference $env:PTC_TEMP (the safe env-var indirection).
+        $tempBase = [System.IO.Path]::GetTempPath().TrimEnd([System.IO.Path]::DirectorySeparatorChar, '/')
+        $capturedScript | Should -Not -Match ([regex]::Escape($tempBase))
     }
 
     It 'does not emit [exit] for a pure-PowerShell ScriptBlock when stale LASTEXITCODE is set' {

@@ -920,6 +920,10 @@ function Invoke-PtcRun {
     }
 
     $temp = Join-Path ([System.IO.Path]::GetTempPath()) ('ptc-{0}.clixml' -f ([guid]::NewGuid()))
+    # NOTE: PTC_TEMP is process-wide; concurrent calls to Invoke-PtcRun (string branch)
+    # will clobber each other's env var. This is a known limitation of the env-var
+    # approach and would require a refactor (e.g. per-call named pipes or temp-file
+    # passing via ArgumentList) to fix safely.
     $env:PTC_TEMP = $temp
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(@"
 `$ErrorActionPreference = 'Continue'
@@ -945,7 +949,9 @@ $Command
         }
     } finally {
         Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
-        $env:PTC_TEMP = $null
+        # Use SetEnvironmentVariable to fully remove the var; $env:X = $null sets it
+        # to empty string on Windows rather than removing it.
+        [System.Environment]::SetEnvironmentVariable('PTC_TEMP', $null)
     }
 
     $compressed = $output | Compress-PtcObject -MaxItems $MaxItems
