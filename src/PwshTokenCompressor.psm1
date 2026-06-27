@@ -895,6 +895,7 @@ function Invoke-PtcRun {
     )
 
     if ($PSCmdlet.ParameterSetName -eq 'ScriptBlock') {
+        $global:LASTEXITCODE = 0
         $output = & $ScriptBlock 2>&1 3>&1 4>&1 5>&1 6>&1
         $exitCode = Get-PtcLastExitCode
         $compressed = $output | Compress-PtcObject -MaxItems $MaxItems

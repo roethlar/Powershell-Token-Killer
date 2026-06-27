@@ -81,6 +81,14 @@ Describe 'ptk dispatcher' {
         $result | Should -Match 'alpha'
     }
 
+    It 'does not emit [exit] for a pure-PowerShell ScriptBlock when stale LASTEXITCODE is set' {
+        $global:LASTEXITCODE = 7
+        $result = Invoke-PtcRun -ScriptBlock { [pscustomobject]@{ Name = 'ok' } }
+        $global:LASTEXITCODE = 0
+
+        $result | Should -Not -Match '\[exit\]'
+    }
+
     It 'compresses pipeline input' {
         $result = Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '..') | ptk compress -MaxItems 3
 
