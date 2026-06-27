@@ -9,6 +9,7 @@
     PowerShellVersion = '7.2'
     FunctionsToExport = @(
         'Compress-PtcObject',
+        'Invoke-PtcBoundCommand',
         'Invoke-Ptc',
         'Invoke-PtcRun',
         'Invoke-PtcList',

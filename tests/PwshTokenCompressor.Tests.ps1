@@ -37,6 +37,28 @@ Describe 'Compress-PtcObject' {
     }
 }
 
+Describe 'Invoke-PtcBoundCommand arg parser' {
+    It 'treats a dash-digit token as a value, not a flag' {
+        # A negative integer should be bound as a value, not treated as a switch named "3"
+        $sb = { param([int]$Count) "Count=$Count" }
+        $result = Invoke-PtcBoundCommand -Name $sb -Arguments @('-Count', '-3')
+        $result | Should -Be 'Count=-3'
+    }
+
+    It 'treats a dash-digit first argument as a positional value' {
+        $sb = { param([string]$x) "x=$x" }
+        $result = Invoke-PtcBoundCommand -Name $sb -Arguments @('-5')
+        # -5 is not a flag (digit after dash), so it is a positional -> bound to $x
+        $result | Should -Be 'x=-5'
+    }
+
+    It 'passes tokens after -- as positional values regardless of leading dash' {
+        $sb = { param([string]$x) "x=$x" }
+        $result = Invoke-PtcBoundCommand -Name $sb -Arguments @('--', '-not-a-flag')
+        $result | Should -Be 'x=-not-a-flag'
+    }
+}
+
 Describe 'ptk dispatcher' {
     It 'runs list wrapper' {
         $root = Join-Path $PSScriptRoot '..'

@@ -56,7 +56,7 @@ function Get-PtcLastExitCode {
 function Invoke-PtcBoundCommand {
     param(
         [Parameter(Mandatory)]
-        [string]$Name,
+        [object]$Name,
 
         [AllowNull()]
         [object[]]$Arguments
@@ -66,14 +66,20 @@ function Invoke-PtcBoundCommand {
     $positionals = [System.Collections.Generic.List[object]]::new()
     $named = @{}
 
+    $endOfOptions = $false
     for ($i = 0; $i -lt $Arguments.Count; $i++) {
         $item = $Arguments[$i]
-        if ($item -is [string] -and $item.StartsWith('-') -and $item.Length -gt 1) {
+        if (-not $endOfOptions -and $item -is [string] -and $item -eq '--') {
+            $endOfOptions = $true
+            continue
+        }
+        $isFlag = (-not $endOfOptions) -and ($item -is [string]) -and ($item -match '^-[A-Za-z]')
+        if ($isFlag) {
             $key = $item.TrimStart('-')
-            $hasValue = ($i + 1 -lt $Arguments.Count) -and -not (
-                $Arguments[$i + 1] -is [string] -and $Arguments[$i + 1].StartsWith('-')
+            $nextIsValue = ($i + 1 -lt $Arguments.Count) -and -not (
+                $Arguments[$i + 1] -is [string] -and $Arguments[$i + 1] -match '^-[A-Za-z]'
             )
-            if ($hasValue) {
+            if ($nextIsValue) {
                 $named[$key] = $Arguments[$i + 1]
                 $i++
             } else {
@@ -1024,6 +1030,7 @@ Set-Alias -Name ptk -Value Invoke-Ptc
 
 Export-ModuleMember -Function @(
     'Compress-PtcObject',
+    'Invoke-PtcBoundCommand',
     'Invoke-Ptc',
     'Invoke-PtcRun',
     'Invoke-PtcList',
