@@ -919,17 +919,18 @@ function Invoke-PtcRun {
     }
 
     $temp = Join-Path ([System.IO.Path]::GetTempPath()) ('ptc-{0}.clixml' -f ([guid]::NewGuid()))
+    $env:PTC_TEMP = $temp
     $encoded = [Convert]::ToBase64String([Text.Encoding]::Unicode.GetBytes(@"
 `$ErrorActionPreference = 'Continue'
 try {
     `$result = & {
 $Command
     } 2>&1 3>&1 4>&1 5>&1 6>&1
-    `$result | Export-Clixml -LiteralPath '$temp' -Depth $Depth
+    `$result | Export-Clixml -LiteralPath `$env:PTC_TEMP -Depth $Depth
     `$code = if (`$global:LASTEXITCODE -is [int]) { `$global:LASTEXITCODE } else { 0 }
     exit `$code
 } catch {
-    `$_ | Export-Clixml -LiteralPath '$temp' -Depth $Depth
+    `$_ | Export-Clixml -LiteralPath `$env:PTC_TEMP -Depth $Depth
     exit 1
 }
 "@))
@@ -943,6 +944,7 @@ $Command
         }
     } finally {
         Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+        $env:PTC_TEMP = $null
     }
 
     $compressed = $output | Compress-PtcObject -MaxItems $MaxItems
