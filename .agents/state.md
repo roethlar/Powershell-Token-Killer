@@ -10,7 +10,8 @@ short and update it when important repo facts change.
 
 ## Next
 
-- None recorded.
+- Open review findings recorded 2026-06-26 await a decision to act; see the Open
+  Decisions queue in `.agents/decisions.md`.
 
 ## Blockers
 
