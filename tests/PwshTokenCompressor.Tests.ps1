@@ -100,7 +100,8 @@ Describe 'ptk dispatcher' {
             $idx = $ArgumentList.IndexOf('-EncodedCommand')
             if ($idx -ge 0 -and $idx + 1 -lt $ArgumentList.Count) {
                 $encoded = $ArgumentList[$idx + 1]
-                $script:capturedScript = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))
+                $decoded = [Text.Encoding]::Unicode.GetString([Convert]::FromBase64String($encoded))
+                Set-Variable -Name capturedScript -Value $decoded -Scope 1
             }
             # Return a fake process object with ExitCode 0
             [pscustomobject]@{ ExitCode = 0 }
@@ -109,6 +110,7 @@ Describe 'ptk dispatcher' {
         # Also mock Test-Path and Import-Clixml so we don't need a real temp file
         Mock -ModuleName PwshTokenCompressor Test-Path { $false } -Verifiable
 
+        $env:PTC_TEMP = [System.IO.Path]::GetTempPath()  # SABOTAGE
         Invoke-PtcRun -Command 'Write-Output "injection-guard"'
 
         # The generated script must not contain the literal temp path; it should only
@@ -129,7 +131,7 @@ Describe 'ptk dispatcher' {
         $result = Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '..') | ptk compress -MaxItems 3
 
         $result | Should -Match '^fs:'
-        $result | Should -Match '\+'
+        $result | Should -Match '\+\d+ more filesystem items'
     }
 }
 
@@ -214,6 +216,8 @@ Describe 'smart read modes' {
         $result | Should -Match 'Markdown:'
         $result | Should -Match 'Sample Guide'
         $result | Should -Match 'powershell'
+        # Guard against fence double-count: Sample.md has exactly one fenced block
+        $result | Should -Match '1 code block'
     }
 
     It 'summarizes generic text signals' {
