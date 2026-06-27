@@ -737,14 +737,14 @@ function Invoke-PtcList {
         [int]$MaxItems = $script:DefaultMaxItems
     )
 
-    $args = @{
+    $gciArgs = @{
         LiteralPath = $Path
         Force = $Force
         ErrorAction = 'Stop'
     }
-    if ($Recurse) { $args.Recurse = $true }
+    if ($Recurse) { $gciArgs.Recurse = $true }
 
-    Get-ChildItem @args | Compress-PtcObject -MaxItems $MaxItems
+    Get-ChildItem @gciArgs | Compress-PtcObject -MaxItems $MaxItems
 }
 
 function Invoke-PtcRead {
