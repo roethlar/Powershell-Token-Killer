@@ -2,6 +2,7 @@ Set-StrictMode -Version Latest
 
 $script:DefaultMaxItems = 40
 $script:DefaultWidth = 140
+$script:PtcTableMaxColumnWidth = 50
 
 function Remove-PtcAnsi {
     param([AllowNull()][string]$Text)
@@ -158,7 +159,7 @@ function Format-PtcTable {
         $max = $prop.Length
         foreach ($row in $visible) {
             $value = ConvertTo-PtcScalar (Get-PtcPropertyValue -Object $row -Name $prop)
-            if ($value.Length -gt $max) { $max = [Math]::Min($value.Length, 50) }
+            if ($value.Length -gt $max) { $max = [Math]::Min($value.Length, $script:PtcTableMaxColumnWidth) }
         }
         $widths[$prop] = $max
     }
@@ -171,7 +172,7 @@ function Format-PtcTable {
     foreach ($row in $visible) {
         $cells = foreach ($prop in $Properties) {
             $value = ConvertTo-PtcScalar (Get-PtcPropertyValue -Object $row -Name $prop)
-            if ($value.Length -gt 50) { $value = $value.Substring(0, 49) + '...' }
+            if ($value.Length -gt $script:PtcTableMaxColumnWidth) { $value = $value.Substring(0, $script:PtcTableMaxColumnWidth - 1) + '...' }
             $value.PadRight($widths[$prop])
         }
         $lines += (($cells -join '  ').TrimEnd())
