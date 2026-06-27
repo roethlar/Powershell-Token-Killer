@@ -86,7 +86,7 @@ Describe 'smart read modes' {
     }
 
     It 'omits single-file raw header when it only adds noise' {
-        $file = Join-Path $PSScriptRoot 'fixtures/SmallLog.err.log'
+        $file = Join-Path $PSScriptRoot 'fixtures/SmallLog.errlog'
         $result = ptk cat $file
 
         $result | Should -Not -Match '^\[file\]'
