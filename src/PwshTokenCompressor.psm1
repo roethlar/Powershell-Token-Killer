@@ -217,7 +217,7 @@ function Get-PtcLanguage {
     }
 }
 
-function Use-PtcNeverWorse {
+function Use-PtcShorter {
     param(
         [string]$Raw,
         [string]$Compressed
@@ -548,7 +548,7 @@ function Invoke-PtcTextFilter {
     # For summary level the output is a structured digest, not a compression —
     # never-worse length comparison does not apply; always return the summary.
     if ($Level -eq 'summary') { return $filtered }
-    Use-PtcNeverWorse -Raw $rawWindow -Compressed $filtered
+    Use-PtcShorter -Raw $rawWindow -Compressed $filtered
 }
 
 function Compress-PtcFileSystem {
