@@ -264,3 +264,64 @@ y = 1
         @($result | Where-Object Level -eq 'summary')[0].SavingsPct | Should -BeGreaterThan 40
     }
 }
+
+Describe 'object routing robustness' {
+    It 'does not crash on projected objects that carry a FileInfo type name' {
+        # Select-Object / Clixml round-trips tag projections with the source type
+        # name but drop properties like PSIsContainer. Routing must not assume them.
+        $obj = [pscustomobject]@{ Name = 'alpha'; Length = 10 }
+        $obj.PSObject.TypeNames.Insert(0, 'Deserialized.Selected.System.IO.FileInfo')
+
+        $result = $obj | Compress-PtcObject
+
+        $result | Should -Match 'alpha'
+        $result | Should -Not -Match 'cannot be found'
+    }
+
+    It 'still routes real (deserialized) filesystem objects to the fs compressor' {
+        $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("ptc-fs-{0}.clixml" -f ([guid]::NewGuid()))
+        try {
+            Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '..') | Export-Clixml -LiteralPath $temp
+            $result = Import-Clixml -LiteralPath $temp | Compress-PtcObject -MaxItems 10
+            $result | Should -Match '^fs:'
+            $result | Should -Match 'README.md'
+        } finally {
+            Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'runs a command string that projects objects without crashing' {
+        $result = Invoke-PtcRun -Command "Get-ChildItem -LiteralPath '$PSScriptRoot' | Select-Object Name,Length"
+
+        $result | Should -Not -Match 'cannot be found'
+        $result | Should -Match 'Name'
+    }
+}
+
+Describe 'minimal mode comment stripping' {
+    It 'preserves #requires directives and here-string content while stripping PowerShell comments' {
+        $src = @'
+#requires -Version 7
+function Test-Thing {
+    $banner = @"
+#keepme inside herestring
+"@
+    $x = 1 # trailing comment
+    return $banner
+}
+# whole-line comment
+'@
+        $file = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-directives-{0}.ps1" -f ([guid]::NewGuid()))
+        Set-Content -LiteralPath $file -Value $src
+        try {
+            $result = Invoke-PtcRead -Path $file -Level minimal -MaxLines 80
+        } finally {
+            Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+        }
+
+        $result | Should -Match '#requires'
+        $result | Should -Match 'keepme inside herestring'
+        $result | Should -Not -Match 'whole-line comment'
+        $result | Should -Not -Match 'trailing comment'
+    }
+}

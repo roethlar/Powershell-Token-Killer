@@ -143,6 +143,18 @@ function Get-PtcPropertyValue {
     $property.Value
 }
 
+function Test-PtcHasProperty {
+    param(
+        [object]$Object,
+        [string[]]$Name
+    )
+
+    foreach ($candidate in $Name) {
+        if ($null -eq $Object.PSObject.Properties[$candidate]) { return $false }
+    }
+    $true
+}
+
 function Format-PtcTable {
     param(
         [object[]]$Rows,
@@ -239,26 +251,30 @@ function Normalize-PtcBlankLines {
 function Remove-PtcPowerShellComments {
     param([string]$Text)
 
-    $lines = @($Text -split "`r?`n")
-    $out = [System.Collections.Generic.List[string]]::new()
-    $inHelp = $false
+    # Use the PowerShell tokenizer so we only strip real comment tokens. A
+    # line-based approach wrongly removes `#requires` directives and any line
+    # that merely starts with `#` inside a here-string or expandable string.
+    $tokens = $null
+    $errors = $null
+    [void][System.Management.Automation.Language.Parser]::ParseInput($Text, [ref]$tokens, [ref]$errors)
 
-    foreach ($line in $lines) {
-        $trimmed = $line.Trim()
-        if ($trimmed -match '^<#') {
-            $inHelp = $true
-            if ($trimmed -match '#>$') { $inHelp = $false }
-            continue
-        }
-        if ($inHelp) {
-            if ($trimmed -match '#>$') { $inHelp = $false }
-            continue
-        }
-        if ($trimmed.StartsWith('#')) { continue }
-        $out.Add($line)
+    $comments = @($tokens | Where-Object {
+        $_.Kind -eq [System.Management.Automation.Language.TokenKind]::Comment -and
+        $_.Text -notmatch '^#requires'
+    })
+
+    if ($comments.Count -eq 0) {
+        return Normalize-PtcBlankLines $Text
     }
 
-    Normalize-PtcBlankLines ($out -join [Environment]::NewLine)
+    $builder = [System.Text.StringBuilder]::new($Text)
+    foreach ($comment in $comments | Sort-Object { $_.Extent.StartOffset } -Descending) {
+        $start = $comment.Extent.StartOffset
+        $length = $comment.Extent.EndOffset - $start
+        [void]$builder.Remove($start, $length)
+    }
+
+    Normalize-PtcBlankLines $builder.ToString()
 }
 
 function Remove-PtcGenericComments {
@@ -563,9 +579,9 @@ function Compress-PtcFileSystem {
     )
 
     $items = @($InputObject)
-    $dirs = @($items | Where-Object { $_.PSIsContainer })
-    $files = @($items | Where-Object { -not $_.PSIsContainer })
-    $totalBytes = ($files | Measure-Object -Property Length -Sum).Sum
+    $dirs = @($items | Where-Object { [bool](Get-PtcPropertyValue -Object $_ -Name 'PSIsContainer') })
+    $files = @($items | Where-Object { -not [bool](Get-PtcPropertyValue -Object $_ -Name 'PSIsContainer') })
+    $totalBytes = ($files | ForEach-Object { [long](Get-PtcPropertyValue -Object $_ -Name 'Length') } | Measure-Object -Sum).Sum
     if ($null -eq $totalBytes) { $totalBytes = 0 }
 
     $lines = @("fs: {0} dirs, {1} files, {2}" -f $dirs.Count, $files.Count, (Format-PtcSize $totalBytes))
@@ -707,20 +723,34 @@ function Compress-PtcObject {
             return
         }
 
+        # Route by type name, but only when the first item actually carries the
+        # properties the specialized compressor needs. Projections and Clixml
+        # round-trips (e.g. Select-Object) keep the source type name while
+        # dropping properties, so type name alone is not enough to dispatch on.
+        $first = $array | Select-Object -First 1
         $typeNames = @($array | ForEach-Object { $_.PSObject.TypeNames[0] } | Select-Object -Unique)
-        if (@($typeNames | Where-Object { $_ -like '*System.IO.DirectoryInfo*' -or $_ -like '*System.IO.FileInfo*' }).Count -gt 0) {
+        $matchesType = {
+            param([string]$Pattern)
+            @($typeNames | Where-Object { $_ -like $Pattern }).Count -gt 0
+        }
+
+        if (((& $matchesType '*System.IO.DirectoryInfo*') -or (& $matchesType '*System.IO.FileInfo*')) -and
+            (Test-PtcHasProperty -Object $first -Name 'PSIsContainer')) {
             Compress-PtcFileSystem -InputObject $array -MaxItems $MaxItems
             return
         }
-        if (@($typeNames | Where-Object { $_ -like '*Microsoft.PowerShell.Commands.MatchInfo*' }).Count -gt 0) {
+        if ((& $matchesType '*Microsoft.PowerShell.Commands.MatchInfo*') -and
+            (Test-PtcHasProperty -Object $first -Name 'LineNumber', 'Path')) {
             Compress-PtcMatchInfo -InputObject $array -MaxItems $MaxItems
             return
         }
-        if (@($typeNames | Where-Object { $_ -like '*System.Diagnostics.Process*' }).Count -gt 0) {
+        if ((& $matchesType '*System.Diagnostics.Process*') -and
+            (Test-PtcHasProperty -Object $first -Name 'Id', 'ProcessName')) {
             Compress-PtcProcess -InputObject $array -MaxItems $MaxItems
             return
         }
-        if (@($typeNames | Where-Object { $_ -like '*ServiceController*' }).Count -gt 0) {
+        if ((& $matchesType '*ServiceController*') -and
+            (Test-PtcHasProperty -Object $first -Name 'Status', 'Name')) {
             Compress-PtcService -InputObject $array -MaxItems $MaxItems
             return
         }
