@@ -117,3 +117,101 @@ real Windows usage (the `savings`/`Measure-PtcSavings` primitive exists). Only b
 (4) the universal in-process wrapper if the data justifies it. Sequences the cost
 behind the proven benefit. Each of (1)-(4) is a separate authorized change requiring
 its own go.
+
+### OPEN (2026-06-27): Whether to give ptk a session-persistent warm-runspace backend
+
+**Status:** Open - deferred, recording the design exploration. No code change
+authorized. This is the **substrate** counterpart to the universal-wrapper decision
+above: that entry settled that the universal path MUST run in-process to preserve a
+warm host; this entry asks where that warm host should come from when the harness does
+not happen to provide one.
+
+**Question:** Should ptk own a persistent PowerShell host - a single long-lived
+runspace that loads heavy modules (`ActiveDirectory`, `ExchangeOnlineManagement`) and
+establishes their authenticated connections **once**, then serves many agent tool
+calls from that warm state for the life of a coding session? And if so, in what form?
+
+**What triggered it:** The universal-wrapper evidence showed the owner's on-prem
+`Get-Queue` workflow only works because the agent happens to be running *inside* an
+already-open EMS host whose implicit-remoting PSSession persists in that process. That
+is incidental, not architectural: it is not portable, not reproducible from a cold
+harness, and covers only the modules/connections that ambient host already loaded.
+Cost driver is concrete - a cold per-call `pwsh` reloads modules and re-authenticates
+every call (on-prem EMS connect is 30s+; EXO/Graph connects cost auth round-trips). The
+question is whether ptk can provide that warm host *deterministically* instead of
+depending on an ambient one.
+
+**Verified evidence gathered this session (keep - expensive to re-establish):**
+
+- **A stdio MCP server is the one Claude Code mechanism that gives a session-scoped
+  warm process.** It is launched once and runs as a single long-lived child process
+  for the whole session; tool calls are JSON-RPC to that same process, so an in-memory
+  .NET object / PowerShell `Runspace` it creates persists across calls. (claude-code-guide
+  agent, citing `code.claude.com/docs/en/mcp.md`.)
+- **Per-tool-call timeout is generous.** `MCP_TOOL_TIMEOUT` default is ~28h; a per-server
+  `timeout` (ms) in `.mcp.json` overrides it. There is a hard wall-clock cap per call
+  and progress notifications do not extend it, but there is ample headroom for module
+  load / connection setup. The 5-minute idle timeout applies to remote HTTP/SSE servers,
+  not stdio. (`mcp.md`.)
+- **The Bash-daemon alternative fights the harness.** The Bash tool is not a persistent
+  shell - each call is a separate process, env vars do not persist, and background
+  processes started via Bash are killed on session end or orphaned (open Claude Code
+  issues #25188, #43944). `SessionEnd` hooks are non-blocking and not guaranteed to run
+  on crash / Ctrl-C, so they cannot be relied on to tear a daemon down. The dedicated
+  PowerShell tool (`CLAUDE_CODE_USE_POWERSHELL_TOOL=1`) has the same per-call-process
+  model and does not help. (tools-reference.md, hooks-guide.md, the two issues.)
+- **No official PowerShell MCP SDK.** The practical path is a .NET stdio server hosting
+  `System.Management.Automation` and owning the `Runspace` in-process (tightest fit), or
+  a Node/Python stdio server shelling into a persistent `pwsh`. (claude-code-guide.)
+- **Headless EXO auth must be certificate-based app-only.** `Connect-ExchangeOnline`
+  with MFA is interactive and cannot run inside a non-interactive server process;
+  app-registration + certificate (`-CertificateThumbprint -AppId -Organization`) is the
+  supported unattended path and the direction Microsoft is steering tenants toward.
+
+**Settled sub-decisions (conditional on building it at all):**
+
+- **Transport = stdio MCP server, not a Bash-spawned daemon.** Claude Code owns the
+  lifecycle (start at session start, kill at session end), which sidesteps the
+  background-process persistence/teardown bugs above. The Bash-daemon option is rejected
+  on reliability grounds, not just cleanliness.
+- **Implementation = .NET stdio server hosting `System.Management.Automation`**, owning a
+  single `Runspace` in-process. The `PwshTokenCompressor` module loads once in that same
+  runspace.
+- **EXO/Graph auth = app registration + certificate (app-only) is a HARD REQUIREMENT.**
+  No interactive `Connect-*` in the server. A tenant/box that cannot meet this is out of
+  scope rather than a reason to add an interactive fallback.
+- **One serial runspace, not a pool.** Cmdlets and implicit-remoting PSSessions are not
+  thread-safe; serialize calls. A per-call timeout recycles the runspace on a wedge
+  rather than hanging the session. Reach for a `RunspacePool` only if real parallelism is
+  ever proven necessary.
+- **Module strategy = enumerate `Get-Module -ListAvailable` at startup, lazy-load + cache
+  on first use.** Expose `ptk_modules` (available/loaded) and `ptk_reset` (recycle the
+  runspace / clear leaked `$global:` / cwd / `$PSDefaultParameterValues` state).
+- **Substrate vs shaping stay separate.** The runspace is *where* a command runs; output
+  still flows through `Compress-PtcObject` (objects, lossless) before return. The
+  `experiment/ptk-router` branch (rtk for logs, ollama for prose, deterministic text
+  filter otherwise) is the *shaping* layer behind a `ptk_invoke { <scriptblock> }` tool -
+  it is complementary, not an alternative.
+- **Lifetime is managed inside the server** (idle self-timeout + idempotent
+  startup cleanup), never via `SessionEnd`, which is not guaranteed to fire.
+
+**Relationship to the universal-wrapper decision:** complementary, not competing. The
+universal wrapper is the *surface* (`ptk <cmdlet>`); the persistent runspace is the
+*substrate* (a deterministic warm host). The MCP tool is the portable replacement for
+"the agent happens to live in a warm EMS host." If both are built, `ptk_invoke` runs the
+cmdlet inside the owned runspace.
+
+**Why deferred (owner's framing):** unchanged from the universal-wrapper entry - ptk is
+a personal/team tool complementing `headroom`; the build trigger is measured benefit on
+real daily Windows work, not faith. This is a *larger* build than the universal wrapper
+(a whole MCP server + .NET hosting + app-reg/cert setup), so the bar is at least as high.
+
+**Standing recommendation (for whoever picks this up):** Do not build the server first.
+(1) Quantify the pain - count cold `Import-Module` / `Connect-*` invocations and their
+latency over a week of real sessions; if the ambient-warm-host accident already covers
+the daily workflow, the deterministic host may not pay for itself yet. (2) If material,
+prototype the smallest possible .NET stdio MCP server exposing one tool
+`ptk_invoke { <scriptblock> }` against a single warm `Runspace` with cert-based EXO
+preconnect, returning `Compress-PtcObject` output. (3) Only then add the module map,
+`ptk_reset`, and the router shaping layer. Each step is a separate authorized change
+requiring its own go.
