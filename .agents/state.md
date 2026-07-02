@@ -17,9 +17,16 @@ short and update it when important repo facts change.
   `.agents/decisions.md`. The core requirement is warm module load with no reload
   tax; unattended (cert-based) auth is the pattern for connection-bearing modules
   like EXO, not itself the requirement (owner correction 2026-07-02).
-- 2026-07-02: owner selected the warm-runspace MCP server as the active work item:
-  get the server with a persistent runspace working first, then object compression
-  via ptk on top. A durable plan is still required before code.
+- 2026-07-02: owner selected the warm-runspace MCP server as the active work item and
+  approved `.agents/plans/warm-runspace-mcp-server.md`. Slices 1-6 are built and
+  verified: `server/` holds a net10.0 stdio MCP server (ModelContextProtocol 1.4.0 +
+  Microsoft.PowerShell.SDK 7.6.3) with ptk_ping / ptk_invoke / ptk_modules /
+  ptk_reset over a single warm runspace (serialized calls, timeout recycle, idle
+  self-exit), registered in `.mcp.json` as `dotnet run -v q --project
+  server/PtkMcpServer` (verified byte-clean stdout on cold build).
+- Measured reload tax on this machine (Pester as the heavy module): cold per-call
+  pwsh ≈ 460-500 ms every call; warm server pays 402 ms once, then re-import and
+  module use round-trip at ~3 ms per tool call.
 - Owner intent that frames future work: ptk is a personal/team tool complementing the
   owner's `headroom` PoC on Windows/PowerShell work, not an org-wide tool. The build
   trigger is measured benefit on real daily Windows usage, not faith. See
@@ -30,9 +37,12 @@ short and update it when important repo facts change.
 
 ## Next
 
-- Draft the durable plan for the warm-runspace stdio MCP server (owner's chosen work
-  item, 2026-07-02) and get it approved before any code. Settled sub-decisions live
-  in `.agents/decisions.md` under that Open Decision - resume there, do not re-derive.
+- Live-session check: the `.mcp.json` `ptk` server is picked up at the NEXT Claude
+  Code session start (project MCP servers need one-time approval). Confirm the four
+  tools appear and ptk_invoke shares state across calls.
+- Slice 7 (owner-run, on the real Windows box): AD/EMS/EXO module load-once behavior
+  and the unattended-auth pattern; findings feed Phase 2 scope.
+- Phase 2 (separate go): route ptk_invoke output through Compress-PtcObject.
 - The "universal PowerShell wrapper" decision (the surface) stays open/deferred; its
   run-anything surface largely falls out of the server's `ptk_invoke` tool anyway.
 

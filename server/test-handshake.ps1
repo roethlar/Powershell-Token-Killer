@@ -11,24 +11,37 @@ Exits 0 on success, 1 on failure. Used as part of slice verification alongside
 #>
 [CmdletBinding()]
 param(
-    [int]$TimeoutSec = 30
+    [int]$TimeoutSec = 30,
+    # Drive the server with `dotnet run` — the exact command the .mcp.json
+    # registration spawns (build-on-launch, quiet stdout) — instead of
+    # dotnet exec against a prebuilt dll.
+    [switch]$UseRegistrationCommand
 )
 
 $ErrorActionPreference = 'Stop'
 $serverDir = Split-Path -Parent $PSCommandPath
-$proj = Join-Path $serverDir 'PtkMcpServer'
-
-Write-Host 'Building server...'
-dotnet build $proj -v q --nologo | Out-Host
-if ($LASTEXITCODE -ne 0) { Write-Error 'Build failed.'; exit 1 }
-
-$dll = Join-Path $proj 'bin/Debug/net10.0/PtkMcpServer.dll'
-if (-not (Test-Path $dll)) { Write-Error "Built assembly not found at $dll"; exit 1 }
 
 $psi = [System.Diagnostics.ProcessStartInfo]::new()
-$psi.FileName = 'dotnet'
-$psi.ArgumentList.Add('exec')
-$psi.ArgumentList.Add($dll)
+if ($UseRegistrationCommand) {
+    Write-Host 'Starting via dotnet run (registration command; builds on launch)...'
+    $psi.FileName = 'dotnet'
+    foreach ($a in @('run', '-v', 'q', '--project', (Join-Path $serverDir 'PtkMcpServer'))) {
+        $psi.ArgumentList.Add($a)
+    }
+}
+else {
+    $proj = Join-Path $serverDir 'PtkMcpServer'
+    Write-Host 'Building server...'
+    dotnet build $proj -v q --nologo | Out-Host
+    if ($LASTEXITCODE -ne 0) { Write-Error 'Build failed.'; exit 1 }
+
+    $dll = Join-Path $proj 'bin/Debug/net10.0/PtkMcpServer.dll'
+    if (-not (Test-Path $dll)) { Write-Error "Built assembly not found at $dll"; exit 1 }
+
+    $psi.FileName = 'dotnet'
+    $psi.ArgumentList.Add('exec')
+    $psi.ArgumentList.Add($dll)
+}
 $psi.RedirectStandardInput = $true
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true

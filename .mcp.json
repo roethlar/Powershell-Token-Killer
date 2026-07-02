@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "ptk": {
+      "command": "dotnet",
+      "args": ["run", "-v", "q", "--project", "server/PtkMcpServer"]
+    }
+  }
+}
