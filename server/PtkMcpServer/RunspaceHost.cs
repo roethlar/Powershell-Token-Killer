@@ -33,11 +33,19 @@ public sealed class RunspaceHost : IDisposable
         _runspace = CreateRunspace();
     }
 
+    // Runspace.Open initializes the FileSystem provider via DriveInfo.GetDrives,
+    // whose native getmntinfo call is not thread-safe on macOS — two concurrent
+    // opens in one process can AccessViolation. Serialize creation process-wide.
+    private static readonly object CreationLock = new();
+
     private static Runspace CreateRunspace()
     {
-        var runspace = RunspaceFactory.CreateRunspace(InitialSessionState.CreateDefault());
-        runspace.Open();
-        return runspace;
+        lock (CreationLock)
+        {
+            var runspace = RunspaceFactory.CreateRunspace(InitialSessionState.CreateDefault());
+            runspace.Open();
+            return runspace;
+        }
     }
 
     public async Task<InvokeResult> InvokeAsync(string script, CancellationToken cancellationToken = default)

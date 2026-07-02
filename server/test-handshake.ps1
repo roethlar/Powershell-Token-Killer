@@ -81,7 +81,7 @@ try {
     Send-Rpc @{ jsonrpc = '2.0'; id = 2; method = 'tools/list' }
     $tools = Read-RpcResponse -Id 2
     $names = @($tools.result.tools.name)
-    foreach ($required in @('ptk_ping', 'ptk_invoke')) {
+    foreach ($required in @('ptk_ping', 'ptk_invoke', 'ptk_modules', 'ptk_reset')) {
         if ($names -notcontains $required) {
             throw "$required missing from tools/list; got: $($names -join ', ')"
         }
