@@ -1,6 +1,7 @@
 # Plan: Warm-Runspace stdio MCP Server (prototype)
 
-**Status:** DRAFT — awaiting owner approval. No code until approved.
+**Status:** APPROVED by owner 2026-07-02 ("go"). Implementation in progress, one
+commit per slice.
 **Decision basis:** `.agents/decisions.md` → Open Decision (2026-06-27) "session-persistent
 warm-runspace backend", selected as active work by owner 2026-07-02. Settled
 sub-decisions there are binding on this plan; read that entry first.
