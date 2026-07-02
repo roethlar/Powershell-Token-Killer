@@ -6,6 +6,11 @@ This is a structured-output compressor, not a Unix command wrapper. It captures
 PowerShell objects before formatting, summarizes them by type and selected
 properties, and renders compact text suitable for LLM tool output.
 
+The repo also contains a warm-runspace MCP server (`server/`) that keeps one
+persistent PowerShell runspace alive for a whole agent session, so heavy
+modules load once instead of per tool call. Setup instructions:
+[server/README.md](server/README.md).
+
 ## Quick Start
 
 ```powershell
