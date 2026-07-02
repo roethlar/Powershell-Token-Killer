@@ -35,19 +35,25 @@ short and update it when important repo facts change.
   (`AGENTS.md` reconciled to the current template; repo-specific content carved into
   the new `.agents/repo-guidance.md` and `.agents/push-policy.md`).
 
+- 2026-07-02 (late): owner stepped back and PAUSED all further building pending a
+  go/no-go test. Evidence: headroom stopped (its context rewrites caused prompt-cache
+  re-billing, net negative); rtk not adopted reliably via AGENTS.md instructions.
+  Full reasoning and the test definition live in `.agents/decisions.md` ("Whether ptk
+  continues at all"). Phase 2 compression, the universal wrapper, and the
+  destructive-cmdlet gate are all behind that gate. No new plans until the test runs.
+
 ## Next
 
-- Live-session check: the `.mcp.json` `ptk` server is picked up at the NEXT Claude
-  Code session start (project MCP servers need one-time approval). Confirm the four
-  tools appear and ptk_invoke shares state across calls.
-- Slice 7 (owner-run, on the real Windows box): AD/EMS/EXO module load-once behavior
-  and the unattended-auth pattern. BLOCKED until ~2026-07-16: owner is away from
-  work with no Exchange access. Not a blocker for Phase 2 planning — deserialized
-  objects can be synthesized locally via PSSerializer round-trip for routing tests;
-  the Windows pass becomes confirmation, not a prerequisite.
-- Phase 2 (separate go): route ptk_invoke output through Compress-PtcObject.
-- The "universal PowerShell wrapper" decision (the surface) stays open/deferred; its
-  run-anything surface largely falls out of the server's `ptk_invoke` tool anyway.
+- (~2026-07-16, owner back at work) Run the go/no-go test on the real Windows box:
+  does the model use ptk_invoke unprompted for Exchange/AD work, and does it save
+  real time? Both yes → Phase 2 earns a second look. Ignored like rtk → archive the
+  project with the finding. Definition in `.agents/decisions.md`.
+- Live-session check whenever convenient: the `.mcp.json` `ptk` server is picked up
+  at the next Claude Code session start (one-time approval). Confirm the four tools
+  appear and ptk_invoke shares state across calls.
+- Interim security posture: keep ptk_invoke on ask-per-call in the harness; the
+  policy-file gate design is recorded in the continuation decision, build only if
+  real usage creates blanket-allow pressure.
 
 ## Blockers
 

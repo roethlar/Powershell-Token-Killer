@@ -10,12 +10,14 @@ formatted to text, summarizes them by type and selected properties, and
 renders compact output for LLM tool use. It is a structured-output compressor,
 not a Unix-command wrapper (see `README.md`).
 
-The owner treats this as a personal/team tool complementing a separate
-`headroom` proof-of-concept for Windows/PowerShell work, not an org-wide
-product. The build trigger for larger architectural changes is measured
-benefit on real daily usage, not anticipated need. Two such changes are
-currently deferred pending that evidence — see the Open Decisions in
-`.agents/decisions.md` rather than re-deriving this framing.
+The owner treats this as a personal/team tool, not an org-wide product. (An
+earlier framing said it complements the owner's `headroom` PoC; headroom was
+stopped in 2026 as net negative — see the corrections in `.agents/decisions.md`.)
+The build trigger for larger architectural changes is measured benefit on real
+daily usage, not anticipated need — and specifically *experienced* benefit, not
+a tool's self-reported savings metric. All further building is currently gated
+on a go/no-go adoption test of the warm-runspace MCP server; see the Open
+Decisions in `.agents/decisions.md` rather than re-deriving this framing.
 
 ## Reading Order
 

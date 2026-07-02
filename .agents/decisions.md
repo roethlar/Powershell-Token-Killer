@@ -110,6 +110,16 @@ large, risky piece (in-session execution; retiring hardened code). The owner's
 build trigger is "if it shows real benefit," i.e. a measurement condition. Bar to
 clear is "real savings on my daily Windows work," not org scale.
 
+**Correction (2026-07-02, owner):** the headroom claim above is superseded. The
+~39.5M/day figure was headroom's own metric, not net benefit: its compression
+rewrote existing context, causing prompt-cache rewrites whose re-billing made it
+NET NEGATIVE, and the owner has stopped headroom. Note the mechanism does not
+transfer 1:1 to ptk - ptk compresses fresh tool output before it enters context,
+which does not invalidate cached prompt prefixes - but the adoption evidence
+against instruction-driven tools does transfer (see the 2026-07-02 continuation
+decision below). This entry's premise ("complementing headroom") is stale;
+deprioritized accordingly.
+
 **Standing recommendation (for whoever picks this up):** Stage it. (1) Fix the
 `string[]` truncation bug and (2) drop the bash-crutch verbs - both small and
 clearly worth it on their own. Then (3) measure object-first savings on a week of
@@ -120,10 +130,12 @@ its own go.
 
 ### OPEN (2026-06-27): Whether to give ptk a session-persistent warm-runspace backend
 
-**Status:** Open - selected as active work by owner 2026-07-02 (build the MCP server
-with persistent runspace first; object compression via ptk comes after). A durable
-plan is still required before code. This is the **substrate** counterpart to the
-universal-wrapper decision
+**Status:** Open - selected as active work by owner 2026-07-02 and BUILT the same
+day: slices 1-6 of `.agents/plans/warm-runspace-mcp-server.md` are complete,
+verified, and pushed (server in `server/`, registered in `.mcp.json`). Slice 7
+(Windows validation) and any Phase 2 are paused behind the go/no-go test in the
+2026-07-02 continuation decision below. This is the **substrate** counterpart to
+the universal-wrapper decision
 above: that entry settled that the universal path MUST run in-process to preserve a
 warm host; this entry asks where that warm host should come from when the harness does
 not happen to provide one.
@@ -202,8 +214,9 @@ depending on an ambient one.
 - **Lifetime is managed inside the server** (idle self-timeout + idempotent
   startup cleanup), never via `SessionEnd`, which is not guaranteed to fire.
 
-**Relationship to the universal-wrapper decision:** complementary, not competing. The
-universal wrapper is the *surface* (`ptk <cmdlet>`); the persistent runspace is the
+**Relationship to the universal-wrapper decision:** complementary, not competing
+(and see the 2026-07-02 continuation decision below, which now gates all further
+work on both entries). The universal wrapper is the *surface* (`ptk <cmdlet>`); the persistent runspace is the
 *substrate* (a deterministic warm host). The MCP tool is the portable replacement for
 "the agent happens to live in a warm EMS host." If both are built, `ptk_invoke` runs the
 cmdlet inside the owned runspace.
@@ -214,6 +227,8 @@ real daily Windows work, not faith. This is a *larger* build than the universal 
 (a whole MCP server + .NET hosting + app-reg/cert setup), so the bar is at least as high.
 
 **Standing recommendation (for whoever picks this up):** Do not build the server first.
+(Superseded in practice 2026-07-02: the owner chose to build the server without the
+step-1 measurement; it is built. Retained for the record.)
 (1) Quantify the pain - count cold `Import-Module` / `Connect-*` invocations and their
 latency over a week of real sessions; if the ambient-warm-host accident already covers
 the daily workflow, the deterministic host may not pay for itself yet. (2) If material,
@@ -222,3 +237,61 @@ prototype the smallest possible .NET stdio MCP server exposing one tool
 preconnect, returning `Compress-PtcObject` output. (3) Only then add the module map,
 `ptk_reset`, and the router shaping layer. Each step is a separate authorized change
 requiring its own go.
+
+### OPEN (2026-07-02): Whether ptk continues at all — substrate go/no-go after owner vacation
+
+**Status:** Open - all further building is PAUSED by owner decision until the test
+below runs. This gates Phase 2 (compression), the universal wrapper, and the
+destructive-cmdlet gate. The warm-runspace server itself (slices 1-6) is built,
+verified, and stays registered.
+
+**What triggered it:** the owner stepped back and asked whether ptk is worth it,
+citing two pieces of evidence from sibling tools:
+
+- **headroom is stopped, net negative.** Its compression rewrote existing context,
+  causing prompt-cache rewrites whose re-billing exceeded the savings. Its
+  ~39.5M-tokens/day figure was the tool's own metric, not net benefit. (This
+  corrects the claim recorded in the universal-wrapper entry above.)
+- **rtk does not get used reliably** when instructed via AGENTS.md; usage is
+  model-dependent and decays.
+
+**The generalized finding (owner-confirmed):** tools whose benefit requires the
+model's ongoing *discipline* - remembering a compression step whose payoff the
+model never experiences - do not get adopted. ptk's CLI face and any
+instruction-driven compression inherit this failure mode. Two distinctions keep
+ptk from being dead on this evidence alone:
+
+1. **Cache mechanism does not transfer:** ptk compresses fresh tool output before
+   it enters context; unlike headroom it does not rewrite cached prompt prefixes,
+   so the specific net-negative mechanism is headroom's, not ptk's.
+2. **The warm-runspace server is a capability, not a discipline:** on the owner's
+   Windows box, ptk_invoke is the only deterministic warm path to EMS/EXO (2s vs
+   30s+ or failure). The model experiences that difference directly, which is an
+   adoption story the rtk evidence does not already contradict - but it is a
+   hypothesis, not a result.
+
+**The test (after owner returns ~2026-07-16):** work normal days on the Windows box
+with the server registered and observe two things:
+
+- **Adoption:** does the model reach for ptk_invoke *unprompted* for Exchange/AD
+  work?
+- **Benefit:** does it save real time and aggravation (not a tool-reported metric -
+  see the headroom trap)?
+
+Both yes → Phase 2 (compression riding on an already-adopted tool) earns a second
+look. Model ignores it like rtk → archive the project with the finding recorded.
+
+**Also parked behind this gate - destructive-cmdlet security layer.** Design was
+explored 2026-07-02 through three iterations, recorded so it need not be re-derived:
+(1) two-tool split with harness permissions (ptk_invoke / ptk_invoke_unsafe) -
+REJECTED by owner: a sticky "always allow" grant on the unsafe tool silently
+removes the gate; (2) server-enforced per-call OS approval dialog - REJECTED by
+owner: too cumbersome, unworkable headless/automation; (3) declarative policy file
+outside the workspace, default read-only, destructive commands refused unless
+pre-authorized, classification via each cmdlet's own SupportsShouldProcess /
+ConfirmImpact metadata plus alias resolution, fail-closed on unknowns/natives -
+tentatively acceptable to owner. All variants are guardrails against model
+sloppiness, NOT security boundaries (the model has raw shell access; recorded
+threat model unchanged). Interim posture: keep ptk_invoke on ask-per-call in the
+harness; build the policy gate only if real usage creates the desire to
+blanket-allow ptk_invoke.

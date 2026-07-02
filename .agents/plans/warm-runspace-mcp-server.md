@@ -1,7 +1,9 @@
 # Plan: Warm-Runspace stdio MCP Server (prototype)
 
-**Status:** APPROVED by owner 2026-07-02 ("go"). Implementation in progress, one
-commit per slice.
+**Status:** Slices 1-6 COMPLETE and pushed (2026-07-02). Slice 7 and Phase 2 are
+paused behind the go/no-go continuation decision in `.agents/decisions.md`
+("Whether ptk continues at all"); do not resume from this plan without checking
+that decision first.
 **Decision basis:** `.agents/decisions.md` → Open Decision (2026-06-27) "session-persistent
 warm-runspace backend", selected as active work by owner 2026-07-02. Settled
 sub-decisions there are binding on this plan; read that entry first.
