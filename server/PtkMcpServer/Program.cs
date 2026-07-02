@@ -11,8 +11,16 @@ var callTimeout = TimeSpan.FromSeconds(
     double.TryParse(Environment.GetEnvironmentVariable("PTK_CALL_TIMEOUT_SECONDS"), out var s) && s > 0
         ? s
         : 300);
+var idleExit = TimeSpan.FromSeconds(
+    double.TryParse(Environment.GetEnvironmentVariable("PTK_IDLE_EXIT_SECONDS"), out var i) && i > 0
+        ? i
+        : 14400); // 4h backstop for orphaned servers; Claude Code normally kills the child itself.
 
 builder.Services.AddSingleton(new PtkMcpServer.RunspaceHost(callTimeout));
+builder.Services.AddHostedService(sp => new PtkMcpServer.IdleWatchdog(
+    idleExit,
+    () => sp.GetRequiredService<PtkMcpServer.RunspaceHost>().LastActivityUtc,
+    () => sp.GetRequiredService<IHostApplicationLifetime>().StopApplication()));
 builder.Services
     .AddMcpServer()
     .WithStdioServerTransport()

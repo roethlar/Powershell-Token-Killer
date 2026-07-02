@@ -27,6 +27,9 @@ public sealed class RunspaceHost : IDisposable
     private Runspace _runspace;
     private bool _disposed;
 
+    /// <summary>Timestamp of the most recent invoke/reset; read by the idle watchdog.</summary>
+    public DateTimeOffset LastActivityUtc { get; private set; } = DateTimeOffset.UtcNow;
+
     public RunspaceHost(TimeSpan? callTimeout = null)
     {
         _callTimeout = callTimeout ?? TimeSpan.FromSeconds(300);
@@ -51,6 +54,7 @@ public sealed class RunspaceHost : IDisposable
     public async Task<InvokeResult> InvokeAsync(string script, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        LastActivityUtc = DateTimeOffset.UtcNow;
         await _gate.WaitAsync(cancellationToken);
         var ps = PowerShell.Create();
         var handedOff = false;
@@ -112,6 +116,7 @@ public sealed class RunspaceHost : IDisposable
     public async Task ResetAsync(CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        LastActivityUtc = DateTimeOffset.UtcNow;
         await _gate.WaitAsync(cancellationToken);
         try
         {
