@@ -5,17 +5,13 @@ short and update it when important repo facts change.
 
 ## Now
 
-- Module is in a clean, reviewed state. HEAD is 9d56fae (LOCAL, not yet pushed;
-  origin/master is c7cc77a): on top of the reviewed master it fixes two bugs that
-  survived the design session - the deserialized/projected-object routing crash in
-  `Compress-PtcObject` (the README `ptk run "... | Select-Object ..."` example) and the
-  line-based `Remove-PtcPowerShellComments` (now tokenizer-based, preserves `#requires`
-  and here-string `#` lines). 31/31 Pester tests passing. Decide whether to push 9d56fae
-  or land it via PR.
+- Module is in a clean, reviewed state. HEAD is 5e7d117, and `origin/master` matches it
+  (`git rev-parse HEAD origin/master`, both `5e7d117`) — nothing is committed-but-unpushed.
+  31/31 Pester tests passing.
 - A 2026-06-27 design session explored a "universal PowerShell wrapper" rearchitecture
   (triggered by `ptk Get-ChildItem` printing help instead of running). No product code
-  was written; the owner deferred the build decision. Outcome recorded as an Open
-  decision (b1e0550, docs-only). See `.agents/decisions.md`.
+  was written; the owner deferred the build decision. Recorded as an Open decision
+  (b1e0550, docs-only). See `.agents/decisions.md`.
 - A follow-on 2026-06-27 exploration looked at giving ptk a session-persistent
   warm-runspace backend (a stdio MCP server owning a `Runspace` that loads heavy
   modules / authenticated connections once). Recorded as a second Open decision in
@@ -23,14 +19,14 @@ short and update it when important repo facts change.
   No code authorized.
 - Owner intent that frames future work: ptk is a personal/team tool complementing the
   owner's `headroom` PoC on Windows/PowerShell work, not an org-wide tool. The build
-  trigger is measured benefit on real daily Windows usage, not faith.
-- Untracked: a session-log `.txt` in the repo root (prior session transcript). Not
-  ours to delete; ignore unless asked.
+  trigger is measured benefit on real daily Windows usage, not faith. See
+  `.agents/repo-guidance.md` for the generalized framing.
+- 2026-07-02: governance refreshed from the AgentGovernanceBootstrap toolkit
+  (`AGENTS.md` reconciled to the current template; repo-specific content carved into
+  the new `.agents/repo-guidance.md` and `.agents/push-policy.md`).
 
 ## Next
 
-- Decide how to land HEAD 9d56fae (push to master vs PR); it is committed locally but
-  unpushed. Direct push to master was blocked by the harness policy this session.
 - Two open decisions deferred by owner (both 2026-06-27), in `.agents/decisions.md`
   (Open Decisions) - resume there, do not re-derive:
   1. whether/how to build a "universal PowerShell wrapper" rearchitecture (the surface);
@@ -49,6 +45,7 @@ short and update it when important repo facts change.
 ## Active Sources
 
 - `AGENTS.md`
+- `.agents/repo-guidance.md`
 - `.agents/repo-map.json`
 - `.agents/decisions.md`
 

@@ -1,7 +1,7 @@
 {
   "validated_against": {
-    "commit": "2c6d4452d2eb4cf4977eb03421c076cb89bc0c67",
-    "date": "2026-06-26"
+    "commit": "5e7d1173d5777e34701b50c79e06250ea52cf241",
+    "date": "2026-07-02"
   },
   "artifacts": [
     {
@@ -12,6 +12,16 @@
     {
       "path": "CLAUDE.md",
       "purpose": "Claude Code harness shim pointing at AGENTS.md",
+      "custody": "tracked"
+    },
+    {
+      "path": ".agents/repo-guidance.md",
+      "purpose": "Repo-specific guidance extending AGENTS.md: mission detail, reading order, verification, remotes",
+      "custody": "tracked"
+    },
+    {
+      "path": ".agents/push-policy.md",
+      "purpose": "Default push policy for agents working in this repo",
       "custody": "tracked"
     },
     {
@@ -72,6 +82,11 @@
     {
       "path": ".claude/commands/playbook.md",
       "purpose": "Operator wrapper pointing at AGENTS.md playbook definition",
+      "custody": "tracked"
+    },
+    {
+      "path": ".claude/commands/update-governance.md",
+      "purpose": "Non-operator command wrapper that refreshes governance from the AgentGovernanceBootstrap toolkit",
       "custody": "tracked"
     },
     {

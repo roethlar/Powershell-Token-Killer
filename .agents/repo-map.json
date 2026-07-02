@@ -1,7 +1,7 @@
 {
   "validated_against": {
-    "commit": "2c6d4452d2eb4cf4977eb03421c076cb89bc0c67",
-    "date": "2026-06-26"
+    "commit": "5e7d1173d5777e34701b50c79e06250ea52cf241",
+    "date": "2026-07-02"
   },
   "projects": [
     {
@@ -34,13 +34,15 @@
   ],
   "guidance_paths": [
     "AGENTS.md",
+    ".agents/repo-guidance.md",
+    ".agents/push-policy.md",
     ".agents/state.md",
     ".agents/decisions.md",
     ".agents/repo-map.json",
     ".agents/artifact-manifest.json"
   ],
   "notes": [
-    "Verification command run during bootstrap: 19 tests passed, 0 failed.",
+    "Verification command re-confirmed 2026-07-02 during governance refresh: 31 tests passed, 0 failed.",
     "No CI configured in this repo (no provider-executable workflow files found); verification is local-only."
   ]
 }
