@@ -5,9 +5,10 @@ short and update it when important repo facts change.
 
 ## Now
 
-- Module is in a clean, reviewed state; `master` tracked `origin/master` with nothing
-  unpushed when checked 2026-07-03. Pester: 31/31 on the Mac (2026-07-02); 29/31 on
-  the Windows box (2026-07-03) — the 2 failures are a pre-existing test-fixture
+- Module code is unchanged and reviewed. Local docs commits from 2026-07-03 (Windows
+  bring-up record + this handoff) are committed but NOT pushed — push needs owner
+  approval (`.agents/push-policy.md`). Pester: 31/31 on the Mac (2026-07-02); 29/31
+  on the Windows box (2026-07-03) — the 2 failures are a pre-existing test-fixture
   sensitivity, not a module defect (see the Windows bring-up bullet under Next).
 - A 2026-06-27 design session explored a "universal PowerShell wrapper" rearchitecture
   (triggered by `ptk Get-ChildItem` printing help instead of running). No product code
@@ -43,6 +44,31 @@ short and update it when important repo facts change.
   Full reasoning and the test definition live in `.agents/decisions.md` ("Whether ptk
   continues at all"). Phase 2 compression, the universal wrapper, and the
   destructive-cmdlet gate are all behind that gate. No new plans until the test runs.
+
+- 2026-07-03 session findings (recorded here so they survive without chat):
+  - PowerShell 5.1 compatibility, measured on this box: the module BODY imports and
+    runs under Windows PowerShell 5.1.26100 — zero parse errors; fs, text, and
+    MatchInfo paths work; only the process-object path fails ("Exception getting
+    CPU": 5.1's ETS computes CPU from TotalProcessorTime, which throws on protected
+    processes where 7 returns null). The manifest floor (`PowerShellVersion = '7.2'`)
+    is the only import gate. So a 5.1 CLI backport is bounded (lower floor + one
+    defensive access + dual-engine test runs; Pester 5.8.0 already sits in this
+    box's 5.1 user scope). A 5.1 WARM SUBSTRATE would be new architecture — no
+    NuGet package embeds 5.1; it would need a .NET Framework host or a persistent
+    powershell.exe child. Parked, and capped by the decom horizon below. Note: a
+    self-contained publish of the existing server xcopy-deploys to boxes with no
+    .NET installed (engine is still 7.6).
+  - Module-compat map for the go/no-go environment: on-prem Exchange management
+    tools/EMS are 5.1-only through 2019/SE and will never load in the 7.6 runspace
+    (owner-confirmed); the viable route is implicit remoting held inside the warm
+    runspace (`New-PSSession -ConfigurationName Microsoft.Exchange` +
+    `Import-PSSession` — plain WSMan/Kerberos, unofficial on 7, UNTESTED in this
+    environment and the single most valuable slice-7 check). ActiveDirectory module:
+    assumed PS7-native with current RSAT — unverified, no RSAT on this box. EXO and
+    MSGraph: 7-native (owner-confirmed).
+  - Decom horizon (owner, 2026-07-03): Exchange 2019 decommissions next year; the
+    on-prem need lasts roughly 6-12 more months. This caps any 5.1-specific build —
+    post-decom the workload is EXO+Graph, fully 7-native.
 
 ## Next
 
@@ -88,6 +114,28 @@ short and update it when important repo facts change.
   temp-dir fixture for those two tests. Remaining to go live on this box: restart
   the Claude Code session so `.mcp.json` spawns the server (it could not start
   pre-SDK); expect the per-machine approval prompt for the project MCP server.
+- AWAITING OWNER GO, proposed 2026-07-03 (none started): (a) push the local
+  commits; (b) deterministic temp-dir fixture for the two repo-root-sensitive
+  Pester tests; (c) fold the slice-7 test matrix below into the continuation
+  decision entry; (d) pre-07-16 tests on this box: live-session bring-up plus a
+  Windows warm-load measurement; ToolSearch discoverability probe (do the ptk tool
+  descriptions rank for "powershell"-shaped queries?); failure-mode drills (kill
+  the server mid-session — do the tools respawn or brick? wedge a call past a
+  short `PTK_CALL_TIMEOUT_SECONDS` — does the recycle keep the session usable?);
+  and a headless "nudge ladder" adoption experiment (bare registration →
+  allowlisted → one neutral CLAUDE.md line → explicit rule; small N,
+  PowerShell-shaped tasks that never name ptk; burns API tokens). Related protocol
+  proposal: run the go/no-go two-phase — week 1 pure/unprompted (the recorded
+  criterion), then if adoption is zero add the minimal effective nudge and watch
+  PERSISTENCE (this tests the experienced-benefit hypothesis); adopting it means
+  amending the continuation decision entry, not quietly moving the goalpost.
+- Slice-7 test matrix (proposed, not yet in the decision entry): (1) AD module
+  native import inside ptk_invoke + warm reuse across calls; (2) build and HOLD an
+  Exchange implicit-remoting session in the warm runspace, Get-Queue latency call
+  1 vs call N; (3) EXO/Graph via unattended cert auth (plan constraint: no
+  interactive Connect-*). Server knobs for these tests (Program.cs): per-call
+  timeout default 300s (`PTK_CALL_TIMEOUT_SECONDS`), idle self-exit default 4h
+  orphan backstop (`PTK_IDLE_EXIT_SECONDS`).
 - (~2026-07-16, owner back at work) Run the go/no-go test on the real Windows box:
   does the model use ptk_invoke unprompted for Exchange/AD work, and does it save
   real time? Both yes → Phase 2 earns a second look. Ignored like rtk → archive the
