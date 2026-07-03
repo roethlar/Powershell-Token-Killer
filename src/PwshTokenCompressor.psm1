@@ -759,6 +759,101 @@ function Compress-PtcObject {
     }
 }
 
+# Heuristic: does this text look like a log? (timestamped lines and/or level tags
+# across most of the first 40 lines). Ported from the experiment/ptk-router spike.
+function Test-PtcLogShaped {
+    param([string]$Text)
+    $lines = @($Text -split "`r?`n" | Where-Object { $_.Trim() }) | Select-Object -First 40
+    if (@($lines).Count -lt 5) { return $false }
+    $levelHits = @($lines | Where-Object {
+        $_ -match '\[(INFO|WARN|WARNING|ERROR|FATAL|DEBUG|TRACE)\]' -or
+        $_ -match '\b(INFO|WARN|ERROR|FATAL)\b.*:' -or
+        $_ -match '^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}'
+    }).Count
+    return ($levelHits / @($lines).Count) -ge 0.5
+}
+
+# An explicitly set PTK_RTK_PATH wins outright: if it points at nothing, rtk is
+# treated as absent rather than silently falling back to a different binary on
+# PATH, so a misconfiguration stays visible.
+function Get-PtcRtkCommand {
+    if (Test-Path env:PTK_RTK_PATH) {
+        if ($env:PTK_RTK_PATH -and (Test-Path -LiteralPath $env:PTK_RTK_PATH)) { return $env:PTK_RTK_PATH }
+        return $null
+    }
+    $cmd = Get-Command rtk -CommandType Application -ErrorAction SilentlyContinue | Select-Object -First 1
+    if ($cmd) { return $cmd.Source }
+    return $null
+}
+
+function Invoke-PtcRtkLog {
+    param([string]$Text)
+    $rtk = Get-PtcRtkCommand
+    if (-not $rtk) {
+        return "[ptk:log rtk not found - returning raw text.]`n$Text"
+    }
+    $tmp = [System.IO.Path]::GetTempFileName()
+    try {
+        Set-Content -LiteralPath $tmp -Value $Text -NoNewline
+        $result = & $rtk log $tmp 2>$null
+        $ok = $?
+        if (-not $ok -or @($result).Count -eq 0) {
+            return "[ptk:log rtk failed - returning raw text.]`n$Text"
+        }
+        "[ptk:log via rtk]`n" + (@($result) -join [Environment]::NewLine)
+    } finally {
+        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+    }
+}
+
+# Shapes ptk_invoke output for the MCP server (Phase 2 plan): objects compress via
+# Compress-PtcObject; log-shaped text goes to rtk when available; all other text
+# (strings and primitive scalars) passes through verbatim and is NEVER truncated.
+# Contract: never throws - any internal failure returns labeled unshaped output,
+# because shaping must not be able to fail a ptk_invoke call.
+function Compress-PtcOutput {
+    [CmdletBinding()]
+    param(
+        [Parameter(ValueFromPipeline)]
+        [AllowNull()]
+        [object]$InputObject,
+        [int]$MaxItems = $script:DefaultMaxItems
+    )
+
+    begin {
+        $items = [System.Collections.Generic.List[object]]::new()
+    }
+    process {
+        if ($null -ne $InputObject) { $items.Add($InputObject) }
+    }
+    end {
+        $array = @($items)
+        if ($array.Count -eq 0) { return }
+
+        try {
+            $textual = $true
+            foreach ($item in $array) {
+                if ($item -is [string]) { continue }
+                if ($item.GetType().IsPrimitive -or $item -is [decimal]) { continue }
+                $textual = $false
+                break
+            }
+
+            if ($textual) {
+                $text = @($array | ForEach-Object { "$_" }) -join [Environment]::NewLine
+                if (Test-PtcLogShaped -Text $text) { return (Invoke-PtcRtkLog -Text $text) }
+                return $text
+            }
+
+            return ($array | Compress-PtcObject -MaxItems $MaxItems)
+        }
+        catch {
+            $raw = ($array | Out-String).TrimEnd()
+            return "[ptk:shape ERROR - $($_.Exception.Message). Returning unshaped output.]`n$raw"
+        }
+    }
+}
+
 function Invoke-PtcList {
     [CmdletBinding()]
     param(
@@ -1081,6 +1176,7 @@ Set-Alias -Name ptk -Value Invoke-Ptc
 
 Export-ModuleMember -Function @(
     'Compress-PtcObject',
+    'Compress-PtcOutput',
     'Invoke-PtcBoundCommand',
     'Invoke-Ptc',
     'Invoke-PtcRun',

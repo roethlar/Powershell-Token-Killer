@@ -325,3 +325,85 @@ function Test-Thing {
         $result | Should -Not -Match 'trailing comment'
     }
 }
+
+Describe 'Compress-PtcOutput' {
+    AfterEach {
+        Remove-Item env:PTK_RTK_PATH -ErrorAction SilentlyContinue
+    }
+
+    It 'compresses object output via Compress-PtcObject' {
+        $result = [pscustomobject]@{ Name = 'a'; Value = 1 },
+                  [pscustomobject]@{ Name = 'b'; Value = 2 } | Compress-PtcOutput
+
+        $result | Should -Match '^objects: 2'
+        $result | Should -Match 'Name'
+    }
+
+    It 'passes string output through verbatim and never truncates it' {
+        $lines = 1..40 | ForEach-Object { "line $_" }
+        $result = $lines | Compress-PtcOutput
+
+        $result | Should -BeExactly ($lines -join [Environment]::NewLine)
+        $result | Should -Match 'line 40'
+        $result | Should -Not -Match 'more'
+    }
+
+    It 'passes a single string through exactly' {
+        'just one line, untouched' | Compress-PtcOutput |
+            Should -BeExactly 'just one line, untouched'
+    }
+
+    It 'treats primitive scalars as text, not object tables' {
+        42 | Compress-PtcOutput | Should -BeExactly '42'
+        $result = 1, 2, 3 | Compress-PtcOutput
+        $result | Should -BeExactly (@('1', '2', '3') -join [Environment]::NewLine)
+    }
+
+    It 'routes mixed string/object output down the object path' {
+        $result = 'text', [pscustomobject]@{ A = 1 } | Compress-PtcOutput
+
+        $result | Should -Match '^objects: 2'
+    }
+
+    It 'returns nothing for empty output' {
+        @() | Compress-PtcOutput | Should -BeNullOrEmpty
+    }
+
+    Context 'log-shaped text' {
+        BeforeAll {
+            $script:logText = @(1..8 | ForEach-Object {
+                "2026-07-03 10:00:0$($_ % 10) INFO worker: step $_ completed"
+            })
+        }
+
+        It 'falls back to labeled raw text when rtk is absent' {
+            $env:PTK_RTK_PATH = Join-Path ([System.IO.Path]::GetTempPath()) 'no-such-rtk-binary.exe'
+            $result = $script:logText | Compress-PtcOutput
+
+            $result | Should -Match '\[ptk:log rtk not found'
+            $result | Should -Match 'step 8 completed'
+        }
+
+        It 'routes through rtk when a binary is configured' {
+            $stub = Join-Path ([System.IO.Path]::GetTempPath()) ("rtk-stub-{0}.ps1" -f ([guid]::NewGuid()))
+            Set-Content -LiteralPath $stub -Value 'param($verb, $path) "RTKSTUB verb=$verb exists=$(Test-Path -LiteralPath $path)"'
+            try {
+                $env:PTK_RTK_PATH = $stub
+                $result = $script:logText | Compress-PtcOutput
+            } finally {
+                Remove-Item -LiteralPath $stub -Force -ErrorAction SilentlyContinue
+            }
+
+            $result | Should -Match '\[ptk:log via rtk\]'
+            $result | Should -Match 'RTKSTUB verb=log exists=True'
+        }
+
+        It 'leaves non-log multi-line text alone even when rtk is configured' {
+            $env:PTK_RTK_PATH = 'anything'
+            $prose = 1..6 | ForEach-Object { "paragraph $_ of plain prose without timestamps" }
+            $result = $prose | Compress-PtcOutput
+
+            $result | Should -BeExactly ($prose -join [Environment]::NewLine)
+        }
+    }
+}
