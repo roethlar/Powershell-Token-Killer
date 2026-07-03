@@ -11,15 +11,19 @@ public static class InvokeTool
     [Description(
         "Run a PowerShell script in the server's persistent warm runspace. Variables, " +
         "imported modules, and established connections persist across calls for the " +
-        "whole session, so heavy modules import once instead of on every call. Calls " +
-        "run serially; a call that exceeds the server timeout is aborted and the " +
-        "runspace is recycled, losing all warm state.")]
+        "whole session, so heavy modules import once instead of on every call. Output " +
+        "is token-compressed by shape: objects become compact typed summaries, " +
+        "log-shaped text is deduplicated, plain text passes through unchanged; set " +
+        "raw=true when you need the full uncompressed output. Calls run serially; a " +
+        "call that exceeds the server timeout is aborted and the runspace is " +
+        "recycled, losing all warm state.")]
     public static async Task<string> Invoke(
         RunspaceHost host,
         [Description("The PowerShell script to execute.")] string script,
-        CancellationToken cancellationToken)
+        CancellationToken cancellationToken,
+        [Description("Skip output compression and return plain formatted text.")] bool raw = false)
     {
-        var result = await host.InvokeAsync(script, cancellationToken);
+        var result = await host.InvokeAsync(script, raw, cancellationToken);
 
         var sb = new StringBuilder();
         var output = result.Output.TrimEnd();

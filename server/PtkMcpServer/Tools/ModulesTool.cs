@@ -24,7 +24,8 @@ public static class ModulesTool
         {
             var loaded = await host.InvokeAsync(
                 "Get-Module | Sort-Object Name | ForEach-Object { '{0} {1}' -f $_.Name, $_.Version }",
-                cancellationToken);
+                raw: true, // this tool formats its own lines; never shape them
+                cancellationToken: cancellationToken);
             var text = loaded.Output.TrimEnd();
             return text.Length > 0 ? text : "(no modules loaded)";
         }
@@ -37,7 +38,8 @@ public static class ModulesTool
                 var available = await host.InvokeAsync(
                     "Get-Module -ListAvailable | Sort-Object Name -Unique | " +
                     "ForEach-Object { '{0} {1}' -f $_.Name, $_.Version }",
-                    cancellationToken);
+                    raw: true, // this tool formats its own lines; never shape them
+                    cancellationToken: cancellationToken);
                 _availableCache = available.Output.TrimEnd();
             }
             return _availableCache.Length > 0 ? _availableCache : "(no modules available)";

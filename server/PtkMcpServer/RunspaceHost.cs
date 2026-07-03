@@ -24,16 +24,27 @@ public sealed class RunspaceHost : IDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly TimeSpan _callTimeout;
+    private readonly string? _modulePath;
     private Runspace _runspace;
     private bool _disposed;
 
     /// <summary>Timestamp of the most recent invoke/reset; read by the idle watchdog.</summary>
     public DateTimeOffset LastActivityUtc { get; private set; } = DateTimeOffset.UtcNow;
 
-    public RunspaceHost(TimeSpan? callTimeout = null)
+    /// <summary>True when the PwshTokenCompressor module is imported into the current
+    /// warm runspace; false disables output shaping (calls fall back to Out-String).</summary>
+    public bool ModuleLoaded { get; private set; }
+
+    public RunspaceHost(TimeSpan? callTimeout = null, string? modulePathOverride = null)
     {
         _callTimeout = callTimeout ?? TimeSpan.FromSeconds(300);
-        _runspace = CreateRunspace();
+        _modulePath = modulePathOverride ?? ResolveModulePath();
+        if (_modulePath is null)
+        {
+            Console.Error.WriteLine(
+                "ptk: PwshTokenCompressor module not found (set PTK_MODULE_PATH); output shaping disabled, calls return plain Out-String text.");
+        }
+        _runspace = CreatePrimedRunspace();
     }
 
     // Runspace.Open initializes the FileSystem provider via DriveInfo.GetDrives,
@@ -51,7 +62,58 @@ public sealed class RunspaceHost : IDisposable
         }
     }
 
-    public async Task<InvokeResult> InvokeAsync(string script, CancellationToken cancellationToken = default)
+    /// <summary>Creates a runspace and imports the compressor module into it, so
+    /// recycle/reset paths get shaping back automatically.</summary>
+    private Runspace CreatePrimedRunspace()
+    {
+        var runspace = CreateRunspace();
+        ModuleLoaded = _modulePath is not null && TryImportModule(runspace, _modulePath);
+        return runspace;
+    }
+
+    // An explicitly set PTK_MODULE_PATH wins outright: if it points at nothing,
+    // shaping is disabled rather than silently falling back to a probed copy, so a
+    // misconfiguration stays visible (same semantics as the module's PTK_RTK_PATH).
+    private static string? ResolveModulePath()
+    {
+        var env = Environment.GetEnvironmentVariable("PTK_MODULE_PATH");
+        if (!string.IsNullOrWhiteSpace(env))
+        {
+            return File.Exists(env) ? env : null;
+        }
+
+        foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        {
+            for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
+            {
+                var candidate = Path.Combine(dir.FullName, "src", "PwshTokenCompressor.psd1");
+                if (File.Exists(candidate)) return candidate;
+            }
+        }
+        return null;
+    }
+
+    private static bool TryImportModule(Runspace runspace, string modulePath)
+    {
+        try
+        {
+            using var ps = PowerShell.Create();
+            ps.Runspace = runspace;
+            ps.AddCommand("Import-Module")
+              .AddParameter("Name", modulePath)
+              .AddParameter("ErrorAction", "Stop");
+            ps.Invoke();
+            return true;
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"ptk: import of '{modulePath}' failed ({ex.Message}); output shaping disabled, calls return plain Out-String text.");
+            return false;
+        }
+    }
+
+    public async Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         LastActivityUtc = DateTimeOffset.UtcNow;
@@ -64,7 +126,7 @@ public sealed class RunspaceHost : IDisposable
             // useLocalScope: false — assignments land in the runspace's session
             // state and survive into the next call; that persistence is the point.
             ps.AddScript(script, useLocalScope: false)
-              .AddCommand("Out-String");
+              .AddCommand(ModuleLoaded && !raw ? "Compress-PtcOutput" : "Out-String");
 
             var invokeTask = ps.InvokeAsync();
             var finished = await Task.WhenAny(invokeTask, Task.Delay(_callTimeout, cancellationToken));
@@ -121,7 +183,7 @@ public sealed class RunspaceHost : IDisposable
         try
         {
             var old = _runspace;
-            _runspace = CreateRunspace();
+            _runspace = CreatePrimedRunspace();
             _ = Task.Run(() => { try { old.Dispose(); } catch { /* wedged runspace */ } });
         }
         finally
@@ -133,7 +195,7 @@ public sealed class RunspaceHost : IDisposable
     private void AbandonAndRecycle(PowerShell wedged, Task abandonedInvoke)
     {
         var old = _runspace;
-        _runspace = CreateRunspace();
+        _runspace = CreatePrimedRunspace();
         _ = Task.Run(async () =>
         {
             try { wedged.Stop(); } catch { /* best effort */ }
