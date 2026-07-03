@@ -57,6 +57,17 @@ short and update it when important repo facts change.
   only if the native tool path is painful (cold EXO/AD auth per call) or the tools
   are surfaced/allowlisted prominently. Harness artifacts (runner + transcripts) were
   session-scratch, not kept in-repo.
+- 2026-07-02 Codex condition: ptk registered in `~/.codex/config.toml` (dotnet run,
+  absolute project path; Headroom proxy config removed the same day). Unlike Claude
+  Code, Codex loads MCP tool descriptions upfront — gpt-5.5 found and called ptk_ping
+  correctly. Headless `codex exec` auto-denies MCP tool calls ("user cancelled", ~1ms
+  pre-flight; not overridable via --full-auto or approval_policy=never), so automated
+  trials were not possible; interactive verification by owner succeeded (pong, after
+  one-time allow). Asked directly, gpt-5.5 self-reported it would prefer ptk for
+  multi-step/heavy-module PowerShell work (75-90%) but not one-offs (30-40%) —
+  recorded as a self-report only: per the continuation decision, self-reported
+  benefit is explicitly not evidence; observed unprompted usage on the Windows box
+  remains the go/no-go criterion. No fresh-session behavioral trial run on Codex yet.
 - (~2026-07-16, owner back at work) Run the go/no-go test on the real Windows box:
   does the model use ptk_invoke unprompted for Exchange/AD work, and does it save
   real time? Both yes → Phase 2 earns a second look. Ignored like rtk → archive the
