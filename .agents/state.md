@@ -44,6 +44,19 @@ short and update it when important repo facts change.
 
 ## Next
 
+- 2026-07-02 headless adoption dry-run on this Mac (Sonnet, 19 trials, neutral cwd,
+  ptk pre-approved via --allowedTools, tasks PowerShell-shaped but never mentioning
+  ptk): **0/13 unprompted ptk usage**. The model used the harness's native PowerShell
+  tool every time; the 6 control trials correctly used Bash. Even when the permission
+  system blocked `Import-Module` in the native tool, it retried rather than discover
+  ptk. Structural finding: the harness defers MCP tools behind ToolSearch (they are
+  not in the upfront tool list — confirmed reachable when explicitly requested), so
+  ptk's descriptions are invisible unless the model actively searches; against a
+  native PowerShell tool it never does. This reproduces the rtk non-adoption pattern
+  and is directly relevant to the 7/16 go/no-go: on the Windows box, expect adoption
+  only if the native tool path is painful (cold EXO/AD auth per call) or the tools
+  are surfaced/allowlisted prominently. Harness artifacts (runner + transcripts) were
+  session-scratch, not kept in-repo.
 - (~2026-07-16, owner back at work) Run the go/no-go test on the real Windows box:
   does the model use ptk_invoke unprompted for Exchange/AD work, and does it save
   real time? Both yes → Phase 2 earns a second look. Ignored like rtk → archive the
