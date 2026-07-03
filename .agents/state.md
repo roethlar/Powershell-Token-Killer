@@ -51,6 +51,35 @@ short and update it when important repo facts change.
   passthrough; ollama leg dropped. ACTIVE plan (approved 2026-07-03):
   `.agents/plans/phase2-compression.md`. The universal wrapper and the
   destructive-cmdlet gate stay paused. Owner back at work ~2026-07-20 (was ~07-16).
+- 2026-07-03 (later): Phase 2 slices 0-2 BUILT and committed. Module:
+  `Compress-PtcOutput` (objects → Compress-PtcObject; log-shaped text → rtk with
+  labeled raw fallback; all other text verbatim passthrough, never truncated;
+  never-throw contract). Server: every runspace (create/reset/recycle) is primed
+  with the module (`PTK_MODULE_PATH` override, else upward probe; import failure →
+  stderr log + Out-String fallback) and ptk_invoke output is shaped unless the new
+  `raw=true` argument is set. Verified: Pester 38 passing (+ the 2 known
+  repo-root-fixture failures), dotnet test 25/25, both handshake variants pass;
+  guard proofs done for module and server tests. Measured savings (chars/4
+  estimate, TOOL-REPORTED — explicitly not the go/no-go benefit metric):
+  Get-Process 2096→492 tok (76.5%), Get-Service 3689→861 (76.7%), Get-ChildItem
+  -Recurse repo 47139→530 (98.9%), Get-Command 1737→1034 (40.5%); README.md text
+  passthrough byte-identical. Object savings are summary-by-truncation (top-N +
+  count) by design; `raw=true` is the escape hatch.
+- Slice 3 (rtk binary) BLOCKED on owner confirm: rtk v0.43.0
+  `rtk-x86_64-pc-windows-msvc.zip` downloaded and SHA256-verified in session
+  scratch, but the harness permission classifier refused installing/executing an
+  agent-downloaded binary without owner confirmation (treated as legitimate, not
+  worked around). Until it lands, the log leg returns labeled raw fallback. On go:
+  extract to `%LOCALAPPDATA%\Programs\rtk`, add to user PATH, verify the
+  `rtk log <file>` CLI shape, live-check the leg.
+- Failure-mode drill result (observed during the rebuild): killing the server
+  process mid-session bricks the ptk tools for the rest of the session — the
+  harness marks them disconnected and does NOT respawn the server; only a session
+  restart brings them back. Interpretation rule for the go/no-go weeks: a quiet
+  ptk day needs a server-alive check before it is read as non-adoption. This
+  session's live server was killed for the rebuild, so the live tools are down
+  right now; the next session start loads the new shaping build (live re-check
+  pending there).
 
 - 2026-07-03 session findings (recorded here so they survive without chat):
   - PowerShell 5.1 compatibility, measured on this box: the module BODY imports and
