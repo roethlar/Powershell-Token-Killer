@@ -81,9 +81,14 @@ short and update it when important repo facts change.
   harness marks them disconnected and does NOT respawn the server; only a session
   restart brings them back. Interpretation rule for the go/no-go weeks: a quiet
   ptk day needs a server-alive check before it is read as non-adoption. This
-  session's live server was killed for the rebuild, so the live tools are down
-  right now; the next session start loads the new shaping build (live re-check
-  pending there).
+  session's live server was killed for the rebuild; the owner's `/mcp` restart
+  respawned it on the new build without a full session restart (a second, gentler
+  recovery path worth remembering alongside the drill finding above).
+- 2026-07-03 (evening): Phase 2 LIVE CHECK PASSED in a real Claude Code session
+  on the new build: objects → compact `fs:` summary; strings → verbatim
+  passthrough; log-shaped output → `[ptk:log via rtk]` through the real winget
+  rtk (the live server's PATH sees it — no PTK_RTK_PATH override needed);
+  `raw=true` → plain Out-String table. Phase 2 is fully operational end to end.
 
 - 2026-07-03 session findings (recorded here so they survive without chat):
   - PowerShell 5.1 compatibility, measured on this box: the module BODY imports and
