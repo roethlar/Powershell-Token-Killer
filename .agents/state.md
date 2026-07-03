@@ -5,9 +5,12 @@ short and update it when important repo facts change.
 
 ## Now
 
-- Module code is unchanged and reviewed. Local docs commits from 2026-07-03 (Windows
-  bring-up record + this handoff) are committed but NOT pushed — push needs owner
-  approval (`.agents/push-policy.md`). Pester: 31/31 on the Mac (2026-07-02); 29/31
+- Owner pushed the day's work (a0a4819..4f943ea, including Phase 2) to origin on
+  2026-07-03; only docs commits after 4f943ea may be local. On the push, the remote
+  reported the repo MOVED to `AlsoBeltrix/PowerShell-Token-Killer` (capital S — the
+  URL already recorded in `.agents/repo-guidance.md`); the local `origin` URL still
+  has the old lowercase spelling and follows the redirect — harmless, silenceable
+  with `git remote set-url`. Pester: 31/31 on the Mac (2026-07-02); 29/31
   on the Windows box (2026-07-03) — the 2 failures are a pre-existing test-fixture
   sensitivity, not a module defect (see the Windows bring-up bullet under Next).
 - A 2026-06-27 design session explored a "universal PowerShell wrapper" rearchitecture
