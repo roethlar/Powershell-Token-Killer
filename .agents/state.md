@@ -65,13 +65,17 @@ short and update it when important repo facts change.
   -Recurse repo 47139→530 (98.9%), Get-Command 1737→1034 (40.5%); README.md text
   passthrough byte-identical. Object savings are summary-by-truncation (top-N +
   count) by design; `raw=true` is the escape hatch.
-- Slice 3 (rtk binary) BLOCKED on owner confirm: rtk v0.43.0
-  `rtk-x86_64-pc-windows-msvc.zip` downloaded and SHA256-verified in session
-  scratch, but the harness permission classifier refused installing/executing an
-  agent-downloaded binary without owner confirmation (treated as legitimate, not
-  worked around). Until it lands, the log leg returns labeled raw fallback. On go:
-  extract to `%LOCALAPPDATA%\Programs\rtk`, add to user PATH, verify the
-  `rtk log <file>` CLI shape, live-check the leg.
+- Slice 3 (rtk binary) DONE 2026-07-03: owner installed rtk 0.43.0 via winget
+  (resolves to `%LOCALAPPDATA%\Microsoft\WinGet\Links\rtk.exe` on the user PATH;
+  an earlier agent-downloaded copy was refused by the permission classifier and
+  discarded — owner install superseded it). Verified: `rtk log <file>` matches the
+  interface the module uses (dedup summary + errors/warnings); rtk's "no hook
+  installed" nag goes to stderr, which `Invoke-PtcRtkLog` already suppresses; the
+  module log leg verified end-to-end with real rtk (`[ptk:log via rtk]` output).
+  The SERVER discovers rtk via `Get-Command rtk` on its own PATH — true once
+  Claude Code restarts from an environment that has the post-install user PATH;
+  if it ever isn't, the leg degrades to its labeled raw fallback (visible, not
+  silent), and `PTK_RTK_PATH` is the explicit override.
 - Failure-mode drill result (observed during the rebuild): killing the server
   process mid-session bricks the ptk tools for the rest of the session — the
   harness marks them disconnected and does NOT respawn the server; only a session
