@@ -5,8 +5,10 @@ short and update it when important repo facts change.
 
 ## Now
 
-- Module is in a clean, reviewed state. HEAD is 9ae82a3 and `origin/master` matches it
-  — nothing is committed-but-unpushed. 31/31 Pester tests passing (last run 2026-07-02).
+- Module is in a clean, reviewed state; `master` tracked `origin/master` with nothing
+  unpushed when checked 2026-07-03. Pester: 31/31 on the Mac (2026-07-02); 29/31 on
+  the Windows box (2026-07-03) — the 2 failures are a pre-existing test-fixture
+  sensitivity, not a module defect (see the Windows bring-up bullet under Next).
 - A 2026-06-27 design session explored a "universal PowerShell wrapper" rearchitecture
   (triggered by `ptk Get-ChildItem` printing help instead of running). No product code
   was written; the owner deferred the build decision. Recorded as an Open decision
@@ -68,6 +70,24 @@ short and update it when important repo facts change.
   recorded as a self-report only: per the continuation decision, self-reported
   benefit is explicitly not evidence; observed unprompted usage on the Windows box
   remains the go/no-go criterion. No fresh-session behavioral trial run on Codex yet.
+- 2026-07-03: Windows box brought up and the server validated there (the
+  prerequisite for the go/no-go, NOT slice 7 itself — no AD/EMS/EXO modules were
+  exercised). Two machine gaps found and fixed: the user-level NuGet.Config had an
+  EMPTY packageSources list, so every restore failed NU1100 instantly — registered
+  the default nuget.org feed; Pester 5 was not visible to pwsh (only inbox 3.4.0) —
+  installed 5.8.0 CurrentUser via Install-PSResource. With dotnet SDK 10.0.301 and
+  pwsh 7.6.3: `dotnet test` 19/19; stdio handshake PASSED both via the built dll and
+  via the exact `.mcp.json` registration command from a cold build (stdout
+  byte-clean); warm cross-call state verified. Module Pester suite 29/31: the two
+  failures ("compresses filesystem objects before formatting" and "still routes real
+  (deserialized) filesystem objects to the fs compressor") assert README.md survives
+  `Get-ChildItem <repo root> | Compress-PtcObject -MaxItems 10`, but this box's root
+  has 12 entries (a machine-local `.claude/` dir among them), so README.md falls
+  past the cap. The fixture is the live repo root — environment-sensitive by design,
+  pre-existing, not a Windows defect. Proposed fix (needs a go): deterministic
+  temp-dir fixture for those two tests. Remaining to go live on this box: restart
+  the Claude Code session so `.mcp.json` spawns the server (it could not start
+  pre-SDK); expect the per-machine approval prompt for the project MCP server.
 - (~2026-07-16, owner back at work) Run the go/no-go test on the real Windows box:
   does the model use ptk_invoke unprompted for Exchange/AD work, and does it save
   real time? Both yes → Phase 2 earns a second look. Ignored like rtk → archive the
