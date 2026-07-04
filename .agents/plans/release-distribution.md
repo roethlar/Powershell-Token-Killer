@@ -70,9 +70,10 @@ section).
   `ptk-hook.ps1` from its own `$PSScriptRoot`, so shipping `scripts/` inside
   the release artifact lets the installed copy register the installed hook
   path. (Verify in slice 1; expected zero code change.)
-- **The handshake script is the artifact smoke test** but currently launches
-  only via `dotnet run` / `dotnet exec` of a Debug dll. It needs a third mode
-  that drives an arbitrary server binary (slice 0 tooling change).
+- **The handshake script is the artifact smoke test.** It originally launched
+  only via `dotnet run` / `dotnet exec` of a Debug dll; the third mode that
+  drives an arbitrary server binary landed as the slice-0 tooling change
+  (`-ServerCommand` — see the probe results below).
 - **Repo is PUBLIC** (verified 2026-07-04 via `gh repo view`): anonymous
   release-asset downloads and raw.githubusercontent.com installer URLs work.
 - **No CI exists** (recorded in `.agents/repo-guidance.md`); release
@@ -237,6 +238,66 @@ section).
 
 Process note: the codex review loop per code slice (owner-set precedent,
 2026-07-04) applies to slices 0–5; workflow YAML counts as code here.
+
+## Slice 0 probe results (2026-07-04, this Mac — osx-arm64)
+
+- **Handshake tooling:** `-ServerCommand <exe> [args...]` mode added to
+  `server/test-handshake.ps1` (parameter sets keep the three launch modes
+  mutually exclusive). Guard ran: default and `-UseRegistrationCommand`
+  modes still pass; the new mode passes against a local publish.
+- **Publish:** `dotnet publish server/PtkMcpServer -c Release -r osx-arm64
+  --self-contained` (plain directory layout — no trimming, no single-file)
+  → 558 files, 129 MB on disk; ~2 s incremental with a warm NuGet cache.
+- **Canonical layout:** `bin/` (publish output) + `src/` (module) +
+  `scripts/` + `VERSION` assembled in a scratch dir. Handshake passes via
+  the new mode from the repo root and from a neutral cwd. From the neutral
+  cwd the module resolves through the `AppContext.BaseDirectory` upward
+  probe (`bin/` → home's `src/`) — verified explicitly:
+  `(Get-Module PwshTokenCompressor).Name` returns the module inside
+  `ptk_invoke` and no module-not-found warning appears on stderr. The
+  layout is position-independent today whenever no repo checkout shadows
+  it from cwd; the slice-1 probe-order flip remains required for exactly
+  that shadowing case. stdout is byte-clean JSON-RPC; stderr carries
+  Microsoft.Hosting info logs (harmless — MCP ignores stderr). The server
+  exits 0 on stdin EOF (clean shutdown; useful fact for CI smokes).
+- **Archive size:** 45 MB `.tar.gz` / 46 MB `.zip` for the full layout —
+  well under this plan's ~70–120 MB working estimate, which measurement has
+  now superseded: the estimate was simply high for the shipped asset (the
+  unpacked directory is 129 MB; the compressed archive is what ships).
+- **Cold-start:** single-sample wall times of the full handshake script
+  (initialize, tools/list, ping, two invokes — measured around the whole
+  `pwsh` invocation, so these are script wall times, not server start
+  latency): 2.5–2.8 s (two runs) against the published binary vs 5.2 s
+  (one run) via the registration `dotnet run`, whose per-launch build
+  check accounts for the delta. Directional conclusion only: the published
+  binary removes the build-check cost from session start.
+- **Signing/Gatekeeper:** the apphost is ad-hoc signed by default
+  (`codesign -dv`: `Signature=adhoc`, CodeDirectory `flags=0x2(adhoc)`).
+  A curl-downloaded archive carries NO `com.apple.quarantine` (only
+  `com.apple.provenance`); extract + run passes the handshake with zero
+  Gatekeeper interference. Method caveat: the download was loopback plain
+  HTTP — curl never applies quarantine whatever the endpoint, so this
+  should hold for the real URL, but the actual GitHub-Releases download
+  gets exercised once `install.sh` exists (slices 4/7). Contrast,
+  supporting the Risks entry (measured on this box only — Darwin 25.5,
+  osx-arm64, default Gatekeeper settings): a never-executed copy with a
+  hand-written quarantine xattr is killed on exec (exit 137/SIGKILL) and
+  `spctl --assess --type execute` reports `rejected` — the Risks entry's
+  browser-download friction is real, not hypothetical. Whether a real
+  browser download hits it also depends on the extraction tool (Archive
+  Utility propagates quarantine; CLI `tar` generally does not) and macOS
+  version — not probed. (Re-quarantining a copy that had already run once
+  did NOT block it; approval appears to be cached, mechanism not probed.)
+- **`claude mcp` CLI (Claude Code 2.1.201):** `claude mcp add [options]
+  <name> <commandOrUrl> [args...]`; stdio is the default transport; env
+  vars via `-e/--env KEY=value`; scope via `-s/--scope local|user|project`
+  (default local); `claude mcp remove <name> [-s scope]` exists, so the
+  remove-then-add registration contract is expressible verbatim. The
+  registration commitment (`--scope user`, absolute binary path, no env
+  block) needs nothing the installed CLI lacks.
+- **CI runner probe:** PENDING — blocked on the scoped push go for `ci/*`
+  requested under Owner logistics; the runner facts get recorded here when
+  it runs, before slices 2–4 are built.
 
 ## Timeline (target 2026-07-25)
 
