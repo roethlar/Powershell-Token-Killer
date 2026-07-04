@@ -5,9 +5,15 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **2026-07-04 (late): RELEASE-DISTRIBUTION PLAN DRAFTED — awaiting owner
-  approval.** `.agents/plans/release-distribution.md` (UNPUSHED commits from
-  7494edf onward; push needs owner go). Owner set a first public release
+- **2026-07-04 (late): RELEASE-DISTRIBUTION PLAN APPROVED — next action is
+  slice 0.** `.agents/plans/release-distribution.md`, approved by owner
+  in-session 2026-07-04 after question resolution and a codex review loop on
+  the plan text (3 LOW doc fixes, all accepted — `.agents/review/index.md`).
+  All commits from 7494edf onward are UNPUSHED (push needs owner go), and
+  the plan's requested standing push scope (`ci/*` + `v0.2.0-rc.*`) was NOT
+  separately confirmed — ask explicitly before the first CI push. Slice 0 =
+  local osx-arm64 publish probe, `test-handshake.ps1 -ServerCommand` mode,
+  CI runner probe (needs that push go). Owner set a first public release
   target of **2026-07-25**: prebuilt self-contained per-RID binaries on
   GitHub Releases + `install.ps1`/`install.sh` one-liners (tier 3);
   publish-and-register script and .NET-tool packaging are dev-only. Decision
@@ -274,9 +280,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-- Release-distribution plan: see the top entry in Now — formal approval, the
-  scoped push go, and (before slice 4) the one deliberately open question
-  (public-installer hook default) are the resume actions; then slice 0. The
+- Release-distribution plan APPROVED — run slice 0 (see the top Now entry).
+  Still needed along the way: the explicit push go for `ci/*` + rc tags
+  (ask at first use), and the hook-default decision before slice 4. The
   other questions (RIDs, version, install root, winget posture) are RESOLVED
   — do not re-raise them.
 - ~~Execute unified-shell-routing slices~~ DONE 2026-07-04 (see Now). Next

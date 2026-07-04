@@ -1,6 +1,11 @@
 # Plan: Release distribution — prebuilt binaries + one-line installer
 
-**Status:** DRAFT 2026-07-04 — awaiting owner approval before any code.
+**Status:** APPROVED by owner 2026-07-04 (in-session go after resolving the
+open questions and a codex review loop on the plan text — 3 LOW
+doc-consistency findings, all fixed and accepted; see
+`.agents/review/index.md`). Slices execute in order, codex review loop per
+code slice. The scoped push go requested under Owner logistics was NOT
+separately confirmed — get an explicit yes before the first `ci/*` push.
 Open questions resolved by owner 2026-07-04 (see Resolutions): 5 RIDs,
 version v0.2.0, install root `~/.ptk` everywhere, winget as the eventual
 primary Windows path with readiness built into v0.2.0. One question remains

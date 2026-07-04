@@ -274,7 +274,7 @@ unacceptable for anyone else to use, and set a **first public release target
 of 2026-07-25**: prebuilt self-contained per-platform binaries on GitHub
 Releases plus a one-line installer. A publish-and-register script and .NET
 tool packaging are dev-only paths, explicitly not the public install story.
-Plan (requires its own approval before code):
+Plan (APPROVED by owner 2026-07-04, same day):
 `.agents/plans/release-distribution.md`. Owner resolved the plan's open
 questions the same day (5 RIDs incl. Windows/Linux ARM, version v0.2.0, one
 `~/.ptk` home for payload+config on every platform and install method, winget
