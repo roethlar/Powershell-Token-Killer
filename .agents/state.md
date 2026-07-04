@@ -274,8 +274,11 @@ short and update it when important repo facts change.
 
 ## Next
 
-- Release-distribution plan: see the top entry in Now — approval, scoped push
-  go, and the four open questions are the resume actions; then slice 0.
+- Release-distribution plan: see the top entry in Now — formal approval, the
+  scoped push go, and (before slice 4) the one deliberately open question
+  (public-installer hook default) are the resume actions; then slice 0. The
+  other questions (RIDs, version, install root, winget posture) are RESOLVED
+  — do not re-raise them.
 - ~~Execute unified-shell-routing slices~~ DONE 2026-07-04 (see Now). Next
   actions are the OWNER items in the routing entry: install the hook
   (`scripts/ptk_init.ps1 -Global`), run the live hooked check in a fresh
