@@ -304,9 +304,22 @@ Process note: the codex review loop per code slice (owner-set precedent,
   remove-then-add registration contract is expressible verbatim. The
   registration commitment (`--scope user`, absolute binary path, no env
   block) needs nothing the installed CLI lacks.
-- **CI runner probe:** PENDING — blocked on the scoped push go for `ci/*`
-  requested under Owner logistics; the runner facts get recorded here when
-  it runs, before slices 2–4 are built.
+- **CI runner probe (run 2026-07-04, `ci/probe` branch — branch since
+  deleted per the owner's no-lingering-branches condition):** all five
+  planned runners exist and all jobs passed — `ubuntu-latest` (X64),
+  `windows-latest` (X64), `macos-latest` (**ARM64 confirmed**),
+  `windows-11-arm` (ARM64), `ubuntu-24.04-arm` (ARM64). On every one of
+  the five: .NET SDK **10.0.301** resolves via `actions/setup-dotnet@v4`
+  with `dotnet-version: 10.0.x`; **pwsh 7.6.3 is preinstalled** (`shell:
+  pwsh` works everywhere); **Pester 5.7.1 is preinstalled** — the
+  Install-Module fallback exists but was needed nowhere, so slice 2 needs
+  no Pester pinning step (keep the fallback for runner-image drift);
+  `actions/upload-artifact@v4` works on all five (artifacts downloaded
+  and verified). Two annotations to carry into slices 2–3: the v4 action
+  majors (checkout/setup-dotnet/upload-artifact) emit Node 20 deprecation
+  warnings — use current action majors when writing the real workflows;
+  and `macos-latest` migrates to macOS 26 from 2026-06-15 (already
+  ARM64; no impact on the RID set).
 
 ## Timeline (target 2026-07-25)
 
