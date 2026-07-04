@@ -22,6 +22,10 @@ still applies to the whole batch.
 
 | ID        | Severity | Impact (one line)                                                      | Status | Branch |
 |-----------|----------|------------------------------------------------------------------------|--------|--------|
-| gov-doc-1 | LOW      | Slice 5 (.NET tool) textually violates the one-`~/.ptk`-home commitment | `[~]`  | master (direct) |
-| gov-doc-2 | LOW      | Plan contradicts itself on PTK_MODULE_PATH in the registration          | `[~]`  | master (direct) |
-| gov-doc-3 | LOW      | state.md still says "four open questions" after owner resolved three    | `[~]`  | master (direct) |
+| gov-doc-1 | LOW      | Slice 5 (.NET tool) textually violates the one-`~/.ptk`-home commitment | `[x]`  | master (direct, fd52e1e) |
+| gov-doc-2 | LOW      | Plan contradicts itself on PTK_MODULE_PATH in the registration          | `[x]`  | master (direct, 2704cb7) |
+| gov-doc-3 | LOW      | state.md still says "four open questions" after owner resolved three    | `[x]`  | master (direct, f77b353) |
+
+**Loop CLOSED 2026-07-04T15:11Z:** re-grade at head f77b353 — all three
+accepted, zero new findings (codex, codex-cli 0.142.5). The reviewed commits
+remain unpushed pending the owner's push go.

@@ -1,9 +1,9 @@
 # gov-doc-2: contradictory PTK_MODULE_PATH registration requirements
 
 **Severity**: LOW — two passages give opposite registration contracts; no runtime impact
-**Status**: In progress
+**Status**: Verified
 **Branch**: master (direct commit per repo codex-loop precedent)
-**Commit**: (filled after commit)
+**Commit**: `2704cb7`
 
 ## Evidence
 `.agents/plans/release-distribution.md` — the "Grounded facts" bullet (written
@@ -41,4 +41,11 @@ None.
 None.
 
 ## Reviewer comments
-(pending re-review)
+codex (codex-cli 0.142.5), reviewed f77b3537999e196a32605c7f9210db288f7c4f41
+against base a43897a66db016d31eeec993ff52466761cd1d39, 2026-07-04T15:11Z.
+Verdict: **accepted**. guard_confirmed: n/a (prose; manual-consistency check
+in lieu, per the finding's Guard proof). "The module-discovery facts now
+describe cwd-first probing as current-but-wrong, defer the intended fix to
+the binary-dir-first design commitment, and name Registration as the single
+contract. `PTK_MODULE_PATH` remains only an explicit override; I found no
+contradictory registration guidance."
