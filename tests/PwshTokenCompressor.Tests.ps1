@@ -462,6 +462,24 @@ Describe 'Resolve-PtcInvokeScript routing' {
         Resolve-PtcInvokeScript -Script 'git status' | Should -BeExactly 'git status'
     }
 
+    It 'keeps batch-shim applications (.cmd/.bat) on the PowerShell path' {
+        # Codex finding: PowerShell special-cases argument quoting for
+        # .cmd/.bat shims (npm, npx); re-invoking them through rtk.exe can
+        # change the argv the shim sees.
+        $shimDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ptc-shim-{0}" -f ([guid]::NewGuid()))
+        New-Item -ItemType Directory -Path $shimDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $shimDir 'ptcshimtest.cmd') -Value "@echo off`r`nexit /b 0"
+        $savedPath = $env:PATH
+        try {
+            $env:PATH = "$shimDir$([System.IO.Path]::PathSeparator)$env:PATH"
+            Resolve-PtcInvokeScript -Script 'ptcshimtest --flag' |
+                Should -BeExactly 'ptcshimtest --flag'
+        } finally {
+            $env:PATH = $savedPath
+            Remove-Item -LiteralPath $shimDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'does not pollute $Error when the command name does not resolve' {
         # Codex finding: Get-Command -ErrorAction SilentlyContinue records a
         # hidden CommandNotFoundException on every typo, skewing $Error for

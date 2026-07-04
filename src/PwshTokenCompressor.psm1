@@ -919,6 +919,12 @@ function Resolve-PtcInvokeScript {
         $resolved = $ExecutionContext.InvokeCommand.GetCommand(
             $name, [System.Management.Automation.CommandTypes]::All)
         if ($null -eq $resolved -or $resolved.CommandType -ne [System.Management.Automation.CommandTypes]::Application) { return $Script }
+        # Batch shims (npm.cmd, npx.cmd) get special argument quoting from
+        # PowerShell that an rtk.exe re-invocation would not reproduce -
+        # empty-string and embedded-quote args could reach the shim
+        # differently. Semantics win over filtering: keep them on the
+        # PowerShell path.
+        if ([System.IO.Path]::GetExtension($resolved.Source) -in '.cmd', '.bat') { return $Script }
     }
 
     "& '{0}' {1}" -f $rtk.Replace("'", "''"), $command.Extent.Text
