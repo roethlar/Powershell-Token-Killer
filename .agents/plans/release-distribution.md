@@ -243,8 +243,17 @@ Process note: the codex review loop per code slice (owner-set precedent,
 
 - **Handshake tooling:** `-ServerCommand <exe> [args...]` mode added to
   `server/test-handshake.ps1` (parameter sets keep the three launch modes
-  mutually exclusive). Guard ran: default and `-UseRegistrationCommand`
-  modes still pass; the new mode passes against a local publish.
+  mutually exclusive). Contract: a named array parameter — multi-element
+  commands use PowerShell array syntax (`-ServerCommand
+  dotnet,exec,PtkMcpServer.dll`, verified end-to-end) from a command
+  context (CI `shell: pwsh` steps qualify); `pwsh -File` binds arguments
+  literally, so from `-File` pass a single executable path. Space-separated
+  tokens after `-ServerCommand` fail binding loudly by design — the
+  alternative (ValueFromRemainingArguments) was probed and REJECTED: it
+  silently swallows server args that prefix-match script/common parameters
+  (`-v` binds to `-Verbose`), corrupting the launched command. Guard ran:
+  default and `-UseRegistrationCommand` modes still pass; the new mode
+  passes against a local publish.
 - **Publish:** `dotnet publish server/PtkMcpServer -c Release -r osx-arm64
   --self-contained` (plain directory layout — no trimming, no single-file)
   → 558 files, 129 MB on disk; ~2 s incremental with a warm NuGet cache.

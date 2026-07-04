@@ -8,7 +8,8 @@ tools/call(ptk_ping) handshake over real stdin/stdout. Three launch modes:
 default builds this checkout and drives the built dll; -UseRegistrationCommand
 drives the exact `dotnet run` command the .mcp.json registration spawns;
 -ServerCommand drives an arbitrary server binary (e.g. a published
-self-contained build, for release-artifact smoke tests).
+self-contained build, for release-artifact smoke tests) — multi-element
+commands use array syntax: -ServerCommand dotnet,exec,PtkMcpServer.dll.
 
 Exits 0 on success, 1 on failure. Used as part of slice verification alongside
 `dotnet test`.
@@ -23,8 +24,13 @@ param(
     [switch]$UseRegistrationCommand,
     # Drive an arbitrary server binary instead of building this checkout:
     # first element is the executable, remaining elements are its arguments.
-    # The child runs in this script's current PowerShell location (pinned
-    # below), so relative paths resolve where the caller expects.
+    # Named array parameter: multi-element commands need PowerShell array
+    # syntax (-ServerCommand dotnet,exec,Server.dll) from a command context.
+    # Space-separated tokens after -ServerCommand do NOT collect (binding
+    # errors loudly), and `pwsh -File` binds literally — from -File, pass a
+    # single executable path. The child runs in this script's current
+    # PowerShell location (pinned below), so relative paths resolve where
+    # the caller expects.
     [Parameter(ParameterSetName = 'ServerCommand', Mandatory)]
     [ValidateNotNullOrEmpty()]
     [string[]]$ServerCommand
