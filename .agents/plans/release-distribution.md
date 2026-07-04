@@ -101,7 +101,9 @@ section).
   with whole-home-moves-together semantics). Inside it:
   - installer-owned, replaced wholesale on upgrade: `bin/` (publish output,
     `PtkMcpServer(.exe)`), `src/` (module), `scripts/` (`ptk-hook.ps1`,
-    `ptk_init.ps1`), `VERSION`
+    `ptk_init.ps1`, and `dev-install.ps1` — added in slice 1 as the
+    payload-local uninstall entry point the Windows ARP UninstallString
+    targets, until a future `PtkMcpServer install` verb hosts it), `VERSION`
   - user-owned, NEVER touched by install/upgrade/uninstall (only by an
     explicit `--purge`): everything else — the future `policy.psd1`
     (destructive-cmdlet allow/deny lists, design parked in
