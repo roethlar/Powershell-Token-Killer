@@ -146,3 +146,11 @@ pwsh -NoProfile -File server/test-handshake.ps1 -UseRegistrationCommand -Timeout
 
 - [MCP server setup, configuration, and operations](server/README.md)
 - [Local CLI usage](docs/usage.md)
+
+## Credits
+
+ptk is heavily inspired by [rtk](https://github.com/rtk-ai/rtk), which proved
+the idea that agent shell output should be compressed at the source. rtk owns
+the native-command side of that idea; ptk extends it to PowerShell — object
+pipelines, warm runspace state — and routes back through rtk wherever rtk
+does it better.
