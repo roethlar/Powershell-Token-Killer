@@ -446,10 +446,25 @@ Describe 'Resolve-PtcInvokeScript routing' {
     }
 
     It 'leaves aliases and cmdlets on the PowerShell path' {
-        # On Windows ls is an alias; rtk ls fails (slice-0 probe), so
-        # resolution must happen in the runspace, not by name shape.
-        Resolve-PtcInvokeScript -Script 'ls' | Should -BeExactly 'ls'
+        # gci is an alias on every platform; resolution happens in the
+        # runspace, not by name shape.
+        Resolve-PtcInvokeScript -Script 'gci' | Should -BeExactly 'gci'
         Resolve-PtcInvokeScript -Script 'Get-ChildItem -Force' | Should -BeExactly 'Get-ChildItem -Force'
+    }
+
+    It 'routes ls per platform: alias on Windows, native command elsewhere' {
+        # Owner-ratified 2026-07-04: ls IS the shell command where a native
+        # one exists (Get-ChildItem is the PowerShell way). On Unix, ls
+        # resolves to the native Application and routes to rtk; on Windows
+        # there is no native ls - it is the Get-ChildItem alias and stays on
+        # the PowerShell path (rtk ls fails there - slice-0 probe).
+        if ($IsWindows) {
+            Resolve-PtcInvokeScript -Script 'ls' | Should -BeExactly 'ls'
+        }
+        else {
+            Resolve-PtcInvokeScript -Script 'ls' |
+                Should -BeExactly ("& '{0}' ls" -f $script:fakeRtk)
+        }
     }
 
     It 'leaves pipelines, chains, variables, expandable strings, and redirections unchanged' {
