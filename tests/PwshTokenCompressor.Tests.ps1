@@ -88,10 +88,18 @@ Describe 'ptk dispatcher' {
     }
 
     It 'runs read wrapper' {
-        $file = Join-Path $PSScriptRoot '../README.md'
-        $result = ptk read $file -MaxLines 3
+        # Deterministic temp fixture: asserting on live README content broke
+        # when the README was rewritten (2026-07-04).
+        $file = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-read-{0}.txt" -f ([guid]::NewGuid()))
+        Set-Content -LiteralPath $file -Value @('ptk-read-fixture-marker', 'second line', 'third line')
+        try {
+            $result = ptk read $file -MaxLines 3
 
-        $result | Should -Match 'pwsh_token_compressor'
+            $result | Should -Match 'ptk-read-fixture-marker'
+        }
+        finally {
+            Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It 'runs scriptblock commands with structured output' {
@@ -156,11 +164,20 @@ Describe 'ptk dispatcher' {
 
 Describe 'ptk.ps1 launcher' {
     It 'loads the module and dispatches commands' {
+        # Deterministic temp fixture: asserting on live README content broke
+        # when the README was rewritten (2026-07-04).
         $root = Resolve-Path (Join-Path $PSScriptRoot '..')
         $launcher = Join-Path $root 'ptk.ps1'
-        $output = & $launcher read (Join-Path $root 'README.md') -MaxLines 2
+        $file = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-launcher-{0}.txt" -f ([guid]::NewGuid()))
+        Set-Content -LiteralPath $file -Value @('ptk-launcher-fixture-marker', 'second line')
+        try {
+            $output = & $launcher read $file -MaxLines 2
 
-        ($output -join "`n") | Should -Match 'pwsh_token_compressor'
+            ($output -join "`n") | Should -Match 'ptk-launcher-fixture-marker'
+        }
+        finally {
+            Remove-Item -LiteralPath $file -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 
