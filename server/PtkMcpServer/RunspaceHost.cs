@@ -77,7 +77,7 @@ public sealed class RunspaceHost : IDisposable
     // An explicitly set PTK_MODULE_PATH wins outright: if it points at nothing,
     // shaping is disabled rather than silently falling back to a probed copy, so a
     // misconfiguration stays visible (same semantics as the module's PTK_RTK_PATH).
-    private static string? ResolveModulePath()
+    internal static string? ResolveModulePath()
     {
         var env = Environment.GetEnvironmentVariable("PTK_MODULE_PATH");
         if (!string.IsNullOrWhiteSpace(env))
@@ -85,7 +85,16 @@ public sealed class RunspaceHost : IDisposable
             return File.Exists(env) ? env : null;
         }
 
-        foreach (var start in new[] { Directory.GetCurrentDirectory(), AppContext.BaseDirectory })
+        // Binary-dir first: an installed server (~/.ptk/bin beside its src/)
+        // must win over a repo checkout the session happens to sit in; cwd
+        // stays the fallback so a checkout run with no installed layout
+        // still resolves its own module.
+        return ProbeForModule(AppContext.BaseDirectory, Directory.GetCurrentDirectory());
+    }
+
+    internal static string? ProbeForModule(params string[] starts)
+    {
+        foreach (var start in starts)
         {
             for (var dir = new DirectoryInfo(start); dir is not null; dir = dir.Parent)
             {
