@@ -52,12 +52,15 @@ section).
   installed; the embedded engine is PowerShell 7.6 (SDK 7.6.3, net10.0,
   ModelContextProtocol 1.4.0 per `server/PtkMcpServer/PtkMcpServer.csproj`).
 - **Module discovery already supports an installed layout.**
-  `RunspaceHost.ResolveModulePath` probes upward from cwd and
-  `AppContext.BaseDirectory` for `src/PwshTokenCompressor.psd1`, and
-  `PTK_MODULE_PATH` is an explicit override. The installer registers with an
-  explicit `PTK_MODULE_PATH` (deterministic) rather than relying on the probe,
-  which could match a checkout's module when a session runs inside a repo that
-  has one.
+  `RunspaceHost.ResolveModulePath` probes upward for
+  `src/PwshTokenCompressor.psd1` — today from cwd first, then
+  `AppContext.BaseDirectory` — and `PTK_MODULE_PATH` is an explicit override.
+  The cwd-first order is wrong for a shipped binary (a session inside a repo
+  containing that path would win over the installed copy), which is why the
+  Design commitments flip the probe to binary-dir-first; after the flip,
+  registration needs no env block and `PTK_MODULE_PATH` remains the explicit
+  override only (see the Registration commitment — that bullet is the single
+  registration contract).
 - **The hook installer is layout-portable.** `scripts/ptk_init.ps1` resolves
   `ptk-hook.ps1` from its own `$PSScriptRoot`, so shipping `scripts/` inside
   the release artifact lets the installed copy register the installed hook
