@@ -45,10 +45,31 @@ at the repo root; the build plan is `.agents/plans/warm-runspace-mcp-server.md`.
 
 | Tool | Purpose |
 | --- | --- |
-| `ptk_invoke` | Run a script in the warm runspace; state persists across calls |
+| `ptk_invoke` | Run any shell command (PowerShell or native) in the warm runspace; state persists across calls |
 | `ptk_modules` | List loaded modules; `listAvailable: true` for all installed (cached) |
 | `ptk_reset` | Recycle the runspace, discarding all warm state |
 | `ptk_ping` | Health check |
+
+## Routing (unified shell surface)
+
+`ptk_invoke` is the single tool for all shell work
+(`.agents/plans/unified-shell-routing.md`):
+
+- A script that is exactly one bare native command with constant arguments
+  (`git status`, `npm ls`, ...) is rewritten to run through **rtk**, whose
+  per-command filters compress output at the source; commands rtk doesn't
+  know pass through it unchanged. No rtk on PATH → the script runs as-is.
+- Everything else — pipelines, chains, variables, cmdlets, aliases — runs as
+  PowerShell in the warm runspace; log-shaped text output still routes
+  through `rtk log`, objects compress via `Compress-PtcObject`.
+- Overrides: `route=pwsh` forces plain execution, `route=rtk` forces the
+  rewrite, `raw=true` skips routing and shaping entirely.
+
+`scripts/ptk_init.ps1` installs a Claude Code PreToolUse hook that redirects
+Bash/PowerShell tool calls to `ptk_invoke` (local settings by default,
+`-Global` for all projects, `-Show`/`-Uninstall`/`-DryRun`; takes effect at
+next session start). A command containing `PTK_DIRECT` bypasses the redirect
+for genuinely interactive/TTY work.
 
 ## Configuration (environment variables)
 

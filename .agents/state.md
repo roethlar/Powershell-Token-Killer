@@ -5,7 +5,57 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **ACTIVE WORK ITEM (next session starts here): unified shell routing.**
+- **UNIFIED SHELL ROUTING: BUILT 2026-07-04** — all five slices of the
+  approved plan are committed and verified, each through the codex review
+  loop (details in the plan and the commit messages):
+  - Slice 0 probe results are recorded in the plan (rtk fidelity, cwd,
+    chains, the Windows `rtk ls` gap, hook mechanics, latency).
+  - Slice 1 (aa0ff12 + fixes): `Resolve-PtcInvokeScript` rewrites a single
+    bare native-Application command with constant args to run through rtk;
+    everything else runs as PowerShell unchanged; `route=auto|pwsh|rtk`
+    argument on ptk_invoke; `raw=true` skips routing. Codex loop closed NO
+    FINDINGS after fixes: $Error pollution (twice — resolver and
+    Get-PtcRtkCommand), .cmd/.bat shim exclusion, Unix test stub, NUL handle
+    lifetime.
+  - **Load-bearing discovery (0a31364): natives that read stdin hung forever
+    over stdio.** PowerShell hands a native command with no pipeline input
+    the process stdin — the idle-but-open MCP JSON-RPC pipe — so bare git
+    (any MSYS binary, sort, ssh) blocked until session end. Predates
+    routing; never seen because no one had run a bare MSYS binary through
+    ptk_invoke over stdio (live checks used cmdlets; rtk-routed calls mask
+    it by wiring their own child stdio). Fix: ChildStdinGuard captures the
+    transport streams, then points process stdin at NUL so children inherit
+    EOF. Regression e2e spawns the real server over idle pipes and runs a
+    stdin-reading native (60s hang without the guard, ~600ms with).
+  - Slices 2-3 (e8ff3d7, 0f84988 + fixes): ptk_invoke repositioned as the
+    single shell tool; `scripts/ptk-hook.ps1` (PreToolUse deny-with-guidance
+    redirect for Bash+PowerShell, PTK_DIRECT escape hatch, fail-open,
+    cwd-anchoring advice with apostrophe escaping) and `scripts/ptk_init.ps1`
+    (rtk-init-style installer: local default/-Global/-Show/-Uninstall/
+    -DryRun, idempotent, preserves foreign hooks surgically). Codex loop:
+    cwd drop (High), shared-entry deletion, param-description mismatch,
+    apostrophe escaping — all fixed with guard proofs; final one-line escape
+    fix declared converged (replicates a codex-cleared pattern).
+  - Verified 2026-07-04 (final battery): Pester 69/69, dotnet 34/34, both
+    handshake variants, live stdio spot-check with real rtk (`[ptk:log via
+    rtk]` + `[exit] 7` together), live in-harness routed `git status`.
+  - **NOT DONE / OWNER ACTIONS:** (a) the hook is NOT installed anywhere —
+    install with `pwsh -File scripts/ptk_init.ps1 -Global` (next session
+    start), then run the live hooked check: a Bash and a PowerShell tool
+    call should come back denied with ptk guidance and the model should
+    re-issue via ptk_invoke; start the friction log the amended go/no-go
+    needs. (b) ~25 local commits are unpushed; push needs owner go.
+    (c) `/mcp` restart to respawn the live server on the final build.
+  - Process notes for the record: two review-fix tests rode along in
+    earlier commits instead of their own (5202756 carried the shim-test
+    skip; 58990b1 carried the shared-entry test) — content correct, history
+    not rewritten. Claude Code auto-respawns the ptk server after kills and
+    each /mcp reconnect can leave an extra instance; every server rebuild
+    this session needed a `Stop-Process -Name PtkMcpServer` first.
+    PROPOSED (no go yet): a shadow-copy launcher so builds never collide
+    with live servers.
+- (COMPLETE — superseded by the BUILT entry above; kept as the approval
+  record) Unified shell routing was the active work item:
   Owner-approved plan `.agents/plans/unified-shell-routing.md` (2026-07-04):
   ptk becomes the single shell tool — PowerShell → warm runspace, ANY
   non-PowerShell command line → rtk unconditionally (rtk passes through what
@@ -191,12 +241,12 @@ short and update it when important repo facts change.
 
 ## Next
 
-- **Execute `.agents/plans/unified-shell-routing.md` slice 0** (probe: rtk
-  exit-code/stderr/cwd fidelity through the warm runspace incl. bash-isms on
-  Windows; hook rewrite-vs-deny capability, PowerShell-tool matcher name,
-  per-call hook latency, supersede-vs-coexist with rtk's Bash matcher), record
-  results in the plan, freeze the design, then slices 1-4 with the codex loop.
-- Read or re-run the pending codex verdict on ccc9686 (see Now).
+- ~~Execute unified-shell-routing slices~~ DONE 2026-07-04 (see Now). Next
+  actions are the OWNER items in the routing entry: install the hook
+  (`scripts/ptk_init.ps1 -Global`), run the live hooked check in a fresh
+  session, start the friction log, push on go, `/mcp` restart.
+- ~~Codex verdict on ccc9686~~ CLOSED 2026-07-04 (converged; disposition
+  recorded in the round-2 entry above).
 - 2026-07-02 headless adoption dry-run on this Mac (Sonnet, 19 trials, neutral cwd,
   ptk pre-approved via --allowedTools, tasks PowerShell-shaped but never mentioning
   ptk): **0/13 unprompted ptk usage**. The model used the harness's native PowerShell
