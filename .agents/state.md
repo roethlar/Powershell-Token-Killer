@@ -6,17 +6,25 @@ short and update it when important repo facts change.
 ## Now
 
 - **2026-07-04 (late): RELEASE-DISTRIBUTION PLAN DRAFTED — awaiting owner
-  approval.** `.agents/plans/release-distribution.md` (commit 7494edf, the
-  only UNPUSHED commit; push needs owner go). Owner set a first public
-  release target of **2026-07-25**: prebuilt self-contained per-RID binaries
-  on GitHub Releases + `install.ps1`/`install.sh` one-liners (tier 3);
+  approval.** `.agents/plans/release-distribution.md` (UNPUSHED commits from
+  7494edf onward; push needs owner go). Owner set a first public release
+  target of **2026-07-25**: prebuilt self-contained per-RID binaries on
+  GitHub Releases + `install.ps1`/`install.sh` one-liners (tier 3);
   publish-and-register script and .NET-tool packaging are dev-only. Decision
-  amendment recorded in `.agents/decisions.md` (continuation entry). Resume
-  point: get owner approval + the scoped push go (`ci/*` branch, rc
-  pre-release tags) + answers to the plan's four open questions
-  (recommendations inline; owner silence = recommendations stand), then run
-  slice 0 (local publish probe, handshake `-ServerCommand` mode, CI runner
-  probe). No code before approval.
+  amendment recorded in `.agents/decisions.md` (continuation entry). Owner
+  resolved the plan's open questions in-session the same day: **5 RIDs**
+  (win-x64, win-arm64, linux-x64, linux-arm64, osx-arm64 — owner has
+  hardware for all five), **v0.2.0**, **one `~/.ptk` home** (payload+config,
+  every platform and install method, no `--dir`), **winget = eventual
+  primary Windows path** (installer-type only; v0.2.0 builds readiness: ARP
+  uninstall entry, binary-hostable install logic, binary-relative module
+  discovery — probe-order flip is an approved scope addition). STILL OPEN
+  (owner: "decision for later", must close before slice 4): the public
+  installer's hook default — tension recorded in the plan's Resolutions.
+  Resume point: formal plan approval + the scoped push go (`ci/*` branch,
+  `v0.2.0-rc.*` tags), then slice 0 (local publish probe, handshake
+  `-ServerCommand` mode, CI runner probe incl. ARM runners). No code before
+  approval.
 - **2026-07-04 (earlier): docs pass PUSHED through a43897a.** README now
   leads with the MCP server as the primary use and documents rtk routing
   (four shaping legs, install-rtk encouragement, credits); server/README

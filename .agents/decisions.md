@@ -275,10 +275,17 @@ of 2026-07-25**: prebuilt self-contained per-platform binaries on GitHub
 Releases plus a one-line installer. A publish-and-register script and .NET
 tool packaging are dev-only paths, explicitly not the public install story.
 Plan (requires its own approval before code):
-`.agents/plans/release-distribution.md`. Interaction with the go/no-go is
-deliberate: CI produces only **draft** releases; the `v0.1.0` tag and the
-publish click are owner actions after the ~2026-07-20 test window, so a
-no-go can still end the project with nothing public shipped.
+`.agents/plans/release-distribution.md`. Owner resolved the plan's open
+questions the same day (5 RIDs incl. Windows/Linux ARM, version v0.2.0, one
+`~/.ptk` home for payload+config on every platform and install method, winget
+as the eventual primary Windows path with readiness — ARP entry, hostable
+install logic — built into v0.2.0; resolutions recorded in the plan). One
+question stays deliberately open: the public installer's hook default
+("decision for later"; must close before the installer slice ships).
+Interaction with the go/no-go is deliberate: CI produces only **draft**
+releases; the `v0.2.0` tag and the publish click are owner actions after the
+~2026-07-20 test window, so a no-go can still end the project with nothing
+public shipped.
 
 Consequence for the test: the ~2026-07-20 go/no-go now evaluates the routed
 one-tool product with the hook installed; the criteria shift accordingly —

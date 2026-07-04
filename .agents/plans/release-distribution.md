@@ -1,6 +1,11 @@
 # Plan: Release distribution — prebuilt binaries + one-line installer
 
 **Status:** DRAFT 2026-07-04 — awaiting owner approval before any code.
+Open questions resolved by owner 2026-07-04 (see Resolutions): 5 RIDs,
+version v0.2.0, install root `~/.ptk` everywhere, winget as the eventual
+primary Windows path with readiness built into v0.2.0. One question remains
+deliberately open: the hook default in the public installer (owner: "decision
+for later" — must close before slice 4 finalizes installer UX).
 **Decision basis:** owner direction 2026-07-04 (recorded as an amendment to the
 continuation decision in `.agents/decisions.md`): the current
 run-from-the-repo-checkout install story (`dotnet run --project ...`) is not
@@ -34,6 +39,12 @@ Dev workflows keep two non-public paths: a publish-and-register script that
 installs the current checkout's HEAD (tier 1 — also the exact layout logic the
 release CI reuses), and local .NET tool packaging (tier 2, cuttable).
 
+ptk is a primarily-Windows tool, and **winget is ultimately the primary
+Windows install path** (owner, 2026-07-04). v0.2.0 ships the scripts above;
+they are written as winget's future engine, and the winget manifest is the
+named follow-up once v0.2.0's assets are published (see the winget track
+section).
+
 ## Grounded facts this design stands on
 
 - **Self-contained publish works.** Recorded 2026-07-03 (`.agents/state.md`):
@@ -66,28 +77,66 @@ release CI reuses), and local .NET tool packaging (tier 2, cuttable).
   SDK is reflection-heavy and does not support trimmed or single-file publish
   reliably; the artifact is a plain publish directory in an archive. Size
   (~70–120 MB per RID) is acceptable for GitHub Releases; slice 0 measures it.
-- **Every shipped artifact is smoke-tested on its own OS** by the extended
-  handshake script against the actual published binary, in CI, before it can
-  land in a release. No untested asset ships (an untestable RID is dropped,
-  not shipped blind — no silent caps).
-- **Install layout** (one root, everything inside it):
-  - Windows: `%LOCALAPPDATA%\ptk`; macOS/Linux: `~/.ptk`
-  - `bin/` (publish output, `PtkMcpServer(.exe)`), `src/` (module),
-    `scripts/` (`ptk-hook.ps1`, `ptk_init.ps1`), `VERSION`
+- **Every shipped artifact is smoke-tested on its own OS/arch** by the
+  extended handshake script against the actual published binary — in CI where
+  a native runner exists, otherwise on owner hardware during the rc rehearsal
+  (the owner has machines for every v0.2.0 RID except osx-x64, which is not
+  shipped). No untested asset ships; an unverifiable RID is dropped, not
+  shipped blind — and the drop is logged, never silent.
+- **One ptk home: `~/.ptk`, on every platform, for every install method.**
+  Payload and config live together; no `--dir` override in v0.2.0 (an
+  override is variance by another name — added later only on real demand,
+  with whole-home-moves-together semantics). Inside it:
+  - installer-owned, replaced wholesale on upgrade: `bin/` (publish output,
+    `PtkMcpServer(.exe)`), `src/` (module), `scripts/` (`ptk-hook.ps1`,
+    `ptk_init.ps1`), `VERSION`
+  - user-owned, NEVER touched by install/upgrade/uninstall (only by an
+    explicit `--purge`): everything else — the future `policy.psd1`
+    (destructive-cmdlet allow/deny lists, design parked in
+    `.agents/decisions.md`) and any later config/state land here, at the
+    same path regardless of how ptk was installed.
+- **Package managers conform or don't ship:** any future package-manager
+  distribution must deliver into `~/.ptk` (installer-type packaging driving
+  our own install logic — the winget track below). Portable-type packages
+  that land in a manager-owned directory fork the layout and are ruled out.
+- **Module discovery becomes binary-relative.** `ResolveModulePath` flips to
+  probe `AppContext.BaseDirectory` upward BEFORE cwd, so an installed server
+  never silently loads a checkout's module because the session happens to sit
+  in a repo containing one, and the payload is position-independent (`bin/`
+  finds its sibling `src/` wherever the home is). This is the plan's one
+  deliberate server-code change beyond the handshake mode; `PTK_MODULE_PATH`
+  keeps its explicit-override semantics.
 - **Registration** is `claude mcp add ptk --scope user` pointing at the
-  absolute binary path with `PTK_MODULE_PATH` set in the env block;
-  remove-then-add so re-installs and dev→release switches never collide.
+  absolute binary path (no env block needed once discovery is
+  binary-relative); remove-then-add so re-installs and dev→release switches
+  never collide. Registration and hook wiring are always produced by the
+  scripts shipped in the payload's `scripts/` — one generator for every
+  install method, nothing hand-maintained.
+- **Windows installs are winget-ready from v0.2.0:** every Windows install —
+  script or future winget — writes the per-user Add/Remove Programs registry
+  entry (HKCU uninstall key: DisplayName, DisplayVersion = release version,
+  UninstallString), and uninstall removes it. That entry is what
+  `winget upgrade`/`winget uninstall` track. The install logic is written so
+  the server binary can host it later via an `install` verb (the binary
+  embeds the PowerShell engine, so self-install runs on a machine with
+  nothing preinstalled); the verb itself is post-v0.2.0.
+- **Installers refuse to run elevated** (root / Administrator) with a clear
+  message: ptk is a per-user tool, and the warm runspace inherits the
+  harness's privileges — an elevated install invites root-owned files and an
+  elevated-execution footgun. The security-posture docs gain the matching
+  sentence (slice 6).
 - **rtk is recommended, never bundled.** It is a separate product with its own
   installers; ptk already degrades visibly without it. The installer detects
   rtk on PATH and prints an install pointer when absent.
 - **The release tag and the published release are owner actions.** CI builds
   and smoke-tests everything into a **draft** release; publishing it (and
-  pushing the `v0.1.0` tag that triggers it) needs an explicit owner go, per
+  pushing the `v0.2.0` tag that triggers it) needs an explicit owner go, per
   `.agents/push-policy.md`. This also lets the ~2026-07-20 go/no-go outcome
   abort the release without public residue.
 - **No new server features ride along.** This plan is distribution only;
   server/module behavior changes are out of scope except the handshake-script
-  launch mode (test tooling).
+  launch mode (test tooling) and the module-discovery probe-order flip named
+  above.
 
 ## Slices
 
@@ -103,55 +152,73 @@ release CI reuses), and local .NET tool packaging (tier 2, cuttable).
    - `claude mcp add --env` syntax verified against the installed CLI.
    - CI probe on a side branch: minimal workflow proving runner facts —
      .NET 10 SDK via setup action, Pester 5 availability/pinning per OS,
-     macos-latest is arm64, Rosetta presence for an osx-x64 smoke, artifact
-     upload. Results recorded here before slices 2–4 are built.
-1. **Canonical layout + dev install script (tier 1, dev-only).**
-   `scripts/dev-install.ps1`: publish the current checkout self-contained for
-   the local RID, produce the install layout, register with `claude mcp` (and
-   print the Codex snippet), `-Hook` optional, `-Uninstall`, `-LayoutOnly
+     macos-latest is arm64, and the ARM runners (`windows-11-arm`,
+     `ubuntu-24.04-arm`) needed for the win-arm64/linux-arm64 smokes,
+     artifact upload. Results recorded here before slices 2–4 are built.
+1. **Discovery flip + canonical layout + dev install script (tier 1,
+   dev-only).** First the server change this layout depends on: flip
+   `ResolveModulePath` to probe the binary's directory upward before cwd
+   (guard: dotnet test covering both orders — installed layout wins over a
+   cwd checkout; cwd probe still works when nothing ships alongside the
+   binary). Then `scripts/dev-install.ps1`: publish the current checkout
+   self-contained for the local RID, produce the `~/.ptk` layout, register
+   with `claude mcp` (and print the Codex snippet), write the Add/Remove
+   Programs entry on Windows, `-Hook` optional, `-Uninstall`, `-LayoutOnly
    -OutputDir` mode that release CI reuses so dev and release artifacts are
-   the same layout by construction. Guard: handshake `-ServerCommand` against
-   the installed binary; uninstall removes the registration and the dir;
-   existing repo-based `.mcp.json` flow untouched.
+   the same layout by construction. Install logic factored so a future
+   `PtkMcpServer install` verb can host it in-process. Guard: handshake
+   `-ServerCommand` against the installed binary; uninstall removes the
+   registration, the ARP entry, and the payload while leaving non-payload
+   files; existing repo-based `.mcp.json` flow untouched.
 2. **CI workflow (tests).** `.github/workflows/ci.yml` on push/PR:
    ubuntu/windows/macos matrix running the Pester suite, `dotnet test`, and
    the handshake. Guard: green on all three OSes on the PR/branch.
 3. **Release workflow.** `.github/workflows/release.yml` on `v*` tags:
-   per-RID publish using the slice-1 layout mode on the RID's native runner
-   (win-x64 on windows, linux-x64 on ubuntu, osx-arm64 on macos; osx-x64 also
-   on macos with a Rosetta smoke), handshake against each artifact, archive as
+   per-RID publish using the slice-1 layout mode on the RID's native runner —
+   win-x64 (windows-latest), win-arm64 (windows-11-arm), linux-x64
+   (ubuntu-latest), linux-arm64 (ubuntu-24.04-arm), osx-arm64 (macos-latest);
+   no osx-x64 — handshake against each artifact, archive as
    `ptk-<version>-<rid>.zip|.tar.gz`, generate `SHA256SUMS`, assemble a
-   **draft** GitHub Release. Version stamped from the tag via `-p:Version`.
-   Guard: an rc pre-release tag (e.g. `v0.1.0-rc.1`) yields a complete draft
-   with every asset smoke-tested and checksummed.
+   **draft** GitHub Release. Version stamped from the tag via `-p:Version`
+   (and into the ARP entry at install time). Guard: an rc pre-release tag
+   (e.g. `v0.2.0-rc.1`) yields a complete draft with every asset
+   smoke-tested and checksummed; any RID whose runner smoke cannot run is
+   covered on owner hardware in slice 7 before the release publishes, or
+   dropped with a logged reason.
 4. **Installers.** `install.ps1` (Windows PowerShell one-liner) and
-   `install.sh` (POSIX sh for macOS/Linux): detect OS/arch, download the
-   pinned-or-latest release asset, verify against `SHA256SUMS`, extract to the
-   install root, register (remove-then-add) when `claude` is present else
-   print the command, print the Codex snippet and an rtk recommendation when
-   rtk is absent, `--hook` optional (requires `pwsh`; skipped with a message
-   when missing — the server itself never needs an installed PowerShell),
-   `--uninstall`. Guard: from the rc draft release, a one-liner install on
-   each supported OS ends with the handshake passing against the installed
-   binary, and uninstall leaves no registration or files.
+   `install.sh` (POSIX sh for macOS/Linux): detect OS/arch, refuse to run
+   elevated, download the pinned-or-latest release asset, verify against
+   `SHA256SUMS`, extract to `~/.ptk`, register (remove-then-add) when
+   `claude` is present else print the command, write the ARP entry on
+   Windows, print the Codex snippet and an rtk recommendation when rtk is
+   absent, hook install per the deferred hook-default decision (must be
+   closed before this slice ships; hook requires `pwsh` and is skipped with
+   a message when missing — the server itself never needs an installed
+   PowerShell), `--uninstall` (removes payload, registration, ARP entry;
+   leaves user config; `--purge` for everything). Guard: from the rc draft
+   release, a one-liner install on each supported OS ends with the handshake
+   passing against the installed binary, and uninstall leaves no
+   registration, ARP entry, or payload.
 5. **.NET tool packaging (tier 2, dev-only, CUTTABLE).** `PackAsTool` with the
-   module shipped inside the package so the BaseDirectory probe finds it;
+   module shipped inside the package so the binary-relative probe finds it;
    installable only from a local source (`dotnet tool install -g
-   --add-source`); explicitly NOT published to NuGet.org for v0.1.0. Guard:
+   --add-source`); explicitly NOT published to NuGet.org for v0.2.0. Guard:
    local tool install passes the handshake via the tool command. First thing
    dropped if 2026-07-25 is at risk — it is off the release critical path.
 6. **Docs + release prep.** README "Setup" becomes the one-liner install
    (repo-checkout and dev paths move to a dev/contributor doc);
-   `server/README.md` documents the installed layout and `PTK_MODULE_PATH`
-   registration; release-notes draft; `ModuleVersion`/release version
-   reconciled; `.agents/repo-guidance.md` "No CI" statement and
-   `.agents/repo-map.json` verification entries updated (drift fix rides in
-   the same slice that creates the drift).
+   `server/README.md` documents the `~/.ptk` layout, binary-relative
+   discovery, and the elevated-harness sentence in the security posture
+   (the runspace inherits the harness's privileges — root/Admin harness
+   means root/Admin shell); release-notes draft; `ModuleVersion` bumped to
+   0.2.0 to match the release; `.agents/repo-guidance.md` "No CI" statement
+   and `.agents/repo-map.json` verification entries updated (drift fix rides
+   in the same slice that creates the drift).
 7. **RC rehearsal + release (owner-gated).** End-to-end dry run in week 3 with
    the owner back (~2026-07-20): rc tag → draft release → one-liner installs
-   exercised on the real Windows box and this Mac (Linux via container or CI),
-   friction fixed, then owner pushes `v0.1.0` and publishes the release by
-   2026-07-25.
+   exercised on the owner's machines (hardware exists for every shipped RID),
+   any runner-unsmokable ARM artifact verified here, friction fixed, then
+   owner pushes `v0.2.0` and publishes the release by 2026-07-25.
 
 Process note: the codex review loop per code slice (owner-set precedent,
 2026-07-04) applies to slices 0–5; workflow YAML counts as code here.
@@ -164,30 +231,64 @@ Process note: the codex review loop per code slice (owner-set precedent,
   from CI; slice 5 only if slack remains.
 - **Week 3 (Jul 20–24):** slice 6 docs, slice 7 rehearsal on the real boxes
   (owner back ~Jul 20), fixes, owner go, tag + publish 2026-07-25.
-- **Buffer:** slice 5 is cuttable; osx-x64 is droppable (osx-arm64 covers the
-  owner's Mac); the schedule holds the release even if week 1 slips into
-  week 2, because slices 3–4 are the only hard-path items after slice 1.
+- **Buffer:** slice 5 is cuttable; the ARM RIDs can fall back to
+  owner-hardware verification in slice 7 if their CI runners misbehave (the
+  x64 pair plus osx-arm64 are the CI-critical path); the schedule holds the
+  release even if week 1 slips into week 2, because slices 3–4 are the only
+  hard-path items after slice 1.
 
 ## Owner logistics (needed to execute, not design questions)
 
 - **Pushes:** CI/workflow iteration only runs on pushed refs, and the policy
   is ask-first. Requested: a standing go, scoped to this plan, for pushes to a
-  `ci/*` side branch and `v0.1.0-rc.*` pre-release tags. `master` pushes and
-  the final `v0.1.0` tag stay per-explicit-go.
+  `ci/*` side branch and `v0.2.0-rc.*` pre-release tags. `master` pushes and
+  the final `v0.2.0` tag stay per-explicit-go.
 - **Real-box installer verification** needs the Windows box, which returns
   with the owner ~Jul 20 — hence slice 7's placement; CI's windows runner
   covers the risk until then.
 
-## Open questions (recommendations inline)
+## Resolutions (owner, 2026-07-04)
 
-1. **RID set for v0.1.0.** Recommend `win-x64`, `linux-x64`, `osx-arm64`,
-   plus `osx-x64` if the Rosetta smoke works on the CI runner; defer
-   `win-arm64`/`linux-arm64` until someone asks.
-2. **Version.** Recommend `v0.1.0` (matches the module's `ModuleVersion`).
-3. **Hook in the public installer.** Recommend off by default behind
-   `--hook`/`-Hook`: it is the adoption device for the owner's own test, but
-   opinionated (deny-redirects every shell call) for a first-time public user.
-4. **Install root names.** Recommend `~/.ptk` and `%LOCALAPPDATA%\ptk`.
+1. **RID set:** five — `win-x64`, `win-arm64`, `linux-x64`, `linux-arm64`,
+   `osx-arm64`. No `osx-x64`. The owner has hardware for all five, so every
+   artifact can be exercised locally in the rc rehearsal in addition to CI
+   runner smokes.
+2. **Version:** `v0.2.0` (the pre-release history is the implied 0.1;
+   `ModuleVersion` is bumped to match in slice 6).
+3. **Hook in the public installer:** DELIBERATELY OPEN — owner: "decision for
+   later"; must close before slice 4 ships. The recorded tension: default-off
+   risks shipping demo-ware (0/13 unprompted-adoption evidence; MCP tools
+   hidden behind ToolSearch means an unhooked server goes undiscovered) vs
+   default-on shipping a global settings.json edit and a deny-redirect on
+   every shell call that we ourselves will have lived with for only ~5 days
+   (friction log starts ~07-20). Standing recommendation: off by default
+   with the installer's closing message stating the measured adoption fact
+   and the `--hook` flag; revisit for the winget release with friction-log
+   data.
+4. **Install root:** `~/.ptk` on every platform — one ptk home for payload
+   AND config, independent of install method; no `--dir` in v0.2.0; package
+   managers deliver into it or don't ship. (The earlier
+   `%LOCALAPPDATA%`-on-Windows recommendation was withdrawn: the ecosystem
+   ptk integrates with — `~/.claude`, `~/.codex`, `~/.dotnet`, `~/.nuget` —
+   already normalized home-root dot-dirs on Windows, and the harness's
+   winget precedent was winget's packaging convention, not a design choice.)
+
+## Post-v0.2.0: the winget track (named follow-up, not v0.2.0 scope)
+
+Winget is the eventual primary Windows install path. `winget install <id>`
+must run OUR install logic (installer-type manifest — winget downloads the
+package and executes it silently), never a portable-type package (winget
+would own the destination and fork the `~/.ptk` layout). The pieces v0.2.0
+deliberately builds toward it: the ARP uninstall entry (winget's
+upgrade/uninstall tracking), version stamped there from the release tag, and
+install logic hostable by the binary itself via a future
+`PtkMcpServer install` verb — the binary embeds the PowerShell engine (the
+`Microsoft.PowerShell.SDK` package IS the engine; `pwsh` is a thin wrapper
+around the same library), so self-install runs on a machine with nothing
+preinstalled, and winget's zip-with-nested-installer support invokes exactly
+that from inside the existing release archive. Submission to
+microsoft/winget-pkgs happens once v0.2.0's assets are published (manifests
+need live asset URLs and go through validation lag).
 
 ## Risks
 
@@ -197,11 +298,12 @@ Process note: the codex review loop per code slice (owner-set precedent,
 - **GitHub runner drift** (net10 SDK availability, Pester versions, macos
   arch) — slice 0's CI probe exists to catch this before the workflows are
   designed around wrong facts.
-- **Unsigned binaries.** No code signing or notarization in v0.1.0. The
+- **Unsigned binaries.** No code signing or notarization in v0.2.0. The
   curl/irm install paths avoid browser quarantine/MOTW, and dotnet ad-hoc
   signs macOS apphosts, but a user who downloads the archive via a browser may
   hit Gatekeeper/SmartScreen friction. Documented limitation; signing is a
-  post-v0.1.0 track if it bites.
+  post-v0.2.0 track if it bites (and a prerequisite worth revisiting at
+  winget submission time).
 - **Go/no-go interaction.** The ~2026-07-20 adoption test may conclude
   "archive the project" days before the release date. The draft-until-owner-go
   release design means nothing public ships in that case; the distribution
@@ -214,10 +316,17 @@ Process note: the codex review loop per code slice (owner-set precedent,
 
 ## Non-goals
 
-- Publishing to NuGet.org, winget, Homebrew, or any package manager (v0.1.0 is
-  GitHub Releases + installer scripts only; managers are a later track).
+- Shipping ON any package manager in v0.2.0 (NuGet.org, winget, Homebrew).
+  v0.2.0 is GitHub Releases + installer scripts; winget-READINESS is in
+  scope (ARP entry, hostable install logic), the manifest submission is the
+  named post-v0.2.0 track above.
 - Code signing / notarization.
 - Bundling or installing rtk.
-- Any server/module behavior change beyond the handshake launch mode.
-- Auto-update mechanics (re-running the installer is the update path).
-- The universal wrapper CLI and destructive-cmdlet gate (still paused).
+- Any server/module behavior change beyond the handshake launch mode and the
+  module-discovery probe-order flip.
+- A `--dir` install-location override (one home: `~/.ptk`).
+- Auto-update mechanics (re-running the installer — or later, winget
+  upgrade — is the update path).
+- Building the destructive-cmdlet policy gate (still paused; this plan only
+  reserves its config location: user-owned files in `~/.ptk`).
+- The universal wrapper CLI (still paused).
