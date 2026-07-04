@@ -6,12 +6,15 @@ namespace PtkMcpServer;
 /// <summary>Result of one script invocation in the warm runspace.</summary>
 /// <param name="Success">False on a terminating error or timeout; non-terminating
 /// errors surface in <paramref name="Errors"/> without failing the call.</param>
+/// <param name="ExitCode">Nonzero $LASTEXITCODE left by a native command, else null.
+/// Reported for visibility; it does not affect <paramref name="Success"/>.</param>
 public sealed record InvokeResult(
     bool Success,
     string Output,
     string[] Errors,
     string[] Warnings,
-    bool TimedOut);
+    bool TimedOut,
+    int? ExitCode = null);
 
 /// <summary>
 /// Owns the single long-lived PowerShell runspace. Calls are serialized (a runspace
@@ -113,6 +116,33 @@ public sealed class RunspaceHost : IDisposable
         }
     }
 
+    // Exit-code bookkeeping runs as tiny extra pipelines on the warm runspace
+    // (sub-ms each). Both must hold the gate and must never fail a call.
+    private void ResetExitCode()
+    {
+        try
+        {
+            using var ps = PowerShell.Create();
+            ps.Runspace = _runspace;
+            ps.AddScript("$global:LASTEXITCODE = 0", useLocalScope: false);
+            ps.Invoke();
+        }
+        catch { /* bookkeeping only */ }
+    }
+
+    private int ReadExitCode()
+    {
+        try
+        {
+            using var ps = PowerShell.Create();
+            ps.Runspace = _runspace;
+            ps.AddScript("if ($global:LASTEXITCODE -is [int]) { $global:LASTEXITCODE } else { 0 }", useLocalScope: false);
+            var results = ps.Invoke();
+            return results.Count > 0 && results[0]?.BaseObject is int code ? code : 0;
+        }
+        catch { return 0; }
+    }
+
     public async Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -122,6 +152,10 @@ public sealed class RunspaceHost : IDisposable
         var handedOff = false;
         try
         {
+            // Reset before each call so a previous call's native exit code is never
+            // reported against a script that ran no native command (the stale-
+            // LASTEXITCODE bug the CLI path already fixed in Invoke-PtcRun).
+            ResetExitCode();
             ps.Runspace = _runspace;
             // useLocalScope: false — assignments land in the runspace's session
             // state and survive into the next call; that persistence is the point.
@@ -147,12 +181,14 @@ public sealed class RunspaceHost : IDisposable
             {
                 var results = await invokeTask;
                 var output = string.Concat(results.Select(r => r?.ToString()));
+                var exitCode = ReadExitCode();
                 return new InvokeResult(
                     Success: true,
                     Output: output,
                     Errors: [.. ps.Streams.Error.Select(e => e.ToString())],
                     Warnings: [.. ps.Streams.Warning.Select(w => w.ToString())],
-                    TimedOut: false);
+                    TimedOut: false,
+                    ExitCode: exitCode == 0 ? null : exitCode);
             }
             catch (RuntimeException ex)
             {

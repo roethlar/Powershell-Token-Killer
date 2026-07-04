@@ -48,6 +48,35 @@ public sealed class InvokeToolTests : IDisposable
         Assert.Contains("(no output)", text);
     }
 
+    private static string NativeExit(int code) =>
+        OperatingSystem.IsWindows() ? $"cmd /c exit {code}" : $"sh -c 'exit {code}'";
+
+    [Fact]
+    public async Task Native_nonzero_exit_code_is_reported()
+    {
+        var text = await InvokeTool.Invoke(_host, NativeExit(7), CancellationToken.None);
+
+        Assert.Contains("[exit] 7", text);
+    }
+
+    [Fact]
+    public async Task Native_zero_exit_code_is_not_reported()
+    {
+        var text = await InvokeTool.Invoke(_host, NativeExit(0), CancellationToken.None);
+
+        Assert.DoesNotContain("[exit]", text);
+    }
+
+    [Fact]
+    public async Task Stale_exit_code_is_not_reported_against_a_later_pure_PowerShell_call()
+    {
+        await InvokeTool.Invoke(_host, NativeExit(7), CancellationToken.None);
+        var text = await InvokeTool.Invoke(_host, "'clean call'", CancellationToken.None);
+
+        Assert.Contains("clean call", text);
+        Assert.DoesNotContain("[exit]", text);
+    }
+
     [Fact]
     public async Task Timeout_is_reported_with_the_state_loss_warning()
     {

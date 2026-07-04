@@ -29,6 +29,12 @@ public static class InvokeTool
         var output = result.Output.TrimEnd();
         sb.Append(output.Length > 0 ? output : "(no output)");
 
+        if (result.ExitCode is int exitCode)
+        {
+            sb.AppendLine();
+            sb.Append($"[exit] {exitCode}");
+        }
+
         if (result.Errors.Length > 0)
         {
             sb.AppendLine();
