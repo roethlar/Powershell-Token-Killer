@@ -163,7 +163,11 @@ function Format-PtcTable {
     )
 
     if ($Rows.Count -eq 0) { return @() }
-    if ($Properties.Count -eq 0) { return @($Rows | ForEach-Object { [string]$_ }) }
+    if ($Properties.Count -eq 0) {
+        $lines = @($Rows | Select-Object -First $MaxItems | ForEach-Object { [string]$_ })
+        if ($Rows.Count -gt $MaxItems) { $lines += '+{0} more' -f ($Rows.Count - $MaxItems) }
+        return $lines
+    }
 
     $visible = @($Rows | Select-Object -First $MaxItems)
     $widths = @{}

@@ -35,6 +35,16 @@ Describe 'Compress-PtcObject' {
 
         $result | Should -Match '\[95 more lines\]'
     }
+
+    It 'applies MaxItems to rows with no display properties' {
+        $result = 1..5 | Compress-PtcObject -MaxItems 2
+        $lines = @($result -split "`r?`n")
+
+        $lines | Should -Contain '1'
+        $lines | Should -Contain '2'
+        $lines | Should -Not -Contain '3'
+        $result | Should -Match '\+3 more'
+    }
 }
 
 Describe 'Invoke-PtcBoundCommand arg parser' {
