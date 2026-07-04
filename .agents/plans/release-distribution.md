@@ -327,7 +327,12 @@ Process note: the codex review loop per code slice (owner-set precedent,
 - **Pushes:** CI/workflow iteration only runs on pushed refs, and the policy
   is ask-first. Requested: a standing go, scoped to this plan, for pushes to a
   `ci/*` side branch and `v0.2.0-rc.*` pre-release tags. `master` pushes and
-  the final `v0.2.0` tag stay per-explicit-go.
+  the final `v0.2.0` tag stay per-explicit-go. **GRANTED 2026-07-04** with
+  the owner's hard condition: no branches may linger once the coding is
+  done — the agent deletes every `ci/*` branch (local and remote) as soon
+  as its facts/workflows land on master. Probe branches fork from
+  origin/master, not local HEAD, so unpushed master work is not published
+  through a side branch.
 - **Real-box installer verification** needs the Windows box, which returns
   with the owner ~Jul 20 — hence slice 7's placement; CI's windows runner
   covers the risk until then.

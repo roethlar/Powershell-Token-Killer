@@ -49,3 +49,12 @@ guard run did happen — agent's method summary was incomplete).
 **Loop CLOSED 2026-07-04T20:33Z:** re-grade at head 4591c9e — rel0-1
 resolution accepted, zero new findings (codex, codex-cli 0.142.5). Commits
 remain unpushed pending the owner's push go.
+
+---
+
+Loop run 2026-07-04 (test fixes) — reviewer: codex (codex-cli 0.142.5),
+scope: `dc68bdc..d0e34d6` (owner-approved fixes for the 3 pre-existing red
+Pester tests: 849081d deterministic temp fixtures for the two read-wrapper
+tests; d0e34d6 platform-aware ls routing assertion). **CLOSED first pass:
+NO FINDINGS** (no_findings=true, reviewed_head_sha=d0e34d6). Suite on this
+Mac: 69 passed / 0 failed / 1 skipped.

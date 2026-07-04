@@ -15,24 +15,32 @@ short and update it when important repo facts change.
   session start, module loads position-independently from the canonical
   layout via the BaseDirectory upward probe, `claude mcp add`/`remove`
   syntax confirmed on Claude Code CLI 2.1.201. Codex review loop on the
-  slice: see `.agents/review/index.md`. The CI runner probe AWAITS the
-  owner's scoped push go for `ci/*` (asked 2026-07-04); slice 1 can start
-  meanwhile if the owner prefers.
-- **2026-07-04 (later): master's Pester battery is RED on this Mac —
-  pre-existing, NOT slice 0.** Clean master (changes stashed): 65 passed /
-  3 failed / 1 skipped. (1)+(2) the two "read README" assertions expect
-  `pwsh_token_compressor` in the LIVE README; the a43897a docs-pass
-  rewrite removed that string — content-sensitive fixtures broken by a
-  pushed commit, fails on every platform. (3) "leaves aliases and cmdlets
-  on the PowerShell path" asserts `ls` stays unrouted, but on macOS/Linux
-  `ls` resolves to the native Application (verified in pwsh -NoProfile:
-  Application /bin/ls, no alias), so `Resolve-PtcInvokeScript` routes it
-  BY DESIGN — the assertion holds only on Windows and will also fail in
-  slice 2's ubuntu/macos CI. The earlier "Pester 69/69" battery record
-  did not reproduce today on identical module/test code — treat suite
-  greenness as machine-dependent until fixed. FIX PROPOSED (test-only
-  code, needs owner go): deterministic content fixture for the README
-  tests; platform-aware `ls` assertion (`$IsWindows`). One commit each.
+  slice: see `.agents/review/index.md`. PUSH GO GRANTED 2026-07-04 for
+  `ci/*` + `v0.2.0-rc.*`, with the owner's hard condition: NO branches
+  may linger once the coding is done — the agent deletes every `ci/*`
+  branch (local and remote) as soon as its facts/workflows land on
+  master; the owner never has to handle branches. Probe branches fork
+  from origin/master (last pushed commit), NOT local HEAD, so unpushed
+  master work is not published through a side branch. `master` pushes and
+  the final `v0.2.0` tag stay per-explicit-go.
+- **2026-07-04 (later): master's Pester battery was RED on this Mac —
+  pre-existing, NOT slice 0 — now FIXED (owner go same day).** Clean
+  master had 65 passed / 3 failed / 1 skipped: two "read README"
+  assertions expected `pwsh_token_compressor` in the LIVE README (removed
+  by the a43897a docs-pass rewrite; broke on every platform), and "leaves
+  aliases and cmdlets on the PowerShell path" asserted `ls` stays
+  unrouted, which only holds on Windows — on macOS/Linux `ls` is the
+  native Application and the resolver routes it to rtk BY DESIGN
+  (owner-ratified 2026-07-04: ls IS the shell command where a native one
+  exists; Get-ChildItem is the PowerShell way; models shouldn't lean on
+  aliases). Fixes: 849081d (deterministic temp fixtures) and d0e34d6
+  (gci for the cross-platform alias case + a new test pinning the ls
+  platform split via $IsWindows). Codex loop: NO FINDINGS first pass.
+  Suite on this Mac: 69 passed / 0 failed / 1 skipped (70 tests — the
+  canonical count going forward; the earlier "69/69" phrasing predates
+  the added test). Lesson recorded: the old 69/69 record had not
+  reproduced on identical code — suite greenness was machine-dependent
+  until these fixtures were made deterministic.
 - **2026-07-04 (late): RELEASE-DISTRIBUTION PLAN APPROVED — next action is
   slice 0.** `.agents/plans/release-distribution.md`, approved by owner
   in-session 2026-07-04 after question resolution and a codex review loop on
