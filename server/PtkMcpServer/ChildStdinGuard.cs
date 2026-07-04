@@ -15,6 +15,11 @@ internal static class ChildStdinGuard
 {
     private const int StdInputHandle = -10;
 
+    // Holds the NUL handle for the process lifetime. A local would be
+    // finalized by the GC, closing the handle installed via SetStdHandle and
+    // leaving later children a stale stdin handle.
+    private static Microsoft.Win32.SafeHandles.SafeFileHandle? _nulHandle;
+
     [DllImport("kernel32.dll", SetLastError = true)]
     [return: MarshalAs(UnmanagedType.Bool)]
     private static extern bool SetStdHandle(int nStdHandle, nint handle);
@@ -31,10 +36,8 @@ internal static class ChildStdinGuard
         {
             if (OperatingSystem.IsWindows())
             {
-                // The NUL handle must stay valid for the process lifetime, so it
-                // is deliberately never disposed.
-                var nul = File.OpenHandle("NUL", FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
-                SetStdHandle(StdInputHandle, nul.DangerousGetHandle());
+                _nulHandle = File.OpenHandle("NUL", FileMode.Open, FileAccess.Read, FileShare.ReadWrite);
+                SetStdHandle(StdInputHandle, _nulHandle.DangerousGetHandle());
             }
             else
             {
