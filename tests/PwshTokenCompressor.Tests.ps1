@@ -4,10 +4,20 @@ BeforeAll {
 
 Describe 'Compress-PtcObject' {
     It 'compresses filesystem objects before formatting' {
-        $result = Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '..') | Compress-PtcObject -MaxItems 10
+        # Deterministic fixture: the live repo root is environment-sensitive (a
+        # checkout with >10 entries pushes README.md past the -MaxItems cap).
+        $fixture = Join-Path ([System.IO.Path]::GetTempPath()) ("ptc-fsfix-{0}" -f ([guid]::NewGuid()))
+        New-Item -ItemType Directory -Path (Join-Path $fixture 'sub') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $fixture 'README.md') -Value 'fixture readme'
+        Set-Content -LiteralPath (Join-Path $fixture 'notes.txt') -Value 'notes'
+        try {
+            $result = Get-ChildItem -LiteralPath $fixture | Compress-PtcObject -MaxItems 10
 
-        $result | Should -Match '^fs:'
-        $result | Should -Match 'README.md'
+            $result | Should -Match '^fs:'
+            $result | Should -Match 'README.md'
+        } finally {
+            Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
+        }
     }
 
     It 'compresses match info grouped by file' {
@@ -289,14 +299,20 @@ Describe 'object routing robustness' {
     }
 
     It 'still routes real (deserialized) filesystem objects to the fs compressor' {
+        # Deterministic fixture: same rationale as the fs test above.
+        $fixture = Join-Path ([System.IO.Path]::GetTempPath()) ("ptc-fsfix-{0}" -f ([guid]::NewGuid()))
+        New-Item -ItemType Directory -Path (Join-Path $fixture 'sub') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $fixture 'README.md') -Value 'fixture readme'
+        Set-Content -LiteralPath (Join-Path $fixture 'notes.txt') -Value 'notes'
         $temp = Join-Path ([System.IO.Path]::GetTempPath()) ("ptc-fs-{0}.clixml" -f ([guid]::NewGuid()))
         try {
-            Get-ChildItem -LiteralPath (Join-Path $PSScriptRoot '..') | Export-Clixml -LiteralPath $temp
+            Get-ChildItem -LiteralPath $fixture | Export-Clixml -LiteralPath $temp
             $result = Import-Clixml -LiteralPath $temp | Compress-PtcObject -MaxItems 10
             $result | Should -Match '^fs:'
             $result | Should -Match 'README.md'
         } finally {
             Remove-Item -LiteralPath $temp -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $fixture -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 
