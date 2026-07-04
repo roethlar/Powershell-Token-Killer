@@ -10,6 +10,7 @@
     FunctionsToExport = @(
         'Compress-PtcObject',
         'Compress-PtcOutput',
+        'Resolve-PtcInvokeScript',
         'Invoke-PtcBoundCommand',
         'Invoke-Ptc',
         'Invoke-PtcRun',

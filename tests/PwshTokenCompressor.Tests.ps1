@@ -405,6 +405,74 @@ Describe 'object routing robustness' {
     }
 }
 
+Describe 'Resolve-PtcInvokeScript routing' {
+    BeforeAll {
+        # A real file so Get-PtcRtkCommand resolves; nothing executes in these
+        # tests - routing only rewrites the script text.
+        $script:fakeRtk = Join-Path ([System.IO.Path]::GetTempPath()) ("rtk-route-{0}.exe" -f ([guid]::NewGuid()))
+        Set-Content -LiteralPath $script:fakeRtk -Value ''
+    }
+    AfterAll {
+        Remove-Item -LiteralPath $script:fakeRtk -Force -ErrorAction SilentlyContinue
+    }
+    BeforeEach { $env:PTK_RTK_PATH = $script:fakeRtk }
+    AfterEach { Remove-Item env:PTK_RTK_PATH -ErrorAction SilentlyContinue }
+
+    It 'rewrites a single native command with constant args to rtk' {
+        Resolve-PtcInvokeScript -Script 'git status -s' |
+            Should -BeExactly ("& '{0}' git status -s" -f $script:fakeRtk)
+    }
+
+    It 'keeps quoted constant arguments intact in the rewrite' {
+        Resolve-PtcInvokeScript -Script 'git commit -m "hello world"' |
+            Should -BeExactly ("& '{0}' git commit -m `"hello world`"" -f $script:fakeRtk)
+    }
+
+    It 'leaves aliases and cmdlets on the PowerShell path' {
+        # On Windows ls is an alias; rtk ls fails (slice-0 probe), so
+        # resolution must happen in the runspace, not by name shape.
+        Resolve-PtcInvokeScript -Script 'ls' | Should -BeExactly 'ls'
+        Resolve-PtcInvokeScript -Script 'Get-ChildItem -Force' | Should -BeExactly 'Get-ChildItem -Force'
+    }
+
+    It 'leaves pipelines, chains, variables, expandable strings, and redirections unchanged' {
+        foreach ($s in @(
+            'git status | Select-String modified',
+            'git status && git diff',
+            '$x = git status',
+            'git log -1 > out.txt',
+            'git commit -m "$msg"',
+            '& git status'
+        )) {
+            Resolve-PtcInvokeScript -Script $s | Should -BeExactly $s
+        }
+    }
+
+    It 'leaves scripts with parse errors unchanged' {
+        Resolve-PtcInvokeScript -Script 'git status ||| (' |
+            Should -BeExactly 'git status ||| ('
+    }
+
+    It 'does not double-route rtk itself' {
+        Resolve-PtcInvokeScript -Script 'rtk gain' | Should -BeExactly 'rtk gain'
+    }
+
+    It 'returns the script unchanged when rtk is absent' {
+        $env:PTK_RTK_PATH = Join-Path ([System.IO.Path]::GetTempPath()) 'no-such-rtk-binary.exe'
+        Resolve-PtcInvokeScript -Script 'git status' | Should -BeExactly 'git status'
+    }
+
+    It 'honors the route overrides' {
+        Resolve-PtcInvokeScript -Script 'git status' -Route pwsh | Should -BeExactly 'git status'
+        # force-rtk skips Application resolution but still needs the
+        # single-command constant-args shape
+        Resolve-PtcInvokeScript -Script 'Get-ChildItem' -Route rtk |
+            Should -BeExactly ("& '{0}' Get-ChildItem" -f $script:fakeRtk)
+        Resolve-PtcInvokeScript -Script 'git status | Out-Null' -Route rtk |
+            Should -BeExactly 'git status | Out-Null'
+    }
+}
+
 Describe 'minimal mode comment stripping' {
     It 'preserves #requires directives and here-string content while stripping PowerShell comments' {
         $src = @'

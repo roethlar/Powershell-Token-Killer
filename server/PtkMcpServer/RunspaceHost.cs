@@ -143,7 +143,27 @@ public sealed class RunspaceHost : IDisposable
         catch { return 0; }
     }
 
-    public async Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default)
+    // Asks the module to classify/rewrite the script (single native commands
+    // route through rtk — unified-shell-routing plan). Any failure returns the
+    // script unchanged: routing must never be able to fail a call.
+    private string ResolveScript(string script, string route)
+    {
+        try
+        {
+            using var ps = PowerShell.Create();
+            ps.Runspace = _runspace;
+            ps.AddCommand("Resolve-PtcInvokeScript")
+              .AddParameter("Script", script)
+              .AddParameter("Route", route);
+            var results = ps.Invoke();
+            return results.Count > 0 && results[0]?.BaseObject is string resolved && resolved.Length > 0
+                ? resolved
+                : script;
+        }
+        catch { return script; }
+    }
+
+    public async Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default, string route = "auto")
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         LastActivityUtc = DateTimeOffset.UtcNow;
@@ -152,6 +172,13 @@ public sealed class RunspaceHost : IDisposable
         var handedOff = false;
         try
         {
+            // raw skips routing as well as shaping: raw means the uncompressed
+            // truth, executed exactly as written.
+            if (ModuleLoaded && !raw && route != "pwsh")
+            {
+                script = ResolveScript(script, route);
+            }
+
             // Reset before each call so a previous call's native exit code is never
             // reported against a script that ran no native command (the stale-
             // LASTEXITCODE bug the CLI path already fixed in Invoke-PtcRun).

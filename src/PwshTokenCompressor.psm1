@@ -850,6 +850,77 @@ function Invoke-PtcRtkLog {
     }
 }
 
+# Routing for the unified shell surface (unified-shell-routing plan): a script
+# that is exactly one bare native-application command with constant arguments
+# is rewritten to run through rtk, whose per-command filters compress output at
+# the source and whose passthrough keeps unknown commands intact (verified in
+# the plan's slice-0 probe). Everything else - pipelines, chains, variables,
+# cmdlets, aliases, redirections, parse errors - returns unchanged and runs as
+# PowerShell: natives inside chains execute with correct semantics there, and
+# their text output still gets the log-shaped rtk leg in Compress-PtcOutput.
+# With no rtk binary the script also returns unchanged (same execution as
+# before routing existed; unfiltered, never a failure).
+function Resolve-PtcInvokeScript {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Script,
+        # 'pwsh' always returns the script unchanged; 'rtk' skips the
+        # Application resolution check but still needs the single-command
+        # constant-args shape to rewrite safely.
+        [ValidateSet('auto', 'pwsh', 'rtk')]
+        [string]$Route = 'auto'
+    )
+
+    if ($Route -eq 'pwsh') { return $Script }
+
+    $rtk = Get-PtcRtkCommand
+    if (-not $rtk) { return $Script }
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($Script, [ref]$tokens, [ref]$parseErrors)
+    if (@($parseErrors).Count -gt 0) { return $Script }
+    if ($null -ne $ast.ParamBlock -or $null -ne $ast.BeginBlock -or $null -ne $ast.ProcessBlock) { return $Script }
+    if ($null -eq $ast.EndBlock) { return $Script }
+    $statements = @($ast.EndBlock.Statements)
+    if ($statements.Count -ne 1) { return $Script }
+    $pipeline = $statements[0]
+    if ($pipeline -isnot [System.Management.Automation.Language.PipelineAst]) { return $Script }
+    if (@($pipeline.PipelineElements).Count -ne 1) { return $Script }
+    $command = $pipeline.PipelineElements[0]
+    if ($command -isnot [System.Management.Automation.Language.CommandAst]) { return $Script }
+    if ($command.InvocationOperator -ne [System.Management.Automation.Language.TokenKind]::Unknown) { return $Script }
+    if (@($command.Redirections).Count -gt 0) { return $Script }
+
+    $elements = @($command.CommandElements)
+    if ($elements[0] -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) { return $Script }
+    $name = $elements[0].Value
+    if ([System.IO.Path]::GetFileNameWithoutExtension($name) -eq 'rtk') { return $Script }
+    foreach ($element in ($elements | Select-Object -Skip 1)) {
+        # StringConstantExpressionAst derives from ConstantExpressionAst, so
+        # one check covers bare words, quoted literals, and numbers. A
+        # parameter like -m is constant unless its attached argument is not
+        # (-flag:$var).
+        $isConstant = $element -is [System.Management.Automation.Language.ConstantExpressionAst] -or
+            ($element -is [System.Management.Automation.Language.CommandParameterAst] -and
+                ($null -eq $element.Argument -or
+                 $element.Argument -is [System.Management.Automation.Language.ConstantExpressionAst]))
+        if (-not $isConstant) { return $Script }
+    }
+
+    if ($Route -ne 'rtk') {
+        # Resolve in this runspace: aliases, cmdlets, and functions shadow
+        # native binaries here exactly as they would at execution time (on
+        # Windows, ls is an alias and `rtk ls` fails - slice-0 probe).
+        $resolved = Get-Command -Name $name -ErrorAction SilentlyContinue | Select-Object -First 1
+        if ($null -eq $resolved -or $resolved.CommandType -ne [System.Management.Automation.CommandTypes]::Application) { return $Script }
+    }
+
+    "& '{0}' {1}" -f $rtk.Replace("'", "''"), $command.Extent.Text
+}
+
 # Shapes ptk_invoke output for the MCP server (Phase 2 plan): objects compress via
 # Compress-PtcObject; log-shaped text goes to rtk when available; all other text
 # (strings and primitive scalars) passes through verbatim and is NEVER truncated.
@@ -1221,6 +1292,7 @@ Set-Alias -Name ptk -Value Invoke-Ptc
 Export-ModuleMember -Function @(
     'Compress-PtcObject',
     'Compress-PtcOutput',
+    'Resolve-PtcInvokeScript',
     'Invoke-PtcBoundCommand',
     'Invoke-Ptc',
     'Invoke-PtcRun',

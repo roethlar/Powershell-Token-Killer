@@ -21,9 +21,20 @@ public static class InvokeTool
         RunspaceHost host,
         [Description("The PowerShell script to execute.")] string script,
         CancellationToken cancellationToken,
-        [Description("Skip output compression and return plain formatted text.")] bool raw = false)
+        [Description("Skip output compression and return plain formatted text.")] bool raw = false,
+        [Description(
+            "Routing override: 'auto' (default) runs a single native command " +
+            "through rtk's filters; 'pwsh' forces plain execution in the warm " +
+            "runspace; 'rtk' forces the rtk rewrite when the script shape allows it.")]
+        string route = "auto")
     {
-        var result = await host.InvokeAsync(script, raw, cancellationToken);
+        route = route?.ToLowerInvariant() switch
+        {
+            "pwsh" => "pwsh",
+            "rtk" => "rtk",
+            _ => "auto",
+        };
+        var result = await host.InvokeAsync(script, raw, cancellationToken, route);
 
         var sb = new StringBuilder();
         var output = result.Output.TrimEnd();

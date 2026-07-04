@@ -116,6 +116,85 @@ public sealed class InvokeToolTests : IDisposable
         }
     }
 
+    private static (DirectoryInfo dir, string path) CreateRtkStub(string body)
+    {
+        var dir = Directory.CreateTempSubdirectory("ptk-rtk-route-");
+        string path;
+        if (OperatingSystem.IsWindows())
+        {
+            path = Path.Combine(dir.FullName, "rtk-stub.cmd");
+            File.WriteAllText(path, "@echo off\r\n" + body.Replace("\n", "\r\n") + "\r\n");
+        }
+        else
+        {
+            path = Path.Combine(dir.FullName, "rtk-stub.sh");
+            File.WriteAllText(path, "#!/bin/sh\n" + body.Replace("%*", "\"$@\"") + "\n");
+            File.SetUnixFileMode(path,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        return (dir, path);
+    }
+
+    [Fact]
+    public async Task Single_native_command_routes_through_rtk()
+    {
+        var (dir, stub) = CreateRtkStub("echo RTKROUTE %*\nexit /b 0");
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            var text = await InvokeTool.Invoke(_host, "git status", CancellationToken.None);
+
+            Assert.Contains("RTKROUTE git status", text);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Route_pwsh_forces_plain_execution()
+    {
+        var (dir, stub) = CreateRtkStub("echo RTKROUTE %*\nexit /b 0");
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            var text = await InvokeTool.Invoke(
+                _host, "git --version", CancellationToken.None, route: "pwsh");
+
+            Assert.DoesNotContain("RTKROUTE", text);
+            Assert.Contains("git version", text);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Routed_command_exit_code_is_reported()
+    {
+        var (dir, stub) = CreateRtkStub("echo RTKROUTE %*\nexit /b 5");
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            var text = await InvokeTool.Invoke(_host, "git status", CancellationToken.None);
+
+            Assert.Contains("RTKROUTE git status", text);
+            Assert.Contains("[exit] 5", text);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
     [Fact]
     public async Task Timeout_is_reported_with_the_state_loss_warning()
     {
