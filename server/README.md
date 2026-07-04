@@ -1,99 +1,152 @@
-# PtkMcpServer — warm-runspace MCP server
+# PtkMcpServer
 
-A stdio MCP server that owns one long-lived PowerShell runspace, so heavy
-modules (`ExchangeOnlineManagement`, `ActiveDirectory`, ...) import **once**
-per session and every later tool call runs against warm state, instead of
-paying module-load and connection cost in a fresh `pwsh` process per call.
+`PtkMcpServer` is a stdio MCP server that owns one long-lived PowerShell
+runspace. Agent shell calls can run inside that runspace through `ptk_invoke`,
+so variables, imported modules, and established connections survive across
+calls for the life of the MCP server process.
 
-Status and open decisions live in `.agents/state.md` and `.agents/decisions.md`
-at the repo root; the build plan is `.agents/plans/warm-runspace-mcp-server.md`.
+The server imports `src/PwshTokenCompressor.psd1` into the warm runspace and
+uses `Compress-PtcOutput` to shape tool output. If the module cannot be found or
+imported, calls fall back to plain `Out-String` output and the server writes the
+problem to stderr.
 
 ## Prerequisites
 
 - .NET SDK 10.x (`dotnet --list-sdks`)
-- PowerShell 7.4+ (`pwsh`) on PATH — 7.6.3 is what the server SDK pins
-- Network access on first build (NuGet restore)
-- Claude Code (or any MCP client that speaks stdio)
+- Network access on first build for NuGet restore
+- PowerShell 7.x (`pwsh`) for the handshake script and hook installer
+- An MCP client that can launch stdio servers, such as Claude Code
 
-## Setup on a new machine
+The server itself hosts PowerShell through the `Microsoft.PowerShell.SDK`
+package pinned in `server/PtkMcpServer/PtkMcpServer.csproj`.
 
-1. Clone this repo.
-2. Verify the server works before wiring it to a client:
+## Setup
 
-   ```
-   dotnet test server/PtkMcpServer.slnx
-   pwsh -NoProfile -File server/test-handshake.ps1 -UseRegistrationCommand
-   ```
+Verify the server before registering it broadly:
 
-   The handshake script starts the server exactly the way the MCP
-   registration does and must end with `HANDSHAKE PASSED`.
+```powershell
+dotnet test server/PtkMcpServer.slnx
+pwsh -NoProfile -File server/test-handshake.ps1 -UseRegistrationCommand -TimeoutSec 90
+```
 
-3. **Sessions started inside this repo:** nothing else to do. The committed
-   `.mcp.json` registers the server as `ptk`; Claude Code asks for one-time
-   approval at session start. First launch builds automatically (`dotnet run`).
+The handshake starts the server through the same `dotnet run` command used by
+the MCP registration and must end with `HANDSHAKE PASSED`. The explicit
+`-TimeoutSec 90` gives cold build/startup work room to finish.
 
-4. **Sessions in other project directories** (the normal case for daily work):
-   register it user-wide, pointing at this clone:
+Sessions started inside this repo use the committed `.mcp.json`:
 
-   ```
-   claude mcp add ptk --scope user -- dotnet run -v q --project <path-to-repo>/server/PtkMcpServer
-   ```
+```json
+{
+  "mcpServers": {
+    "ptk": {
+      "command": "dotnet",
+      "args": ["run", "-v", "q", "--project", "server/PtkMcpServer"]
+    }
+  }
+}
+```
 
-   Check with `claude mcp list`; remove with `claude mcp remove ptk`.
+For sessions started from other project directories, register the same command
+user-wide and point it at this clone:
+
+```powershell
+claude mcp add ptk --scope user -- dotnet run -v q --project <path-to-repo>/server/PtkMcpServer
+```
+
+Check with `claude mcp list`; remove with `claude mcp remove ptk`.
 
 ## Tools
 
-| Tool | Purpose |
-| --- | --- |
-| `ptk_invoke` | Run any shell command (PowerShell or native) in the warm runspace; state persists across calls |
-| `ptk_modules` | List loaded modules; `listAvailable: true` for all installed (cached) |
-| `ptk_reset` | Recycle the runspace, discarding all warm state |
-| `ptk_ping` | Health check |
+| Tool | Arguments | Purpose |
+| --- | --- | --- |
+| `ptk_invoke` | `script`, optional `raw`, optional `route` | Run a PowerShell script or native command line in the warm runspace. |
+| `ptk_modules` | optional `listAvailable` | List loaded modules by default; with `listAvailable: true`, enumerate installed modules once and cache the result. |
+| `ptk_reset` | none | Recycle the runspace, discarding variables, loaded modules, current directory, default parameters, and connections. |
+| `ptk_ping` | none | Health check returning `pong`. |
 
-## Routing (unified shell surface)
+`ptk_invoke` returns command output, then labeled sections when present:
+`[exit] N`, `[errors]`, and `[warnings]`. Empty output returns `(no output)`.
 
-`ptk_invoke` is the single tool for all shell work
-(`.agents/plans/unified-shell-routing.md`):
+## `ptk_invoke` Behavior
 
-- A script that is exactly one bare native command with constant arguments
-  (`git status`, `npm ls`, ...) is rewritten to run through **rtk**, whose
-  per-command filters compress output at the source; commands rtk doesn't
-  know pass through it unchanged. No rtk on PATH → the script runs as-is.
-- Everything else — pipelines, chains, variables, cmdlets, aliases — runs as
-  PowerShell in the warm runspace; log-shaped text output still routes
-  through `rtk log`, objects compress via `Compress-PtcObject`.
-- Overrides: `route=pwsh` forces plain execution, `route=rtk` forces the
-  rewrite, `raw=true` skips routing and shaping entirely.
+By default, `ptk_invoke` executes with `route=auto` and `raw=false`.
 
-`scripts/ptk_init.ps1` installs a Claude Code PreToolUse hook that redirects
-Bash/PowerShell tool calls to `ptk_invoke` (local settings by default,
-`-Global` for all projects, `-Show`/`-Uninstall`/`-DryRun`; takes effect at
-next session start). A command containing `PTK_DIRECT` bypasses the redirect
-for genuinely interactive/TTY work.
+Routing:
 
-## Configuration (environment variables)
+- A script that is exactly one bare native application command with constant
+  arguments, such as `git status --short`, is rewritten through `rtk` when
+  `rtk` is available.
+- `rtk` itself is not double-routed.
+- Cmdlets, aliases, functions, pipelines, chains, variables, expandable
+  strings, redirections, parse errors, and `.cmd`/`.bat` shims stay on the
+  PowerShell path.
+- If `rtk` is absent, the script runs unchanged.
+
+Output shaping:
+
+- Object output compresses with `Compress-PtcObject`.
+- Plain strings and primitive scalars pass through without truncation.
+- Log-shaped text routes through `rtk log` when possible.
+- Log-shaped text falls back to labeled raw text if `rtk` is absent or fails.
+- Nonzero native exit codes are reported as `[exit] N`.
+
+Overrides:
+
+- `raw=true` skips routing and shaping and returns plain formatted text.
+- `route=pwsh` forces execution exactly as PowerShell.
+- `route=rtk` forces the `rtk` rewrite when the script has the safe
+  single-command shape.
+
+## Claude Code Hook
+
+`scripts/ptk_init.ps1` installs a Claude Code `PreToolUse` hook that redirects
+ordinary Bash and PowerShell tool calls toward `mcp__ptk__ptk_invoke` using a
+deny-with-guidance response.
+
+```powershell
+pwsh -File scripts/ptk_init.ps1             # local .claude/settings.json
+pwsh -File scripts/ptk_init.ps1 -Global     # ~/.claude/settings.json
+pwsh -File scripts/ptk_init.ps1 -Show
+pwsh -File scripts/ptk_init.ps1 -DryRun
+pwsh -File scripts/ptk_init.ps1 -Uninstall
+```
+
+The installer preserves unrelated hooks and replaces only the ptk-owned entry
+when re-run. The hook takes effect at the next Claude Code session start.
+
+A command containing `PTK_DIRECT` bypasses the hook. Use that for work that
+genuinely needs the harness shell, such as interactive or TTY-dependent tools,
+or when the ptk MCP server is unavailable.
+
+## Configuration
+
+Set these in the MCP registration `env` block when defaults do not fit:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PTK_CALL_TIMEOUT_SECONDS` | `300` | Per-call limit; on timeout the call fails and the runspace is recycled (warm state lost) |
-| `PTK_IDLE_EXIT_SECONDS` | `14400` (4h) | Server exits after this long with no calls — backstop for orphaned processes |
+| `PTK_CALL_TIMEOUT_SECONDS` | `300` | Per-call limit. On timeout, the call fails and the runspace is recycled. |
+| `PTK_IDLE_EXIT_SECONDS` | `14400` | Idle self-exit backstop for orphaned servers, in seconds. |
+| `PTK_MODULE_PATH` | auto-discovered `src/PwshTokenCompressor.psd1` | Explicit module manifest to import into the runspace. If set to a missing file, shaping is disabled. |
+| `PTK_RTK_PATH` | `rtk` on `PATH` | Explicit `rtk` binary for native routing and log shaping. If set to a missing file, `rtk` is treated as absent. |
 
-Set them via the `env` block of the MCP registration if the defaults don't fit.
+## Operational Notes
 
-## Security posture
+- Calls are serialized; one runspace runs one pipeline at a time.
+- `useLocalScope: false` is intentional, so assignments and imported modules
+  persist into later calls.
+- `ptk_reset` and call timeouts create a fresh primed runspace. Warm state is
+  lost, but later calls continue working.
+- Caller cancellation tries to stop the pipeline and preserve the runspace. If
+  the pipeline does not stop within the grace period, the runspace is recycled.
+- Child native processes inherit EOF for stdin instead of the MCP JSON-RPC pipe,
+  so stdin-reading commands do not hang forever waiting on the transport.
+- No interactive prompts can be answered inside the server. Use unattended auth
+  patterns for connection-bearing modules, or run those commands outside the
+  server.
 
-The server is **not** a security boundary: `ptk_invoke` runs arbitrary
-PowerShell with the same blast radius as the shell your harness already has.
-Recommended posture: leave `ptk_invoke` on ask-per-call in Claude Code and read
-the script in the prompt — do not blanket-allow it. A declarative policy gate
-for destructive cmdlets is designed but deliberately not built; see the
-2026-07-02 continuation decision in `.agents/decisions.md`.
+## Security Posture
 
-## Behavior worth knowing
-
-- Calls are serialized — the single runspace runs one pipeline at a time.
-- A timed-out call recycles the runspace: the next call works, but variables,
-  modules, and connections are gone (re-import/reconnect).
-- No interactive prompts can be answered inside the server; anything needing
-  `Connect-*` MFA-style interaction must use an unattended pattern (e.g.
-  app-registration + certificate) or stay out of the server.
+The server is not a security boundary. `ptk_invoke` runs arbitrary PowerShell
+with the same authority as the MCP client process. A destructive-cmdlet policy
+gate is intentionally not implemented in the current code; review scripts at
+the client permission prompt instead of blanket-allowing the tool.
