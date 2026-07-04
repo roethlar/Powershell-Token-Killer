@@ -727,22 +727,26 @@ function Compress-PtcObject {
             return
         }
 
-        # Route by type name, but only when every item actually carries the
-        # properties the specialized compressor needs. Projections and Clixml
-        # round-trips (e.g. Select-Object) keep the source type name while
-        # dropping properties, so type name alone is not enough to dispatch on;
-        # and a mixed stream (e.g. FileInfo + string) must not reach a
-        # specialized compressor whose direct property access would throw under
-        # strict mode. Heterogeneous streams fall through to the generic path,
+        # Route by type name, but only when EVERY item carries a matching type
+        # name AND the properties the specialized compressor needs. Projections
+        # and Clixml round-trips (e.g. Select-Object) keep the source type name
+        # while dropping properties, so type name alone is not enough to
+        # dispatch on; and shape alone is not enough either — one genuine item
+        # must not drag look-alike shapes of other types into a specialized
+        # compressor. Heterogeneous streams fall through to the generic path,
         # whose property access is null-safe. Each guard must list every
         # property its compressor dereferences directly; a property that is
         # legitimately absent on real objects is guarded conditionally instead:
-        # DirectoryInfo has no Length, but a *file* without Length is a
+        # DirectoryInfo has no Length, but a *file* without a known Length is a
         # projection whose size is unknown, not zero, so it goes generic.
         $typeNames = @($array | ForEach-Object { $_.PSObject.TypeNames[0] } | Select-Object -Unique)
-        $matchesType = {
-            param([string]$Pattern)
-            @($typeNames | Where-Object { $_ -like $Pattern }).Count -gt 0
+        $allMatchType = {
+            param([string[]]$Pattern)
+            foreach ($typeName in $typeNames) {
+                $matched = @($Pattern | Where-Object { $typeName -like $_ }).Count -gt 0
+                if (-not $matched) { return $false }
+            }
+            $true
         }
         $allHaveProperties = {
             param([string[]]$Name)
@@ -756,27 +760,27 @@ function Compress-PtcObject {
             foreach ($item in $array) {
                 if (-not (Test-PtcHasProperty -Object $item -Name 'PSIsContainer', 'Name', 'LastWriteTime')) { return $false }
                 if (-not [bool](Get-PtcPropertyValue -Object $item -Name 'PSIsContainer') -and
-                    -not (Test-PtcHasProperty -Object $item -Name 'Length')) { return $false }
+                    $null -eq (Get-PtcPropertyValue -Object $item -Name 'Length')) { return $false }
             }
             $true
         }
 
-        if (((& $matchesType '*System.IO.DirectoryInfo*') -or (& $matchesType '*System.IO.FileInfo*')) -and
+        if ((& $allMatchType '*System.IO.DirectoryInfo*', '*System.IO.FileInfo*') -and
             (& $allFileSystemShaped)) {
             Compress-PtcFileSystem -InputObject $array -MaxItems $MaxItems
             return
         }
-        if ((& $matchesType '*Microsoft.PowerShell.Commands.MatchInfo*') -and
+        if ((& $allMatchType '*Microsoft.PowerShell.Commands.MatchInfo*') -and
             (& $allHaveProperties 'LineNumber', 'Path', 'Line')) {
             Compress-PtcMatchInfo -InputObject $array -MaxItems $MaxItems
             return
         }
-        if ((& $matchesType '*System.Diagnostics.Process*') -and
+        if ((& $allMatchType '*System.Diagnostics.Process*') -and
             (& $allHaveProperties 'Id', 'ProcessName', 'CPU', 'WorkingSet64')) {
             Compress-PtcProcess -InputObject $array -MaxItems $MaxItems
             return
         }
-        if ((& $matchesType '*ServiceController*') -and
+        if ((& $allMatchType '*ServiceController*') -and
             (& $allHaveProperties 'Status', 'Name', 'DisplayName')) {
             Compress-PtcService -InputObject $array -MaxItems $MaxItems
             return

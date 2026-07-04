@@ -349,6 +349,33 @@ Describe 'object routing robustness' {
         $result | Should -Not -Match 'cannot be found'
     }
 
+    It 'routes a file projection with a null Length value to the generic path' {
+        # A Length property whose value is null is still an unknown size, not
+        # zero — presence of the property alone must not satisfy the fs guard.
+        $projected = Get-Item -LiteralPath (Join-Path $PSScriptRoot '..' 'README.md') |
+            Select-Object PSIsContainer, Name, LastWriteTime, @{ n = 'Length'; e = { $null } }
+
+        $result = $projected | Compress-PtcObject
+
+        $result | Should -Not -Match '^fs:'
+        $result | Should -Not -Match 'cannot be found'
+    }
+
+    It 'does not let one genuine FileInfo drag fs-shaped foreign objects onto the fs route' {
+        # Shape alone is not enough either: every item must carry a filesystem
+        # type name, or a look-alike (here a process projection) would be
+        # rendered as a file.
+        $lookAlike = Get-Process -Id $PID | Select-Object `
+            @{ n = 'PSIsContainer'; e = { $false } }, Name,
+            @{ n = 'LastWriteTime'; e = { Get-Date } }, @{ n = 'Length'; e = { 5 } }
+        $mixed = @((Get-Item -LiteralPath (Join-Path $PSScriptRoot '..' 'README.md')), $lookAlike)
+
+        $result = $mixed | Compress-PtcObject
+
+        $result | Should -Not -Match '^fs:'
+        $result | Should -Match '^objects: 2'
+    }
+
     It 'routes a MatchInfo projection lacking Line to the generic path' {
         $projected = Select-String -Path (Join-Path $PSScriptRoot '..' 'README.md') -Pattern 'PowerShell' |
             Select-Object LineNumber, Path
