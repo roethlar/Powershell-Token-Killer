@@ -21,9 +21,16 @@ builder.Services.AddHostedService(sp => new PtkMcpServer.IdleWatchdog(
     idleExit,
     () => sp.GetRequiredService<PtkMcpServer.RunspaceHost>().LastActivityUtc,
     () => sp.GetRequiredService<IHostApplicationLifetime>().StopApplication()));
+// Capture the transport streams BEFORE detaching stdin: the streams wrap the
+// original handles, so the JSON-RPC channel keeps working while every child
+// process spawned from the warm runspace inherits NUL/EOF instead of the live
+// pipe (see ChildStdinGuard).
+var mcpIn = Console.OpenStandardInput();
+var mcpOut = Console.OpenStandardOutput();
+PtkMcpServer.ChildStdinGuard.DetachChildStdin();
 builder.Services
     .AddMcpServer()
-    .WithStdioServerTransport()
+    .WithStreamServerTransport(mcpIn, mcpOut)
     .WithToolsFromAssembly();
 
 await builder.Build().RunAsync();
