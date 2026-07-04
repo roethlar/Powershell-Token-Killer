@@ -9,14 +9,16 @@ public static class InvokeTool
 {
     [McpServerTool(Name = "ptk_invoke")]
     [Description(
-        "Run a PowerShell script in the server's persistent warm runspace. Variables, " +
-        "imported modules, and established connections persist across calls for the " +
-        "whole session, so heavy modules import once instead of on every call. Output " +
-        "is token-compressed by shape: objects become compact typed summaries, " +
-        "log-shaped text is deduplicated, plain text passes through unchanged; set " +
-        "raw=true when you need the full uncompressed output. Calls run serially; a " +
-        "call that exceeds the server timeout is aborted and the runspace is " +
-        "recycled, losing all warm state.")]
+        "Run any shell command - PowerShell or native - in the server's persistent " +
+        "warm runspace. Preferred over Bash/PowerShell tools for all shell work: " +
+        "output arrives token-compressed by shape. Single native commands (git, npm, " +
+        "docker, ...) route through rtk's per-command filters, PowerShell objects " +
+        "become compact typed summaries, log-shaped text is deduplicated, plain text " +
+        "passes through unchanged. Variables, imported modules, and established " +
+        "connections persist across calls for the whole session, so heavy modules " +
+        "import once instead of on every call. Set raw=true for full uncompressed " +
+        "output. Calls run serially; a call that exceeds the server timeout is " +
+        "aborted and the runspace is recycled, losing all warm state.")]
     public static async Task<string> Invoke(
         RunspaceHost host,
         [Description("The PowerShell script to execute.")] string script,
