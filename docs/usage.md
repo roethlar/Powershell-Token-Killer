@@ -7,8 +7,9 @@ server, see [../server/README.md](../server/README.md).
 
 - PowerShell 7.2 or newer for the module manifest.
 - Pester when running the PowerShell test suite.
-- Optional: `rtk` on `PATH`, or `PTK_RTK_PATH` pointing at an `rtk` binary, for
-  log-shaped text compression and MCP native-command routing.
+- Optional: [rtk](https://github.com/rtk-ai/rtk) on `PATH`, or `PTK_RTK_PATH`
+  pointing at an `rtk` binary, for log-shaped text compression and MCP
+  native-command routing.
 
 ## Loading
 
@@ -52,7 +53,7 @@ The repo launcher imports the module for a single call:
 | `ptk ps [name]` | `process` | Runs `Get-Process` and compresses process objects. |
 | `ptk service [name]` | `services`, `svc` | Runs `Get-Service` and compresses service objects. |
 | `ptk run { ... }` | `exec` | Runs a scriptblock in the current PowerShell process and compresses the result. |
-| `ptk run "<command>"` | `exec` | Runs a command string in a fresh `pwsh -NoProfile -NonInteractive` child, imports CLIXML output, and compresses it. |
+| `ptk run "<command>"` | `exec` | Runs a command string in a fresh `pwsh -NoProfile -NonInteractive` child, imports CLIXML output, and compresses it. Nonzero exit codes are appended as `[exit] N`. The string form hands the result file over via a process-wide env var, so do not run two string-form calls concurrently in one process. |
 | `<objects> | ptk compress` | `object` | Compresses pipeline input directly. Supports `-MaxItems`. |
 
 ## Read Levels

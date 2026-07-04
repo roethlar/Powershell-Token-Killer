@@ -71,7 +71,14 @@ Check with `claude mcp list`; remove with `claude mcp remove ptk`.
 
 By default, `ptk_invoke` executes with `route=auto` and `raw=false`.
 
-Routing:
+Routing rewrites eligible native commands through
+[rtk](https://github.com/rtk-ai/rtk), an external CLI whose per-command
+filters compress the output of common tools (`git`, `npm`, `docker`, ...) at
+the source and pass through commands it does not recognize. The rewrite
+(`<cmd>` becomes `& '<rtk>' <cmd>`) executes inside the warm runspace, so the
+runspace's current directory and environment still apply.
+
+Routing rules:
 
 - A script that is exactly one bare native application command with constant
   arguments, such as `git status --short`, is rewritten through `rtk` when
