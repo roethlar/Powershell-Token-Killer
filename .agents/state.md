@@ -5,6 +5,26 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **2026-07-04 (late): RELEASE-DISTRIBUTION PLAN DRAFTED — awaiting owner
+  approval.** `.agents/plans/release-distribution.md` (commit 7494edf, the
+  only UNPUSHED commit; push needs owner go). Owner set a first public
+  release target of **2026-07-25**: prebuilt self-contained per-RID binaries
+  on GitHub Releases + `install.ps1`/`install.sh` one-liners (tier 3);
+  publish-and-register script and .NET-tool packaging are dev-only. Decision
+  amendment recorded in `.agents/decisions.md` (continuation entry). Resume
+  point: get owner approval + the scoped push go (`ci/*` branch, rc
+  pre-release tags) + answers to the plan's four open questions
+  (recommendations inline; owner silence = recommendations stand), then run
+  slice 0 (local publish probe, handshake `-ServerCommand` mode, CI runner
+  probe). No code before approval.
+- **2026-07-04 (earlier): docs pass PUSHED through a43897a.** README now
+  leads with the MCP server as the primary use and documents rtk routing
+  (four shaping legs, install-rtk encouragement, credits); server/README
+  introduces rtk with the in-runspace rewrite detail; usage.md documents the
+  `[exit] N` and PTC_TEMP-concurrency facts of `Invoke-PtcRun`. App name
+  corrected everywhere: **PowerShell Token Killer** (`ptk`), named after
+  rtk (Rust Token Killer); `PwshTokenCompressor` is only the module's
+  on-disk name (repo-guidance mission line aligned).
 - **UNIFIED SHELL ROUTING: BUILT 2026-07-04** — all five slices of the
   approved plan are committed and verified, each through the codex review
   loop (details in the plan and the commit messages):
@@ -44,10 +64,13 @@ short and update it when important repo facts change.
     start), then run the live hooked check: a Bash and a PowerShell tool
     call should come back denied with ptk guidance and the model should
     re-issue via ptk_invoke; start the friction log the amended go/no-go
-    needs. (b) 28 local commits are unpushed (origin/master..HEAD, through
-    this handoff commit); push needs owner go. (c) `/mcp` restart to respawn
-    the live server on the final build (the last live instance was killed
-    for the final rebuild).
+    needs. (b) ~~28 local commits unpushed~~ RESOLVED 2026-07-04: owner
+    pushed everything through a43897a; only the plan commit 7494edf remains
+    unpushed (see the release-plan entry above). (c) `/mcp` restart to
+    respawn the live server on the final build (the last live instance was
+    killed for the final rebuild) — not verifiable from the 2026-07-04 docs
+    session; check whether it happened before reading a quiet ptk day as
+    non-adoption.
   - Process notes for the record: two review-fix tests rode along in
     earlier commits instead of their own (5202756 carried the shim-test
     skip; 58990b1 carried the shared-entry test) — content correct, history
@@ -104,8 +127,8 @@ short and update it when important repo facts change.
 - NOTE (2026-07-04): the live ptk MCP server was killed again this session to
   unblock `dotnet test` (PID 7696 held the exe lock — same precedented
   recovery); the owner needs an `/mcp` restart to respawn it on the current
-  build. Local commits through efe94c1 are UNPUSHED; push needs owner go per
-  `.agents/push-policy.md`.
+  build. ~~Local commits through efe94c1 UNPUSHED~~ RESOLVED: owner pushed
+  through a43897a on 2026-07-04.
 - Owner pushed the day's work (a0a4819..4f943ea, including Phase 2) to origin on
   2026-07-03; only docs commits after 4f943ea may be local. On the push, the remote
   reported the repo MOVED to `AlsoBeltrix/PowerShell-Token-Killer` (capital S — the
@@ -243,18 +266,8 @@ short and update it when important repo facts change.
 
 ## Next
 
-- **NEW (2026-07-04): release-distribution plan DRAFTED, awaiting owner
-  approval** — `.agents/plans/release-distribution.md`. Owner set a first
-  public release target of 2026-07-25: prebuilt per-platform binaries on
-  GitHub Releases + one-line installers; publish-script and .NET-tool paths
-  are dev-only (decision amendment recorded in `.agents/decisions.md`). Four
-  open questions (RID set, version, hook default, install roots) carry
-  recommendations in the plan; execution also needs the owner's scoped push
-  go for CI iteration (`ci/*` branch + rc pre-release tags). First action on
-  approval: slice 0 (publish probe + handshake `-ServerCommand` mode + CI
-  runner probe). Docs pass earlier the same day: README now leads with the
-  MCP server and rtk routing; app name corrected to PowerShell Token Killer
-  (all pushed through a43897a).
+- Release-distribution plan: see the top entry in Now — approval, scoped push
+  go, and the four open questions are the resume actions; then slice 0.
 - ~~Execute unified-shell-routing slices~~ DONE 2026-07-04 (see Now). Next
   actions are the OWNER items in the routing entry: install the hook
   (`scripts/ptk_init.ps1 -Global`), run the live hooked check in a fresh
