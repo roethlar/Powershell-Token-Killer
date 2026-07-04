@@ -1,6 +1,7 @@
 # Plan: Fix the verified findings from the 2026-07-03 round-2 review
 
-**Status:** Draft — awaiting owner approval.
+**Status:** Approved by owner 2026-07-03 (in-session go on the three-slice scope,
+with a codex review loop after each slice).
 **Decision basis:** A second external review (of a8d3d02..HEAD, the round-1 review
 fixes) surfaced two findings; a 2026-07-03 verification session confirmed both
 against the code. Both are defects in already-shipped, owner-approved work (round-1
