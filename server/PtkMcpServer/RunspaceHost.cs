@@ -40,6 +40,7 @@ public sealed class RunspaceHost : IDisposable
 {
     private readonly SemaphoreSlim _gate = new(1, 1);
     private readonly TimeSpan _callTimeout;
+    private readonly TimeSpan _maxCallTimeout;
     private readonly string? _modulePath;
     private Runspace _runspace;
     private bool _disposed;
@@ -58,9 +59,12 @@ public sealed class RunspaceHost : IDisposable
     /// warm runspace; false disables output shaping (calls fall back to Out-String).</summary>
     public bool ModuleLoaded { get; private set; }
 
-    public RunspaceHost(TimeSpan? callTimeout = null, string? modulePathOverride = null)
+    public RunspaceHost(TimeSpan? callTimeout = null, string? modulePathOverride = null, TimeSpan? maxCallTimeout = null)
     {
         _callTimeout = callTimeout ?? TimeSpan.FromSeconds(300);
+        // Caps only the per-call timeoutSeconds override; an env-configured
+        // default is the owner's own setting and is not second-guessed.
+        _maxCallTimeout = maxCallTimeout ?? TimeSpan.FromSeconds(3600);
         _modulePath = modulePathOverride ?? ResolveModulePath();
         if (_modulePath is null)
         {
@@ -309,9 +313,12 @@ public sealed class RunspaceHost : IDisposable
         catch { return script; }
     }
 
-    public async Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default, string route = "auto")
+    public async Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default, string route = "auto", int timeoutSeconds = 0)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        var callTimeout = timeoutSeconds > 0
+            ? TimeSpan.FromSeconds(Math.Min(timeoutSeconds, _maxCallTimeout.TotalSeconds))
+            : _callTimeout;
         LastActivityUtc = DateTimeOffset.UtcNow;
         await _gate.WaitAsync(cancellationToken);
         var ps = PowerShell.Create();
@@ -336,7 +343,7 @@ public sealed class RunspaceHost : IDisposable
               .AddCommand(ModuleLoaded && !raw ? "Compress-PtcOutput" : "Out-String");
 
             var invokeTask = ps.InvokeAsync();
-            var delayTask = Task.Delay(_callTimeout, cancellationToken);
+            var delayTask = Task.Delay(callTimeout, cancellationToken);
             var finished = await Task.WhenAny(invokeTask, delayTask);
 
             if (finished != invokeTask)
@@ -369,10 +376,15 @@ public sealed class RunspaceHost : IDisposable
 
                 handedOff = true;
                 AbandonAndRecycle(ps, invokeTask);
+                // Teach the recovery paths at the moment of failure — the one
+                // place a model reliably reads documentation (design P4). The
+                // two paths differ by workload, so name both.
                 return new InvokeResult(
                     Success: false,
                     Output: string.Empty,
-                    Errors: [$"Call exceeded the {_callTimeout.TotalSeconds:0}s timeout; the runspace was recycled and all warm state was lost."],
+                    Errors: [$"Call exceeded the {callTimeout.TotalSeconds:0}s timeout; the runspace was recycled and all warm state was lost. " +
+                        "For stateless long work (builds, watchers), rerun with background=true and poll with ptk_job. " +
+                        "For work that needs the warm session (live connections, imported modules), rerun with a larger timeoutSeconds."],
                     Warnings: [],
                     TimedOut: true);
             }
@@ -407,6 +419,44 @@ public sealed class RunspaceHost : IDisposable
             if (!handedOff) ps.Dispose();
             _gate.Release();
         }
+    }
+
+    /// <summary>Runs a text chunk through the module's shaping pipeline in the warm
+    /// runspace (ptk_job output polls). The text enters as pipeline INPUT, never as
+    /// script, so job output cannot inject code. Falls back to the raw text on any
+    /// failure — shaping must never fail a poll.</summary>
+    public async Task<string> ShapeTextAsync(string text, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (!ModuleLoaded || text.Length == 0) return text;
+        LastActivityUtc = DateTimeOffset.UtcNow;
+        await _gate.WaitAsync(cancellationToken);
+        try
+        {
+            using var ps = PowerShell.Create();
+            ps.Runspace = _runspace;
+            ps.AddCommand("Compress-PtcOutput");
+            var results = await Task.Run(() => ps.Invoke(new object[] { text }), cancellationToken);
+            return string.Concat(results.Select(r => r?.ToString()));
+        }
+        catch { return text; }
+        finally
+        {
+            _gate.Release();
+        }
+    }
+
+    /// <summary>Current directory of the warm session (background jobs start
+    /// there); null when the probe fails.</summary>
+    public async Task<string?> TryGetCurrentLocationAsync(CancellationToken cancellationToken = default)
+    {
+        try
+        {
+            var result = await InvokeAsync("(Get-Location).Path", raw: true, cancellationToken: cancellationToken);
+            var path = result.Output.Trim();
+            return result.Success && path.Length > 0 && Directory.Exists(path) ? path : null;
+        }
+        catch { return null; }
     }
 
     /// <summary>Discard all warm state and start a fresh runspace. Caller-facing

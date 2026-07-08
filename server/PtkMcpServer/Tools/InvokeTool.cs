@@ -22,6 +22,7 @@ public static class InvokeTool
         "aborted and the runspace is recycled, losing all warm state.")]
     public static async Task<string> Invoke(
         RunspaceHost host,
+        JobManager jobs,
         [Description("The command to execute: a PowerShell script or a native command line (git, npm, ...).")] string script,
         CancellationToken cancellationToken,
         [Description("Skip output compression and return plain formatted text.")] bool raw = false,
@@ -29,15 +30,43 @@ public static class InvokeTool
             "Routing override: 'auto' (default) runs a single native command " +
             "through rtk's filters; 'pwsh' forces plain execution in the warm " +
             "runspace; 'rtk' forces the rtk rewrite when the script shape allows it.")]
-        string route = "auto")
+        string route = "auto",
+        [Description(
+            "Run the script as a background job in a separate cold pwsh process and " +
+            "return a job id immediately. Use for long stateless work (builds, " +
+            "watchers, deploys) that could exceed the call timeout. The job does NOT " +
+            "see warm session state (variables, modules, connections); poll it with " +
+            "ptk_job.")]
+        bool background = false,
+        [Description(
+            "Per-call timeout override in seconds, capped by the server maximum. Use " +
+            "for long work that NEEDS the warm session (live connections, imported " +
+            "modules); stateless long work should use background=true instead.")]
+        int timeoutSeconds = 0)
     {
+        if (background)
+        {
+            try
+            {
+                var cwd = await host.TryGetCurrentLocationAsync(cancellationToken);
+                var job = jobs.Start(script, cwd);
+                return $"[job {job.Id} started] pid {job.Pid}, cold process (no warm session state), log: {job.OutputPath}\n" +
+                       $"Poll with ptk_job action=output id={job.Id} (then pass the returned next offset); " +
+                       $"ptk_job action=status id={job.Id} for exit state.";
+            }
+            catch (Exception ex)
+            {
+                return $"[job start failed] {ex.Message}";
+            }
+        }
+
         route = route?.ToLowerInvariant() switch
         {
             "pwsh" => "pwsh",
             "rtk" => "rtk",
             _ => "auto",
         };
-        var result = await host.InvokeAsync(script, raw, cancellationToken, route);
+        var result = await host.InvokeAsync(script, raw, cancellationToken, route, timeoutSeconds);
 
         var sb = new StringBuilder();
         var output = result.Output.TrimEnd();

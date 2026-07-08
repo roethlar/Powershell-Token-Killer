@@ -61,13 +61,19 @@ Per-call escape hatches: `raw=true` returns full uncompressed output executed
 exactly as written; `route=pwsh` forces plain PowerShell execution;
 `route=rtk` forces the rtk rewrite when the script shape allows it.
 
+Long work has two paths, by workload: `background=true` runs the script as a
+cold background job polled through `ptk_job` (builds, watchers — anything
+stateless that could exceed the call timeout), while `timeoutSeconds` raises
+the per-call limit for long work that needs the warm session itself.
+
 ## Server Tools
 
 | Tool | Purpose |
 | --- | --- |
 | `ptk_invoke` | Run a PowerShell script or native command line in the warm runspace. |
-| `ptk_state` | Session introspection and health check: engine, uptime, cwd, loaded modules, and drift (env/PATH/variable changes since server start). |
-| `ptk_reset` | Recycle the runspace to factory state, restoring the server-start environment. |
+| `ptk_job` | Poll, read (shaped), or kill background jobs started with `background=true`. |
+| `ptk_state` | Session introspection and health check: engine, uptime, cwd, loaded modules, jobs, and drift (env/PATH/variable changes since server start). |
+| `ptk_reset` | Recycle the runspace to factory state: server-start environment restored, background jobs killed. |
 
 ## Setup
 

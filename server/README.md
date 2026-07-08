@@ -59,7 +59,8 @@ Check with `claude mcp list`; remove with `claude mcp remove ptk`.
 
 | Tool | Arguments | Purpose |
 | --- | --- | --- |
-| `ptk_invoke` | `script`, optional `raw`, optional `route` | Run a PowerShell script or native command line in the warm runspace. |
+| `ptk_invoke` | `script`, optional `raw`, `route`, `background`, `timeoutSeconds` | Run a PowerShell script or native command line in the warm runspace; `background: true` starts it as a cold background job instead, `timeoutSeconds` overrides the per-call timeout (capped by the server maximum). |
+| `ptk_job` | `action` (`status`/`output`/`kill`/`list`), `id`, `offset` | Manage background jobs: `output` returns new output since `offset`, shaped and bounded, ending with the next offset to pass; the complete raw log path is in `status`. |
 | `ptk_state` | optional `listAvailable` | Session introspection and health check: engine, server PID/uptime, cwd, loaded modules, and drift — env vars changed since server start, PATH as an entry diff, variable count. With `listAvailable: true`, also enumerate installed modules once and cache the result. |
 | `ptk_reset` | none | Recycle the runspace to factory state: discards variables, loaded modules, current directory, default parameters, and connections, and restores environment variables to their server-start values. |
 
@@ -105,6 +106,24 @@ Overrides:
 - `route=rtk` forces the `rtk` rewrite when the script has the safe
   single-command shape.
 
+Long-running work (two paths, by workload):
+
+- `background=true` starts the script as a **cold child `pwsh` process** and
+  returns a job id immediately. The job does not see warm session state; it
+  starts in the session's current directory and writes all output to a log
+  under `~/.ptk/jobs/`. Poll with `ptk_job action=output` (pass the returned
+  next offset each time); output polls are shaped and bounded like foreground
+  output, and the complete raw log path is in `action=status`. Use this for
+  builds, watchers, deploys — stateless work that could exceed the call
+  timeout.
+- `timeoutSeconds` raises the per-call timeout (capped by
+  `PTK_MAX_CALL_TIMEOUT_SECONDS`) for long work that **needs** the warm
+  session — live connections, imported modules. A background job would
+  forfeit exactly that state.
+- Background jobs are killed by `ptk_reset` and at graceful server shutdown.
+  A hard-killed server can leave a running job orphaned (it finishes on its
+  own); job logs older than seven days are swept at server start.
+
 ## Claude Code Hook
 
 `scripts/ptk_init.ps1` installs a Claude Code `PreToolUse` hook that redirects
@@ -132,7 +151,8 @@ Set these in the MCP registration `env` block when defaults do not fit:
 
 | Variable | Default | Meaning |
 | --- | --- | --- |
-| `PTK_CALL_TIMEOUT_SECONDS` | `300` | Per-call limit. On timeout, the call fails and the runspace is recycled. |
+| `PTK_CALL_TIMEOUT_SECONDS` | `300` | Default per-call limit. On timeout, the call fails and the runspace is recycled. |
+| `PTK_MAX_CALL_TIMEOUT_SECONDS` | `3600` | Cap on the per-call `timeoutSeconds` override. |
 | `PTK_IDLE_EXIT_SECONDS` | `14400` | Idle self-exit backstop for orphaned servers, in seconds. |
 | `PTK_MODULE_PATH` | auto-discovered `src/PwshTokenCompressor.psd1` | Explicit module manifest to import into the runspace. If set to a missing file, shaping is disabled. |
 | `PTK_RTK_PATH` | `rtk` on `PATH` | Explicit `rtk` binary for native routing and log shaping. If set to a missing file, `rtk` is treated as absent. |

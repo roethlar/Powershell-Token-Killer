@@ -15,8 +15,16 @@ var idleExit = TimeSpan.FromSeconds(
     double.TryParse(Environment.GetEnvironmentVariable("PTK_IDLE_EXIT_SECONDS"), out var i) && i > 0
         ? i
         : 14400); // 4h backstop for orphaned servers; Claude Code normally kills the child itself.
+var maxCallTimeout = TimeSpan.FromSeconds(
+    double.TryParse(Environment.GetEnvironmentVariable("PTK_MAX_CALL_TIMEOUT_SECONDS"), out var m) && m > 0
+        ? m
+        : 3600); // caps the per-call timeoutSeconds override on ptk_invoke
 
-builder.Services.AddSingleton(new PtkMcpServer.RunspaceHost(callTimeout));
+builder.Services.AddSingleton(new PtkMcpServer.RunspaceHost(callTimeout, maxCallTimeout: maxCallTimeout));
+// Factory registration so the container disposes it on graceful shutdown,
+// killing running jobs. A hard-killed server can leave jobs orphaned - the
+// trade-off of process-based jobs, documented in server/README.md.
+builder.Services.AddSingleton(_ => new PtkMcpServer.JobManager());
 builder.Services.AddHostedService(sp => new PtkMcpServer.IdleWatchdog(
     idleExit,
     () => sp.GetRequiredService<PtkMcpServer.RunspaceHost>().LastActivityUtc,

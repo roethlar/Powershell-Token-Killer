@@ -13,14 +13,16 @@ public static class StateTool
     [McpServerTool(Name = "ptk_state")]
     [Description(
         "Session introspection and health check for the ptk warm runspace: engine, " +
-        "server PID and uptime, current directory, loaded modules, and DRIFT - what " +
-        "this session has changed since server start (environment variables, PATH as " +
-        "an entry diff, session variable count). Use it to diagnose a polluted " +
-        "session (e.g. a test shim left on PATH) before it corrupts results; " +
-        "ptk_reset restores factory state. Set listAvailable to also enumerate " +
-        "installed modules - slow the first time, cached for the rest of the session.")]
+        "server PID and uptime, current directory, loaded modules, running " +
+        "background jobs, and DRIFT - what this session has changed since server " +
+        "start (environment variables, PATH as an entry diff, session variable " +
+        "count). Use it to diagnose a polluted session (e.g. a test shim left on " +
+        "PATH) before it corrupts results; ptk_reset restores factory state. Set " +
+        "listAvailable to also enumerate installed modules - slow the first time, " +
+        "cached for the rest of the session.")]
     public static async Task<string> State(
         RunspaceHost host,
+        JobManager jobs,
         [Description("Also enumerate every installed module instead of only loaded ones.")]
         bool listAvailable = false,
         CancellationToken cancellationToken = default)
@@ -49,6 +51,20 @@ public static class StateTool
         {
             sb.AppendLine("[state probe errors]");
             foreach (var error in result.Errors) sb.AppendLine(error);
+        }
+
+        var allJobs = jobs.List();
+        if (allJobs.Length == 0)
+        {
+            sb.AppendLine("jobs: (none)");
+        }
+        else
+        {
+            sb.AppendLine("jobs:");
+            foreach (var job in allJobs)
+            {
+                sb.AppendLine($"  job {job.Id}: {(job.Running ? $"running (pid {job.Pid})" : $"exited {job.ExitCode}")}");
+            }
         }
 
         var drift = host.GetEnvironmentDrift();
