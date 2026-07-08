@@ -424,24 +424,47 @@ public sealed class RunspaceHost : IDisposable
     /// <summary>Runs a text chunk through the module's shaping pipeline in the warm
     /// runspace (ptk_job output polls). The text enters as pipeline INPUT, never as
     /// script, so job output cannot inject code. Falls back to the raw text on any
-    /// failure — shaping must never fail a poll.</summary>
+    /// failure — shaping must never fail a poll — and a shaping call that wedges
+    /// (e.g. a hung rtk child on the log leg) is timed out and the runspace
+    /// recycled, exactly like a timed-out foreground call: a poll must never hold
+    /// the gate forever.</summary>
     public async Task<string> ShapeTextAsync(string text, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!ModuleLoaded || text.Length == 0) return text;
         LastActivityUtc = DateTimeOffset.UtcNow;
         await _gate.WaitAsync(cancellationToken);
+        var ps = PowerShell.Create();
+        var handedOff = false;
         try
         {
-            using var ps = PowerShell.Create();
             ps.Runspace = _runspace;
             ps.AddCommand("Compress-PtcOutput");
-            var results = await Task.Run(() => ps.Invoke(new object[] { text }), cancellationToken);
+            var input = new PSDataCollection<object> { text };
+            input.Complete();
+
+            var invokeTask = ps.InvokeAsync(input);
+            var delayTask = Task.Delay(_callTimeout, cancellationToken);
+            var finished = await Task.WhenAny(invokeTask, delayTask);
+            if (finished != invokeTask)
+            {
+                if (delayTask.IsCanceled && await TryStopPipelineAsync(ps, invokeTask))
+                {
+                    return text;
+                }
+                handedOff = true;
+                AbandonAndRecycle(ps, invokeTask);
+                return text + Environment.NewLine +
+                    "[ptk: shaping timed out; the runspace was recycled; raw text returned]";
+            }
+
+            var results = await invokeTask;
             return string.Concat(results.Select(r => r?.ToString()));
         }
         catch { return text; }
         finally
         {
+            if (!handedOff) ps.Dispose();
             _gate.Release();
         }
     }

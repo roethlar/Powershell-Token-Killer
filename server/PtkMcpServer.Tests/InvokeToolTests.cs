@@ -240,6 +240,38 @@ public sealed class InvokeToolTests : IDisposable
     }
 
     [Fact]
+    public async Task A_wedged_shaping_call_cannot_hold_the_gate_forever()
+    {
+        using var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(2));
+        // A .ps1 rtk stub runs IN the warm runspace, so its sleep wedges the
+        // shaping pipeline exactly like a hung rtk child would.
+        var dir = Directory.CreateTempSubdirectory("ptk-wedge-stub-");
+        var stub = Path.Combine(dir.FullName, "rtk-sleep.ps1");
+        File.WriteAllText(stub, "param($verb, $path) Start-Sleep -Seconds 120");
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            var logShaped = string.Join('\n', Enumerable.Range(1, 8)
+                .Select(i => $"2026-07-08 10:00:0{i % 10} INFO worker: step {i}"));
+
+            var shaped = await host.ShapeTextAsync(logShaped);
+
+            Assert.Contains("step 1", shaped);
+            Assert.Contains("shaping timed out", shaped);
+
+            var after = await host.InvokeAsync("1 + 1");
+            Assert.True(after.Success);
+            Assert.Contains("2", after.Output);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Background_starts_a_job_and_its_output_is_pollable()
     {
         var text = await InvokeTool.Invoke(
