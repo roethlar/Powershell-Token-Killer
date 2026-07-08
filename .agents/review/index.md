@@ -84,6 +84,25 @@ unpushed pending the owner's master push go.
 
 ---
 
+Loop run 2026-07-08 (greenfield design plan) — reviewer: codex (Codex
+v0.143.0, gpt-5.5, read-only), scope: the owner-requested greenfield design
+document `.agents/plans/greenfield-design.md` at `991a79d` (docs-only; the
+plan text is the artifact — no guard proofs, per the plan-review precedent
+above). Fixes committed directly to `master`, one finding per commit, per
+the recorded precedent. All four findings ADMITTED at triage (gfd-4 had
+also been self-caught before the verdict arrived).
+
+## Findings (greenfield-design loop)
+
+| ID    | Severity | Impact (one line)                                                        | Status | Branch |
+|-------|----------|---------------------------------------------------------------------------|--------|--------|
+| gfd-1 | MEDIUM   | Teach-at-timeout text sent warm-state workloads to cold background jobs   | `[x]`  | master (direct, e06733a) |
+| gfd-2 | MEDIUM   | ptk_state contract impossible: "no arguments" yet keeps listAvailable     | `[x]`  | master (direct, 24e5266) |
+| gfd-3 | MEDIUM   | 5.1 exclusion leaned on the untested PS7 implicit-remoting route as settled | `[x]`  | master (direct, 8963439) |
+| gfd-4 | LOW      | ANSI/log-shape mechanism overstated (only the timestamp regex is anchored) | `[x]`  | master (direct, f4f6c3c) |
+
+---
+
 Loop run 2026-07-08 (slice 2) — reviewer: codex (codex-cli 0.142.5), scope:
 release-plan slice 2, reviewed at the `ci/slice-2` branch SHAs `831bcc3`
 (ci.yml, three-OS matrix) and `30f283d` (Windows execution-policy fix +
