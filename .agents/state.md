@@ -45,10 +45,15 @@ short and update it when important repo facts change.
   `0.2.0-dev.g9ec73fe`): ARP entry present and `winget list` surfaces it
   (`ARP\User\X64\ptk`), user-scope registration live. NOT verified:
   `-Uninstall` round-trip and the elevated/running-server refusals.
-  Notes: `claude mcp list` flags ptk defined in BOTH user scope (installed
+  Notes: `claude mcp list` flagged ptk defined in BOTH user scope (installed
   exe) and project scope (`.mcp.json` dotnet run) with different endpoints —
-  both servers were live; owner call whether to drop one. Both instances were
-  killed to unblock `dotnet test` (precedented exe lock); `/mcp` respawns.
+  both servers were live. RESOLVED 2026-07-08: owner removed the
+  project-scope registration and the emptied `.mcp.json` is committed; the
+  installed user-scope binary is the endpoint, and a checkout needs
+  `scripts/dev-install.ps1` to get a server (the Mac has no install after
+  the slice-1 round-trip test). Both instances were killed to unblock
+  `dotnet test` (precedented exe lock); `/mcp` respawned on the installed
+  binary.
 - **2026-07-08: ptk MCP server live-use feedback recorded.**
   After ~10 calls in a real session, the owner reported the MCP server was the
   right tool and that warm runspace/state persistence is the standout feature,
