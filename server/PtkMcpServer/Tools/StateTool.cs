@@ -94,15 +94,17 @@ public static class StateTool
                         "ForEach-Object { '  {0} {1}' -f $_.Name, $_.Version }",
                         raw: true, // this tool formats its own lines; never shape them
                         cancellationToken: cancellationToken);
-                    // Cache only a successful probe: a failed/canceled enumeration
-                    // must not masquerade as "(none)" for the rest of the process.
-                    if (available.Success)
+                    // Cache only a clean probe: a failed/canceled enumeration must
+                    // not masquerade as "(none)", and Success=true still carries
+                    // non-terminating errors (a poisoned Get-Module can Write-Error
+                    // and emit fake data), so both must be clear before caching.
+                    if (available.Success && available.Errors.Length == 0)
                     {
                         _availableCache = available.Output.TrimEnd();
                     }
                     else
                     {
-                        sb.AppendLine("modules available: probe failed (not cached)");
+                        sb.AppendLine("modules available: probe reported errors (not cached)");
                         foreach (var error in available.Errors) sb.AppendLine("  " + error);
                     }
                 }
