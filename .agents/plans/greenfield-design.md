@@ -239,8 +239,14 @@ scheduled.
   posture; revisit only under real blanket-allow pressure.
 - **A PowerShell 5.1 substrate** — the decom horizon (recorded 2026-07-03:
   on-prem Exchange gone in 6–12 months, then the estate is 7-native) caps
-  its value below its cost. On-prem work in the meantime rides implicit
-  remoting held inside the warm session (the slice-7 check).
+  its value below its cost. On-prem work in the meantime is ASSUMED to
+  ride implicit remoting held inside the warm session — a route the repo
+  records as unofficial on PS7 and untested in this environment (the
+  single most valuable slice-7 check). If that check fails, this design
+  leaves the remaining on-prem window uncovered inside ptk; the fallback
+  is the hook's `PTK_DIRECT` escape to the harness shell for EMS work,
+  not a 5.1 substrate — the horizon still caps that build — but the owner
+  makes that call on the slice-7 result, not on this plan's assumption.
 - **Runspace pools / parallel foreground calls** — serialization is a
   correctness feature until real usage proves a parallel need.
 - **The ollama/local-model shaping leg** — dropped by owner decision;
