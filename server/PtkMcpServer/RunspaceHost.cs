@@ -16,6 +16,19 @@ public sealed record InvokeResult(
     bool TimedOut,
     int? ExitCode = null);
 
+/// <summary>What the session has changed in the process environment since the
+/// post-priming baseline. PATH is additionally reported as an entry-level diff
+/// because prepended tool shims are the recorded warm-state hazard.</summary>
+public sealed record EnvironmentDrift(
+    string[] Added,
+    string[] Modified,
+    string[] Removed,
+    string[] PathEntriesAdded,
+    string[] PathEntriesRemoved)
+{
+    public bool IsEmpty => Added.Length == 0 && Modified.Length == 0 && Removed.Length == 0;
+}
+
 /// <summary>
 /// Owns the single long-lived PowerShell runspace. Calls are serialized (a runspace
 /// runs one pipeline at a time); a call that exceeds the timeout gets its pipeline
@@ -34,6 +47,13 @@ public sealed class RunspaceHost : IDisposable
     /// <summary>Timestamp of the most recent invoke/reset; read by the idle watchdog.</summary>
     public DateTimeOffset LastActivityUtc { get; private set; } = DateTimeOffset.UtcNow;
 
+    /// <summary>UTC time this host was constructed; ptk_state reports uptime from it.</summary>
+    public DateTimeOffset StartedUtc { get; } = DateTimeOffset.UtcNow;
+
+    /// <summary>Session-variable count right after the current runspace was primed;
+    /// ptk_state reports the current count against it. -1 when the probe failed.</summary>
+    public int BaselineVariableCount { get; private set; }
+
     /// <summary>True when the PwshTokenCompressor module is imported into the current
     /// warm runspace; false disables output shaping (calls fall back to Out-String).</summary>
     public bool ModuleLoaded { get; private set; }
@@ -48,6 +68,90 @@ public sealed class RunspaceHost : IDisposable
                 "ptk: PwshTokenCompressor module not found (set PTK_MODULE_PATH); output shaping disabled, calls return plain Out-String text.");
         }
         _runspace = CreatePrimedRunspace();
+        // Environment variables are process-wide, not runspace state, and engine
+        // startup/priming legitimately touches some (e.g. PSModulePath) — so the
+        // drift baseline is captured AFTER the first primed runspace exists;
+        // drift then shows only what session calls changed.
+        _envBaseline = SnapshotEnvironment();
+    }
+
+    // Windows env-var names are case-insensitive; Unix names are not. The same
+    // comparer serves the PATH entry diff (paths follow the same platform rule).
+    private static readonly StringComparer EnvNameComparer =
+        OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal;
+
+    private readonly Dictionary<string, string> _envBaseline;
+
+    private static Dictionary<string, string> SnapshotEnvironment()
+    {
+        var snapshot = new Dictionary<string, string>(EnvNameComparer);
+        foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            if (entry.Key is string name) snapshot[name] = entry.Value as string ?? string.Empty;
+        }
+        return snapshot;
+    }
+
+    /// <summary>Computes what the session has changed in the process environment
+    /// since the post-priming baseline (names only, plus a PATH entry diff).</summary>
+    public EnvironmentDrift GetEnvironmentDrift()
+    {
+        var current = SnapshotEnvironment();
+        var added = new List<string>();
+        var modified = new List<string>();
+        foreach (var (name, value) in current)
+        {
+            if (!_envBaseline.TryGetValue(name, out var baselineValue)) added.Add(name);
+            else if (!string.Equals(value, baselineValue, StringComparison.Ordinal)) modified.Add(name);
+        }
+        var removed = _envBaseline.Keys.Where(name => !current.ContainsKey(name)).ToList();
+
+        string[] pathAdded = [], pathRemoved = [];
+        var baselinePath = _envBaseline.GetValueOrDefault("PATH", string.Empty);
+        var currentPath = current.GetValueOrDefault("PATH", string.Empty);
+        if (!string.Equals(baselinePath, currentPath, StringComparison.Ordinal))
+        {
+            var baselineEntries = SplitPathEntries(baselinePath);
+            var currentEntries = SplitPathEntries(currentPath);
+            pathAdded = [.. currentEntries.Except(baselineEntries, EnvNameComparer)];
+            pathRemoved = [.. baselineEntries.Except(currentEntries, EnvNameComparer)];
+        }
+
+        added.Sort(EnvNameComparer);
+        modified.Sort(EnvNameComparer);
+        removed.Sort(EnvNameComparer);
+        return new EnvironmentDrift([.. added], [.. modified], [.. removed], pathAdded, pathRemoved);
+    }
+
+    private static string[] SplitPathEntries(string value) =>
+        [.. value.Split(Path.PathSeparator, StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)];
+
+    // Reset semantics are "factory state" (greenfield-design plan), and env vars
+    // are process-wide, so a recycled runspace alone would keep them — the
+    // recorded PATH-shim hazard would outlive its own recovery tool. Restore the
+    // post-priming baseline: remove additions, reinstate modified/removed values.
+    // Timeout recycles deliberately do NOT restore: the abandoned pipeline may
+    // still be running and mutating env; only the explicit ptk_reset nukes.
+    private void RestoreEnvironmentBaseline()
+    {
+        try
+        {
+            foreach (System.Collections.DictionaryEntry entry in Environment.GetEnvironmentVariables())
+            {
+                if (entry.Key is string name && !_envBaseline.ContainsKey(name))
+                {
+                    Environment.SetEnvironmentVariable(name, null);
+                }
+            }
+            foreach (var (name, value) in _envBaseline)
+            {
+                if (!string.Equals(Environment.GetEnvironmentVariable(name), value, StringComparison.Ordinal))
+                {
+                    Environment.SetEnvironmentVariable(name, value);
+                }
+            }
+        }
+        catch { /* never fail a reset over environment bookkeeping */ }
     }
 
     // Runspace.Open initializes the FileSystem provider via DriveInfo.GetDrives,
@@ -84,7 +188,23 @@ public sealed class RunspaceHost : IDisposable
     {
         var runspace = CreateRunspace();
         ModuleLoaded = _modulePath is not null && TryImportModule(runspace, _modulePath);
+        BaselineVariableCount = TryCountVariables(runspace);
         return runspace;
+    }
+
+    // Seeds $global:LASTEXITCODE first so the baseline matches later counts
+    // (every InvokeAsync resets it before running, creating it if absent).
+    private static int TryCountVariables(Runspace runspace)
+    {
+        try
+        {
+            using var ps = PowerShell.Create();
+            ps.Runspace = runspace;
+            ps.AddScript("$global:LASTEXITCODE = 0; @(Get-Variable).Count", useLocalScope: false);
+            var results = ps.Invoke();
+            return results.Count > 0 && results[0]?.BaseObject is int count ? count : -1;
+        }
+        catch { return -1; }
     }
 
     // An explicitly set PTK_MODULE_PATH wins outright: if it points at nothing,
@@ -300,6 +420,7 @@ public sealed class RunspaceHost : IDisposable
         {
             var old = _runspace;
             _runspace = CreatePrimedRunspace();
+            RestoreEnvironmentBaseline();
             _ = Task.Run(() => { try { old.Dispose(); } catch { /* wedged runspace */ } });
         }
         finally

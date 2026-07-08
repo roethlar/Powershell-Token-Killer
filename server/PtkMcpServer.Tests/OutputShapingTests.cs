@@ -1,5 +1,8 @@
 namespace PtkMcpServer.Tests;
 
+// ProcessEnvironment collection: mutates PSExecutionPolicyPreference and calls
+// ResetAsync, whose environment restore would wipe parallel classes' env vars.
+[Collection("ProcessEnvironment")]
 public sealed class OutputShapingTests : IDisposable
 {
     private readonly RunspaceHost _host = new(callTimeout: TimeSpan.FromSeconds(60));

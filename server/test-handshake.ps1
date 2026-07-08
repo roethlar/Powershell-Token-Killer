@@ -4,7 +4,7 @@
 .SYNOPSIS
 Smoke-tests the PtkMcpServer stdio transport end to end: starts the server as
 a child process and performs an MCP initialize / tools/list /
-tools/call(ptk_ping) handshake over real stdin/stdout. Three launch modes:
+tools/call(ptk_state) handshake over real stdin/stdout. Three launch modes:
 default builds this checkout and drives the built dll; -UseRegistrationCommand
 drives the exact `dotnet run` command the .mcp.json registration spawns;
 -ServerCommand drives an arbitrary server binary (e.g. a published
@@ -139,7 +139,7 @@ try {
     Send-Rpc @{ jsonrpc = '2.0'; id = 2; method = 'tools/list' }
     $tools = Read-RpcResponse -Id 2
     $names = @($tools.result.tools.name)
-    foreach ($required in @('ptk_ping', 'ptk_invoke', 'ptk_modules', 'ptk_reset')) {
+    foreach ($required in @('ptk_invoke', 'ptk_state', 'ptk_reset')) {
         if ($names -notcontains $required) {
             throw "$required missing from tools/list; got: $($names -join ', ')"
         }
@@ -148,12 +148,14 @@ try {
 
     Send-Rpc @{
         jsonrpc = '2.0'; id = 3; method = 'tools/call'
-        params = @{ name = 'ptk_ping'; arguments = @{} }
+        params = @{ name = 'ptk_state'; arguments = @{} }
     }
     $call = Read-RpcResponse -Id 3
     $text = $call.result.content[0].text
-    if ($text -ne 'pong') { throw "ptk_ping returned '$text', expected 'pong'." }
-    Write-Host 'ptk_ping ok: pong'
+    if ($text -notmatch 'ptk server: pid \d+') {
+        throw "ptk_state returned unexpected text: '$text'"
+    }
+    Write-Host 'ptk_state ok: server header present'
 
     # Two ptk_invoke calls sharing state prove the warm runspace end to end.
     Send-Rpc @{

@@ -8,6 +8,9 @@ namespace PtkMcpServer.Tests;
 /// checkout the session's cwd happens to sit in, and the cwd probe must
 /// still work when nothing ships alongside the binary.
 /// </summary>
+// ProcessEnvironment collection: mutates PTK_MODULE_PATH, which a parallel
+// reset-driven environment restore would otherwise wipe mid-test.
+[Collection("ProcessEnvironment")]
 public class ModulePathProbeTests
 {
     /// <summary>Copies the real module (psd1 + psm1) into {root}/src so a

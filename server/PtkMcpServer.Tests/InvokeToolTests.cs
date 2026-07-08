@@ -2,6 +2,9 @@ using PtkMcpServer.Tools;
 
 namespace PtkMcpServer.Tests;
 
+// ProcessEnvironment collection: mutates PTK_RTK_PATH, which a parallel
+// reset-driven environment restore would otherwise wipe mid-test.
+[Collection("ProcessEnvironment")]
 public sealed class InvokeToolTests : IDisposable
 {
     private readonly RunspaceHost _host = new(callTimeout: TimeSpan.FromSeconds(60));

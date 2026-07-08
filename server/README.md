@@ -60,9 +60,8 @@ Check with `claude mcp list`; remove with `claude mcp remove ptk`.
 | Tool | Arguments | Purpose |
 | --- | --- | --- |
 | `ptk_invoke` | `script`, optional `raw`, optional `route` | Run a PowerShell script or native command line in the warm runspace. |
-| `ptk_modules` | optional `listAvailable` | List loaded modules by default; with `listAvailable: true`, enumerate installed modules once and cache the result. |
-| `ptk_reset` | none | Recycle the runspace, discarding variables, loaded modules, current directory, default parameters, and connections. |
-| `ptk_ping` | none | Health check returning `pong`. |
+| `ptk_state` | optional `listAvailable` | Session introspection and health check: engine, server PID/uptime, cwd, loaded modules, and drift — env vars changed since server start, PATH as an entry diff, variable count. With `listAvailable: true`, also enumerate installed modules once and cache the result. |
+| `ptk_reset` | none | Recycle the runspace to factory state: discards variables, loaded modules, current directory, default parameters, and connections, and restores environment variables to their server-start values. |
 
 `ptk_invoke` returns command output, then labeled sections when present:
 `[exit] N`, `[errors]`, and `[warnings]`. Empty output returns `(no output)`.

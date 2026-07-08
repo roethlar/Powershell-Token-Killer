@@ -66,9 +66,8 @@ exactly as written; `route=pwsh` forces plain PowerShell execution;
 | Tool | Purpose |
 | --- | --- |
 | `ptk_invoke` | Run a PowerShell script or native command line in the warm runspace. |
-| `ptk_modules` | List loaded modules; optionally enumerate installed ones (cached). |
-| `ptk_reset` | Recycle the runspace, discarding all warm state. |
-| `ptk_ping` | Health check. |
+| `ptk_state` | Session introspection and health check: engine, uptime, cwd, loaded modules, and drift (env/PATH/variable changes since server start). |
+| `ptk_reset` | Recycle the runspace to factory state, restoring the server-start environment. |
 
 ## Setup
 
