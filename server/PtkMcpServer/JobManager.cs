@@ -63,11 +63,19 @@ public sealed class JobManager : IDisposable
         var outputPath = Path.Combine(_jobsDir, $"job-{Environment.ProcessId}-{id}.log");
 
         // The child redirects its own streams to the log file, so output streams
-        // and survives regardless of this server's pipes. The wrapper propagates
-        // a native exit code; single quotes in the path are escaped for the
-        // single-quoted PowerShell literal.
+        // and survives regardless of this server's pipes. The user script enters
+        // the wrapper base64-encoded and is compiled INSIDE it: embedding raw
+        // text would let an unparseable script kill the whole encoded command
+        // before the redirection exists, losing the parse error to the child's
+        // (unredirected) stderr. Parse failures land in the log with exit 64.
+        var logLiteral = "'" + outputPath.Replace("'", "''") + "'";
+        var scriptB64 = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
         var wrapped =
-            "& {\n" + script + "\n} *> '" + outputPath.Replace("'", "''") + "'\n" +
+            $"$ptkJobLog = {logLiteral}\n" +
+            $"$ptkJobScript = [System.Text.Encoding]::Unicode.GetString([System.Convert]::FromBase64String('{scriptB64}'))\n" +
+            "try { $ptkJobBlock = [scriptblock]::Create($ptkJobScript) }\n" +
+            "catch { $_ | Out-File -LiteralPath $ptkJobLog; exit 64 }\n" +
+            "& $ptkJobBlock *> $ptkJobLog\n" +
             "if ($global:LASTEXITCODE -is [int]) { exit $global:LASTEXITCODE } else { exit 0 }";
 
         var psi = new ProcessStartInfo

@@ -125,6 +125,19 @@ public sealed class JobManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Parse_errors_land_in_the_job_log()
+    {
+        var job = _jobs.Start("if (");
+
+        var final = await WaitForExitAsync(job.Id);
+        var read = _jobs.ReadOutput(job.Id, 0)!.Value;
+
+        Assert.NotEqual(0, final.ExitCode);
+        Assert.True(read.Text.Length > 0,
+            "the parse error must land in the job log, not vanish on the child's stderr");
+    }
+
+    [Fact]
     public void Missing_job_reads_as_null()
     {
         Assert.Null(_jobs.Snapshot(999));
