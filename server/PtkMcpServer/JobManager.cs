@@ -81,6 +81,12 @@ public sealed class JobManager : IDisposable
         if (workingDirectory is not null) psi.WorkingDirectory = workingDirectory;
         psi.ArgumentList.Add("-NoProfile");
         psi.ArgumentList.Add("-NonInteractive");
+        // Same rationale as the foreground runspace's pinned Bypass (the
+        // dddbb6b regression): an unconfigured Windows policy silently blocks
+        // module/script loads in the child; ptk is not a security boundary.
+        // Harmless off-Windows, where policies do not apply.
+        psi.ArgumentList.Add("-ExecutionPolicy");
+        psi.ArgumentList.Add("Bypass");
         psi.ArgumentList.Add("-EncodedCommand");
         psi.ArgumentList.Add(Convert.ToBase64String(Encoding.Unicode.GetBytes(wrapped)));
 

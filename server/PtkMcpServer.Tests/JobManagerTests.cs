@@ -1,5 +1,8 @@
 namespace PtkMcpServer.Tests;
 
+// ProcessEnvironment collection: the execution-policy test mutates
+// PSExecutionPolicyPreference, which job children inherit at spawn.
+[Collection("ProcessEnvironment")]
 public sealed class JobManagerTests : IDisposable
 {
     private readonly string _dir =
@@ -85,6 +88,40 @@ public sealed class JobManagerTests : IDisposable
         await WaitForExitAsync(a.Id);
         await WaitForExitAsync(b.Id);
         Assert.Equal(0, _jobs.KillAll());
+    }
+
+    [Fact]
+    public async Task Jobs_run_scripts_under_a_restrictive_windows_execution_policy()
+    {
+        // Mirror of the foreground regression (dddbb6b): process-scope policy
+        // simulates an unconfigured Windows machine; the job child inherits it
+        // and must still be able to import a module. No-op hazard off Windows
+        // (policies do not apply), where this simply exercises the import.
+        var modulePath = RunspaceHost.ResolveModulePath();
+        Assert.NotNull(modulePath);
+        var saved = Environment.GetEnvironmentVariable("PSExecutionPolicyPreference");
+        try
+        {
+            Environment.SetEnvironmentVariable("PSExecutionPolicyPreference", "Restricted");
+            // Assert the CAPABILITY, not survival: the policy error from a
+            // blocked module load is emitted through a path that ignores
+            // -ErrorAction Stop and execution continues (the original bug's
+            // "silent degradation"), so only checking whether the module's
+            // command actually exists distinguishes bypass from blocked.
+            var job = _jobs.Start(
+                $"Import-Module '{modulePath!.Replace("'", "''")}'; " +
+                "if (Get-Command Compress-PtcOutput -ErrorAction SilentlyContinue) { 'MODULE LOADED' } else { 'MODULE MISSING' }");
+
+            await WaitForExitAsync(job.Id);
+            var read = _jobs.ReadOutput(job.Id, 0)!.Value;
+
+            Assert.Contains("MODULE LOADED", read.Text);
+            Assert.DoesNotContain("MODULE MISSING", read.Text);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PSExecutionPolicyPreference", saved);
+        }
     }
 
     [Fact]
