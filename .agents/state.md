@@ -5,6 +5,37 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **2026-07-08 (later): slice 2 IN FLIGHT — the windows CI leg caught a real
+  product bug; server fix AWAITING OWNER GO.** `.github/workflows/ci.yml` is
+  committed and pushed on `ci/slice-2` (831bcc3): ubuntu/windows/macos
+  matrix, current action majors (checkout@v7, setup-dotnet@v5 — the probe's
+  deprecation note), Pester `-CI` + `dotnet test` + default-mode handshake.
+  Run 28964859667: ubuntu and macos GREEN; windows fails 6 server tests,
+  all one root cause — the hosted runspace honors Windows execution policy
+  and the server never sets one, so on any Windows box with no policy
+  configured (CI runners, fresh user machines) the hosted default
+  (Restricted) blocks `Import-Module` of the module .psd1 and
+  shaping/routing degrade to plain Out-String. Owner boxes pass only
+  because they have a policy configured (this box:
+  CurrentUser=Unrestricted); Linux/macOS are unaffected (SMA hardcodes
+  Unrestricted off-Windows); pwsh is unaffected (the Pester leg passed on
+  the same runner). Local repro confirmed:
+  `$env:PSExecutionPolicyPreference='Restricted'; dotnet test
+  server/PtkMcpServer.slnx` → the same 6 failures. PROPOSED FIX (needs an
+  explicit go — the release plan scopes out server behavior changes):
+  set `InitialSessionState.ExecutionPolicy = Bypass` on Windows in
+  `RunspaceHost.CreateRunspace`, plus a regression test forcing Restricted
+  process policy. Rationale: ptk_invoke runs script TEXT (policy gates
+  files, not command strings); it replaces the harness PowerShell tool,
+  which itself runs `-ExecutionPolicy Bypass`; recorded threat model: ptk
+  is not a security boundary. The CI-only alternative (configure policy on
+  the runner) was recommended AGAINST: it greens CI but ships the
+  degraded-on-default-Windows behavior in v0.2.0. Resume: on go, fix +
+  guard proof + codex loop on `ci/slice-2` → matrix green → land
+  workflow+fix on master (master push stays owner-gated), delete
+  `ci/slice-2` local+remote (owner condition), then slice 3. Also ride
+  along when slice 2 lands: fix `.agents/repo-guidance.md`'s "No CI"
+  statement (the plan assigns that drift fix to the slice creating it).
 - **2026-07-08: Windows battery GREEN; dev-install verified on this box
   (handoff items 1-2).** Pester 70/70 (0 skipped — the shim test runs here,
   ls stays unrouted), dotnet test 36/36, handshake passes in all three modes
@@ -382,12 +413,10 @@ short and update it when important repo facts change.
 
 ## Next
 
-- Slices 0 and 1 DONE and codex-closed (top Now entry); the CI probe ran
-  on `ci/probe` (branch deleted after — owner condition) and its runner
-  facts are in the plan. Next: slice 2 (`.github/workflows/ci.yml`,
-  three-OS test matrix; iterate on `ci/*`, master push owner-gated), then
-  slice 3 (release workflow). Still needed along the way: the
-  hook-default decision before slice 4. ~~test fixes~~ DONE 2026-07-04
+- Slice 2 is IN FLIGHT — see the top Now entry for the resume point
+  (blocked on the execution-policy fix go). Then slice 3 (release
+  workflow). Still needed along the way: the hook-default decision before
+  slice 4. ~~test fixes~~ DONE 2026-07-04
   (owner go; battery green). The other questions (RIDs, version, install
   root, winget posture) are RESOLVED — do not re-raise them.
 - ~~Execute unified-shell-routing slices~~ DONE 2026-07-04 (see Now). Next
@@ -485,7 +514,8 @@ short and update it when important repo facts change.
 
 ## Blockers
 
-- None.
+- Slice 2: the windows CI leg is red pending the owner's go (or a different
+  call) on the execution-policy server fix — details in the top Now entry.
 
 ## Verification
 
