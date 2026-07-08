@@ -108,11 +108,16 @@ server maximum).
   immediately. For anything that could exceed the call timeout — builds,
   deploys, watchers, long queries.
 - **Teach at the moment of failure:** the timeout error message itself
-  says "this call exceeded N seconds and the session was recycled; rerun
-  long work with background=true and poll with ptk_job." The one place a
-  model reliably reads documentation is the error it just received (P4).
-  The 2026-07-08 live feedback showed the background+poll pattern works
-  but currently lives only in a state file no model ever sees.
+  teaches both recovery paths, because they differ by workload: stateless
+  long work (builds, watchers, native-heavy commands) reruns with
+  `background=true` and polls with `ptk_job`; work that NEEDS the warm
+  session — a long EXO/AD query on a live connection, the workloads the
+  session exists for — reruns foreground with a larger `timeoutSeconds`,
+  because a background job is a cold process and would forfeit exactly
+  the state that makes the call worth routing through ptk. The one place
+  a model reliably reads documentation is the error it just received
+  (P4). The 2026-07-08 live feedback showed the background+poll pattern
+  works but currently lives only in a state file no model ever sees.
 
 **2. `ptk_job` — poll the long work.**
 Arguments: `action=status|output|kill|list`; `id`; `offset`.
