@@ -137,9 +137,11 @@ foreground calls. The tool description says so. Child processes inherit
 the NUL-stdin guard so stdin-readers cannot hang a job.
 
 **3. `ptk_state` — the session made observable.**
-No arguments. Returns: engine version, server PID, uptime (subsumes
-`ptk_ping`); current directory; loaded modules (subsumes `ptk_modules`;
-`listAvailable` stays as its one argument); running jobs; and **drift** —
+One optional argument: `listAvailable=false`. Returns: engine version,
+server PID, uptime (subsumes `ptk_ping`); current directory; loaded
+modules — and with `listAvailable=true`, the installed-module enumeration
+(cached), so subsuming `ptk_modules` keeps the recorded loaded/available
+observability contract intact; running jobs; and **drift** —
 what this session has changed since birth: environment variables added or
 modified (`PATH` shown as a diff, prominently), and the session variable
 count. This is the designed answer to the recorded hazard that warm state
