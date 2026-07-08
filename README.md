@@ -40,7 +40,8 @@ Each call is classified and shaped through one of four legs:
 4. **Passthrough.** Plain strings and scalars are returned with
    ANSI/terminal escape sequences stripped, otherwise unaltered.
    Pathologically large text is elided to a labeled head+tail window;
-   `raw=true` returns exact, complete bytes.
+   `raw=true` returns the complete, uncompressed output (as plain
+   formatted text — nothing elided or stripped).
 
 Anything that is not a safe single native command — pipelines, chains,
 cmdlets, variables, redirections — runs as ordinary PowerShell in the warm

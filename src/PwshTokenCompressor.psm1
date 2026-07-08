@@ -1018,7 +1018,7 @@ function Compress-PtcOutput {
                 # they are pure token waste to a model, and a color prefix
                 # defeats Test-PtcLogShaped's line-start timestamp anchor, so a
                 # colored log would dodge the rtk dedup leg. raw=true calls
-                # never reach shaping and keep exact bytes.
+                # never reach shaping (they return complete Out-String text).
                 $text = Remove-PtcAnsi (@($array | ForEach-Object { "$_" }) -join [Environment]::NewLine)
                 if (Test-PtcLogShaped -Text $text) { return (Limit-PtcPassthrough (Invoke-PtcRtkLog -Text $text)) }
                 return (Limit-PtcPassthrough $text)
