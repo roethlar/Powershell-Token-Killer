@@ -5,6 +5,16 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **2026-07-08 (decision): GO/NO-GO DECIDED — 100% GO (owner,
+  in-session).** ptk continues as an active product; the continuation-gate
+  entry is archived (`docs/history/decisions-archive.md`), the
+  destructive-cmdlet parking survives as its own Open entry, and
+  warm-runspace slice 7 (AD/EMS/EXO validation) plus greenfield D5
+  (CLI-face retirement) are unblocked by the gate's closure. Owner also
+  approved in the same message: the invalid-handle PROBE, and revising
+  the plan to cover the v1-feedback fixes with the codex loop per slice.
+  The shared multi-client host stays parked on its own measured-pain
+  criterion (not part of this go).
 - **2026-07-08 (after the build): SECOND LIVE-USE FEEDBACK BATCH recorded
   (owner-shared notes from heavy real use of the CURRENT installed v1,
   `F:\notes\PTK\vela_session_notes.md` — machine-local, essentials

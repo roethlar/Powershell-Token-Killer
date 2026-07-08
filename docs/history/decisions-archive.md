@@ -182,3 +182,131 @@ real Windows usage (the `savings`/`Measure-PtcSavings` primitive exists). Only b
 (4) the universal in-process wrapper if the data justifies it. Sequences the cost
 behind the proven benefit. Each of (1)-(4) is a separate authorized change requiring
 its own go.
+
+---
+
+## Closed 2026-07-08 - Go/no-go: 100% GO (owner decision, in-session)
+
+The gate this entry defined is decided: the owner declared an unqualified GO
+on 2026-07-08 (ahead of the ~07-20 window, after the greenfield v2 build and
+a second live-use feedback batch). ptk continues as an active product. The
+destructive-cmdlet parking recorded inside this entry survives on its own
+criterion as a fresh Open entry in `.agents/decisions.md`. Entry preserved
+verbatim below.
+
+### OPEN (2026-07-02): Whether ptk continues at all — substrate go/no-go after owner vacation
+
+**Status:** Open, AMENDED 2026-07-03 (owner): Phase 2 compression is UNPAUSED —
+the owner chose to build it ahead of the go/no-go so the test evaluates the full
+product (warm runspace + compression together). Scope set by owner the same day:
+`ptk_invoke` output routes objects → `Compress-PtcObject`, log-shaped text → rtk
+when an rtk binary is present, all other text → full passthrough; the ollama /
+local-model leg of the router experiment is dropped. Plan:
+`.agents/plans/phase2-compression.md`. The universal wrapper and the
+destructive-cmdlet gate REMAIN paused behind the test. Owner return date is now
+~2026-07-20 (was ~2026-07-16). The go/no-go itself is unchanged: unprompted
+adoption + experienced benefit on the real Windows box remain the criteria.
+
+**AMENDED 2026-07-04 (owner):** unified shell routing is UNPAUSED — the owner
+chose to make ptk the single tool surface for all shell work before the go/no-go,
+plus a harness hook that enforces it. Scope set by owner the same day:
+
+- **One tool for everything shell-shaped.** PowerShell scripts run in the warm
+  runspace (the existing `ptk_invoke` path); log-shaped output routes to rtk
+  (the existing `Compress-PtcOutput` leg); simple native command lines (git,
+  npm, docker, ...) route to rtk so its per-command filters apply — compression
+  happens for everything that supports it and the model has one tool to reach
+  for.
+- **A harness hook forces the redirect.** A PreToolUse hook on the harness's
+  Bash and PowerShell tools redirects shell work to ptk, so adoption does not
+  depend on model discipline — the direct answer to the 2026-07-02 headless
+  dry-run (0/13 unprompted MCP usage; MCP tools hidden behind ToolSearch) and
+  the rtk instruction-decay evidence.
+
+**AMENDED 2026-07-04 (owner, later the same day):** a release/distribution
+track is authorized ahead of the go/no-go. The owner judged the current
+install story (running the MCP server out of a repo checkout via `dotnet run`)
+unacceptable for anyone else to use, and set a **first public release target
+of 2026-07-25**: prebuilt self-contained per-platform binaries on GitHub
+Releases plus a one-line installer. A publish-and-register script and .NET
+tool packaging are dev-only paths, explicitly not the public install story.
+Plan (APPROVED by owner 2026-07-04, same day):
+`.agents/plans/release-distribution.md`. Owner resolved the plan's open
+questions the same day (5 RIDs incl. Windows/Linux ARM, version v0.2.0, one
+`~/.ptk` home for payload+config on every platform and install method, winget
+as the eventual primary Windows path with readiness — ARP entry, hostable
+install logic — built into v0.2.0; resolutions recorded in the plan). One
+question stays deliberately open: the public installer's hook default
+("decision for later"; must close before the installer slice ships).
+Interaction with the go/no-go is deliberate: CI produces only **draft**
+releases; the `v0.2.0` tag and the publish click are owner actions after the
+~2026-07-20 test window, so a no-go can still end the project with nothing
+public shipped.
+
+Consequence for the test: the ~2026-07-20 go/no-go now evaluates the routed
+one-tool product with the hook installed; the criteria shift accordingly —
+"unprompted adoption" is satisfied by construction on hooked sessions, so the
+operative criterion becomes experienced benefit (real time/aggravation saved,
+never a tool-reported metric) plus absence of friction that makes the owner
+disable the hook. The universal PowerShell wrapper CLI face and the
+destructive-cmdlet gate REMAIN paused. Plan (requires its own approval before
+code): `.agents/plans/unified-shell-routing.md`. The zero-code alternative
+(installing rtk's own Bash-rewrite hook and leaving ptk as-is) was considered
+and declined in favor of the routed tool; rtk's hook may still complement the
+bash leg if the probe slice finds it cheaper.
+
+**Original status (2026-07-02):** Open - all further building is PAUSED by owner
+decision until the test below runs. This gates Phase 2 (compression), the
+universal wrapper, and the destructive-cmdlet gate. The warm-runspace server
+itself (slices 1-6) is built, verified, and stays registered.
+
+**What triggered it:** the owner stepped back and asked whether ptk is worth it,
+citing two pieces of evidence from sibling tools:
+
+- **headroom is stopped, net negative.** Its compression rewrote existing context,
+  causing prompt-cache rewrites whose re-billing exceeded the savings. Its
+  ~39.5M-tokens/day figure was the tool's own metric, not net benefit. (This
+  corrects the claim recorded in the universal-wrapper entry above.)
+- **rtk does not get used reliably** when instructed via AGENTS.md; usage is
+  model-dependent and decays.
+
+**The generalized finding (owner-confirmed):** tools whose benefit requires the
+model's ongoing *discipline* - remembering a compression step whose payoff the
+model never experiences - do not get adopted. ptk's CLI face and any
+instruction-driven compression inherit this failure mode. Two distinctions keep
+ptk from being dead on this evidence alone:
+
+1. **Cache mechanism does not transfer:** ptk compresses fresh tool output before
+   it enters context; unlike headroom it does not rewrite cached prompt prefixes,
+   so the specific net-negative mechanism is headroom's, not ptk's.
+2. **The warm-runspace server is a capability, not a discipline:** on the owner's
+   Windows box, ptk_invoke is the only deterministic warm path to EMS/EXO (2s vs
+   30s+ or failure). The model experiences that difference directly, which is an
+   adoption story the rtk evidence does not already contradict - but it is a
+   hypothesis, not a result.
+
+**The test (after owner returns ~2026-07-16):** work normal days on the Windows box
+with the server registered and observe two things:
+
+- **Adoption:** does the model reach for ptk_invoke *unprompted* for Exchange/AD
+  work?
+- **Benefit:** does it save real time and aggravation (not a tool-reported metric -
+  see the headroom trap)?
+
+Both yes → Phase 2 (compression riding on an already-adopted tool) earns a second
+look. Model ignores it like rtk → archive the project with the finding recorded.
+
+**Also parked behind this gate - destructive-cmdlet security layer.** Design was
+explored 2026-07-02 through three iterations, recorded so it need not be re-derived:
+(1) two-tool split with harness permissions (ptk_invoke / ptk_invoke_unsafe) -
+REJECTED by owner: a sticky "always allow" grant on the unsafe tool silently
+removes the gate; (2) server-enforced per-call OS approval dialog - REJECTED by
+owner: too cumbersome, unworkable headless/automation; (3) declarative policy file
+outside the workspace, default read-only, destructive commands refused unless
+pre-authorized, classification via each cmdlet's own SupportsShouldProcess /
+ConfirmImpact metadata plus alias resolution, fail-closed on unknowns/natives -
+tentatively acceptable to owner. All variants are guardrails against model
+sloppiness, NOT security boundaries (the model has raw shell access; recorded
+threat model unchanged). Interim posture: keep ptk_invoke on ask-per-call in the
+harness; build the policy gate only if real usage creates the desire to
+blanket-allow ptk_invoke.
