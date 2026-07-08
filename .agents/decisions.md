@@ -69,7 +69,49 @@ destructive-cmdlet pause, and the not-a-security-boundary threat model.
 
 ## Open Decisions (deferred - not yet adopted)
 
-### OPEN (2026-06-27): Whether to give ptk a session-persistent warm-runspace backend
+### OPEN (2026-07-08): Whether to build a shared multi-client warm host (+ shared signals)
+
+**Status:** Open — recorded from owner-shared design notes
+(`F:\notes\PTK\shared-warm-runspace.md` and `shared-warm-runspace-plan.md`,
+machine-local; decision-relevant core captured here). No code authorized;
+the notes' own slice 0 is "approval and probe".
+
+**Question:** Should ptk grow an optional long-lived host with a local
+multi-client transport (named pipe / Unix socket), so multiple harness
+sessions attach to ONE warm PowerShell session — modules, connections, cwd,
+env shared across clients — plus a structured ephemeral signal store
+(`ptk_signal`: add/list/update/close with actor, kind, scope, TTL) for
+agent-to-agent coordination that does not abuse PowerShell variables?
+
+**What it would bring:** heavy imports and unattended connects (AD, EXO
+cert, Graph, implicit remoting) paid once per machine, reused by every
+attached agent; warm state survives harness lifecycle (attach/detach, not
+cold-start per chat); one place for drift/reset hygiene; fast
+reviewer/implementer/verifier handoff via signals.
+
+**Dominant gotchas (the notes' own analysis):** runspaces stay
+single-pipeline, so sharing serializes agents behind each other — shared is
+not faster; one timeout recycle evicts warm state for EVERY client (the
+biggest operational hazard); not-a-security-boundary becomes cross-agent
+lateral movement (any client reads/mutates every other's state — same OS
+user, local-only, explicit opt-in are hard prerequisites); cwd/env/PATH are
+one namespace, so unrelated-project agents mostly want isolation, not
+share; reset semantics change from "fix my mess" to "evict everyone".
+
+**The notes' recommendation, adopted as this entry's standing
+recommendation:** do NOT make shared mode the default; build it only if
+real use shows repeated reauth/reimport across sessions on one box (or
+real multi-agent handoff need) — measured pain, not anticipated. If built:
+attach-only hard share first (one host, one serialized runspace, full
+shared state, loud shared timeout/reset messages, client identity in
+ptk_state), signals in that same first version, private mode unchanged as
+default. Named sessions and any private-variable multi-tenancy only if the
+narrow form earns it.
+
+**Gate interaction:** behind the go/no-go like everything else, and behind
+its own measured-pain criterion even after a go. The v2 greenfield design
+(2026-07-08 adoption entry above) is the private-session product this
+would extend; nothing in it blocks or presumes sharing.
 
 **Status:** Open - selected as active work by owner 2026-07-02 and BUILT the same
 day: slices 1-6 of `.agents/plans/warm-runspace-mcp-server.md` are complete,

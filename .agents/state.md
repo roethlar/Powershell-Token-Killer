@@ -5,6 +5,36 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **2026-07-08 (after the build): SECOND LIVE-USE FEEDBACK BATCH recorded
+  (owner-shared notes from heavy real use of the CURRENT installed v1,
+  `F:\notes\PTK\vela_session_notes.md` — machine-local, essentials
+  captured here). Assessment against the just-built v2, candidate work
+  awaiting owner prioritization (no code authorized):**
+  1. **HIGH — "The handle is invalid (os error 6)" for rustup-shimmed
+     binaries (cargo, rustc, codex) via route=auto; the session's single
+     biggest time sink.** Workaround used live: `cmd /c "... < nul"` under
+     route=pwsh. Code fact: `ChildStdinGuard` NUL-backs STDIN only
+     (handle -10); stdout/stderr (-11/-12) of the console-less server
+     were never guarded, so console-handle-probing shims can still hit
+     invalid handles. NEEDS A PROBE on this box (which handle, foreground
+     vs rtk-routed vs jobs — job children get a closed-pipe stdin, not
+     NUL) before any fix. This failure class is invisible to the current
+     test suite.
+  2. **HIGH value/effort — mojibake in native output (`ΓÇö` for em-dash):
+     OEM-codepage (cp437/850) vs UTF-8 mismatch on the capture side.**
+     Candidate: pin `[Console]::OutputEncoding`/native decoding to UTF-8
+     in the server/runspace. Pollutes all native tool output today.
+  3. **Timeout recycle surprised live use with changed command/PATH
+     resolution in the fresh runspace.** v2 already improves this
+     (ptk_state drift; teach-at-timeout), and env restore was
+     deliberately reset-only — but the timeout message should also say
+     command resolution may differ and point at ptk_state. Small.
+  4. **Minor:** rtk's "no hook installed" nag rides along in routed
+     output (candidate strip); route=auto sometimes swallowed a failed
+     native's stderr where route=pwsh showed it (probe).
+  5. **Validation, not work:** the note's #3 ("long work has no story",
+     pattern hand-rolled 6-7 times) is exactly what D3 built; warm-state
+     reliability and shaping fidelity got explicit praise.
 - **2026-07-08 (latest): GREENFIELD SLICES D1/D2/D4/D3 BUILT and
   codex-closed.** `.agents/plans/greenfield-design.md` (approved same day,
   adoption entry in `.agents/decisions.md`) executed in full except D5
