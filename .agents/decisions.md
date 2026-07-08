@@ -113,6 +113,8 @@ its own measured-pain criterion even after a go. The v2 greenfield design
 (2026-07-08 adoption entry above) is the private-session product this
 would extend; nothing in it blocks or presumes sharing.
 
+### OPEN (2026-06-27): Whether to give ptk a session-persistent warm-runspace backend
+
 **Status:** Open - selected as active work by owner 2026-07-02 and BUILT the same
 day: slices 1-6 of `.agents/plans/warm-runspace-mcp-server.md` are complete,
 verified, and pushed (server in `server/`, registered in `.mcp.json`). Slice 7
