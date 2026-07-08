@@ -84,6 +84,32 @@ unpushed pending the owner's master push go.
 
 ---
 
+Loop run 2026-07-08 (greenfield implementation, slices D1/D2/D4/D3) —
+reviewer: codex (Codex v0.143.0, gpt-5.5, read-only), one fresh session per
+slice commit, fixes committed directly to `master` one finding per commit
+per the recorded precedent. Re-grades were folded into the next slice's
+dispatch to save passes (noted per row). All findings ADMITTED at triage.
+
+## Findings (greenfield-implementation loop)
+
+| ID    | Severity | Impact (one line)                                                          | Status | Branch |
+|-------|----------|------------------------------------------------------------------------------|--------|--------|
+| d1-1  | LOW      | Docs still promised byte-exact passthrough after the ANSI strip               | `[x]`  | master (direct, 9ee9886) |
+| d2-1  | LOW      | Char window could cut the line-elision marker when both bounds fired          | `[x]`  | master (direct, c446e0c) |
+| d2-2  | LOW      | README overstated raw=true as byte-exact (Out-String + TrimEnd)               | `[x]`  | master (direct, 50e0c2c) |
+| d4-1  | LOW      | ptk_state ignored probe failures; failed listAvailable probe cached           | `[x]`  | master (direct, b17493d + 29f1de5 — first fix graded NOT RESOLVED for non-terminating errors, completed as d4-1b) |
+| d3-1  | MEDIUM   | A wedged shaping call (hung rtk) held the gate forever                        | `[x]`  | master (direct, 3938666) |
+| d3-2  | MEDIUM   | Job children lacked the execution-policy bypass (dddbb6b class)               | `[x]`  | master (direct, 1a11c46 — two vacuous guard drafts discarded; capability-based test proven red/green) |
+| d3-3  | LOW      | Parse errors in background scripts never reached the job log                  | `[x]`  | master (direct, d10e9ee) |
+
+**Loop CLOSED 2026-07-08:** final re-grade at head d10e9ee — d4-1b/d3-1/
+d3-2/d3-3 all RESOLVED, NO NEW FINDINGS (codex, Codex v0.143.0, gpt-5.5).
+Battery at head: Pester 76/76, dotnet 57/57 (new canonical count),
+handshake PASSED on the four-tool surface. Commits unpushed pending the
+owner's master push go.
+
+---
+
 Loop run 2026-07-08 (greenfield design plan) — reviewer: codex (Codex
 v0.143.0, gpt-5.5, read-only), scope: the owner-requested greenfield design
 document `.agents/plans/greenfield-design.md` at `991a79d` (docs-only; the

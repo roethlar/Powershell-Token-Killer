@@ -5,17 +5,51 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **2026-07-08 (latest): GREENFIELD DESIGN APPROVED (owner go in-session)
-  — EXECUTING.** `.agents/plans/greenfield-design.md`, approved with its
-  three decision-point calls standing (D2 bounds 400 lines/40KB with raw
-  unbounded; D3 jobs = child pwsh processes; D5 after the go/no-go
-  window). Adoption entry recorded in `.agents/decisions.md`: amends the
-  Phase 2 never-truncate passthrough contract; closes the
-  universal-wrapper open decision by dissolution (entry archived to
-  `docs/history/decisions-archive.md`). Plan codex loop: gfd-1..4 fixed,
-  re-grade RESOLVED x4 / NO NEW FINDINGS (`.agents/review/index.md`).
-  Execution order D1 → D2 → D4 → D3, one commit + codex loop per slice;
-  D5 deferred post-window. Release-plan slice 3 unaffected, still queued.
+- **2026-07-08 (latest): GREENFIELD SLICES D1/D2/D4/D3 BUILT and
+  codex-closed.** `.agents/plans/greenfield-design.md` (approved same day,
+  adoption entry in `.agents/decisions.md`) executed in full except D5
+  (CLI-face retirement — deferred until after the go/no-go window by the
+  plan's own call). What shipped:
+  - **D1** (dfcc4f0): ANSI/control sequences stripped at text ingest in
+    `Compress-PtcOutput`, before log-shape classification.
+  - **D2** (c573a08): every text leg bounded — `Limit-PtcPassthrough`,
+    400 lines / 40 KB head+tail with explicit elision markers naming
+    raw=true; the old never-truncate contract test reconciled under the
+    adoption decision.
+  - **D4** (247fe72): `ptk_state` (engine/PID/uptime/cwd/modules/jobs +
+    env DRIFT vs post-priming baseline, PATH as entry diff, variable
+    count; `listAvailable` cached only on clean probes) SUBSUMES
+    `ptk_modules` + `ptk_ping`, which are REMOVED. `ptk_reset` now
+    restores the process environment to its server-start baseline
+    (factory-state semantics; timeout recycles deliberately do not).
+  - **D3** (d3efc2d): background jobs — `ptk_invoke background=true`
+    (child pwsh, self-redirected log under `~/.ptk/jobs/`, session cwd,
+    -ExecutionPolicy Bypass, parse errors land in the log, exit 64),
+    `ptk_job` (status/output/kill/list; shaped bounded offset-paged
+    polls), per-call `timeoutSeconds` capped by new
+    `PTK_MAX_CALL_TIMEOUT_SECONDS` (default 3600), teach-at-timeout
+    error naming both recovery paths, reset/graceful-shutdown kill jobs.
+  - Codex loops: 7 findings (d1-1, d2-1, d2-2, d4-1(+b), d3-1..d3-3 —
+    two MEDIUM), all fixed one commit each with guard proofs, final
+    re-grade RESOLVED x4 / NO NEW FINDINGS (`.agents/review/index.md`).
+  - **Canonical counts now: Pester 76, dotnet 57.** Handshake asserts the
+    four-tool surface (ptk_invoke, ptk_job, ptk_state, ptk_reset) and
+    calls ptk_state instead of the removed ptk_ping.
+  - **Tool-surface break, owner action on next release/install:** the
+    installed 0.2.0 binary still serves the old tools; a rebuild/
+    dev-install is needed for the new surface. CI ci.yml runs the same
+    battery unchanged.
+  - **Environment finding (owner action):** `~/.codex/config.toml` still
+    registers ptk as `dotnet run` on this repo — every `codex exec`
+    (including this session's review loops) spawns/builds it and can
+    leave a repo-bin `PtkMcpServer.exe` running, locking the build. The
+    Claude Code registration already points at `~/.ptk/bin`; recommend
+    updating codex's to match. Recovery that worked all session:
+    `Get-Process PtkMcpServer | Where Path -like '*Powershell-Token-Killer*' | Stop-Process`.
+  - All commits local/unpushed (master push stays owner-gated).
+  Release-plan slice 3 unaffected, still queued. D5 execution note for
+  the future session: closes `ptk` CLI verbs, `docs/usage.md`, their
+  tests; README single-surface rewrite.
 - **2026-07-08 (later): release-plan SLICE 2 DONE and codex-closed.**
   `.github/workflows/ci.yml` landed on master (74a2604): ubuntu/windows/
   macos matrix, current action majors (checkout@v7, setup-dotnet@v5),
