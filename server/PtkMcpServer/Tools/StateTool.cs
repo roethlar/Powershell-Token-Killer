@@ -42,7 +42,14 @@ public static class StateTool
         sb.AppendLine(
             $"ptk server: pid {Environment.ProcessId}, up {FormatUptime(DateTimeOffset.UtcNow - host.StartedUtc)}, " +
             $"shaping {(host.ModuleLoaded ? "on" : "off")}");
-        sb.AppendLine(result.Output.TrimEnd());
+        if (result.Output.TrimEnd().Length > 0) sb.AppendLine(result.Output.TrimEnd());
+        // A session can break the probe itself (e.g. a shadowing Get-Module):
+        // surface that instead of silently reporting partial state as the truth.
+        if (!result.Success || result.Errors.Length > 0)
+        {
+            sb.AppendLine("[state probe errors]");
+            foreach (var error in result.Errors) sb.AppendLine(error);
+        }
 
         var drift = host.GetEnvironmentDrift();
         sb.AppendLine("[env drift since server start]");
@@ -71,10 +78,23 @@ public static class StateTool
                         "ForEach-Object { '  {0} {1}' -f $_.Name, $_.Version }",
                         raw: true, // this tool formats its own lines; never shape them
                         cancellationToken: cancellationToken);
-                    _availableCache = available.Output.TrimEnd();
+                    // Cache only a successful probe: a failed/canceled enumeration
+                    // must not masquerade as "(none)" for the rest of the process.
+                    if (available.Success)
+                    {
+                        _availableCache = available.Output.TrimEnd();
+                    }
+                    else
+                    {
+                        sb.AppendLine("modules available: probe failed (not cached)");
+                        foreach (var error in available.Errors) sb.AppendLine("  " + error);
+                    }
                 }
-                sb.AppendLine("modules available:");
-                sb.AppendLine(_availableCache.Length > 0 ? _availableCache : "  (none)");
+                if (_availableCache is not null)
+                {
+                    sb.AppendLine("modules available:");
+                    sb.AppendLine(_availableCache.Length > 0 ? _availableCache : "  (none)");
+                }
             }
             finally
             {
@@ -84,6 +104,10 @@ public static class StateTool
 
         return sb.ToString().TrimEnd();
     }
+
+    /// <summary>Test hook: the available-module cache is process-static, so cache
+    /// semantics are untestable without clearing it between cases.</summary>
+    internal static void ClearAvailableCacheForTests() => _availableCache = null;
 
     private static string FormatUptime(TimeSpan up) =>
         up.TotalHours >= 1 ? $"{(int)up.TotalHours}h{up.Minutes:00}m"

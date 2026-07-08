@@ -58,6 +58,33 @@ public sealed class StateToolTests : IDisposable
     }
 
     [Fact]
+    public async Task Probe_failure_is_surfaced_and_not_cached()
+    {
+        StateTool.ClearAvailableCacheForTests();
+        try
+        {
+            // A session can shadow the very cmdlets the probe uses; the state
+            // report must say so rather than present partial output as truth.
+            await _host.InvokeAsync("function global:Get-Module { throw 'poisoned by session' }");
+
+            var poisoned = await StateTool.State(_host, listAvailable: true, CancellationToken.None);
+            Assert.Contains("[state probe errors]", poisoned);
+            Assert.Contains("poisoned by session", poisoned);
+            Assert.Contains("probe failed (not cached)", poisoned);
+
+            await _host.InvokeAsync("Remove-Item function:Get-Module");
+
+            var healthy = await StateTool.State(_host, listAvailable: true, CancellationToken.None);
+            Assert.DoesNotContain("[state probe errors]", healthy);
+            Assert.Contains("Microsoft.PowerShell.Utility", healthy);
+        }
+        finally
+        {
+            StateTool.ClearAvailableCacheForTests();
+        }
+    }
+
+    [Fact]
     public async Task Env_drift_reports_session_changes()
     {
         try
