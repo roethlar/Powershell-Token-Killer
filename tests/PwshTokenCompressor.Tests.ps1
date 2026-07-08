@@ -714,13 +714,47 @@ Describe 'Compress-PtcOutput' {
         $result | Should -Match 'Name'
     }
 
-    It 'passes string output through verbatim and never truncates it' {
+    # Reconciled 2026-07-08 under the greenfield-design adoption decision
+    # (.agents/decisions.md): the Phase 2 never-truncate contract is amended
+    # to bounded-with-labeled-elision. Under the bounds, passthrough stays
+    # complete and unaltered; over them, a labeled head+tail window applies.
+    It 'passes plain text through complete and unaltered when under the bounds' {
         $lines = 1..40 | ForEach-Object { "line $_" }
         $result = $lines | Compress-PtcOutput
 
         $result | Should -BeExactly ($lines -join [Environment]::NewLine)
         $result | Should -Match 'line 40'
-        $result | Should -Not -Match 'more'
+        $result | Should -Not -Match 'elided'
+    }
+
+    It 'bounds pathological line counts with a labeled head+tail window' {
+        $lines = 1..1000 | ForEach-Object { "line $_" }
+        $result = $lines | Compress-PtcOutput
+
+        $result | Should -Match '\[600 lines elided - use raw=true for everything\]'
+        $result | Should -Match 'line 1\b'
+        $result | Should -Match 'line 1000'
+        $result | Should -Not -Match 'line 500\b'
+        @($result -split "`r?`n").Count | Should -Be 401
+    }
+
+    It 'bounds pathological character counts even at few lines' {
+        $big = ('x' * 20000)
+        $result = "$big-A", "$big-B", "$big-C" | Compress-PtcOutput
+
+        $result | Should -Match '\[\d+ chars elided - use raw=true for everything\]'
+        $result.Length | Should -BeLessThan 42000
+        $result | Should -Match '^x'
+        $result | Should -Match '-C$'
+    }
+
+    It 'bounds the labeled log-leg fallback too' {
+        $env:PTK_RTK_PATH = Join-Path ([System.IO.Path]::GetTempPath()) 'no-such-rtk-binary.exe'
+        $lines = 1..500 | ForEach-Object { "2026-07-08 10:00:0$($_ % 10) INFO worker: step $_" }
+        $result = $lines | Compress-PtcOutput
+
+        $result | Should -Match '\[ptk:log rtk not found'
+        $result | Should -Match 'lines elided - use raw=true for everything'
     }
 
     It 'passes a single string through exactly' {

@@ -3,6 +3,8 @@ Set-StrictMode -Version Latest
 $script:DefaultMaxItems = 40
 $script:DefaultWidth = 140
 $script:PtcTableMaxColumnWidth = 50
+$script:PtcPassthroughMaxLines = 400
+$script:PtcPassthroughMaxChars = 40KB
 
 function Remove-PtcAnsi {
     param([AllowNull()][string]$Text)
@@ -933,6 +935,41 @@ function Resolve-PtcInvokeScript {
     "& '{0}' {1}" -f $rtk.Replace("'", "''"), $command.Extent.Text
 }
 
+# Bounds the text legs of Compress-PtcOutput (greenfield-design D2, adopted
+# 2026-07-08, amending the Phase 2 never-truncate contract): a generous
+# head+tail window sized so real command output virtually never hits it —
+# the cap exists for the pathological case, a whole-file Get-Content landing
+# in context through a compression tool. Elision is always labeled and names
+# raw=true, the deliberate unbounded escape hatch.
+function Limit-PtcPassthrough {
+    param(
+        [AllowNull()][string]$Text,
+        [int]$MaxLines = $script:PtcPassthroughMaxLines,
+        [int]$MaxChars = $script:PtcPassthroughMaxChars
+    )
+
+    if ($null -eq $Text) { return '' }
+
+    $lines = @($Text -split "`r?`n")
+    if ($lines.Count -gt $MaxLines) {
+        $headCount = [int][Math]::Ceiling($MaxLines * 0.75)
+        $tailCount = $MaxLines - $headCount
+        $marker = '[{0} lines elided - use raw=true for everything]' -f ($lines.Count - $MaxLines)
+        $Text = (@($lines | Select-Object -First $headCount) + $marker +
+            @($lines | Select-Object -Last $tailCount)) -join [Environment]::NewLine
+    }
+
+    if ($Text.Length -gt $MaxChars) {
+        $head = [int][Math]::Ceiling($MaxChars * 0.75)
+        $tail = $MaxChars - $head
+        $marker = '{0}[{1} chars elided - use raw=true for everything]{0}' -f
+            [Environment]::NewLine, ($Text.Length - $MaxChars)
+        $Text = $Text.Substring(0, $head) + $marker + $Text.Substring($Text.Length - $tail)
+    }
+
+    $Text
+}
+
 # Shapes ptk_invoke output for the MCP server (Phase 2 plan): objects compress via
 # Compress-PtcObject; log-shaped text goes to rtk when available; all other text
 # (strings and primitive scalars) passes through verbatim and is NEVER truncated.
@@ -973,14 +1010,17 @@ function Compress-PtcOutput {
                 # colored log would dodge the rtk dedup leg. raw=true calls
                 # never reach shaping and keep exact bytes.
                 $text = Remove-PtcAnsi (@($array | ForEach-Object { "$_" }) -join [Environment]::NewLine)
-                if (Test-PtcLogShaped -Text $text) { return (Invoke-PtcRtkLog -Text $text) }
-                return $text
+                if (Test-PtcLogShaped -Text $text) { return (Limit-PtcPassthrough (Invoke-PtcRtkLog -Text $text)) }
+                return (Limit-PtcPassthrough $text)
             }
 
             return ($array | Compress-PtcObject -MaxItems $MaxItems)
         }
         catch {
             $raw = ($array | Out-String).TrimEnd()
+            # Bound the fallback too (P3: no unbounded path), but never let the
+            # bounder violate the never-throw contract of this catch.
+            try { $raw = Limit-PtcPassthrough $raw } catch { }
             return "[ptk:shape ERROR - $($_.Exception.Message). Returning unshaped output.]`n$raw"
         }
     }

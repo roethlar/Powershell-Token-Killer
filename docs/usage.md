@@ -101,7 +101,8 @@ runspace. It is also useful for local experiments:
 
 Its contract is conservative: object output compresses, plain text and
 primitive scalars pass through with ANSI/control sequences stripped but
-otherwise unaltered, log-shaped text tries `rtk log`, and internal shaping
+otherwise unaltered (pathologically large text is elided to a labeled
+head+tail window), log-shaped text tries `rtk log`, and internal shaping
 failures return labeled unshaped output instead of failing the call.
 
 ## Routing Helper

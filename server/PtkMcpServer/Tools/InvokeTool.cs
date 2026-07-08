@@ -14,7 +14,8 @@ public static class InvokeTool
         "output arrives token-compressed by shape. Single native commands (git, npm, " +
         "docker, ...) route through rtk's per-command filters, PowerShell objects " +
         "become compact typed summaries, log-shaped text is deduplicated, plain text " +
-        "passes through with terminal color codes stripped. Variables, imported modules, and established " +
+        "passes through with terminal color codes stripped (oversized text is elided " +
+        "with a labeled marker). Variables, imported modules, and established " +
         "connections persist across calls for the whole session, so heavy modules " +
         "import once instead of on every call. Set raw=true for full uncompressed " +
         "output. Calls run serially; a call that exceeds the server timeout is " +

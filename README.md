@@ -17,8 +17,8 @@ Two things make that worth doing:
   truncated: single native commands route through
   [rtk](https://github.com/rtk-ai/rtk)'s per-command filters,
   PowerShell objects become compact typed summaries, log-shaped text is
-  deduplicated, and plain text passes through with terminal escape codes
-  stripped, otherwise untouched.
+  deduplicated, and plain text passes through cleaned of terminal escape
+  codes, bounded only at pathological sizes.
 
 This is not a sandbox. Commands run with the same authority as the MCP client
 or shell that calls them.
@@ -38,8 +38,9 @@ Each call is classified and shaped through one of four legs:
 3. **Log shaping.** Text output that looks like a log (timestamps, level tags)
    is deduplicated through `rtk log`.
 4. **Passthrough.** Plain strings and scalars are returned with
-   ANSI/terminal escape sequences stripped — otherwise unaltered, never
-   truncated (`raw=true` keeps exact bytes).
+   ANSI/terminal escape sequences stripped, otherwise unaltered.
+   Pathologically large text is elided to a labeled head+tail window;
+   `raw=true` returns exact, complete bytes.
 
 Anything that is not a safe single native command — pipelines, chains,
 cmdlets, variables, redirections — runs as ordinary PowerShell in the warm
