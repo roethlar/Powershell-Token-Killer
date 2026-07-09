@@ -1244,6 +1244,16 @@ Describe 'Get-PtcShellDialectFinding' {
             # Guard sanity: with the shadow gone the finding returns.
             Get-PtcShellDialectFinding -Script 'export X=1' | Should -Match 'export'
         }
+
+        It 'stays silent when the submitted script itself defines the bash name (sd1-1 round 2)' {
+            # The round-1 guard resolved only AMBIENT session commands; the
+            # re-grade repro defines the shadow inline in the same script,
+            # where GetCommand sees nothing yet the script runs (ran:X=1).
+            Get-PtcShellDialectFinding -Script 'function export { param($Assignment) "ran:$Assignment" }; export X=1' |
+                Should -BeNullOrEmpty
+            # Guard sanity: the same call without the inline definition flags.
+            Get-PtcShellDialectFinding -Script 'export X=1' | Should -Match 'export'
+        }
     }
 
     Context 'parse-fatal evidence is comment/string-aware (sd1-3)' {

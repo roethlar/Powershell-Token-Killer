@@ -652,6 +652,12 @@ function Get-PtcShellDialectFinding {
     # CommandAst nodes are walked, so anything inside a quoted string
     # (bash -lc 'local x=1') never enters.
     $commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))
+    # sd1-1 (round 2): the ambient GetCommand guard below cannot see
+    # definitions carried by the submitted script itself (function export
+    # { ... }; export X=1 executes fine - re-grade round 1), so
+    # script-local function names count as resolved too.
+    $localNames = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true) |
+        ForEach-Object { $_.Name })
     foreach ($command in $commands) {
         $elements = @($command.CommandElements)
         $name = $null
@@ -678,7 +684,8 @@ function Get-PtcShellDialectFinding {
             $elements[1] -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
             $label = "the bash 'source' builtin"
         }
-        if ($label -and $null -eq $ExecutionContext.InvokeCommand.GetCommand(
+        if ($label -and $localNames -notcontains $name -and
+            $null -eq $ExecutionContext.InvokeCommand.GetCommand(
                 $name, [System.Management.Automation.CommandTypes]::All)) {
             return $label
         }
