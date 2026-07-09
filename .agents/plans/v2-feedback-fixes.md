@@ -66,8 +66,10 @@ the runspace's `$OutputEncoding` for the stdin side) to UTF-8 (no BOM) in
 `RunspaceHost` — process-wide and idempotent there, so in-proc tests
 exercise it, not only the spawned server. Trade-off accepted: tools that
 emit genuine OEM output would now mojibake instead — modern toolchains
-emit UTF-8, and `raw=true`/jobs (own-file logs, already UTF-8) remain
-escape hatches.
+emit UTF-8. The escape hatch for an OEM-emitting tool is a background
+job (its log keeps the child's original bytes); `raw=true` is NOT one —
+raw skips shaping, but native output is decoded at capture with the same
+pinned encoding (codex v2fb-2 correction).
 
 Guard: a native child emitting a known non-ASCII sequence (a pwsh child
 printing an em-dash as UTF-8) round-trips intact through `ptk_invoke`;
