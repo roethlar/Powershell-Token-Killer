@@ -21,9 +21,14 @@ short and update it when important repo facts change.
   (sd1-1 script-local definitions), `4e6a223` (sd1-3 Generic-fragment
   blanking), `5f4b3fa` (sd1-6 non-bridging blank filler), `ef9f3ed`
   (sd1-7 error/evidence locality) — one commit + red/green guard each;
-  battery at head: Pester 123/1 skipped, dotnet 59/59. NEXT: re-grade
-  round 2 (sd1-1/sd1-3/sd1-6/sd1-7), then record verdicts and close or
-  iterate; sd1-4 still awaits owner adjudication. Records:
+  battery at head: Pester 123/1 skipped, dotnet 59/59. RE-GRADE ROUND 2
+  (head `293eda6`): sd1-6 RESOLVED; sd1-1/sd1-3/sd1-7 held on residual
+  tails (no new IDs; every tail master-verified at head). FIX ROUND 3
+  LANDED: `9b5e326` (sd1-1 Set-Alias tracking + lexical ordering),
+  `20ba7fd` (sd1-3 escape-aware fragments), `f30ddde` (sd1-7
+  command-position keywords). Battery: Pester 127/1 skipped, dotnet
+  59/59. NEXT: re-grade round 3 (sd1-1/sd1-3/sd1-7), then record and
+  close or iterate; sd1-4 still awaits owner adjudication. Records:
   `.agents/review/index.md`, `.agents/review/findings/sd1-{1..7}.md`.
 - **2026-07-09 (night): shell-dialect plan APPROVED — owner,
   in-session.** D1 = (a) refuse-fast with platform-aware guidance; D2 =

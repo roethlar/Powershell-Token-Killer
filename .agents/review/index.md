@@ -341,13 +341,13 @@ detail: `.agents/review/findings/sd1-{1,2,3}.md`.
 
 | ID    | Severity | Impact (one line)                                                      | Status | Branch |
 |-------|----------|--------------------------------------------------------------------------|--------|--------|
-| sd1-1 | MEDIUM   | Session-shadowed export/local/source would be refused once wired         | `[~]`  | master (direct, ca0a7e2 + bc5638d — round 2 landed, pending re-grade) |
+| sd1-1 | MEDIUM   | Session-shadowed export/local/source would be refused once wired         | `[~]`  | master (direct, ca0a7e2 + bc5638d + 9b5e326 — round 3 landed, pending re-grade) |
 | sd1-2 | MEDIUM   | A later escape or comment can close the backtick pair (FP on valid pwsh) | `[x]`  | master (direct, 8c1c77f; re-grade RESOLVED) |
-| sd1-3 | LOW      | Parse-fatal keys take bash evidence from comments/strings                | `[~]`  | master (direct, ceae832 + 4e6a223 — round 2 landed, pending re-grade) |
+| sd1-3 | LOW      | Parse-fatal keys take bash evidence from comments/strings                | `[~]`  | master (direct, ceae832 + 4e6a223 + 20ba7fd — round 3 landed, pending re-grade) |
 | sd1-4 | LOW      | Alias-shadowed `set` refused once wired; contests the frozen slice-0 `set` exemption | `[!]`  | n/a — owner adjudication |
 | sd1-5 | LOW      | Expandable-string blanking erases `$()` evidence (miss, inside sd1-3's recorded known gap) | `[-]`  | n/a — declined at intake |
-| sd1-6 | MEDIUM   | Space-filler blanking SYNTHESIZES bash shapes (new FP; disproves the "never an over-match" claim) | `[~]`  | master (direct, 5f4b3fa — pending re-grade) |
-| sd1-7 | LOW      | Parse-fatal error IDs pair with shape evidence globally, not locally      | `[~]`  | master (direct, ef9f3ed — pending re-grade) |
+| sd1-6 | MEDIUM   | Space-filler blanking SYNTHESIZES bash shapes (new FP; disproves the "never an over-match" claim) | `[x]`  | master (direct, 5f4b3fa; re-grade round 2 RESOLVED) |
+| sd1-7 | LOW      | Parse-fatal error IDs pair with shape evidence globally, not locally      | `[~]`  | master (direct, ef9f3ed + f30ddde — round 3 landed, pending re-grade) |
 
 **Re-grade round 1 (codex, Codex v0.144.0, gpt-5.6-sol, read-only) at head
 `acb0f39`:** sd1-2 RESOLVED; sd1-1 and sd1-3 NOT RESOLVED (each fix covered
@@ -366,5 +366,18 @@ definitions), `4e6a223` (sd1-3 Generic-fragment blanking), `5f4b3fa`
 locality — probed offsets for all eight frozen IN cases satisfy the
 overlap-or-after rule). One commit + guard each; every guard's red leg
 was live-verified at the pre-fix head. Battery at `ef9f3ed`: Pester
-123 passed / 1 skipped, dotnet 59/59. NEXT: re-grade round 2 (sd1-1,
-sd1-3, sd1-6, sd1-7); sd1-4 still awaits owner adjudication.
+123 passed / 1 skipped, dotnet 59/59.
+
+**Re-grade round 2 (codex, gpt-5.6-sol, read-only) at head `293eda6`:**
+sd1-6 RESOLVED; sd1-1/sd1-3/sd1-7 NOT RESOLVED on residual tails
+(preceding `Set-Alias` definitions; escaped quotes inside fragments;
+argument-position evidence after the error) — explicitly "unresolved
+portions, not new IDs"; every tail independently master-verified at head
+before round 3. **Fix round 3 LANDED (2026-07-09 night):** `9b5e326`
+(sd1-1 Set-Alias/New-Alias tracking + lexical ordering per plan slice
+1(iii)), `20ba7fd` (sd1-3 escape-aware fragment patterns), `f30ddde`
+(sd1-7 keyword evidence must sit in command position — probed: pwsh
+error recovery leaves genuine bash then/done as command names, argument
+keywords never). Battery at `f30ddde`: Pester 127/1 skipped, dotnet
+59/59. NEXT: re-grade round 3 (sd1-1, sd1-3, sd1-7); sd1-4 still awaits
+owner adjudication.
