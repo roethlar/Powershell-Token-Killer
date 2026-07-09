@@ -17,11 +17,14 @@ short and update it when important repo facts change.
   sd1-5 DECLINED (miss inside sd1-3's recorded known gap); sd1-4
   CONTESTED (alias-shadowed `set` — contests the frozen slice-0 `set`
   exemption, OWNER CALL). Reviewer battery at head: Pester 119/1
-  skipped, clean tree. NEXT: fix round 2 (sd1-1 inline-definition
-  guard, sd1-3 Generic-fragment blanking, sd1-6 filler over-match,
-  sd1-7 local association), one commit each + guards, then re-grade
-  round 2. Records: `.agents/review/index.md`,
-  `.agents/review/findings/sd1-{1..7}.md`.
+  skipped, clean tree. FIX ROUND 2 LANDED same night: `bc5638d`
+  (sd1-1 script-local definitions), `4e6a223` (sd1-3 Generic-fragment
+  blanking), `5f4b3fa` (sd1-6 non-bridging blank filler), `ef9f3ed`
+  (sd1-7 error/evidence locality) — one commit + red/green guard each;
+  battery at head: Pester 123/1 skipped, dotnet 59/59. NEXT: re-grade
+  round 2 (sd1-1/sd1-3/sd1-6/sd1-7), then record verdicts and close or
+  iterate; sd1-4 still awaits owner adjudication. Records:
+  `.agents/review/index.md`, `.agents/review/findings/sd1-{1..7}.md`.
 - **2026-07-09 (night): shell-dialect plan APPROVED — owner,
   in-session.** D1 = (a) refuse-fast with platform-aware guidance; D2 =
   non-breaking raw-posture subset; D3 = dialect line. The #4 comment's 4
