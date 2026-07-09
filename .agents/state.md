@@ -5,6 +5,16 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **2026-07-09 (latest+1): NUDGE IS A STANDARD LAYER (owner amendment,
+  60cd9f3, codex NO FINDINGS first pass).** `-Nudge` retired; every
+  implemented leg installs its guidance block on a bare run; live bare
+  run on this box installed the claude block (grok's nudge home — grok
+  is now covered) and the codex block; owner's preference text in
+  `~/.claude/CLAUDE.md` preserved byte-exact. Owner pushed through
+  a0dceb8 earlier (origin + gitea; gitea auth hiccup then success).
+  Owner comms preferences recorded in `~/.claude/CLAUDE.md`. **Canonical
+  counts: Pester 75, dotnet 59.** NEXT: slice 3 (grok leg — registration
+  idempotence only now; nudge already handled), then slice 4 (agy).
 - **2026-07-09 (latest): GITHUB ISSUE #2 FIXED and codex-closed** (plan:
   `.agents/plans/issue-2-stale-hook-registration.md`; owner mid-session
   go). ptk_init's claude leg registers the INSTALLED hook copy
