@@ -97,7 +97,9 @@ $hookMarker = 'ptk-hook.ps1'
 # shell call (issue #2). The checkout sibling is only the fallback for
 # payload-less runs (test seams).
 $installedHook = Join-Path $PtkHome 'scripts' 'ptk-hook.ps1'
-$hookScript = (Test-Path -LiteralPath $installedHook) ? $installedHook : (Join-Path $PSScriptRoot 'ptk-hook.ps1')
+# -PathType Leaf: a DIRECTORY at the script path would satisfy a bare
+# Test-Path and re-create the silent fail-open (pwsh -File <dir>) (i2-3).
+$hookScript = (Test-Path -LiteralPath $installedHook -PathType Leaf) ? $installedHook : (Join-Path $PSScriptRoot 'ptk-hook.ps1')
 $hookCommand = 'pwsh -NoProfile -File "{0}"' -f $hookScript
 
 # The -File target of a ptk-owned hook command, for staleness checks; $null
@@ -224,7 +226,8 @@ function Invoke-PtkClaudeLeg {
         foreach ($hook in @($entry['hooks'])) {
             if ($null -ne $hook -and [string]$hook['command'] -like "*$hookMarker*") {
                 $hookTarget = Get-PtkHookCommandTarget ([string]$hook['command'])
-                if ($hookTarget -and -not (Test-Path -LiteralPath $hookTarget)) { $hookTarget }
+                # Leaf: a directory at the target still fails open (i2-3).
+                if ($hookTarget -and -not (Test-Path -LiteralPath $hookTarget -PathType Leaf)) { $hookTarget }
             }
         }
     })

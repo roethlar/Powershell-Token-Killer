@@ -592,6 +592,28 @@ Describe 'redirect hook and installer' {
             $config.hooks.PreToolUse[0].hooks[0].command | Should -Not -Match 'gone'
         }
 
+        It 'treats a directory at the registered target as stale' {
+            # i2-3: pwsh -File <directory> fails open exactly like a missing
+            # file; a bare Test-Path would bless it.
+            $dirTarget = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-dir-{0}" -f ([guid]::NewGuid())) 'ptk-hook.ps1'
+            New-Item -ItemType Directory -Path $dirTarget -Force | Out-Null
+            try {
+                Set-Content -LiteralPath $script:settings -Value (@{
+                    hooks = @{
+                        PreToolUse = @(
+                            @{ matcher = 'Bash|PowerShell'; hooks = @(@{ type = 'command'; command = ('pwsh -NoProfile -File "{0}"' -f $dirTarget) }) }
+                        )
+                    }
+                } | ConvertTo-Json -Depth 8)
+
+                $out = pwsh -NoProfile -File $script:initScript -Show -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-String
+                $out | Should -Match 'STALE'
+            }
+            finally {
+                Remove-Item -LiteralPath (Split-Path -Parent $dirTarget) -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
         It 'flags a stale registered target under -Show' {
             Set-Content -LiteralPath $script:settings -Value (@{
                 hooks = @{
