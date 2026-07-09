@@ -584,6 +584,9 @@ function Invoke-PtkAgyLeg {
         Write-Host (('DRY RUN - would write the ptk plugin to {0}: plugin.json, rules/ptk.md{1}. ' +
             'No hooks.json - agy enforcement is deferred pending a live demonstration.') -f
             $pluginDir, ($globallyRegistered ? ' (registration exists globally - left as-is)' : ', mcp_config.json'))
+        if (Test-Path -LiteralPath (Join-Path $pluginDir 'hooks.json') -PathType Leaf) {
+            Write-Host 'DRY RUN - would remove the pre-existing hooks.json (the shipped plugin carries no hook).'
+        }
         return $true
     }
 
@@ -610,6 +613,17 @@ function Invoke-PtkAgyLeg {
             mcpServers = @{ ptk = @{ command = $binary; args = @() } }
         } | ConvertTo-Json -Depth 4)
         Write-Host '[agy] plugin carries the registration (no global entry found).'
+    }
+    # The shipped plugin carries NO hooks.json (enforcement deferred pending
+    # live verification): a stale hook from an earlier attempt would stay
+    # active - an unverified deny hook blocking agy commands - while this
+    # run reports that no hook ships (mhi-11). Install enforces the
+    # documented no-hook end-state. When a verified hooks.json ships, this
+    # removal must become marker/ownership-aware.
+    $hooksPath = Join-Path $pluginDir 'hooks.json'
+    if (Test-Path -LiteralPath $hooksPath -PathType Leaf) {
+        Remove-Item -LiteralPath $hooksPath -Force
+        Write-Host '[agy] pre-existing hooks.json removed - the shipped plugin carries no hook.'
     }
     Write-Host ("[agy] plugin installed ($pluginDir). No hook: enforcement deferred pending " +
         'live verification; first install run should also confirm agy discovers the plugin.')

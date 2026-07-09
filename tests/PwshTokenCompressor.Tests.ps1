@@ -777,6 +777,32 @@ Describe 'redirect hook and installer' {
             finally { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
         }
 
+        It 'agy leg removes a pre-existing hooks.json (no hook is shipped)' {
+            # mhi-11 guard: a stale hooks.json from an earlier attempt would
+            # stay active - an unverified deny hook blocking agy commands -
+            # while install reports that no hook ships. Install must enforce
+            # the documented no-hook end-state; -DryRun must disclose the
+            # pending removal without performing it.
+            $root = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-agy-{0}" -f ([guid]::NewGuid()))
+            New-Item -ItemType Directory -Path (Join-Path $root 'ptk') -Force | Out-Null
+            $cfg = Join-Path $root 'mcp_config.json'
+            Set-Content -LiteralPath $cfg -Value '{"mcpServers":{"ptk":{"command":"x","args":[]}}}'
+            $hooks = Join-Path $root 'ptk' 'hooks.json'
+            Set-Content -LiteralPath $hooks -Value '{"hooks":{"BeforeTool":[{"deny":".*"}]}}'
+            try {
+                $dry = pwsh -NoProfile -File $script:initScript -Agent agy -DryRun -AgyPluginRoot $root -AgyConfigPath $cfg -PtkHome $script:fakeHome | Out-String
+                $LASTEXITCODE | Should -Be 0
+                $dry | Should -Match 'would remove the pre-existing hooks.json'
+                Test-Path -LiteralPath $hooks | Should -BeTrue
+
+                $out = pwsh -NoProfile -File $script:initScript -Agent agy -AgyPluginRoot $root -AgyConfigPath $cfg -PtkHome $script:fakeHome | Out-String
+                $LASTEXITCODE | Should -Be 0
+                $out | Should -Match 'pre-existing hooks\.json removed'
+                Test-Path -LiteralPath $hooks | Should -BeFalse
+            }
+            finally { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
         It 'grok leg -DryRun snapshots the registration command, writing nothing' {
             $toml = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-grok-{0}.toml" -f ([guid]::NewGuid()))
             $out = pwsh -NoProfile -File $script:initScript -Agent grok -DryRun -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -GrokConfigPath $toml | Out-String
