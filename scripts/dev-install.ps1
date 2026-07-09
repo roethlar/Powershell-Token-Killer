@@ -242,6 +242,27 @@ function Remove-PtkArpEntry {
     }
 }
 
+# True only when a REAL ptk hook entry exists: a marker-matched command
+# inside hooks.PreToolUse. A raw text match on the whole settings file would
+# treat 'ptk-hook.ps1' anywhere (permissions lists, other hook events) as
+# hook consent (i2-1).
+function Test-PtkHookEntryPresent {
+    param([Parameter(Mandatory)][string]$SettingsPath)
+    if (-not (Test-Path -LiteralPath $SettingsPath)) { return $false }
+    $raw = Get-Content -LiteralPath $SettingsPath -Raw
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $false }
+    try { $config = $raw | ConvertFrom-Json -AsHashtable } catch { return $false }
+    if ($null -eq $config -or -not $config.ContainsKey('hooks') -or
+        -not $config['hooks'].ContainsKey('PreToolUse')) { return $false }
+    foreach ($entry in @($config['hooks']['PreToolUse'])) {
+        if ($null -eq $entry) { continue }
+        foreach ($hook in @($entry['hooks'])) {
+            if ($null -ne $hook -and [string]$hook['command'] -like '*ptk-hook.ps1*') { return $true }
+        }
+    }
+    $false
+}
+
 function Show-PtkCodexSnippet {
     param([Parameter(Mandatory)][string]$BinaryPath)
     Write-Host ''
@@ -284,8 +305,7 @@ switch ($mode) {
         # nothing to remove (and creates it when missing), which would
         # violate the leave-non-payload-files-alone contract.
         $settingsPath = Join-Path $HOME '.claude' 'settings.json'
-        $hookPresent = (Test-Path -LiteralPath $settingsPath) -and
-            ((Get-Content -LiteralPath $settingsPath -Raw) -like '*ptk-hook.ps1*')
+        $hookPresent = Test-PtkHookEntryPresent -SettingsPath $settingsPath
         if ($hookPresent) {
             # Prefer the installed copy; fall back to this script's sibling so
             # a partially deleted home still gets its hook entry removed.
@@ -343,8 +363,7 @@ switch ($mode) {
             # - a registration left pointing at a moved/removed path fails
             # open silently on every shell call (issue #2).
             $globalSettings = Join-Path $HOME '.claude' 'settings.json'
-            if ($registered -and (Test-Path -LiteralPath $globalSettings) -and
-                ((Get-Content -LiteralPath $globalSettings -Raw) -like '*ptk-hook.ps1*')) {
+            if ($registered -and (Test-PtkHookEntryPresent -SettingsPath $globalSettings)) {
                 Write-Host 'Existing ptk hook registration found - refreshing it against this install.'
                 & (Join-Path $ptkHome 'scripts' 'ptk_init.ps1') -Agent claude | Out-Host
             }
