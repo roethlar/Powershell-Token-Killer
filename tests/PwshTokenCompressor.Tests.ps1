@@ -700,11 +700,39 @@ Describe 'redirect hook and installer' {
         }
 
         It 'reports unimplemented legs without touching anything' {
-            # One comma-joined string: pwsh -File hands arrays over this way.
-            $out = pwsh -NoProfile -File $script:initScript -Agent 'grok,agy' | Out-String
+            $out = pwsh -NoProfile -File $script:initScript -Agent 'agy' | Out-String
             $LASTEXITCODE | Should -Be 0
-            $out | Should -Match '\[grok\] leg not implemented'
             $out | Should -Match '\[agy\] leg not implemented'
+        }
+
+        It 'grok leg -DryRun snapshots the registration command, writing nothing' {
+            $toml = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-grok-{0}.toml" -f ([guid]::NewGuid()))
+            $out = pwsh -NoProfile -File $script:initScript -Agent grok -DryRun -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -GrokConfigPath $toml | Out-String
+            $LASTEXITCODE | Should -Be 0
+            $out | Should -Match 'grok mcp add -s user ptk '
+            Test-Path -LiteralPath $script:nudgeFile | Should -BeFalse
+        }
+
+        It 'grok leg leaves an existing registration as-is and still writes the nudge' {
+            # The toml presence check short-circuits before any CLI call, so
+            # this runs identically on machines with or without a grok CLI.
+            $toml = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-grok-{0}.toml" -f ([guid]::NewGuid()))
+            Set-Content -LiteralPath $toml -Value "[mcp_servers.ptk]`ncommand = 'x'`n"
+            try {
+                $out = pwsh -NoProfile -File $script:initScript -Agent grok -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -GrokConfigPath $toml | Out-String
+                $LASTEXITCODE | Should -Be 0
+                $out | Should -Match 'already registered - left as is'
+                Get-Content -LiteralPath $script:nudgeFile -Raw | Should -Match 'ptk-guidance'
+            }
+            finally { Remove-Item -LiteralPath $toml -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'grok leg -Uninstall -DryRun names the removal and leaves the shared nudge alone' {
+            Set-Content -LiteralPath $script:nudgeFile -Value "x`n<!-- ptk-guidance -->b<!-- /ptk-guidance -->`n"
+            $out = pwsh -NoProfile -File $script:initScript -Agent grok -Uninstall -DryRun -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -GrokConfigPath 'C:\nonexistent.toml' | Out-String
+            $LASTEXITCODE | Should -Be 0
+            $out | Should -Match 'grok mcp remove -s user ptk'
+            Get-Content -LiteralPath $script:nudgeFile -Raw | Should -Match 'ptk-guidance'
         }
 
         It 'codex leg -DryRun snapshots the registration command and nudge, writing nothing' {

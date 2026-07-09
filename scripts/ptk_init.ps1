@@ -65,6 +65,10 @@ param(
     # claude). Providing either restricts the run to exactly one leg.
     [string]$SettingsPath,
     [string]$NudgePath,
+    # Per-leg config targets (test seams).
+    [string]$GrokConfigPath,
+    [string]$AgyPluginRoot,
+    [string]$AgyConfigPath,
     # Where the installed payload lives (test seam).
     [string]$PtkHome = (Join-Path $HOME '.ptk')
 )
@@ -417,6 +421,96 @@ function Invoke-PtkCodexLeg {
     $ok
 }
 
+# grok leg: registration presence is read from ~/.grok/config.toml (format
+# live-verified 2026-07-08, docs/harness-support.md); an existing
+# [mcp_servers.ptk] entry is left as-is, otherwise `grok mcp add -s user`
+# (the slice-0-verified surface) registers the installed binary. No hook:
+# no verified grok hook surface exists. grok session-loads
+# ~/.claude/CLAUDE.md (VERIFIED), so its nudge is the same block the claude
+# leg owns there - this leg ensures it exists on install and leaves
+# removal to the claude leg's uninstall.
+function Invoke-PtkGrokLeg {
+    $configPath = $GrokConfigPath ? $GrokConfigPath : (Join-Path $HOME '.grok' 'config.toml')
+    $nudgeTarget = $NudgePath ? $NudgePath : (Join-Path $HOME '.claude' 'CLAUDE.md')
+    $binary = Join-Path $PtkHome 'bin' ($IsWindows ? 'PtkMcpServer.exe' : 'PtkMcpServer')
+    $cli = Get-Command grok -ErrorAction SilentlyContinue
+    $registered = (Test-Path -LiteralPath $configPath -PathType Leaf) -and
+        ((Get-Content -LiteralPath $configPath -Raw) -match '(?m)^\s*\[mcp_servers\.ptk\]')
+    $nudgePresent = (Test-Path -LiteralPath $nudgeTarget) -and
+        ((Get-Content -LiteralPath $nudgeTarget -Raw) -like "*$nudgeBegin*")
+
+    if ($Show) {
+        Write-Host ("[grok] cli: {0}" -f ($cli ? $cli.Source : 'NOT FOUND'))
+        Write-Host ("[grok] registration: {0} ({1})" -f
+            ($registered ? 'REGISTERED' : 'not registered'), $configPath)
+        Write-Host ("[grok] nudge block: {0} in {1} (shared with the claude leg)" -f
+            ($nudgePresent ? 'INSTALLED' : 'not installed'), $nudgeTarget)
+        return $true
+    }
+
+    if ($Uninstall) {
+        if ($DryRun) {
+            Write-Host 'DRY RUN - would run: grok mcp remove -s user ptk'
+        }
+        elseif ($registered -and $cli) {
+            grok mcp remove -s user ptk *> $null
+            if ($LASTEXITCODE -eq 0) { Write-Host '[grok] registration removed.' }
+            else {
+                Write-Warning (('[grok] grok mcp remove failed (the remove syntax mirrors the ' +
+                    'verified add form but is not itself live-verified) - remove the ' +
+                    '[mcp_servers.ptk] entry from {0} manually.') -f $configPath)
+            }
+        }
+        elseif ($registered) {
+            Write-Warning (('[grok] grok CLI not found - remove the [mcp_servers.ptk] entry ' +
+                'from {0} manually.') -f $configPath)
+        }
+        else {
+            Write-Host '[grok] no registration to remove.'
+        }
+        # The nudge block in ~/.claude/CLAUDE.md is claude-leg-owned;
+        # removing it here would strip claude's nudge too.
+        return $true
+    }
+
+    $ok = $true
+    if ($DryRun) {
+        Write-Host (('DRY RUN - would ensure registration (skipped when {0} already has ' +
+            '[mcp_servers.ptk]): grok mcp add -s user ptk "{1}"') -f $configPath, $binary)
+    }
+    elseif ($registered) {
+        # Probe before gates (the mhi-8 lesson): an existing entry -
+        # including a custom one - is left as-is regardless of payload.
+        Write-Host ('[grok] already registered - left as is ({0} has [mcp_servers.ptk]).' -f $configPath)
+    }
+    elseif (-not $cli) {
+        Write-Warning (('[grok] grok CLI not found on PATH - register manually: ' +
+            'grok mcp add -s user ptk "{0}"') -f $binary)
+        $ok = $false
+    }
+    elseif (-not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+        Write-Warning (('[grok] no installed ptk server at {0}. Run scripts/dev-install.ps1 ' +
+            'first, then re-run this script.') -f $binary)
+        $ok = $false
+    }
+    else {
+        grok mcp add -s user ptk $binary | Out-Host
+        if ($LASTEXITCODE -ne 0) {
+            Write-Warning (('[grok] grok mcp add failed - register manually: ' +
+                'grok mcp add -s user ptk "{0}"') -f $binary)
+            $ok = $false
+        }
+        else {
+            Write-Host ('[grok] registered (user-level {0}).' -f $configPath)
+        }
+    }
+
+    # Standard layer, written even on registration failure (conditional
+    # wording, safe on ptk-less machines).
+    Install-PtkNudgeBlock -Path $nudgeTarget
+    $ok
+}
+
 function Invoke-PtkStubLeg {
     param(
         [Parameter(Mandatory)][string]$Name,
@@ -458,7 +552,7 @@ foreach ($name in $resolvedAgents) {
     $ok = switch ($name) {
         'claude' { Invoke-PtkClaudeLeg }
         'codex' { Invoke-PtkCodexLeg }
-        'grok' { Invoke-PtkStubLeg -Name 'grok' -PlannedSlice 3 }
+        'grok' { Invoke-PtkGrokLeg }
         'agy' { Invoke-PtkStubLeg -Name 'agy' -PlannedSlice 4 }
     }
     if (-not $ok) { $failedLegs += $name }

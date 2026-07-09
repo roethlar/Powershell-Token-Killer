@@ -92,6 +92,27 @@ it); no flag to remember. A bare `ptk_init.ps1` — or dev-install's
 chaining — must produce the full correct state for every detected
 harness.
 
+**AMENDMENT 2026-07-09 (owner, second):** "I don't want to run things
+piecemeal anymore. nothing gets changed outside of the end-state
+installation process. finish that." Consequences:
+
+- **Slice 5 changes from `-InitAgents` opt-in to DEFAULT chaining**: a
+  bare `dev-install.ps1` runs the full per-agent init after a successful
+  registration (one command per machine); `-Hook` becomes a redundant
+  accepted alias. `-Uninstall` reverses every leg via `ptk_init
+  -Uninstall` before removing the payload.
+- **No live installer runs or harness-file writes during development**
+  (repo-guidance Earned Practices). Tests use seams, `-DryRun` snapshots,
+  and fake CLI shims; live verification happens at the owner's install
+  run.
+- **agy hook DEFERRED**: the verify-once bar (live deny-and-reissue)
+  cannot be met without a live run, so slice 4 ships the agy plugin
+  WITHOUT `hooks.json` (registration + rules nudge only); the hook lands
+  in a future slice after the owner's install run demonstrates it.
+- grok uninstall syntax (`grok mcp remove`) is a mirror of the verified
+  add form, not itself live-verified: the leg attempts it and reports
+  honestly on failure, naming the config file for manual removal.
+
 ## Goal
 
 One installer surface that makes ptk available and preferred on a machine,
