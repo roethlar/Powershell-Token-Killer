@@ -489,8 +489,8 @@ Describe 'redirect hook and installer' {
         }
 
         It 'installs one Bash|PowerShell entry into fresh settings, idempotently' {
-            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $script:fakeHome | Out-Null
-            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $script:fakeHome | Out-Null
+            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-Null
+            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-Null
 
             $config = Get-Content -LiteralPath $script:settings -Raw | ConvertFrom-Json
             $entries = @($config.hooks.PreToolUse)
@@ -510,13 +510,13 @@ Describe 'redirect hook and installer' {
                 }
             } | ConvertTo-Json -Depth 8)
 
-            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $script:fakeHome | Out-Null
+            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-Null
             $config = Get-Content -LiteralPath $script:settings -Raw | ConvertFrom-Json
             $config.model | Should -BeExactly 'sonnet'
             @($config.hooks.PreToolUse).Count | Should -Be 2
             @($config.hooks.PreToolUse | Where-Object { $_.hooks[0].command -eq 'rtk hook claude' }).Count | Should -Be 1
 
-            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $script:fakeHome -Uninstall | Out-Null
+            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -Uninstall | Out-Null
             $config = Get-Content -LiteralPath $script:settings -Raw | ConvertFrom-Json
             $config.model | Should -BeExactly 'sonnet'
             @($config.hooks.PreToolUse).Count | Should -Be 1
@@ -541,7 +541,7 @@ Describe 'redirect hook and installer' {
                 }
             } | ConvertTo-Json -Depth 8)
 
-            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $script:fakeHome -Uninstall | Out-Null
+            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -Uninstall | Out-Null
 
             $config = Get-Content -LiteralPath $script:settings -Raw | ConvertFrom-Json
             @($config.hooks.PreToolUse).Count | Should -Be 1
@@ -550,7 +550,7 @@ Describe 'redirect hook and installer' {
         }
 
         It 'writes nothing under -DryRun' {
-            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $script:fakeHome -DryRun | Out-Null
+            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -DryRun | Out-Null
             Test-Path -LiteralPath $script:settings | Should -BeFalse
         }
 
@@ -562,7 +562,7 @@ Describe 'redirect hook and installer' {
             New-Item -ItemType Directory -Path (Join-Path $homeWithScripts 'scripts') -Force | Out-Null
             Set-Content -LiteralPath (Join-Path $homeWithScripts 'scripts' 'ptk-hook.ps1') -Value '# installed copy'
             try {
-                pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $homeWithScripts | Out-Null
+                pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $homeWithScripts | Out-Null
 
                 $config = Get-Content -LiteralPath $script:settings -Raw | ConvertFrom-Json
                 $config.hooks.PreToolUse[0].hooks[0].command | Should -Match ([regex]::Escape($homeWithScripts))
@@ -583,7 +583,7 @@ Describe 'redirect hook and installer' {
                 }
             } | ConvertTo-Json -Depth 8)
 
-            $out = pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $script:fakeHome | Out-String
+            $out = pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-String
             $out | Should -Match 'STALE'
             $out | Should -Match ([regex]::Escape('C:\gone\src\ptk-hook.ps1'))
 
@@ -631,7 +631,7 @@ Describe 'redirect hook and installer' {
             # Enforce only where the steered-to tool can answer: without
             # ~/.ptk the hook would deny every shell call toward nothing.
             $emptyHome = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-nohome-{0}" -f ([guid]::NewGuid()))
-            $out = pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $emptyHome 2>&1 | Out-String
+            $out = pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $emptyHome 2>&1 | Out-String
 
             $LASTEXITCODE | Should -Be 1
             $out | Should -Match 'dev-install'
@@ -699,10 +699,47 @@ Describe 'redirect hook and installer' {
             $out | Should -Match 'by content'
         }
 
-        It 'reports unimplemented legs without touching anything' {
-            $out = pwsh -NoProfile -File $script:initScript -Agent 'agy' | Out-String
-            $LASTEXITCODE | Should -Be 0
-            $out | Should -Match '\[agy\] leg not implemented'
+        It 'agy leg writes a hook-less plugin carrying the registration' {
+            $root = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-agy-{0}" -f ([guid]::NewGuid()))
+            $cfg = Join-Path $root 'mcp_config.json'   # absent: no global registration
+            $homeWithBin = Join-Path $root 'home'
+            New-Item -ItemType Directory -Path (Join-Path $homeWithBin 'bin') -Force | Out-Null
+            $binName = $IsWindows ? 'PtkMcpServer.exe' : 'PtkMcpServer'
+            Set-Content -LiteralPath (Join-Path $homeWithBin 'bin' $binName) -Value 'stub'
+            try {
+                pwsh -NoProfile -File $script:initScript -Agent agy -AgyPluginRoot $root -AgyConfigPath $cfg -PtkHome $homeWithBin | Out-Null
+                $LASTEXITCODE | Should -Be 0
+
+                $plugin = Join-Path $root 'ptk'
+                Test-Path (Join-Path $plugin 'plugin.json') | Should -BeTrue
+                Test-Path (Join-Path $plugin 'rules' 'ptk.md') | Should -BeTrue
+                Get-Content (Join-Path $plugin 'rules' 'ptk.md') -Raw | Should -Match 'ptk_invoke'
+                Get-Content (Join-Path $plugin 'mcp_config.json') -Raw | Should -Match ([regex]::Escape($binName))
+                # Enforcement is deferred: no hooks.json may ship (plan
+                # amendment - the verify-once bar is unmet for agy).
+                Test-Path (Join-Path $plugin 'hooks.json') | Should -BeFalse
+
+                pwsh -NoProfile -File $script:initScript -Agent agy -AgyPluginRoot $root -AgyConfigPath $cfg -PtkHome $homeWithBin -Uninstall | Out-Null
+                Test-Path $plugin | Should -BeFalse
+            }
+            finally { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
+        }
+
+        It 'agy leg leaves an existing global registration as-is (plugin carries rules only)' {
+            $root = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-agy-{0}" -f ([guid]::NewGuid()))
+            New-Item -ItemType Directory -Path $root -Force | Out-Null
+            $cfg = Join-Path $root 'mcp_config.json'
+            Set-Content -LiteralPath $cfg -Value '{"mcpServers":{"ptk":{"command":"x","args":[]}}}'
+            try {
+                $out = pwsh -NoProfile -File $script:initScript -Agent agy -AgyPluginRoot $root -AgyConfigPath $cfg -PtkHome $script:fakeHome | Out-String
+                $LASTEXITCODE | Should -Be 0
+                $out | Should -Match 'left as-is'
+                Test-Path (Join-Path $root 'ptk' 'rules' 'ptk.md') | Should -BeTrue
+                Test-Path (Join-Path $root 'ptk' 'mcp_config.json') | Should -BeFalse
+                # The global config is untouched.
+                Get-Content -LiteralPath $cfg -Raw | Should -Match '"command":\s*"x"'
+            }
+            finally { Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue }
         }
 
         It 'grok leg -DryRun snapshots the registration command, writing nothing' {
@@ -779,8 +816,17 @@ exit 1
             $out | Should -Match 'already registered - left as is'
         }
 
+        It 'rejects -SettingsPath without -NudgePath (seam runs stay sandboxed)' {
+            # The nudge is a standard layer; a redirected settings target
+            # with a defaulted nudge target would leak writes onto the real
+            # user guidance file (this bit the suite once).
+            $out = pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $script:fakeHome 2>&1 | Out-String
+            $LASTEXITCODE | Should -Not -Be 0
+            $out | Should -Match 'must pass both'
+        }
+
         It 'rejects -SettingsPath with a non-claude leg' {
-            $out = pwsh -NoProfile -File $script:initScript -Agent codex -SettingsPath $script:settings -PtkHome $script:fakeHome 2>&1 | Out-String
+            $out = pwsh -NoProfile -File $script:initScript -Agent codex -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome 2>&1 | Out-String
             $LASTEXITCODE | Should -Not -Be 0
             # Specifically the resolution-rule rejection, not a downstream
             # leg failure that happens to exit nonzero.

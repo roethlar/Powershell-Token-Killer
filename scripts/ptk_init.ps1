@@ -511,19 +511,104 @@ function Invoke-PtkGrokLeg {
     $ok
 }
 
-function Invoke-PtkStubLeg {
-    param(
-        [Parameter(Mandatory)][string]$Name,
-        [Parameter(Mandatory)][int]$PlannedSlice
-    )
-    Write-Host ("[{0}] leg not implemented yet (multi-harness-init slice {1}) - nothing changed." -f
-        $Name, $PlannedSlice)
+# agy (Antigravity) leg: one user-level plugin directory at
+# ~/.gemini/config/plugins/ptk/ carrying plugin.json, rules/ptk.md (the
+# nudge), and mcp_config.json (registration) - the last omitted when the
+# global ~/.gemini/config/mcp_config.json already registers ptk, which is
+# left as-is. NO hooks.json: agy's deny-with-guidance hook is documented
+# but its live firing has never been demonstrated; enforcement is deferred
+# until the owner's install run meets the verify-once bar (plan amendment
+# 2026-07-09). Whether agy auto-discovers plugins from this root is a
+# documented open probe for that same run. Install = write the directory;
+# uninstall = remove it (the global config entry is never touched).
+function Invoke-PtkAgyLeg {
+    $pluginRoot = $AgyPluginRoot ? $AgyPluginRoot : (Join-Path $HOME '.gemini' 'config' 'plugins')
+    $pluginDir = Join-Path $pluginRoot 'ptk'
+    $globalConfig = $AgyConfigPath ? $AgyConfigPath : (Join-Path $HOME '.gemini' 'config' 'mcp_config.json')
+    $binary = Join-Path $PtkHome 'bin' ($IsWindows ? 'PtkMcpServer.exe' : 'PtkMcpServer')
+
+    $globallyRegistered = $false
+    if (Test-Path -LiteralPath $globalConfig -PathType Leaf) {
+        try {
+            $cfg = Get-Content -LiteralPath $globalConfig -Raw | ConvertFrom-Json -AsHashtable
+            $globallyRegistered = $null -ne $cfg -and $cfg.ContainsKey('mcpServers') -and
+                $cfg['mcpServers'].ContainsKey('ptk')
+        }
+        catch { }
+    }
+    $pluginPresent = Test-Path -LiteralPath (Join-Path $pluginDir 'plugin.json') -PathType Leaf
+
+    if ($Show) {
+        Write-Host ("[agy] plugin: {0} ({1})" -f
+            ($pluginPresent ? 'INSTALLED' : 'not installed'), $pluginDir)
+        Write-Host ("[agy] global registration: {0} ({1})" -f
+            ($globallyRegistered ? 'REGISTERED' : 'not registered'), $globalConfig)
+        Write-Host '[agy] hook: not shipped (deferred pending live verification)'
+        return $true
+    }
+
+    if ($Uninstall) {
+        if ($DryRun) {
+            Write-Host "DRY RUN - would remove $pluginDir"
+        }
+        elseif (Test-Path -LiteralPath $pluginDir) {
+            Remove-Item -LiteralPath $pluginDir -Recurse -Force
+            Write-Host "[agy] plugin removed ($pluginDir)."
+        }
+        else {
+            Write-Host '[agy] no plugin to remove.'
+        }
+        # The global mcp_config.json entry (owner-installed, slice 0) is
+        # never touched here.
+        return $true
+    }
+
+    if ($DryRun) {
+        Write-Host (('DRY RUN - would write the ptk plugin to {0}: plugin.json, rules/ptk.md{1}. ' +
+            'No hooks.json - agy enforcement is deferred pending a live demonstration.') -f
+            $pluginDir, ($globallyRegistered ? ' (registration exists globally - left as-is)' : ', mcp_config.json'))
+        return $true
+    }
+
+    if (-not $globallyRegistered -and -not (Test-Path -LiteralPath $binary -PathType Leaf)) {
+        Write-Warning (('[agy] no installed ptk server at {0}. Run scripts/dev-install.ps1 ' +
+            'first, then re-run this script.') -f $binary)
+        return $false
+    }
+
+    New-Item -ItemType Directory -Path (Join-Path $pluginDir 'rules') -Force | Out-Null
+    Set-Content -LiteralPath (Join-Path $pluginDir 'plugin.json') -Value (@{
+        name        = 'ptk'
+        description = 'PowerShell Token Killer: warm-runspace shell with token-compressed output.'
+    } | ConvertTo-Json)
+    Set-Content -LiteralPath (Join-Path $pluginDir 'rules' 'ptk.md') -Value ($nudgeBlock.Trim() + [Environment]::NewLine) -NoNewline
+    if ($globallyRegistered) {
+        Write-Host '[agy] global registration exists - left as-is; the plugin carries rules only.'
+        # A stale plugin-level registration from an earlier install must not
+        # double-register against the global entry.
+        Remove-Item -LiteralPath (Join-Path $pluginDir 'mcp_config.json') -Force -ErrorAction SilentlyContinue
+    }
+    else {
+        Set-Content -LiteralPath (Join-Path $pluginDir 'mcp_config.json') -Value (@{
+            mcpServers = @{ ptk = @{ command = $binary; args = @() } }
+        } | ConvertTo-Json -Depth 4)
+        Write-Host '[agy] plugin carries the registration (no global entry found).'
+    }
+    Write-Host ("[agy] plugin installed ($pluginDir). No hook: enforcement deferred pending " +
+        'live verification; first install run should also confirm agy discovers the plugin.')
     $true
 }
 
 # --- resolve which legs run ---------------------------------------------
 
 $explicitTargets = [bool]$SettingsPath -or [bool]$NudgePath
+if ($SettingsPath -and -not $NudgePath) {
+    # A seam run must never write outside its sandbox: with the nudge a
+    # standard layer, defaulting it to the real user guidance file while
+    # the settings target is redirected would leak writes onto the machine.
+    throw ('-SettingsPath without -NudgePath would leave the nudge targeting the real user ' +
+        'guidance file; explicit-target runs must pass both.')
+}
 $resolvedAgents =
     if ($explicitTargets -or $Local) {
         if (-not $Agent) { $Agent = @('claude') }
@@ -553,7 +638,7 @@ foreach ($name in $resolvedAgents) {
         'claude' { Invoke-PtkClaudeLeg }
         'codex' { Invoke-PtkCodexLeg }
         'grok' { Invoke-PtkGrokLeg }
-        'agy' { Invoke-PtkStubLeg -Name 'agy' -PlannedSlice 4 }
+        'agy' { Invoke-PtkAgyLeg }
     }
     if (-not $ok) { $failedLegs += $name }
 }
