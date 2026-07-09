@@ -83,6 +83,18 @@ MCP tool") or per-harness wording.
    `-Uninstall` per leg. Claude leg = registration check (offers
    dev-install if `~/.ptk` is missing) + hook + optional nudge block in
    `~/.claude/CLAUDE.md`. Hook guidance text goes harness-neutral.
+   **Compatibility (deliberate breaking change, handled loudly):** the
+   current script is local-by-default; after the flip, a bare invocation
+   installs globally and PRINTS what changed and how to get the old
+   behavior (`-Local`). `dev-install.ps1 -Hook` already invokes the
+   global install and keeps working as an alias for the Claude leg; it
+   gains a deprecation note pointing at `-InitAgents` (slice 5) but is
+   not removed in this plan.
+   **Candidate within this slice (decide at implementation):** a cheap
+   server-liveness check in the hook, or at minimum down-server wording
+   in the deny guidance — today a dead server still yields denials
+   steering to an unavailable tool (mhi-2); PTK_DIRECT is the documented
+   escape either way.
 2. **codex leg.** `codex mcp add` (idempotent via `codex mcp get`) +
    marker-delimited nudge block in `~/.codex/AGENTS.md`. No hook.
 3. **grok leg.** `grok mcp add -s user` + whatever slice-0 said about the
