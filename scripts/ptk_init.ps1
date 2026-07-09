@@ -16,18 +16,19 @@ report themselves as not implemented.
 
 codex leg: idempotent registration (`codex mcp get ptk` answers -> the
 existing entry is left as-is; otherwise `codex mcp add ptk -- <installed
-binary>`), and with -Nudge the guidance block in ~/.codex/AGENTS.md. No
-hook: codex hooks are trust-gated (plan: Evidence).
+binary>`) and the guidance block in ~/.codex/AGENTS.md. No hook: codex
+hooks are trust-gated (plan: Evidence).
 
 claude leg: checks the installed payload (~/.ptk) and refuses the hook when
 it is missing - a redirect hook without a server steers every shell call at
 a tool that cannot answer; run scripts/dev-install.ps1 first. Installs one
 PreToolUse entry (matcher "Bash|PowerShell") running scripts/ptk-hook.ps1
-(deny-with-guidance; PTK_DIRECT in a command is the escape hatch), and with
--Nudge also maintains the ptk guidance block in ~/.claude/CLAUDE.md.
-Existing hooks - including rtk's own Bash rewrite hook - are preserved.
-Idempotent: re-running replaces ptk-owned entries instead of duplicating
-them. Takes effect at the next session start.
+(deny-with-guidance; PTK_DIRECT in a command is the escape hatch) and the
+ptk guidance block in ~/.claude/CLAUDE.md (standard layer, no opt-in - it
+is also grok's nudge home). Existing hooks - including rtk's own Bash
+rewrite hook - are preserved. Idempotent: re-running replaces ptk-owned
+entries instead of duplicating them. Takes effect at the next session
+start.
 
 BREAKING CHANGE vs the single-harness version of this script: installs are
 USER-LEVEL BY DEFAULT (~/.claude/settings.json). The old project-local
@@ -36,7 +37,6 @@ content-tracking tooling.
 
 .EXAMPLE
 pwsh -File scripts/ptk_init.ps1                     # detected agents, user level
-pwsh -File scripts/ptk_init.ps1 -Agent claude -Nudge
 pwsh -File scripts/ptk_init.ps1 -Show
 pwsh -File scripts/ptk_init.ps1 -Uninstall
 #>
@@ -55,11 +55,6 @@ param(
     # Deprecated: user-level is the default now. Accepted so older callers
     # (an installed dev-install.ps1 from a previous payload) keep working.
     [switch]$Global,
-
-    # Also maintain the ptk guidance block in the agent's user-level
-    # instructions file (claude: ~/.claude/CLAUDE.md). -Uninstall removes
-    # the block regardless of this switch.
-    [switch]$Nudge,
 
     [switch]$Show,
     [switch]$Uninstall,
@@ -327,7 +322,10 @@ function Invoke-PtkClaudeLeg {
     if ($Uninstall) {
         Uninstall-PtkNudgeBlock -Path $nudgeTarget
     }
-    elseif ($Nudge) {
+    else {
+        # Standard layer, no opt-in (owner amendment 2026-07-09): the block
+        # is idempotent, marker-owned, and conditionally worded - and it is
+        # grok's ONLY layer (grok session-loads this file, no hook).
         Install-PtkNudgeBlock -Path $nudgeTarget
     }
     $true
@@ -412,7 +410,10 @@ function Invoke-PtkCodexLeg {
         }
     }
 
-    if ($Nudge) { Install-PtkNudgeBlock -Path $nudgeTarget }
+    # Standard layer, no opt-in (owner amendment 2026-07-09); written even
+    # when registration failed - the wording is conditional, safe on
+    # machines where ptk never arrives.
+    Install-PtkNudgeBlock -Path $nudgeTarget
     $ok
 }
 

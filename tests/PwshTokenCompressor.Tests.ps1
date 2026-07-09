@@ -640,8 +640,8 @@ Describe 'redirect hook and installer' {
 
         It 'installs and removes the nudge block, preserving user content' {
             Set-Content -LiteralPath $script:nudgeFile -Value "# my file`n`nkeep me"
-            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -Nudge | Out-Null
-            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -Nudge | Out-Null
+            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-Null
+            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-Null
 
             $text = Get-Content -LiteralPath $script:nudgeFile -Raw
             ([regex]::Matches($text, [regex]::Escape('<!-- ptk-guidance -->'))).Count | Should -Be 1
@@ -660,15 +660,18 @@ Describe 'redirect hook and installer' {
             # lack a trailing newline; install/uninstall must not eat either.
             $original = "    indented code`r`n`r`nkeep me"
             Set-Content -LiteralPath $script:nudgeFile -Value $original -NoNewline
-            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -Nudge | Out-Null
+            pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-Null
             pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -Uninstall | Out-Null
 
             Get-Content -LiteralPath $script:nudgeFile -Raw | Should -BeExactly $original
         }
 
-        It 'leaves the nudge file untouched without -Nudge' {
+        It 'installs the nudge block by default - no opt-in flag' {
+            # Owner amendment 2026-07-09: a bare run produces the full
+            # correct state; flags nobody remembers do not gate layers.
             pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-Null
-            Test-Path -LiteralPath $script:nudgeFile | Should -BeFalse
+
+            Get-Content -LiteralPath $script:nudgeFile -Raw | Should -Match 'ptk-guidance'
         }
 
         It 'does not create the settings file when uninstalling with nothing installed' {
@@ -708,7 +711,7 @@ Describe 'redirect hook and installer' {
             # The codex leg is a thin CLI wrapper; live registration paths are
             # deliberately untested (they would mutate the real ~/.codex
             # config on a dev box). -DryRun is fully offline.
-            $out = pwsh -NoProfile -File $script:initScript -Agent codex -DryRun -Nudge -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-String
+            $out = pwsh -NoProfile -File $script:initScript -Agent codex -DryRun -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-String
             $LASTEXITCODE | Should -Be 0
             $out | Should -Match 'codex mcp add ptk -- '
             $out | Should -Match ([regex]::Escape($script:fakeHome))

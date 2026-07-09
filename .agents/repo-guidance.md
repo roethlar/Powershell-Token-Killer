@@ -74,6 +74,14 @@ dropped. Push policy stays in `.agents/push-policy.md`, not here.
 
 ## Earned Practices
 
-None recorded yet beyond the portable Git Safety rules in `AGENTS.md`. Add an
-entry here only once a real, citable incident in this repo earns a
-repo-specific rule.
+- **No piecemeal machine changes (owner rule, 2026-07-09).** Agents change
+  nothing on the machine outside the end-state installation process
+  (`scripts/dev-install.ps1`, which chains `scripts/ptk_init.ps1`); the
+  owner runs that process. During development, verification uses test
+  seams, `-DryRun` snapshots, and fake CLI shims — not live installer runs
+  or edits to harness files (`~/.claude/*`, `~/.codex/*`, `~/.grok/*`,
+  `~/.gemini/*`). Incident: 2026-07-09 — an agent ran installer legs and
+  wrote guidance blocks ad hoc across the session; the owner could not
+  tell what state the machine was in ("I don't want to run things
+  piecemeal anymore. nothing gets changed outside of the end-state
+  installation process.").

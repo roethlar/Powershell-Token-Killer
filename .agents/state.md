@@ -5,18 +5,22 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **2026-07-09 (latest): the nudge-standard-layer change was REVERTED on
-  owner instruction (82b8c51 reverts 60cd9f3+865af88).** It had been
-  built WITHOUT an approved plan — the owner's "that line is arcane"
-  complaint was read as a go; it was not. `-Nudge` stands as the opt-in;
-  the `~/.claude/CLAUDE.md` guidance block the unapproved run added was
-  removed (owner's own content kept; the `~/.codex/AGENTS.md` block
-  stays — it shipped under the approved slice-2 plan). Pester 75/75 at
-  the reverted head. OPEN DESIGN QUESTION for a future approved plan:
-  the owner finds the flag/branching surface cumbersome ("too many
-  branching paths"; "the install script needs to handle it") — slice 5's
-  one-command dev-install chaining is the recorded direction; nudge
-  default-ness needs an explicit owner decision, not inference.
+- **2026-07-09 (latest): OWNER CLARIFICATION resolved a revert
+  miscommunication; NEW STANDING RULE recorded.** The owner's "revert"
+  meant the HARNESS-FILE changes (done: the `~/.claude/CLAUDE.md`
+  guidance block was removed, owner content kept; `~/.codex/AGENTS.md`
+  keeps its slice-2 block), NOT the script rewrite — so the
+  nudge-standard-layer change (60cd9f3, codex NO FINDINGS) is RESTORED
+  by reverting 82b8c51. **Standing owner rule (also in
+  repo-guidance Earned Practices): no piecemeal machine changes —
+  agents change nothing outside the end-state installation process; the
+  owner runs that process.** Owner directive: FINISH the end state —
+  slices 3 (grok), 4 (agy), 5 (dev-install chains ptk_init by default,
+  one command per machine, uninstall symmetry), 6 (docs). Live
+  verification of legs happens at the owner's install run, not during
+  development (tests use seams/DryRun/fake shims). Owner pushed through
+  a0dceb8; everything after is local. **Canonical counts: Pester 75,
+  dotnet 59.**
 - **2026-07-09 (latest): GITHUB ISSUE #2 FIXED and codex-closed** (plan:
   `.agents/plans/issue-2-stale-hook-registration.md`; owner mid-session
   go). ptk_init's claude leg registers the INSTALLED hook copy

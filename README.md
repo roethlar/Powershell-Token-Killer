@@ -123,8 +123,11 @@ that actually holds.
 
 ```powershell
 pwsh -File scripts/ptk_init.ps1              # user-level install (default)
-pwsh -File scripts/ptk_init.ps1 -Nudge       # ... plus a guidance block in ~/.claude/CLAUDE.md
 ```
+
+One bare run installs the full state for every detected harness: the hook
+plus a guidance block in `~/.claude/CLAUDE.md` (which grok also reads —
+no flags to remember).
 
 Installs **user-level by default** (`~/.claude/settings.json`): one install
 per machine, covers every repo, invisible to repo-level tooling. `-Local` is
@@ -152,7 +155,7 @@ options and details are in
 
 The hook covers Claude Code today. `scripts/ptk_init.ps1` is growing
 per-harness legs (`-Agent claude|codex|grok|agy`); the claude and codex
-legs are implemented — `-Nudge` maintains the guidance block in
+legs are implemented and maintain the guidance block as a standard layer —
 `~/.claude/CLAUDE.md` (which also covers grok: it session-loads that file)
 and `~/.codex/AGENTS.md` (codex leg; registration is `codex mcp add`,
 idempotent) — see [docs/harness-support.md](docs/harness-support.md); the

@@ -129,12 +129,17 @@ grok/agy legs announce themselves as planned.
 
 ```powershell
 pwsh -File scripts/ptk_init.ps1              # user-level install (default)
-pwsh -File scripts/ptk_init.ps1 -Nudge       # ... plus the ~/.claude/CLAUDE.md guidance block
 pwsh -File scripts/ptk_init.ps1 -Show        # inspect per-leg status
 pwsh -File scripts/ptk_init.ps1 -DryRun
 pwsh -File scripts/ptk_init.ps1 -Uninstall   # hook out, nudge block out
 pwsh -File scripts/ptk_init.ps1 -Local       # per-repo opt-in (warns, see below)
 ```
+
+A bare install ships every layer the leg supports — for claude the hook
+AND the `~/.claude/CLAUDE.md` guidance block (also grok's nudge home); for
+codex the registration and the `~/.codex/AGENTS.md` block. There is no
+opt-in flag for the guidance block: it is idempotent, marker-owned,
+conditionally worded, and removed by `-Uninstall`.
 
 Installs are **user-level by default** (`~/.claude/settings.json`; the old
 `-Global` switch is accepted and means the same thing). `-Local` is the

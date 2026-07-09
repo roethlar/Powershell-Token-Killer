@@ -84,6 +84,14 @@ keep the leave-as-is path; behavioral guard via a fake codex shim, Pester
 canonical count now 66) fixed and re-graded RESOLVED, no new findings
 (`.agents/review/index.md`).
 
+**AMENDMENT 2026-07-09 (owner):** the `-Nudge` opt-in is retired — "that
+line is arcane and I will literally never run it." The nudge block is a
+STANDARD layer: every implemented leg installs it on a bare run (it is
+idempotent, marker-owned, conditionally worded, and uninstall removes
+it); no flag to remember. A bare `ptk_init.ps1` — or dev-install's
+chaining — must produce the full correct state for every detected
+harness.
+
 ## Goal
 
 One installer surface that makes ptk available and preferred on a machine,
