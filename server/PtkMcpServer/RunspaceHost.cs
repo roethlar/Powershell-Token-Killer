@@ -355,7 +355,7 @@ public sealed class RunspaceHost : IDisposable
 
             // Reset before each call so a previous call's native exit code is never
             // reported against a script that ran no native command (the stale-
-            // LASTEXITCODE bug the CLI path already fixed in Invoke-PtcRun).
+            // LASTEXITCODE bug first found and fixed on the since-retired CLI path).
             ResetExitCode();
             ps.Runspace = _runspace;
             // useLocalScope: false — assignments land in the runspace's session

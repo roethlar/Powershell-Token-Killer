@@ -5,24 +5,14 @@
     Author            = 'pwsh_token_compressor'
     CompanyName       = 'Unknown'
     Copyright         = '(c) 2026. All rights reserved.'
-    Description       = 'PowerShell-first token compression for agent workflows.'
+    Description       = 'Output shaping library for the ptk warm-runspace MCP server.'
     PowerShellVersion = '7.2'
     FunctionsToExport = @(
         'Compress-PtcObject',
         'Compress-PtcOutput',
-        'Resolve-PtcInvokeScript',
-        'Invoke-PtcBoundCommand',
-        'Invoke-Ptc',
-        'Invoke-PtcRun',
-        'Invoke-PtcList',
-        'Invoke-PtcRead',
-        'Invoke-PtcSmart',
-        'Measure-PtcSavings',
-        'Invoke-PtcSearch',
-        'Invoke-PtcProcess',
-        'Invoke-PtcService'
+        'Resolve-PtcInvokeScript'
     )
-    AliasesToExport   = @('ptk')
+    AliasesToExport   = @()
     CmdletsToExport   = @()
     VariablesToExport = @()
 }

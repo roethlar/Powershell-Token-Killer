@@ -119,29 +119,13 @@ TTY-dependent tools, or the ptk server being down — include `PTK_DIRECT` in a
 command comment to bypass the hook. Install options and details are in
 [server/README.md](server/README.md#claude-code-hook).
 
-## Local CLI
+## The Module
 
-The same compression is available as a plain PowerShell module, without the
-MCP server, for compact file reads, listings, and searches:
-
-```powershell
-Import-Module .\src\PwshTokenCompressor.psd1 -Force
-
-ptk ls . -Recurse
-ptk read .\README.md -MaxLines 20
-ptk smart .\src\PwshTokenCompressor.psm1
-ptk grep "function" .\src
-ptk run { Get-ChildItem . | Select-Object Name,Length }
-Get-ChildItem . | ptk compress -MaxItems 5
-```
-
-Or use the repo launcher without importing first:
-
-```powershell
-.\ptk.ps1 read .\README.md -MaxLines 20
-```
-
-The full command reference is in [docs/usage.md](docs/usage.md).
+`src/PwshTokenCompressor.psd1` is the server's shaping library — the MCP
+server imports it into the warm runspace and every result flows through it.
+It exports `Compress-PtcObject`, `Compress-PtcOutput`, and
+`Resolve-PtcInvokeScript` for the server (and for local experiments); there
+is no separate CLI face — `ptk_invoke` is the product surface.
 
 ## Verification
 
@@ -154,7 +138,6 @@ pwsh -NoProfile -File server/test-handshake.ps1 -UseRegistrationCommand -Timeout
 ## More Docs
 
 - [MCP server setup, configuration, and operations](server/README.md)
-- [Local CLI usage](docs/usage.md)
 
 ## Credits
 
