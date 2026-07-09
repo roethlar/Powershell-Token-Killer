@@ -615,11 +615,18 @@ function Get-PtcShellDialectFinding {
             [System.Management.Automation.Language.TokenKind]::HereStringLiteral,
             [System.Management.Automation.Language.TokenKind]::HereStringExpandable
         )
+        # sd1-6: the filler must never let a shape regex match ACROSS a
+        # blanked span - space fill satisfied \s* and turned foo 'bar'() {
+        # into a bash function shape the raw text never contained (re-grade
+        # round 1). [char]1 belongs to no character class the shape
+        # patterns use, so erased spans break matches instead of bridging
+        # them.
+        $blankChar = [char]1
         $chars = $Script.ToCharArray()
         foreach ($token in @($tokens)) {
             if ($blankKinds -contains $token.Kind) {
                 $end = [Math]::Min($token.Extent.EndOffset, $chars.Length)
-                for ($i = $token.Extent.StartOffset; $i -lt $end; $i++) { $chars[$i] = ' ' }
+                for ($i = $token.Extent.StartOffset; $i -lt $end; $i++) { $chars[$i] = $blankChar }
                 continue
             }
             # sd1-3 (round 2): a quoted fragment glued to bareword text folds
@@ -632,7 +639,7 @@ function Get-PtcShellDialectFinding {
                 foreach ($fragment in [regex]::Matches($token.Text, '"[^"]*"|''[^'']*''')) {
                     $start = $token.Extent.StartOffset + $fragment.Index
                     $end = [Math]::Min($start + $fragment.Length, $chars.Length)
-                    for ($i = $start; $i -lt $end; $i++) { $chars[$i] = ' ' }
+                    for ($i = $start; $i -lt $end; $i++) { $chars[$i] = $blankChar }
                 }
             }
         }

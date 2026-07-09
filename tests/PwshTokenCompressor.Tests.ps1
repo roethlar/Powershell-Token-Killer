@@ -1272,6 +1272,15 @@ Describe 'Get-PtcShellDialectFinding' {
         }
     }
 
+    Context 'blanking never synthesizes shapes (sd1-6)' {
+        It 'does not fabricate a bash function shape across a blanked string' {
+            # Space-filled blanking turned foo 'bar'() { into
+            # foo      () { - a function-shape match the raw text never
+            # contained (re-grade round 1).
+            Get-PtcShellDialectFinding -Script 'foo ''bar''() { echo hi; }' | Should -BeNullOrEmpty
+        }
+    }
+
     Context 'token-aware backtick handling (legitimate escapes never trip)' {
         It 'ignores a lone escape backtick' {
             Get-PtcShellDialectFinding -Script 'Write-Host `n' | Should -BeNullOrEmpty
