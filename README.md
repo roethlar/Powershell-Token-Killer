@@ -116,16 +116,46 @@ behavior (call serialization, timeout recycling, stdin handling) are in
 ## Claude Code Hook (Optional)
 
 The hook makes the redirect automatic: it intercepts ordinary Bash/PowerShell
-tool calls and steers the agent toward `ptk_invoke` instead.
+tool calls and steers the agent toward `ptk_invoke` instead. Adoption
+evidence says this matters: harnesses hide MCP tools behind deferred
+discovery, and instruction-only nudges decay — the hook is the mechanism
+that actually holds.
 
 ```powershell
 pwsh -File scripts/ptk_init.ps1 -Global
 ```
 
+**Prefer `-Global`** (one install per machine, covers every repo). Local
+mode edits the repo's `.claude/settings.json` — if anything in that repo
+tracks the file by content (governance tooling, dotfile managers, a
+hash-checking refresh), the edit reads as an owner modification forever
+after. Global mode patches only `~/.claude/settings.json`, which
+repo-level tooling never sees.
+
 When a command genuinely needs the harness shell — interactive or
 TTY-dependent tools, or the ptk server being down — include `PTK_DIRECT` in a
 command comment to bypass the hook. Install options and details are in
 [server/README.md](server/README.md#claude-code-hook).
+
+## Nudging Other Harnesses
+
+The hook covers Claude Code today (multi-harness install is planned). For
+any harness, a short note in its **user-level** guidance file — not a repo
+file — teaches the preference wherever ptk is registered and stays silent
+where it is not. Suggested text, adapt freely:
+
+> When the ptk MCP server is available, use `ptk_invoke` for shell
+> commands instead of the built-in shell: one warm PowerShell session
+> (imports, connections, variables persist across calls), compressed
+> output. Long stateless work: `background=true`, then poll `ptk_job`;
+> long work that needs the warm session: raise `timeoutSeconds`.
+> `ptk_state` diagnoses session drift; `ptk_reset` restores factory
+> state; `raw=true` returns full uncompressed output.
+
+Known user-level homes: `~/.claude/CLAUDE.md` (Claude Code),
+`~/.codex/AGENTS.md` (codex), `~/.gemini/GEMINI.md` (agy/gemini). Keep
+the note conditional ("when available") so the same text is safe on
+machines without ptk.
 
 ## The Module
 

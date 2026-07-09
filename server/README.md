@@ -131,15 +131,25 @@ ordinary Bash and PowerShell tool calls toward `mcp__ptk__ptk_invoke` using a
 deny-with-guidance response.
 
 ```powershell
+pwsh -File scripts/ptk_init.ps1 -Global     # ~/.claude/settings.json (preferred)
 pwsh -File scripts/ptk_init.ps1             # local .claude/settings.json
-pwsh -File scripts/ptk_init.ps1 -Global     # ~/.claude/settings.json
 pwsh -File scripts/ptk_init.ps1 -Show
 pwsh -File scripts/ptk_init.ps1 -DryRun
 pwsh -File scripts/ptk_init.ps1 -Uninstall
 ```
 
+**Prefer `-Global`.** Local mode edits the repo's `.claude/settings.json`;
+any tooling that tracks that file by content — governance refresh
+mechanisms, dotfile managers — will treat the repo as owner-modified from
+then on. The global install patches only `~/.claude/settings.json`, covers
+every repo on the machine, and is invisible to repo-level tooling. Use
+local mode only for a deliberate per-repo opt-in where nothing tracks the
+settings file.
+
 The installer preserves unrelated hooks and replaces only the ptk-owned entry
 when re-run. The hook takes effect at the next Claude Code session start.
+The hook fails open: if the ptk server is down or the hook script is
+missing, harness shell calls proceed normally.
 
 A command containing `PTK_DIRECT` bypasses the hook. Use that for work that
 genuinely needs the harness shell, such as interactive or TTY-dependent tools,
