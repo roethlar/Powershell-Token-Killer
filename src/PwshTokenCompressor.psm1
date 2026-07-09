@@ -617,9 +617,24 @@ function Get-PtcShellDialectFinding {
         )
         $chars = $Script.ToCharArray()
         foreach ($token in @($tokens)) {
-            if ($blankKinds -notcontains $token.Kind) { continue }
-            $end = [Math]::Min($token.Extent.EndOffset, $chars.Length)
-            for ($i = $token.Extent.StartOffset; $i -lt $end; $i++) { $chars[$i] = ' ' }
+            if ($blankKinds -contains $token.Kind) {
+                $end = [Math]::Min($token.Extent.EndOffset, $chars.Length)
+                for ($i = $token.Extent.StartOffset; $i -lt $end; $i++) { $chars[$i] = ' ' }
+                continue
+            }
+            # sd1-3 (round 2): a quoted fragment glued to bareword text folds
+            # into ONE Generic-kind string token (x"<<EOF" - re-grade round
+            # 1), which the kind list above never sees. Blank just the quoted
+            # spans; the bareword remainder stays as evidence.
+            if ($token.Kind -eq [System.Management.Automation.Language.TokenKind]::Generic -and
+                ($token -is [System.Management.Automation.Language.StringLiteralToken] -or
+                 $token -is [System.Management.Automation.Language.StringExpandableToken])) {
+                foreach ($fragment in [regex]::Matches($token.Text, '"[^"]*"|''[^'']*''')) {
+                    $start = $token.Extent.StartOffset + $fragment.Index
+                    $end = [Math]::Min($start + $fragment.Length, $chars.Length)
+                    for ($i = $start; $i -lt $end; $i++) { $chars[$i] = ' ' }
+                }
+            }
         }
         $scanText = [string]::new($chars)
         if ($errorIds -contains 'MissingFileSpecification' -and $scanText -match '<<') {

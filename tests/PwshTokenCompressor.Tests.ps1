@@ -1263,6 +1263,13 @@ Describe 'Get-PtcShellDialectFinding' {
             # heredoc finding.
             Get-PtcShellDialectFinding -Script 'Write-Output > # cat <<EOF' | Should -BeNullOrEmpty
         }
+
+        It 'takes no bash evidence from quoted fragments folded into Generic tokens (sd1-3 round 2)' {
+            # x"<<EOF" lexes as ONE Generic-kind string token (probed), so
+            # round 1's kind-list blanking never saw it and the heredoc key
+            # fired on an unrelated MissingFileSpecification.
+            Get-PtcShellDialectFinding -Script 'Write-Output x"<<EOF" >' | Should -BeNullOrEmpty
+        }
     }
 
     Context 'token-aware backtick handling (legitimate escapes never trip)' {
