@@ -199,8 +199,13 @@ Describe 'object routing robustness' {
 
         $result = $items | Compress-PtcObject
 
-        $result | Should -Match 'mixed: .*, \+2 more\)'
+        $result | Should -Match 'mixed: PtcTest\.Type1, PtcTest\.Type2, PtcTest\.Type3, \+2 more\)'
         $result | Should -Not -Match 'PtcTest\.Type4'
+        # Piping objects through Select-Object stamps 'Selected.*' into their
+        # LIVE TypeNames - the header must name real types, and the caller's
+        # objects must come back unmutated.
+        $result | Should -Not -Match 'Selected\.'
+        $items[0].PSObject.TypeNames[0] | Should -BeExactly 'PtcTest.Type1'
     }
 
     It 'keeps the payload of a mixed string/MatchInfo stream (issue #1 repro shape)' {

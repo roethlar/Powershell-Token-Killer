@@ -119,13 +119,18 @@ function Format-PtcTable {
     )
 
     if ($Rows.Count -eq 0) { return @() }
+    # Slice by index, never Select-Object: piping PSObject-wrapped rows (any
+    # PSCustomObject) through Select-Object -First stamps 'Selected.*' into
+    # their LIVE TypeNames, and the mutation persists on the caller's
+    # objects across warm-session calls.
+    $take = [Math]::Min($MaxItems, $Rows.Count)
     if ($Properties.Count -eq 0) {
-        $lines = @($Rows | Select-Object -First $MaxItems | ForEach-Object { [string]$_ })
+        $lines = @($Rows[0..($take - 1)] | ForEach-Object { [string]$_ })
         if ($Rows.Count -gt $MaxItems) { $lines += '+{0} more' -f ($Rows.Count - $MaxItems) }
         return $lines
     }
 
-    $visible = @($Rows | Select-Object -First $MaxItems)
+    $visible = @($Rows[0..($take - 1)])
     $widths = @{}
     foreach ($prop in $Properties) {
         $max = $prop.Length
@@ -288,7 +293,11 @@ function Compress-PtcGenericObject {
         return Limit-PtcText -Text (@($items | ForEach-Object { [string]$_ }) -join [Environment]::NewLine) -MaxLines $MaxItems
     }
 
-    $first = $items | Select-Object -First 1
+    # Index, don't Select-Object: piping a PSObject through Select-Object
+    # -First stamps 'Selected.*' into its live TypeNames - the header would
+    # name a wrapper type, and the mutation leaks onto the caller's objects
+    # (visible across warm-session calls).
+    $first = $items[0]
     $props = @(Get-PtcDisplayProperties -Object $first)
     $typeNames = @($items | ForEach-Object { $_.PSObject.TypeNames[0] } | Select-Object -Unique)
     $header = if ($typeNames.Count -gt 1) {
@@ -307,8 +316,8 @@ function Compress-PtcGenericObject {
         # type-heterogeneous stream it misrepresents the rest; carry some
         # payload so a summary never needs a raw re-run (issue #1 guardrail).
         $lines += 'samples:'
-        foreach ($item in $items | Select-Object -First 3) {
-            $lines += '  ' + (Limit-PtcText -Text ([string]$item) -MaxLines 1 -Width 110)
+        for ($i = 0; $i -lt [Math]::Min(3, $items.Count); $i++) {
+            $lines += '  ' + (Limit-PtcText -Text ([string]$items[$i]) -MaxLines 1 -Width 110)
         }
     }
     Join-PtcLines $lines
