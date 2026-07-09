@@ -193,3 +193,19 @@ owner's no-lingering-branches condition), so the master SHAs differ from
 the reviewed SHAs. CI matrix green on all three OSes at `30f283d`
 (run 28971482704). Commits remain unpushed pending the owner's master
 push go.
+
+---
+
+Loop run 2026-07-09 (multi-harness slice 1) — reviewer: codex (Codex
+v0.143.0, gpt-5.5, read-only), scope: commit `057a5ee` (ptk_init per-agent
+framework + Claude leg, hook liveness wording, dev-install -Hook chaining,
+tests, README sections). Fixes committed directly to `master`, one finding
+per commit, per the recorded precedent. Both findings ADMITTED at triage.
+Per-finding detail: `.agents/review/findings/mhi-6.md`, `mhi-7.md`.
+
+## Findings (multi-harness slice-1 loop)
+
+| ID    | Severity | Impact (one line)                                                        | Status | Branch |
+|-------|----------|---------------------------------------------------------------------------|--------|--------|
+| mhi-6 | MEDIUM   | dev-install -Hook ships the blocking hook even when registration was skipped | `[~]`  | master (direct) |
+| mhi-7 | LOW      | Nudge writer trims user-owned whitespace outside the marker block          | `[ ]`  | master (direct) |

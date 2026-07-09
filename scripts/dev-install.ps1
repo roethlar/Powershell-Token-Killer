@@ -188,13 +188,16 @@ function Remove-PtkPayload {
     }
 }
 
+# Returns $true when the server actually got registered with Claude Code;
+# $false when registration was left to the user (-Hook gates on this - a
+# blocking hook must not ship while the steered-to tool is unregistered).
 function Register-PtkServer {
     param([Parameter(Mandatory)][string]$BinaryPath)
     $claude = Get-Command claude -ErrorAction SilentlyContinue
     if (-not $claude) {
         Write-Host 'claude CLI not found - register manually:'
         Write-Host "  claude mcp add --scope user ptk `"$BinaryPath`""
-        return
+        return $false
     }
     # Remove-then-add so re-installs and dev<->release switches never collide.
     claude mcp remove --scope user ptk *> $null
@@ -204,6 +207,7 @@ function Register-PtkServer {
             "already removed. Register manually: claude mcp add --scope user ptk `"{0}`"" -f $BinaryPath)
     }
     Write-Host 'Registered with Claude Code (user scope).'
+    $true
 }
 
 function Unregister-PtkServer {
@@ -316,12 +320,22 @@ switch ($mode) {
             Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
         }
         $binaryPath = Join-Path $ptkHome 'bin' (Get-PtkServerBinaryName -TargetRid $targetRid)
-        Register-PtkServer -BinaryPath $binaryPath
+        $registered = Register-PtkServer -BinaryPath $binaryPath
         Write-PtkArpEntry -PayloadVersion $payloadVersion
         if ($Hook) {
-            Write-Host ('NOTE: -Hook covers the Claude Code leg only; for other harnesses run ' +
-                'scripts/ptk_init.ps1 (multi-harness init).')
-            & (Join-Path $ptkHome 'scripts' 'ptk_init.ps1') -Agent claude | Out-Host
+            if ($registered) {
+                Write-Host ('NOTE: -Hook covers the Claude Code leg only; for other harnesses run ' +
+                    'scripts/ptk_init.ps1 (multi-harness init).')
+                & (Join-Path $ptkHome 'scripts' 'ptk_init.ps1') -Agent claude | Out-Host
+            }
+            else {
+                # A payload exists but ptk_invoke is not registered: installing
+                # the redirect hook now would deny every shell call toward a
+                # tool the harness cannot see.
+                Write-Warning (('Skipping the hook install: the server is not registered with ' +
+                    'Claude Code (claude CLI not found). Register manually, then run: ' +
+                    'pwsh -File "{0}" -Agent claude') -f (Join-Path $ptkHome 'scripts' 'ptk_init.ps1'))
+            }
         }
         Show-PtkCodexSnippet -BinaryPath $binaryPath
         Write-Host ''
