@@ -12,9 +12,15 @@ short and update it when important repo facts change.
   no-preemptive-raw rewording, `route=pwsh`+`raw=false` taught as "exact
   execution, shaped output", `ptk_state` raw telemetry; declined:
   reason/cost gate — attribution recorded in the plan). Decision entry
-  in `.agents/decisions.md`. NEXT: slice 0 probes (results freeze into
-  the plan), then slices 1-4 — one commit + battery + codex loop each.
-  #5/#6 remain UNTRIAGED (owner call).
+  in `.agents/decisions.md`. Slice 0 probes RAN same night, results
+  frozen into the plan: the #3 repro does not reproduce on this build
+  (the resolver never rtk-wraps a `&&` chain — pwsh leg, runs fine);
+  detection list pinned at 12 constructs IN, trailing-`\` OUT
+  (Windows-path false-positive risk); `bash -lc` recovery verified end
+  to end (cwd anchor, `[exit] N`, `[ptk:log via rtk]` compression, both
+  legs); D2/D3 wording baseline snapshotted in the plan. NEXT: slice 1
+  (token-aware detector in the module), then 2-4 — one commit + battery
+  + codex loop each. #5/#6 remain UNTRIAGED (owner call).
 - **2026-07-09 (evening refresh): OWNER PUSHED master through
   `5e3cd70`; GitHub issues #1 and #2 CLOSED (~15:35Z). THREE NEW GitHub
   items since (all `roethlar`, ~19:28-19:33Z):** issue **#5** (ptk_invoke
@@ -705,9 +711,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-- **NEXT ACTION (2026-07-09 night): shell-dialect slice 0 probes.**
-  The plan is APPROVED (see `## Now`); slice 0 results freeze into the
-  plan file, then slices 1-4 — one commit + battery + codex loop each.
+- **NEXT ACTION (2026-07-09 night): shell-dialect slice 1 — the
+  detector.** The plan is APPROVED; slice 0 probe results are frozen in
+  the plan file. Slices 1-4 land one commit + battery + codex loop each.
   Owner decisions still open: (a) prioritize new issues **#5**
   (`[errors]` mislabels exit-0 native stderr) and **#6** (queue-wait
   excluded from `timeoutSeconds`; `ptk_state` blocks behind a busy

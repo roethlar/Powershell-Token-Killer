@@ -249,6 +249,121 @@ source.
 
 Each slice: one commit, battery, codex loop per repo precedent.
 
+## Slice 0 results (frozen 2026-07-09)
+
+Box: macOS (darwin), warm server pwsh 7.6.3, node v26.4.0, bash
+`/bin/bash`, rtk `/opt/homebrew/bin/rtk`. Probe hygiene note: the first
+runtime pass piped child output through `Select-Object -First 2`, whose
+pipeline stop contaminated exit codes; every runtime value below is from
+the clean re-probe (full capture first, truncate after).
+
+**(a) Issue #3 repro: does not reproduce; mechanism claim pinned false
+on this build.** `cd /tmp/ptk-slice0 && node scripts/build.mjs` (real
+directory, real script) ran verbatim through `ptk_invoke` under
+`route=auto`, `route=pwsh`, and `route=rtk` — success all three, no
+failure of any shape. Resolver classification of the exact string:
+returned **unchanged** (pwsh leg); contrast `git status --short` →
+`& '/opt/homebrew/bin/rtk' git status --short`. The resolver never
+rtk-wraps a `&&` chain (the single-`PipelineAst` check holds), so the
+issue's "No such file or directory (os error 2)" rtk phrasing cannot
+arise on this build. Design proceeds on the verified failure modes in
+(b) only, as the plan anticipated.
+
+**(b) Construct inventory.** Parse = `[Parser]::ParseInput`; runtime =
+cold `pwsh -NoProfile` child (the `JobManager` context; the warm
+runspace shares the same parser). Detection-list membership follows the
+precision principle.
+
+*Fatal at parse — cold, but no error names the dialect:*
+
+- heredoc `cat <<EOF …` — 3 errors, `MissingFileSpecification`
+  ("Missing file specification after redirection operator"); actively
+  misleading (names redirection, not heredocs). **IN.**
+- `[ -f x ]` / `[[ -f x ]]` — `MissingTypename` ("Missing type name
+  after '['"). **IN** (keyed to the spaced test shape, never type
+  literals).
+- `if [ … ]; then …; fi` — `MissingOpenParenthesisInIfStatement`. **IN.**
+- `f() { … }` — `ExpectedExpression` ("An expression was expected after
+  '('"). **IN.**
+- `for i in …; do …; done` — `MissingOpenParenthesisAfterKeyword`. **IN.**
+- `<(…)` process substitution — `RedirectionNotSupported` ("The '<'
+  operator is reserved for future use"). **IN.**
+
+*Parses clean, dies late as runtime CommandNotFound (exit 1):*
+
+- `export X=1` — "The term 'export' is not recognized …". **IN.**
+- `FOO=bar echo hi` — "The term 'FOO=bar' is not recognized …". **IN.**
+- `local x=1` — same shape. **IN.**
+- `source ./env.sh` — same shape. **IN.**
+
+*Silent or treacherous semantic change:*
+
+- `` echo `date` `` — parses clean, prints literal text, **exit 0**: the
+  worst case probed — no error at all. **IN**, token-aware paired-substitution
+  shape only (a lone pwsh escape/line-continuation backtick is
+  legitimate and must never trip).
+- `set -e` — `Set-Variable: Missing an argument for parameter
+  'Exclude'`, exit 1: a mystery error naming a parameter the agent never
+  wrote (probed 2026-07-09, matches the D1 note). **IN**, keyed on the
+  probed full argument shape per slice 1(iii).
+- trailing-`\` line continuation — prints the first fragment plus a
+  literal `\` line, exit 1 (split-statement semantics). **OUT** — a
+  trailing backslash is a legitimate line ending for Windows path
+  literals; the false-positive risk fails the precision principle.
+  Accepted miss; the D3 texts carry the lesson.
+
+*False-positive set — must never trip; all verified clean (exit 0):*
+`echo hi && echo there`, `Get-Date | Out-String`,
+`node --version 2>/dev/null`, `echo $(1+1)`, `echo 'literal $x'`, and
+the recovery wrapper itself, `bash -lc 'echo hi'`.
+
+**(c) `bash -lc` recovery path — verified end to end.** cwd anchoring:
+`bash -lc 'pwd'` → the session cwd. Exit codes surface: `bash -lc 'exit
+3'` → `[exit] 3`. Compression applies on the recovery path: 40
+log-shaped lines generated under `bash -lc` → `[ptk:log via rtk]`
+summary. Both legs: a constant `bash -lc '…'` is rtk-wrapped by the
+resolver (`& '/opt/homebrew/bin/rtk' bash -lc 'echo hi'`) and executes;
+a variable-bearing variant returns unchanged (pwsh leg) and executes
+(the log-generation probe carried `$(seq …)` and ran that leg).
+
+**(d) Wording snapshot — the D2/D3 reword baseline (2026-07-09).**
+
+- Hook deny, `scripts/ptk-hook.ps1:57-64`: "Shell commands run through
+  ptk: call the ptk_invoke MCP tool with \"script\" set to this same
+  command." + cwd-anchor advice + "It runs in a persistent warm
+  PowerShell runspace (state and imported modules survive across calls)
+  and output comes back token-compressed. Only if the command genuinely
+  needs this harness shell (interactive/TTY, or ptk is unavailable),
+  re-run it here with PTK_DIRECT in a comment." + a server-down NOTE
+  variant (`:63-64`). No dialect line. `PTK_DIRECT` bypass confirmed at
+  `:34-35` (plain `exit 0`; changes no dialect).
+- Nudge block, `scripts/ptk_init.ps1:120-130`: ends "… ptk_state
+  diagnoses session drift; ptk_reset restores factory state; raw=true
+  returns full uncompressed output. When the ptk tools are not
+  available in this session, use the normal shell tools." No dialect
+  line.
+- `README.md:43-44`: "`raw=true` returns the complete, uncompressed
+  output (as plain formatted text — nothing elided or stripped)";
+  `:60-62`: "Per-call escape hatches: `raw=true` returns full
+  uncompressed output executed exactly as written; `route=pwsh` forces
+  plain PowerShell execution; `route=rtk` forces the rtk rewrite when
+  the script shape allows it."; `:165-171`: the suggested harness note,
+  ending "`raw=true` returns full uncompressed output."
+- `server/README.md:86`: "(`raw=true` returns everything)"; `:93`:
+  "`raw=true` skips routing and shaping and returns plain formatted
+  text."
+- Elision markers, `src/PwshTokenCompressor.psm1:593`, `:605`, `:608`:
+  "[{N} lines elided - use raw=true for everything]", "[{N} lines and
+  {M} chars elided - use raw=true for everything]", "[{N} chars elided
+  - use raw=true for everything]".
+- `server/PtkMcpServer/Tools/InvokeTool.cs:20-21`: "Set raw=true for
+  full uncompressed output."; `:28` (raw parameter): "Skip output
+  compression and return plain formatted text."
+
+Every surface above reads raw as a neutral preference; none names the
+recovery-only posture or the `route=pwsh` + `raw=false` pairing. The
+slice-3 reword inventory is exactly this list.
+
 ## Out of scope
 
 - Issue #3's MCP permission-bypass / policy+audit layer — its own plan,
