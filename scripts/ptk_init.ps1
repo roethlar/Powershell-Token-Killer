@@ -60,7 +60,9 @@ param(
     [switch]$Uninstall,
     [switch]$DryRun,
 
-    # Explicit targets / test seams; providing either forces the claude leg.
+    # Explicit targets / test seams. -SettingsPath is claude-only;
+    # -NudgePath applies to whichever SINGLE leg is selected (default
+    # claude). Providing either restricts the run to exactly one leg.
     [string]$SettingsPath,
     [string]$NudgePath,
     # Where the installed payload lives (test seam).
