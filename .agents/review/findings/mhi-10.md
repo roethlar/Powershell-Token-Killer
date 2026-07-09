@@ -1,9 +1,9 @@
 # mhi-10: dev-install uninstall reverses only currently-detected legs
 
 **Severity**: MEDIUM — uninstall is asymmetric with install: a harness CLI removed from PATH after install leaves stale ptk state (nudge blocks, config entries pointing at a deleted binary) behind forever.
-**Status**: Fixed (awaiting reviewer re-review)
+**Status**: Fixed; re-grade round 1 NOT RESOLVED; completion landed (awaiting re-grade round 2)
 **Branch**: master (direct; repo precedent)
-**Commit**: `fa3620a`
+**Commit**: `fa3620a` (fix); `e8363f3` (re-grade completion)
 Reviewer intake id: `mhi-dev-uninstall-detected-only` (codex, codex-cli 0.142.5).
 
 ## Evidence
@@ -33,4 +33,31 @@ None — admitted as graded.
 grok registration removal genuinely needs the grok CLI (`grok mcp remove`); for that leg "run and report honestly" is the best achievable without the CLI. File/dir artifacts (nudge blocks, plugin dir) need no CLI.
 
 ## Reviewer comments
-(pending re-review)
+**Re-grade round 1 (codex, read-only): NOT RESOLVED.** Held at the codex
+leg's no-CLI uninstall branch (then `scripts/ptk_init.ps1:390`): with the
+codex CLI gone the leg printed `[codex] codex CLI not found - no
+registration to remove.` without ever reading the config, so a stale
+`[mcp_servers.ptk]` entry survived behind a false report — the finding's
+core (stale cross-harness state) reproduced under the new runs-every-leg
+resolution.
+
+## Re-grade completion (`e8363f3`)
+Grok-leg parity (`scripts/ptk_init.ps1:542`): the no-CLI branch now reads
+the config and, when a base `[mcp_servers.ptk]` entry exists, warns with
+the exact manual removal (`scripts/ptk_init.ps1:437`). Warn, not edit —
+the base entry is valid config a reinstalled CLI can manage; only
+unloadable orphaned subtables are swept (mhi-12, `9d00c6e`). New guard
+`codex leg uninstall warns about a stale registration when the CLI left
+PATH (mhi-10)` (`tests/PwshTokenCompressor.Tests.ps1:961`): temp
+config.toml with a base entry, gutted PATH, `-Agent codex -Uninstall
+-CodexConfigPath`; asserts exit 0, the manual-removal warning, and that
+the entry itself is untouched.
+
+**Guard proof (completion)**: stashed `scripts/ptk_init.ps1` (reverting
+to `9d00c6e`), re-ran the guard: FailedCount=1 — Expected regular
+expression 'remove the \[mcp_servers\.ptk\] entry' to match '[codex]
+codex CLI not found - no registration to remove.' — exactly the
+predicted false report. Popped; passes. Full battery at `e8363f3`: 85
+tests, 84 passed, 0 failed, 1 skipped (pre-existing), ~14.7s.
+
+(awaiting re-grade round 2)

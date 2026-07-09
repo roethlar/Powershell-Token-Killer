@@ -5,6 +5,17 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **2026-07-09 (latest): slices 3-6 review loop — fixes landed, re-grade
+  round 2 pending.** Codex loop over `86b51ae..6134a2f` produced
+  mhi-9/10/11 (fixed: `ce0caf2`, `fa3620a`, `6c1d025`); re-grade round 1
+  held mhi-10 NOT RESOLVED — completion `e8363f3` (no-CLI codex uninstall
+  now reads the config and names the manual removal). mhi-12 self-found
+  live (HIGH): `codex mcp remove ptk` orphans `[mcp_servers.ptk.tools.*]`
+  subtables and bricks the codex CLI — this box's config repaired
+  in-session; sweep fix `9d00c6e`. **Canonical counts: Pester 85, dotnet
+  59.** Master is local-ahead of origin; push is the owner's call. NEXT:
+  codex re-grade round 2 at `e8363f3` (mhi-10 completion + mhi-12), then
+  record the verdicts.
 - **2026-07-09 (latest): revert miscommunication resolved; end-state
   build resumed.** The harness-file writes stay undone; the
   nudge-standard-layer script change (60cd9f3) is RESTORED by reverting
@@ -769,3 +780,5 @@ short and update it when important repo facts change.
 ## Unrecorded Repo Memory
 
 - None known.
+
+Active review loop: see `.agents/review/index.md` (multi-harness slices 3-6, mhi-9..12; re-grade round 2 pending at `e8363f3`).

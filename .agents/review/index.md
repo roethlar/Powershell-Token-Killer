@@ -309,5 +309,14 @@ lines before admission). Per-finding detail:
 | ID     | Severity | Impact (one line)                                                        | Status | Branch |
 |--------|----------|--------------------------------------------------------------------------|--------|--------|
 | mhi-9  | MEDIUM   | Non-Claude machines get no harness legs from the one-command install     | `[x]`  | master `ce0caf2` |
-| mhi-10 | MEDIUM   | Uninstall skips legs whose CLI left PATH; stale cross-harness state      | `[ ]`  |        |
-| mhi-11 | MEDIUM   | Pre-existing agy hooks.json survives an install that reports no hook     | `[ ]`  |        |
+| mhi-10 | MEDIUM   | Uninstall skips legs whose CLI left PATH; stale cross-harness state      | `[x]`  | master `fa3620a`+`e8363f3` |
+| mhi-11 | MEDIUM   | Pre-existing agy hooks.json survives an install that reports no hook     | `[x]`  | master `6c1d025` |
+| mhi-12 | HIGH     | Uninstall orphans codex approval subtables; codex CLI bricks at config load | `[x]`  | master `9d00c6e` |
+**Re-grade status:** round 1 (codex, read-only) held mhi-10 NOT RESOLVED
+— the no-CLI codex uninstall still reported "no registration to remove"
+without reading the config; completion landed at `e8363f3` (grok-leg
+parity warning + guard; battery 85/84/0/1). mhi-12 (HIGH, self-found
+live: `codex mcp remove ptk` orphans `[mcp_servers.ptk.tools.*]`
+subtables and bricks the codex CLI; this box repaired in-session) fixed
+at `9d00c6e` — detail: `.agents/review/findings/mhi-12.md`. Next:
+re-grade round 2 over the full set at head `e8363f3`.
