@@ -122,10 +122,14 @@ deny-with-guidance response.
 ```powershell
 pwsh -File scripts/ptk_init.ps1 -Global     # ~/.claude/settings.json (preferred)
 pwsh -File scripts/ptk_init.ps1             # local .claude/settings.json
-pwsh -File scripts/ptk_init.ps1 -Show
-pwsh -File scripts/ptk_init.ps1 -DryRun
-pwsh -File scripts/ptk_init.ps1 -Uninstall
+pwsh -File scripts/ptk_init.ps1 -Global -Show       # inspect the global hook
+pwsh -File scripts/ptk_init.ps1 -Global -DryRun
+pwsh -File scripts/ptk_init.ps1 -Global -Uninstall  # bare -Uninstall targets LOCAL
 ```
+
+`-Show`/`-DryRun`/`-Uninstall` operate on whichever settings file the
+`-Global` switch selects — a global install needs `-Global -Uninstall`; a
+bare `-Uninstall` would only touch the repo-local file.
 
 **Prefer `-Global`.** Local mode edits the repo's `.claude/settings.json`;
 any tooling that tracks that file by content — governance refresh
