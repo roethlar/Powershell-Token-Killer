@@ -53,7 +53,7 @@ verifies them).
 | Claude Code | `claude mcp add --scope user` (in use today) | PreToolUse deny-with-guidance — mechanism verified, ptk's own live deny-and-reissue check STILL PENDING (the standing gate) | `~/.claude/CLAUDE.md` |
 | codex | `codex mcp add ptk -- <exe>` → `~/.codex/config.toml [mcp_servers.ptk]`; loads in `codex exec` (self-report + this machine's live config) | repo-level `.codex/hooks.json` pre_tool_use verified firing elsewhere (2026-06-29), but hooks are TRUST-GATED (`--dangerously-bypass-hook-trust` exists; persistence mechanism unknown) and repo-level writes violate user-level-only → **no hook in v1; probe later** | `~/.codex/AGENTS.md` (self-report, confident) |
 | grok | `grok mcp add -s user ptk <exe>` → `~/.grok/config.toml` (CLI-verified surface) | Self-report: all unsure. Third-party ledger: global `~/.grok/hooks/*.json` + auto-scan of `~/.claude/settings.json` — meaning ptk's GLOBAL CLAUDE HOOK may already fire in grok. Probe. | SELF-REPORT, slice-0 probe target: grok claimed it session-loads `~/.claude/Claude.md` (note the casing it reported — fine on Windows, not on case-sensitive systems). If the probe confirms it, the Claude user nudge covers grok; if not, the grok leg needs its own nudge home. MCP tools named `{server}__{tool}` (self-report) |
-| agy (Antigravity) | UNKNOWN — headless self-interview produced no output (known lapsed-OAuth failure mode); probe interactively. Likely `~/.gemini/settings.json` mcpServers | Third-party ledger: Claude-style hook events in GLOBAL `~/.gemini/settings.json` (docs-verified 2026-06-29); repo-level unverified | `~/.gemini/GEMINI.md` |
+| agy (Antigravity) | `~/.gemini/config/mcp_config.json` — file VERIFIED present on this machine (2026-07-08, currently empty `{}`); the `mcpServers` entry schema is agy's RECALL, confirmed at slice-4 install time by writing the entry and seeing the tools appear. agy also recalls a `/mcp` interactive manager. NOTE: agy's own sandbox blocks it from reading its config — agy probes run from outside or by the owner | CONFLICT to resolve at slice 0: the third-party ledger recorded Claude-style hook events in `~/.gemini/settings.json` (docs, 2026-06-29), but this machine has NO top-level settings.json, `antigravity-cli/settings.json` has no hooks key, and agy itself recalls plugin-bundled `hooks.json` (`before_tool_call`, block via non-zero exit / JSON) instead. All unverified live | `~/.gemini/GEMINI.md` (agy recall, consistent with the ledger; file does not exist yet on this machine — the nudge leg creates it) |
 | gemini CLI / cursor | absent on this machine | cursor: `.cursor` `BeforeTool` hooks.json per rtk's constants | dormant legs |
 
 Cross-cutting finding from grok's tool naming: ptk's hook guidance text
@@ -106,9 +106,14 @@ MCP tool") or per-harness wording.
    Nudge home per the slice-0 probe outcome: the Claude user file if the
    session-load claim verified, otherwise whatever guidance surface the
    probe established for grok.
-4. **agy leg.** Per slice-0 probe; expected: settings.json registration +
-   `~/.gemini/GEMINI.md` nudge block; hook only if the global
-   Claude-style events verify live.
+4. **agy leg.** Registration = write the `mcpServers` entry into the
+   verified `~/.gemini/config/mcp_config.json` (create-or-merge,
+   preserving foreign entries), then confirm the tools appear in a live
+   session — that confirmation IS the schema probe. Nudge = create/append
+   the marker block in `~/.gemini/GEMINI.md`. Hook = only if slice 0
+   resolves the hooks conflict (plugin `hooks.json` vs the ledger's
+   settings.json claim) with a live blocking demonstration; otherwise
+   nudge-only like codex.
 5. **dev-install integration + uninstall symmetry.** `dev-install.ps1`
    offers `-InitAgents` chaining; `-Uninstall` reverses every leg it
    installed (mcp remove per harness, nudge blocks out, hook out).
