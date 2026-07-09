@@ -475,9 +475,19 @@ Describe 'redirect hook and installer' {
             # installed payload regardless of this machine's real ~/.ptk.
             $script:fakeHome = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-home-{0}" -f ([guid]::NewGuid()))
             New-Item -ItemType Directory -Path (Join-Path $script:fakeHome 'bin') -Force | Out-Null
+            # CLI-gate seam (mhi-9): the claude leg now installs its hook
+            # only when a `claude` command resolves; a shim on PATH keeps
+            # these tests hermetic on machines without the real CLI.
+            $script:claudeShimDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-fakeclaude-{0}" -f ([guid]::NewGuid()))
+            New-Item -ItemType Directory -Path $script:claudeShimDir -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $script:claudeShimDir 'claude.ps1') -Value 'exit 0'
+            $script:savedInitPath = $env:PATH
+            $env:PATH = $script:claudeShimDir + [System.IO.Path]::PathSeparator + $env:PATH
         }
         AfterAll {
+            $env:PATH = $script:savedInitPath
             Remove-Item -LiteralPath $script:fakeHome -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item -LiteralPath $script:claudeShimDir -Recurse -Force -ErrorAction SilentlyContinue
         }
         BeforeEach {
             $script:settings = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-init-{0}.json" -f ([guid]::NewGuid()))
@@ -552,6 +562,31 @@ Describe 'redirect hook and installer' {
         It 'writes nothing under -DryRun' {
             pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -DryRun | Out-Null
             Test-Path -LiteralPath $script:settings | Should -BeFalse
+        }
+
+        It 'claude leg skips the hook but keeps the nudge when the claude CLI is absent' {
+            # mhi-9 guard: the hook steers shell calls at MCP ptk, which only
+            # answers where Claude Code can see the server; without the
+            # claude CLI that user-scope registration cannot exist, so a hook
+            # would deny every call toward an invisible tool (mhi-6). The leg
+            # must skip ONLY the hook and still write the conditionally
+            # worded guidance block (grok's single layer).
+            $pwshExe = (Get-Command pwsh).Source
+            $oldPath = $env:PATH
+            try {
+                $env:PATH = [System.IO.Path]::GetTempPath() # no claude, no shim
+                $out = & $pwshExe -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome 2>&1 | Out-String
+            }
+            finally {
+                $env:PATH = $oldPath
+            }
+
+            $LASTEXITCODE | Should -Not -Be 0
+            $out | Should -Match 'claude CLI not found'
+            # No hook write at all - not even an empty settings file.
+            Test-Path -LiteralPath $script:settings | Should -BeFalse
+            # The nudge stays.
+            Get-Content -LiteralPath $script:nudgeFile -Raw | Should -Match 'ptk-guidance'
         }
 
         It 'registers the installed hook copy when the payload carries it' {

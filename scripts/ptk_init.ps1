@@ -267,7 +267,22 @@ function Invoke-PtkClaudeLeg {
         Write-Host 'DRY RUN - continuing to show what an install would write.'
     }
 
-    if ($Uninstall -and -not $installed) {
+    # CLI gate (mhi-9): the hook blocks shell calls to steer them at MCP
+    # ptk, which only answers where Claude Code can see the server - and
+    # the user-scope registration surface is the claude CLI itself. With
+    # the CLI absent that registration cannot exist, so the hook would
+    # deny every shell call toward a tool the harness cannot see (mhi-6).
+    # Skip ONLY the hook: the nudge below is conditionally worded, safe
+    # everywhere, and grok's single layer.
+    $skipHook = -not $Uninstall -and
+        -not (Get-Command claude -ErrorAction SilentlyContinue)
+
+    if ($skipHook) {
+        Write-Warning ('[claude] claude CLI not found - not installing the blocking hook. ' +
+            'Register ptk first (claude mcp add --scope user ptk "<binary>"), then re-run ' +
+            'this script. Installing the guidance block only.')
+    }
+    elseif ($Uninstall -and -not $installed) {
         # Nothing ptk-owned in the settings: skip the write entirely rather
         # than create or reformat a file just to remove nothing.
         Write-Host "[claude] no ptk hook entry in $target - nothing to remove."
@@ -332,7 +347,7 @@ function Invoke-PtkClaudeLeg {
         # grok's ONLY layer (grok session-loads this file, no hook).
         Install-PtkNudgeBlock -Path $nudgeTarget
     }
-    $true
+    (-not $skipHook)
 }
 
 # codex leg: registration (idempotent - an existing entry is left as-is so

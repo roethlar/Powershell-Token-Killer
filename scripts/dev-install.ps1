@@ -188,8 +188,8 @@ function Remove-PtkPayload {
 }
 
 # Returns $true when the server actually got registered with Claude Code;
-# $false when registration was left to the user (-Hook gates on this - a
-# blocking hook must not ship while the steered-to tool is unregistered).
+# $false when registration was left to the user (the install arm then warns,
+# and the claude leg of ptk_init skips its blocking hook - mhi-6/mhi-9).
 function Register-PtkServer {
     param([Parameter(Mandatory)][string]$BinaryPath)
     $claude = Get-Command claude -ErrorAction SilentlyContinue
@@ -337,21 +337,20 @@ switch ($mode) {
         if ($Hook) {
             Write-Host 'NOTE: -Hook is deprecated - the full per-agent init runs by default.'
         }
-        if ($registered) {
-            # The end-state process: one command produces the complete
-            # per-harness state (hooks, registrations, guidance) for every
-            # detected harness, and re-targets any stale registration at the
-            # fresh payload (issue #2).
-            & (Join-Path $ptkHome 'scripts' 'ptk_init.ps1') | Out-Host
+        if (-not $registered) {
+            # The claude leg guards itself now: with the claude CLI absent it
+            # skips the blocking hook (mhi-6) and installs guidance only. The
+            # codex/grok/agy legs never depended on Claude state, so the init
+            # must still run for them (mhi-9).
+            Write-Warning (('ptk is not registered with Claude Code (claude CLI not found); ' +
+                'the claude leg installs guidance only, no blocking hook. Register manually, ' +
+                'then re-run: pwsh -File "{0}"') -f (Join-Path $ptkHome 'scripts' 'ptk_init.ps1'))
         }
-        else {
-            # No verified Claude registration -> installing the blocking hook
-            # would deny every shell call toward a tool the harness cannot
-            # see (mhi-6), so the init is skipped as a whole.
-            Write-Warning (('Skipping per-agent init: the server is not registered with ' +
-                'Claude Code (claude CLI not found). Register manually, then run: ' +
-                'pwsh -File "{0}"') -f (Join-Path $ptkHome 'scripts' 'ptk_init.ps1'))
-        }
+        # The end-state process: one command produces the complete
+        # per-harness state (hooks, registrations, guidance) for every
+        # detected harness, and re-targets any stale registration at the
+        # fresh payload (issue #2).
+        & (Join-Path $ptkHome 'scripts' 'ptk_init.ps1') | Out-Host
         Show-PtkCodexSnippet -BinaryPath $binaryPath
         Write-Host ''
         Write-Host "Installed ptk $payloadVersion to $ptkHome ($targetRid)."
