@@ -5,14 +5,40 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **2026-07-09 (latest): slices 3-6 review loop CLOSED (converged).**
+- **2026-07-09 (latest, evening refresh): OWNER PUSHED master through
+  `5e3cd70`; GitHub issues #1 and #2 CLOSED (~15:35Z). THREE NEW GitHub
+  items since (all `roethlar`, ~19:28-19:33Z):** issue **#5** (ptk_invoke
+  labels successful exit-0 native stderr as `[errors]` — medium; asks
+  for a neutral stderr label, PowerShell Write-Error kept
+  distinguishable, 4-case regression matrix), issue **#6**
+  (`timeoutSeconds` excludes queue wait behind the serialized runspace —
+  a 1s-budget call can wait arbitrarily and still run; `ptk_state`
+  blocks behind the busy runspace it should diagnose — medium; asks for
+  wall-clock budget semantics + prompt busy/active-call-age/waiter-count
+  reporting), and a **comment on issue #4**: cross-model confirmation
+  (GPT-5.6-Sol/Codex governance audit, 2026-07-09) of the
+  `raw=true`-as-habit problem — raw set preemptively on most inspection
+  calls, bought nothing (README byte-identical raw vs shaped; 86%/95.6%
+  reduction forfeited) — with 4 acceptance suggestions (no preemptive
+  raw; teach route=pwsh+raw=false as "exact execution, shaped output";
+  reason/cost gate on unjustified raw; raw-usage telemetry in
+  ptk_state). **#5/#6 are UNTRIAGED — no plan, no code; owner
+  prioritization needed.** The #4 comment bears directly on the DRAFT
+  shell-dialect plan's raw-posture leg — reconcile before approval.
+  Local state: working tree clean, 4 unpushed commits, all
+  shell-dialect plan text (`3227607` draft, sources = issue #3 item 1 +
+  issue #4; `1d7f38b` sd-1..sd-10 fixes; `13599a6` sd2-1..sd2-5;
+  `809e0d0` sd3-1). Plan status: DRAFT awaiting owner approval; slice 0
+  (probes) runs first; no code before approval.
+- **2026-07-09: slices 3-6 review loop CLOSED (converged).**
   Re-grade round 1 (codex read-only, head `3ec608b`) cleared mhi-9 and
   mhi-11 and held mhi-10; round 2 (head `d58be68`, base `3ec608b`)
   graded the mhi-10 completion and mhi-12 RESOLVED, guard_confirmed,
   NO NEW FINDINGS (codex-cli 0.142.5). Verdicts recorded in
-  `.agents/review/findings/mhi-{9,10,11,12}.md`; index updated. All
+  `.agents/review/findings/mhi-{9,10,11,12}.md`; index updated. ~~All
   slice 3-6 + review-loop commits remain unpushed pending the owner's
-  master push go.
+  master push go.~~ RESOLVED same day: owner pushed master through
+  `5e3cd70` (origin confirmed at that head, 2026-07-09 evening).
 - **2026-07-09: slices 3-6 review loop — fixes landed; re-grade closed
   (see latest bullet).** Codex loop over `86b51ae..6134a2f` produced
   mhi-9/10/11 (fixed: `ce0caf2`, `fa3620a`, `6c1d025`); re-grade round 1
@@ -47,8 +73,9 @@ short and update it when important repo facts change.
   HEALED; hook effective next Claude Code session.** NOTE: ~/.ptk's
   payload is the owner's 2026-07-08 install — a dev-install re-run picks
   up the new hook text (neutral naming + liveness) and installer.
-  **Canonical counts: Pester 75, dotnet 59.** Comment/close issues #1+#2
-  after the owner pushes. NEXT: multi-harness slice 3 (grok leg).
+  **Canonical counts: Pester 75, dotnet 59.** ~~Comment/close issues
+  #1+#2 after the owner pushes.~~ DONE 2026-07-09: both CLOSED on
+  GitHub (~15:35Z). NEXT: multi-harness slice 3 (grok leg).
 - **2026-07-09 (later): GITHUB ISSUE #1 FIXED and codex-closed** (plan:
   `.agents/plans/issue-1-mixed-stream-shaping.md`, owner-approved "go";
   taken ahead of multi-harness slice 3 by the same go). Shipped, one
@@ -668,6 +695,16 @@ short and update it when important repo facts change.
 
 ## Next
 
+- **NEXT ACTION (owner decisions, 2026-07-09 evening):** (a)
+  approve/amend the shell-dialect plan
+  (`.agents/plans/shell-dialect.md`, DRAFT — reconcile the #4
+  cross-model comment's 4 acceptance suggestions into its raw-posture
+  leg first), (b) prioritize new issues **#5** (`[errors]` mislabels
+  exit-0 native stderr) and **#6** (queue-wait excluded from
+  `timeoutSeconds`; `ptk_state` blocks behind a busy runspace) — both
+  medium, untriaged, adjacent to but outside the shell-dialect plan's
+  scope, (c) push go for the 4 local plan commits
+  (`3227607..809e0d0`). No code before plan approval.
 - Slice 2 DONE (top Now entry). Next: slice 3 (release workflow,
   `.github/workflows/release.yml` on `v*` tags — per-RID publish on native
   runners, draft release; iterate on `ci/*`, granted scope). Still needed
@@ -789,4 +826,8 @@ short and update it when important repo facts change.
 
 - None known.
 
-Active review loop: see `.agents/review/index.md` (multi-harness slices 3-6, mhi-9..12; re-grade round 2 pending at `e8363f3`).
+Active review loop: none on code — multi-harness slices 3-6 (mhi-9..12)
+CLOSED 2026-07-09T17:33Z, converged (`.agents/review/index.md`).
+Shell-dialect plan-text loop: three rounds of fixes landed in the plan
+commits (sd-1..sd-10 → `1d7f38b`; sd2-1..sd2-5 → `13599a6`; sd3-1 →
+`809e0d0`); plan remains DRAFT pending owner approval.
