@@ -177,6 +177,21 @@ Describe 'object routing robustness' {
         $result | Should -Match 'done'
     }
 
+    It 'labels heterogeneous object streams and appends payload samples' {
+        # No strings in the stream, so the generic table still renders - but
+        # its columns come from the first item only, so the header must say
+        # mixed and samples must carry some per-item payload (issue #1
+        # guardrail).
+        $mixed = @((Get-Item -LiteralPath (Join-Path $PSScriptRoot '..' 'README.md')), [pscustomobject]@{ A = 1 })
+
+        $result = $mixed | Compress-PtcObject
+
+        $result | Should -Match '^objects: 2 \(mixed:'
+        $result | Should -Match 'samples:'
+        $result | Should -Match 'README\.md'
+        $result | Should -Match 'A=1'
+    }
+
     It 'keeps the payload of a mixed string/MatchInfo stream (issue #1 repro shape)' {
         # The live repro: separator strings mixed with Select-String output
         # rendered a Length-only table; the string form of a MatchInfo is

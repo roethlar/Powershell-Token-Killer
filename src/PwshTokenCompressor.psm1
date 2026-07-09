@@ -290,8 +290,24 @@ function Compress-PtcGenericObject {
 
     $first = $items | Select-Object -First 1
     $props = @(Get-PtcDisplayProperties -Object $first)
-    $typeName = $first.PSObject.TypeNames[0]
-    Join-PtcLines (@("objects: {0} ({1})" -f $items.Count, $typeName) + (Format-PtcTable -Rows $items -Properties $props -MaxItems $MaxItems))
+    $typeNames = @($items | ForEach-Object { $_.PSObject.TypeNames[0] } | Select-Object -Unique)
+    $header = if ($typeNames.Count -gt 1) {
+        "objects: {0} (mixed: {1})" -f $items.Count, ($typeNames -join ', ')
+    }
+    else {
+        "objects: {0} ({1})" -f $items.Count, $typeNames[0]
+    }
+    $lines = @($header) + (Format-PtcTable -Rows $items -Properties $props -MaxItems $MaxItems)
+    if ($typeNames.Count -gt 1) {
+        # The table's columns come from the FIRST item only, so on a
+        # type-heterogeneous stream it misrepresents the rest; carry some
+        # payload so a summary never needs a raw re-run (issue #1 guardrail).
+        $lines += 'samples:'
+        foreach ($item in $items | Select-Object -First 3) {
+            $lines += '  ' + (Limit-PtcText -Text ([string]$item) -MaxLines 1 -Width 110)
+        }
+    }
+    Join-PtcLines $lines
 }
 
 function Compress-PtcObject {
