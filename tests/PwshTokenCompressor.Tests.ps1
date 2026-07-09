@@ -1303,6 +1303,13 @@ Describe 'Get-PtcShellDialectFinding' {
             # if-statement error (re-grade round 2).
             Get-PtcShellDialectFinding -Script 'if x"foo`"then"' | Should -BeNullOrEmpty
         }
+
+        It 'fragment blanking spans newlines (sd1-3 round 4)' {
+            # A backtick-newline inside a glued quoted fragment defeated the
+            # round-3 pattern because . does not match LF (re-grade round 3).
+            $script = 'Write-Output >; Write-Output x"foo`' + "`n" + '<<EOF"'
+            Get-PtcShellDialectFinding -Script $script | Should -BeNullOrEmpty
+        }
     }
 
     Context 'error and shape evidence associate locally (sd1-7)' {

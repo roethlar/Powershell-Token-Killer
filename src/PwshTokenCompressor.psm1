@@ -680,7 +680,7 @@ function Get-PtcShellDialectFinding {
             if ($token.Kind -eq [System.Management.Automation.Language.TokenKind]::Generic -and
                 ($token -is [System.Management.Automation.Language.StringLiteralToken] -or
                  $token -is [System.Management.Automation.Language.StringExpandableToken])) {
-                foreach ($fragment in [regex]::Matches($token.Text, '"(`.|[^"`])*"|''(''''|[^''])*''')) {
+                foreach ($fragment in [regex]::Matches($token.Text, '(?s)"(`.|[^"`])*"|''(''''|[^''])*''')) {
                     $start = $token.Extent.StartOffset + $fragment.Index
                     $end = [Math]::Min($start + $fragment.Length, $chars.Length)
                     for ($i = $start; $i -lt $end; $i++) { $chars[$i] = $blankChar }
