@@ -92,8 +92,20 @@ foreach ($name in $Agent) {
 # The marker every ptk-owned settings entry is recognized by (install, show,
 # uninstall).
 $hookMarker = 'ptk-hook.ps1'
-$hookScript = Join-Path $PSScriptRoot 'ptk-hook.ps1'
+# Register the INSTALLED copy whenever it exists: checkouts move and get
+# renamed, stranding registrations that then fail open silently on every
+# shell call (issue #2). The checkout sibling is only the fallback for
+# payload-less runs (test seams).
+$installedHook = Join-Path $PtkHome 'scripts' 'ptk-hook.ps1'
+$hookScript = (Test-Path -LiteralPath $installedHook) ? $installedHook : (Join-Path $PSScriptRoot 'ptk-hook.ps1')
 $hookCommand = 'pwsh -NoProfile -File "{0}"' -f $hookScript
+
+# The -File target of a ptk-owned hook command, for staleness checks; $null
+# when the shape is unrecognized.
+function Get-PtkHookCommandTarget {
+    param([string]$Command)
+    ([string]$Command -match '-File\s+"([^"]+)"') ? $Matches[1] : $null
+}
 
 # Markers delimiting the ptk-owned block in a nudge (guidance) file. The
 # wording is harness-neutral and conditional ("when available") so the same
@@ -205,9 +217,26 @@ function Invoke-PtkClaudeLeg {
     $nudgePresent = (Test-Path -LiteralPath $nudgeTarget) -and
         ((Get-Content -LiteralPath $nudgeTarget -Raw) -like "*$nudgeBegin*")
 
+    # ptk-owned entries whose registered -File target no longer exists: they
+    # fail open silently on every shell call (issue #2) - flag on -Show,
+    # name them when an install replaces them.
+    $staleTargets = @(foreach ($entry in $preToolUse) {
+        foreach ($hook in @($entry['hooks'])) {
+            if ($null -ne $hook -and [string]$hook['command'] -like "*$hookMarker*") {
+                $hookTarget = Get-PtkHookCommandTarget ([string]$hook['command'])
+                if ($hookTarget -and -not (Test-Path -LiteralPath $hookTarget)) { $hookTarget }
+            }
+        }
+    })
+
     if ($Show) {
         Write-Host "[claude] settings: $target"
-        Write-Host ("[claude] ptk hook: {0}" -f ($installed ? 'INSTALLED' : 'not installed'))
+        $hookState = if (-not $installed) { 'not installed' }
+        elseif ($staleTargets.Count -gt 0) {
+            'INSTALLED but STALE - registered file missing: {0} (re-run this script to heal)' -f ($staleTargets -join ', ')
+        }
+        else { 'INSTALLED' }
+        Write-Host "[claude] ptk hook: $hookState"
         Write-Host "[claude] hook script: $hookScript $((Test-Path -LiteralPath $hookScript) ? '' : '(MISSING)')"
         Write-Host ("[claude] nudge block: {0} in {1}" -f ($nudgePresent ? 'INSTALLED' : 'not installed'), $nudgeTarget)
         Write-Host ("[claude] installed payload: {0} ({1})" -f
@@ -283,6 +312,10 @@ function Invoke-PtkClaudeLeg {
                 New-Item -ItemType Directory -Path $dir -Force | Out-Null
             }
             Set-Content -LiteralPath $target -Value $json -NoNewline
+            if (-not $Uninstall -and $staleTargets.Count -gt 0) {
+                Write-Host ("[claude] replaced STALE registration (pointed at missing {0})" -f
+                    ($staleTargets -join ', '))
+            }
             Write-Host ("[claude] ptk hook {0} in {1} (takes effect next session)" -f
                 ($Uninstall ? 'removed' : 'installed'), $target)
         }

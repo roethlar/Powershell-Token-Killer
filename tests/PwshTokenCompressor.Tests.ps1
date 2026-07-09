@@ -554,6 +554,57 @@ Describe 'redirect hook and installer' {
             Test-Path -LiteralPath $script:settings | Should -BeFalse
         }
 
+        It 'registers the installed hook copy when the payload carries it' {
+            # issue #2: checkouts move and strand registrations; the
+            # installed payload is the stable target.
+            $homeWithScripts = Join-Path ([System.IO.Path]::GetTempPath()) ("ptk-home2-{0}" -f ([guid]::NewGuid()))
+            New-Item -ItemType Directory -Path (Join-Path $homeWithScripts 'bin') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $homeWithScripts 'scripts') -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $homeWithScripts 'scripts' 'ptk-hook.ps1') -Value '# installed copy'
+            try {
+                pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $homeWithScripts | Out-Null
+
+                $config = Get-Content -LiteralPath $script:settings -Raw | ConvertFrom-Json
+                $config.hooks.PreToolUse[0].hooks[0].command | Should -Match ([regex]::Escape($homeWithScripts))
+            }
+            finally {
+                Remove-Item -LiteralPath $homeWithScripts -Recurse -Force -ErrorAction SilentlyContinue
+            }
+        }
+
+        It 'heals a stale registration and names the missing target' {
+            # issue #2: a ptk entry whose -File target no longer exists fails
+            # open silently; install must replace it and say what was stale.
+            Set-Content -LiteralPath $script:settings -Value (@{
+                hooks = @{
+                    PreToolUse = @(
+                        @{ matcher = 'Bash|PowerShell'; hooks = @(@{ type = 'command'; command = 'pwsh -NoProfile -File "C:\gone\src\ptk-hook.ps1"' }) }
+                    )
+                }
+            } | ConvertTo-Json -Depth 8)
+
+            $out = pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -PtkHome $script:fakeHome | Out-String
+            $out | Should -Match 'STALE'
+            $out | Should -Match ([regex]::Escape('C:\gone\src\ptk-hook.ps1'))
+
+            $config = Get-Content -LiteralPath $script:settings -Raw | ConvertFrom-Json
+            @($config.hooks.PreToolUse).Count | Should -Be 1
+            $config.hooks.PreToolUse[0].hooks[0].command | Should -Not -Match 'gone'
+        }
+
+        It 'flags a stale registered target under -Show' {
+            Set-Content -LiteralPath $script:settings -Value (@{
+                hooks = @{
+                    PreToolUse = @(
+                        @{ matcher = 'Bash|PowerShell'; hooks = @(@{ type = 'command'; command = 'pwsh -NoProfile -File "C:\gone\src\ptk-hook.ps1"' }) }
+                    )
+                }
+            } | ConvertTo-Json -Depth 8)
+
+            $out = pwsh -NoProfile -File $script:initScript -Show -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome | Out-String
+            $out | Should -Match 'STALE'
+        }
+
         It 'refuses the hook install when no installed payload exists' {
             # Enforce only where the steered-to tool can answer: without
             # ~/.ptk the hook would deny every shell call toward nothing.
