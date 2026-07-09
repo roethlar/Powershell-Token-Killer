@@ -677,17 +677,26 @@ function Get-PtcShellDialectFinding {
 
         # Paired backticks = bash command substitution: parses clean, prints
         # the literal text, exits 0 - no error at all (worst probed case).
-        # Token-aware: only an element that OPENS with `letter is a
-        # candidate, and the raw text from its offset must close the pair
-        # with a backtick sitting at a word boundary. A lone escape (`n)
-        # has no closing backtick, a line continuation sits at end-of-line,
-        # and adjacent escapes (`n `t) fail the boundary check, so the
-        # frozen legitimate-backtick set never trips.
+        # Extent-bounded pairing (sd1-2): a pair is either a single element
+        # whose extent is exactly `word...`, or an opener extent (`letter,
+        # no further backtick) closed by a LATER element extent ending with
+        # its only backtick. The old raw-text tail scan crossed element
+        # boundaries, so any later backtick (a second legitimate escape, a
+        # comment) could close the pair - `tColumn` Name was flagged.
+        # Interior-backtick extents match neither shape, so the frozen
+        # legitimate-backtick set (lone escape `n, adjacent escapes `n `t,
+        # line continuation) never trips.
+        $openerSeen = $false
         foreach ($element in $elements) {
-            if ($element.Extent.Text -notmatch '^`[A-Za-z]') { continue }
-            $rest = $Script.Substring($element.Extent.StartOffset)
-            if ($rest -match '^`[A-Za-z][^`]*`($|[\s;|&)''"])') {
+            $extentText = $element.Extent.Text
+            if ($extentText -match '^`[A-Za-z][^`]*`$') {
                 return 'bash command substitution in backticks (`cmd`)'
+            }
+            if ($openerSeen -and $extentText -match '^[^`]*`$') {
+                return 'bash command substitution in backticks (`cmd`)'
+            }
+            if (-not $openerSeen -and $extentText -match '^`[A-Za-z][^`]*$') {
+                $openerSeen = $true
             }
         }
     }

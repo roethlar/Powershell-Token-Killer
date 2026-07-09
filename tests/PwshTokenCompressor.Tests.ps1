@@ -1258,6 +1258,13 @@ Describe 'Get-PtcShellDialectFinding' {
         It 'ignores backticks inside quoted strings' {
             Get-PtcShellDialectFinding -Script 'echo ''a `date` b''' | Should -BeNullOrEmpty
         }
+
+        It 'ignores escape sequences joined by an escaped space (sd1-2)' {
+            # `t escape + escaped space: one legitimate argument whose extent
+            # holds interior backticks - the old raw-text tail scan paired
+            # them across the element and flagged valid PowerShell.
+            Get-PtcShellDialectFinding -Script 'Write-Output `tColumn` Name' | Should -BeNullOrEmpty
+        }
     }
 
     Context 'accepted misses stay misses (frozen OUT decisions)' {
