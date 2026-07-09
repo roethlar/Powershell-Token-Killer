@@ -1288,6 +1288,13 @@ Describe 'Get-PtcShellDialectFinding' {
             # fired on an unrelated MissingFileSpecification.
             Get-PtcShellDialectFinding -Script 'Write-Output x"<<EOF" >' | Should -BeNullOrEmpty
         }
+
+        It 'fragment blanking understands escaped quotes (sd1-3 round 3)' {
+            # `" inside a double-quoted fragment stopped the round-2 regex
+            # early, leaving then" as visible evidence for the unrelated
+            # if-statement error (re-grade round 2).
+            Get-PtcShellDialectFinding -Script 'if x"foo`"then"' | Should -BeNullOrEmpty
+        }
     }
 
     Context 'error and shape evidence associate locally (sd1-7)' {

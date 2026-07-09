@@ -628,14 +628,17 @@ function Get-PtcShellDialectFinding {
                 for ($i = $token.Extent.StartOffset; $i -lt $end; $i++) { $chars[$i] = $blankChar }
                 continue
             }
-            # sd1-3 (round 2): a quoted fragment glued to bareword text folds
-            # into ONE Generic-kind string token (x"<<EOF" - re-grade round
-            # 1), which the kind list above never sees. Blank just the quoted
-            # spans; the bareword remainder stays as evidence.
+            # sd1-3 (rounds 2+3): a quoted fragment glued to bareword text
+            # folds into ONE Generic-kind string token (x"<<EOF" - re-grade
+            # round 1), which the kind list above never sees. Blank just the
+            # quoted spans; the bareword remainder stays as evidence. The
+            # fragment patterns honor pwsh escapes (round 3): `" does not
+            # close a double-quoted fragment, '' does not close a
+            # single-quoted one.
             if ($token.Kind -eq [System.Management.Automation.Language.TokenKind]::Generic -and
                 ($token -is [System.Management.Automation.Language.StringLiteralToken] -or
                  $token -is [System.Management.Automation.Language.StringExpandableToken])) {
-                foreach ($fragment in [regex]::Matches($token.Text, '"[^"]*"|''[^'']*''')) {
+                foreach ($fragment in [regex]::Matches($token.Text, '"(`.|[^"`])*"|''(''''|[^''])*''')) {
                     $start = $token.Extent.StartOffset + $fragment.Index
                     $end = [Math]::Min($start + $fragment.Length, $chars.Length)
                     for ($i = $start; $i -lt $end; $i++) { $chars[$i] = $blankChar }
