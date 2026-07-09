@@ -141,8 +141,13 @@ settings file.
 
 The installer preserves unrelated hooks and replaces only the ptk-owned entry
 when re-run. The hook takes effect at the next Claude Code session start.
-The hook fails open: if the ptk server is down or the hook script is
-missing, harness shell calls proceed normally.
+
+Failure semantics, precisely: the hook fails open only against its OWN
+failure — if the hook script is missing or errors, harness shell calls
+proceed normally. It does NOT check whether the ptk server is alive: with
+the server down, shell calls are still denied and steered toward an
+unavailable tool, and `PTK_DIRECT` is the way through until the server is
+back (`/mcp` reconnect respawns it).
 
 A command containing `PTK_DIRECT` bypasses the hook. Use that for work that
 genuinely needs the harness shell, such as interactive or TTY-dependent tools,
