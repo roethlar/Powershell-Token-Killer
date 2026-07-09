@@ -1272,6 +1272,15 @@ Describe 'Get-PtcShellDialectFinding' {
         }
     }
 
+    Context 'error and shape evidence associate locally (sd1-7)' {
+        It 'ignores a bash keyword unrelated to the parse error' {
+            # The only error is the malformed pwsh if (missing parenthesis);
+            # then is an ordinary argument EARLIER in the line and must not
+            # turn that error into bash if/then/fi guidance.
+            Get-PtcShellDialectFinding -Script 'Write-Output then; if $true' | Should -BeNullOrEmpty
+        }
+    }
+
     Context 'blanking never synthesizes shapes (sd1-6)' {
         It 'does not fabricate a bash function shape across a blanked string' {
             # Space-filled blanking turned foo 'bar'() { into

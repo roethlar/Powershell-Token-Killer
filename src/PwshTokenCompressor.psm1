@@ -607,7 +607,6 @@ function Get-PtcShellDialectFinding {
         # before matching. Token streams beside parse errors can be
         # partial; blanking only ever removes evidence, so degradation is
         # toward a miss (the pre-detector behavior), never an over-match.
-        $errorIds = @($parseErrors | ForEach-Object { $_.ErrorId })
         $blankKinds = @(
             [System.Management.Automation.Language.TokenKind]::Comment,
             [System.Management.Automation.Language.TokenKind]::StringLiteral,
@@ -644,26 +643,46 @@ function Get-PtcShellDialectFinding {
             }
         }
         $scanText = [string]::new($chars)
-        if ($errorIds -contains 'MissingFileSpecification' -and $scanText -match '<<') {
+        # sd1-7: the error and the shape evidence must be ASSOCIATED, not
+        # merely co-present anywhere in the script - Write-Output then; if
+        # $true paired an if-statement error with an unrelated EARLIER
+        # argument (re-grade round 1). A match counts only when it overlaps
+        # the error extent (inclusive bounds - error extents are often empty
+        # points) or begins at/after it (bash then/do/done trail the keyword
+        # whose parse error fires). Probed offsets for every frozen IN case
+        # satisfy this rule.
+        $shapeNearError = {
+            param([string]$ErrorId, [string]$Pattern)
+            foreach ($parseError in $parseErrors) {
+                if ($parseError.ErrorId -ne $ErrorId) { continue }
+                foreach ($match in [regex]::Matches($scanText, $Pattern)) {
+                    if ($match.Index -ge $parseError.Extent.StartOffset) { return $true }
+                    if ($match.Index -le $parseError.Extent.EndOffset -and
+                        $parseError.Extent.StartOffset -le ($match.Index + $match.Length)) { return $true }
+                }
+            }
+            return $false
+        }
+        if (& $shapeNearError 'MissingFileSpecification' '<<') {
             # Bare << - the quoted-terminator form (<<'EOF') lexes its
             # terminator as a string literal, which blanking removes. <<
             # outside strings/comments is itself never valid pwsh, and the
             # error-id pairing still gates it.
             return 'a bash heredoc (<<WORD ... WORD)'
         }
-        if ($errorIds -contains 'MissingOpenParenthesisInIfStatement' -and $scanText -match '\bthen\b') {
+        if (& $shapeNearError 'MissingOpenParenthesisInIfStatement' '\bthen\b') {
             return 'a bash if/then/fi statement'
         }
-        if ($errorIds -contains 'MissingOpenParenthesisAfterKeyword' -and $scanText -match '\b(do|done)\b') {
+        if (& $shapeNearError 'MissingOpenParenthesisAfterKeyword' '\b(do|done)\b') {
             return 'a bash do/done loop'
         }
-        if ($errorIds -contains 'MissingTypename' -and $scanText -match '(^|[\s;&|(])\[{1,2}\s') {
+        if (& $shapeNearError 'MissingTypename' '(^|[\s;&|(])\[{1,2}\s') {
             return 'a bash test expression ([ ... ] or [[ ... ]])'
         }
-        if ($errorIds -contains 'ExpectedExpression' -and $scanText -match '\w+\s*\(\s*\)\s*\{') {
+        if (& $shapeNearError 'ExpectedExpression' '\w+\s*\(\s*\)\s*\{') {
             return 'a bash function definition (name() { ... })'
         }
-        if ($errorIds -contains 'RedirectionNotSupported' -and $scanText -match '<\(') {
+        if (& $shapeNearError 'RedirectionNotSupported' '<\(') {
             return 'bash process substitution (<(...))'
         }
         return $null
