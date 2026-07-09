@@ -122,10 +122,15 @@ prefix — the same tool carries a different id per harness
 ([docs/harness-support.md](../docs/harness-support.md)).
 
 The script is the multi-harness init surface (`-Agent claude|codex|grok|agy|all`,
-defaulting to the agents detected on the machine). Implemented legs:
-claude (hook + nudge) and codex (idempotent `codex mcp add` registration +
-nudge in `~/.codex/AGENTS.md`; no hook — codex hooks are trust-gated); the
-grok/agy legs announce themselves as planned.
+defaulting to the agents detected on the machine). All four legs are
+implemented: claude (hook + guidance block), codex (idempotent `codex mcp
+add` + `~/.codex/AGENTS.md` block; no hook — trust-gated), grok
+(`grok mcp add -s user` behind a config-presence short-circuit; its
+guidance home is `~/.claude/CLAUDE.md`, which grok session-loads), and agy
+(a user-level plugin directory carrying registration + rules; no hook —
+enforcement is deferred until a live install run demonstrates agy's
+documented deny surface). `dev-install.ps1` chains this script by default:
+one command per machine produces the whole state.
 
 ```powershell
 pwsh -File scripts/ptk_init.ps1              # user-level install (default)
