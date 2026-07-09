@@ -825,6 +825,29 @@ Describe 'redirect hook and installer' {
             $out | Should -Match 'codex mcp remove ptk'
         }
 
+        It 'bare -Uninstall reverses every leg, not just detected ones' {
+            # mhi-10 guard: a harness CLI that left PATH after install must
+            # not strand its ptk state - uninstall scope is the supported
+            # set, independent of live CLI detection. PATH is gutted so
+            # nothing is detected; -DryRun keeps the run read-only (every
+            # leg's dry uninstall names its action without performing it,
+            # and both nudge helpers early-return under -DryRun).
+            $pwshExe = (Get-Command pwsh).Source
+            $oldPath = $env:PATH
+            try {
+                $env:PATH = [System.IO.Path]::GetTempPath()
+                $out = & $pwshExe -NoProfile -File $script:initScript -Uninstall -DryRun 2>&1 | Out-String
+            }
+            finally {
+                $env:PATH = $oldPath
+            }
+
+            $LASTEXITCODE | Should -Be 0
+            $out | Should -Match 'codex mcp remove ptk'
+            $out | Should -Match 'grok mcp remove -s user ptk'
+            $out | Should -Match ([regex]::Escape((Join-Path 'plugins' 'ptk')))
+        }
+
         It 'leaves an existing codex registration as-is even without an installed payload' {
             # mhi-8: the payload gate guards only the add the leg would
             # perform; a machine whose codex already has a (possibly custom)

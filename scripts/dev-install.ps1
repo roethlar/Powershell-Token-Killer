@@ -300,8 +300,9 @@ switch ($mode) {
         Assert-PtkServerNotRunning
         # Per-agent init reversal first (needs a ptk_init.ps1), then Claude
         # registration, ARP, payload. ptk_init -Uninstall reverses every
-        # detected leg (hook + guidance blocks, codex/grok registrations,
-        # agy plugin) and no-ops safely where nothing is installed.
+        # SUPPORTED leg - not just detected ones (mhi-10) - (hook + guidance
+        # blocks, codex/grok registrations, agy plugin) and no-ops safely
+        # where nothing is installed.
         $init = Join-Path $ptkHome 'scripts' 'ptk_init.ps1'
         if (-not (Test-Path -LiteralPath $init)) { $init = Join-Path $PSScriptRoot 'ptk_init.ps1' }
         if (Test-Path -LiteralPath $init) {

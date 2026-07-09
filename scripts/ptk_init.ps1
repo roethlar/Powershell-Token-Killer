@@ -43,9 +43,11 @@ pwsh -File scripts/ptk_init.ps1 -Uninstall
 [CmdletBinding()]
 param(
     # Agent legs to run; default is every supported agent detected on this
-    # machine, 'all' forces every supported leg. Validated manually (not
-    # ValidateSet) because `pwsh -File` passes "codex,grok" as one literal
-    # string; comma-separated values are split and accepted.
+    # machine - except -Uninstall, which defaults to EVERY supported leg
+    # (mhi-10: detection must not scope removal). 'all' forces every leg.
+    # Validated manually (not ValidateSet) because `pwsh -File` passes
+    # "codex,grok" as one literal string; comma-separated values are split
+    # and accepted.
     [string[]]$Agent,
 
     # Claude-only opt-in: patch the project-local .claude/settings.json (the
@@ -636,13 +638,24 @@ $resolvedAgents =
         @($Agent)
     }
     elseif (-not $Agent) {
-        $detected = @($supportedAgents | Where-Object { Test-PtkAgentPresent -Name $_ })
-        if ($detected.Count -eq 0) {
-            Write-Host ('No supported agent harness detected (claude/codex/grok/agy); defaulting ' +
-                'to the claude leg. Pass -Agent to choose explicitly.')
-            $detected = @('claude')
+        if ($Uninstall) {
+            # Uninstall reverses EVERY leg, not just currently-detected ones
+            # (mhi-10): a harness CLI that left PATH after install would
+            # otherwise strand its ptk state forever (nudge blocks, config
+            # entries pointing at a deleted binary). Every leg's uninstall
+            # no-ops safely without its CLI and warns about the one thing it
+            # cannot remove itself (a grok registration).
+            $supportedAgents
         }
-        $detected
+        else {
+            $detected = @($supportedAgents | Where-Object { Test-PtkAgentPresent -Name $_ })
+            if ($detected.Count -eq 0) {
+                Write-Host ('No supported agent harness detected (claude/codex/grok/agy); defaulting ' +
+                    'to the claude leg. Pass -Agent to choose explicitly.')
+                $detected = @('claude')
+            }
+            $detected
+        }
     }
     elseif ($Agent -contains 'all') { $supportedAgents }
     else { @($Agent | Select-Object -Unique) }
