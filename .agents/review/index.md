@@ -234,3 +234,20 @@ NEW FINDINGS (codex, Codex v0.143.0, gpt-5.5, read-only; static pass —
 Pester run coder-side: 66/66 at 3caa78f, the new canonical count; dotnet
 59/59, server untouched). Commits remain unpushed pending the owner's
 master push go.
+
+---
+
+Loop run 2026-07-09 (issue-1 mixed-stream shaping) — reviewer: codex
+(Codex v0.143.0, gpt-5.5, read-only), scope: commits `caa7714` (string-
+bearing mixed streams render as text) + `66a53df` (heterogeneous header +
+samples), the two slices of `.agents/plans/issue-1-mixed-stream-shaping.md`
+(GitHub issue #1). One finding, ADMITTED; fixed direct to `master` per
+precedent. Writing its guard exposed a second, untracked-by-codex defect
+(Select-Object TypeNames mutation) fixed in its own commit. Per-finding
+detail: `.agents/review/findings/i1-1.md`.
+
+## Findings (issue-1 loop)
+
+| ID   | Severity | Impact (one line)                                             | Status | Branch |
+|------|----------|----------------------------------------------------------------|--------|--------|
+| i1-1 | MEDIUM   | mixed-type header grows unbounded with unique type names       | `[~]`  | master (direct) |

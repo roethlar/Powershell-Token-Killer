@@ -192,6 +192,17 @@ Describe 'object routing robustness' {
         $result | Should -Match 'A=1'
     }
 
+    It 'bounds the mixed-type header to a few names' {
+        # i1-1: unique type names are unbounded input; the header must not
+        # grow with them.
+        $items = 1..5 | ForEach-Object { [pscustomobject]@{ PSTypeName = "PtcTest.Type$_"; V = $_ } }
+
+        $result = $items | Compress-PtcObject
+
+        $result | Should -Match 'mixed: .*, \+2 more\)'
+        $result | Should -Not -Match 'PtcTest\.Type4'
+    }
+
     It 'keeps the payload of a mixed string/MatchInfo stream (issue #1 repro shape)' {
         # The live repro: separator strings mixed with Select-String output
         # rendered a Length-only table; the string form of a MatchInfo is

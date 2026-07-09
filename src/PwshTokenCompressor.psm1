@@ -292,7 +292,11 @@ function Compress-PtcGenericObject {
     $props = @(Get-PtcDisplayProperties -Object $first)
     $typeNames = @($items | ForEach-Object { $_.PSObject.TypeNames[0] } | Select-Object -Unique)
     $header = if ($typeNames.Count -gt 1) {
-        "objects: {0} (mixed: {1})" -f $items.Count, ($typeNames -join ', ')
+        # Bound the type list too: a stream of many distinct types must not
+        # grow the header line without limit (i1-1).
+        $shown = @($typeNames | Select-Object -First 3) -join ', '
+        $suffix = ($typeNames.Count -gt 3) ? (', +{0} more' -f ($typeNames.Count - 3)) : ''
+        "objects: {0} (mixed: {1}{2})" -f $items.Count, $shown, $suffix
     }
     else {
         "objects: {0} ({1})" -f $items.Count, $typeNames[0]
