@@ -5,6 +5,18 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **2026-07-09 (latest): the nudge-standard-layer change was REVERTED on
+  owner instruction (82b8c51 reverts 60cd9f3+865af88).** It had been
+  built WITHOUT an approved plan — the owner's "that line is arcane"
+  complaint was read as a go; it was not. `-Nudge` stands as the opt-in;
+  the `~/.claude/CLAUDE.md` guidance block the unapproved run added was
+  removed (owner's own content kept; the `~/.codex/AGENTS.md` block
+  stays — it shipped under the approved slice-2 plan). Pester 75/75 at
+  the reverted head. OPEN DESIGN QUESTION for a future approved plan:
+  the owner finds the flag/branching surface cumbersome ("too many
+  branching paths"; "the install script needs to handle it") — slice 5's
+  one-command dev-install chaining is the recorded direction; nudge
+  default-ness needs an explicit owner decision, not inference.
 - **2026-07-09 (latest): GITHUB ISSUE #2 FIXED and codex-closed** (plan:
   `.agents/plans/issue-2-stale-hook-registration.md`; owner mid-session
   go). ptk_init's claude leg registers the INSTALLED hook copy
