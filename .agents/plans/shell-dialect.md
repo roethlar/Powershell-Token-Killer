@@ -188,12 +188,21 @@ source.
    `pwsh -NoProfile` child (`JobManager.cs:82-91`), so its shadow check
    resolves against the cold default command table, never warm session
    state — a warm-defined `export` function must not exempt a background
-   script that will die without it. (iv) *Recovery
+   script that will die without it. In BOTH contexts the script's own
+   text joins the table: a definition of the name lexically preceding
+   the use site in the same submitted script (`function export {...}`,
+   `Set-Alias export ...`) marks that name shadowed for the remainder
+   of the script — the detector already walks the token stream, so it
+   records definitions as it goes; `function export {
+   param($Assignment) "ran:$Assignment" }; export X=1` is valid in a
+   cold child and must not be refused (execution is sequential,
+   `JobManager.cs:73-79`). (iv) *Recovery
    exemption:* the `bash -lc '...'` wrap itself must never be classified.
    Pester tests per construct plus false-positive guards covering exactly
    these: the recovery wrapper, here-strings/comments containing bash
-   text, shadowed names, multiline scripts mixing pwsh with a bash-ish
-   line, and the shared-dialect set.
+   text, shadowed names (session-defined AND script-local definitions
+   preceding use, in warm and background contexts), multiline scripts
+   mixing pwsh with a bash-ish line, and the shared-dialect set.
 2. **Server wiring per D1**: detection flows to a labeled refusal result
    naming the construct and the platform-aware recovery paths;
    `route=pwsh` and `raw=true` bypass. Covers **both** execution paths:
