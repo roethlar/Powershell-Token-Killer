@@ -292,3 +292,22 @@ handshake unaffected since 1e1ab99). This box's live stale entry healed
 (src\ path → `~/.ptk/scripts/ptk-hook.ps1`, effective next session).
 Commits unpushed pending the owner's master push go; GitHub issue #2 gets
 the fix reference after push.
+
+---
+
+Loop run 2026-07-09 (multi-harness init slices 3-6) — reviewer: codex
+(codex-cli 0.142.5, read-only, this macOS box), scope: commits
+`86b51ae..6134a2f` — slices 3-6 of `.agents/plans/multi-harness-init.md`
+(grok leg 08080ac, wording strip 2356f4c, agy plugin leg 3a802ee,
+dev-install multi-harness 1a8092a, install matrix docs 6134a2f). Three
+findings, all ADMITTED at intake (evidence verified against the cited
+lines before admission). Per-finding detail:
+`.agents/review/findings/mhi-{9,10,11}.md`.
+
+## Findings (slices 3-6 loop)
+
+| ID     | Severity | Impact (one line)                                                        | Status | Branch |
+|--------|----------|--------------------------------------------------------------------------|--------|--------|
+| mhi-9  | MEDIUM   | Non-Claude machines get no harness legs from the one-command install     | `[x]`  | master `ce0caf2` |
+| mhi-10 | MEDIUM   | Uninstall skips legs whose CLI left PATH; stale cross-harness state      | `[ ]`  |        |
+| mhi-11 | MEDIUM   | Pre-existing agy hooks.json survives an install that reports no hook     | `[ ]`  |        |
