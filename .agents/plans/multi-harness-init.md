@@ -1,8 +1,28 @@
 # Plan: multi-harness init — registration, hook, and nudge per harness
 
-**Status:** DRAFT for owner approval (requested 2026-07-08 with the README
-findings update). No code authorized until approved. Codex loop per slice
-once execution starts.
+**Status:** APPROVED by owner 2026-07-08 ("go for 4" on the presented
+status list). **Slice 0 EXECUTED the same day — all probes green; results
+in `docs/harness-support.md` (the durable table) and summarized here:**
+
+- (a) Claude hooked check **PASSED end to end**: both matchers (Bash,
+  PowerShell) denied live in-session with the guidance; a fresh headless
+  session quoted the deny verbatim, re-issued via `ptk_invoke`
+  unprompted, and completed. The standing verify-once gate is CLOSED.
+- (b) grok: registered live (`ptk__*` naming); **no** Claude-hook
+  spillover (the ledger's auto-scan claim is wrong for this build);
+  nudge home **VERIFIED** by marker probe — grok session-loads
+  `~/.claude/CLAUDE.md`, so the Claude nudge covers it.
+- (c) codex: the ptk entry was found MISSING and re-registered
+  (`codex mcp add`); tools list (`mcp__ptk.` dot naming); headless exec
+  still auto-denies MCP calls (known 2026-07-02 limitation,
+  re-confirmed v0.143.0) — interactive use is the codex path.
+- (d) agy: registered via the documented `mcp_config.json`; tools appear
+  (unprefixed), live state call answered; headless auth worked. Plugin
+  hook demonstration deferred to slice 4 as planned.
+
+Probes were run THROUGH ptk itself (background jobs + polling) — the D3
+machinery carried its own verification. Codex loop per implementation
+slice from here.
 
 ## Goal
 

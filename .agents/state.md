@@ -5,6 +5,23 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **2026-07-08 (night): v2 LIVE ON THIS BOX; MULTI-HARNESS PLAN APPROVED;
+  SLICE 0 EXECUTED — ALL PROBES GREEN.** Owner completed dev-install +
+  global hook + push; the session's own tool calls then hit the redirect
+  and re-issued via ptk_invoke (both matchers verified live). Fresh
+  headless Claude session: deny quoted verbatim → unprompted re-issue →
+  task done — the standing hooked-check gate is CLOSED. grok and agy
+  registered and live-verified (grok: ptk__ naming, no Claude-hook
+  spillover, nudge home = ~/.claude/CLAUDE.md VERIFIED by marker probe;
+  agy: mcp_config.json entry, unprefixed names, headless auth worked);
+  codex entry was missing, re-added, tools list, headless auto-deny
+  re-confirmed (interactive is codex's path). Durable table:
+  `docs/harness-support.md`. Slice-0 probes ran THROUGH ptk background
+  jobs. NEXT: slice 1 (installer framework + Claude leg), codex loop per
+  slice. **Dogfood findings for the backlog:** (1) mixed string/object
+  streams hit the generic table and LOSE the string lines (twice in live
+  use — real shaping gap); (2) same class: string+MatchInfo mix rendered
+  a Length-only table.
 - **2026-07-08 (evening): SETUP DOCS UPDATED; MULTI-HARNESS INIT PLAN
   DRAFTED, codex-closed, AWAITING owner approval + the manual agy
   interview.** `.agents/plans/multi-harness-init.md`: per-harness
