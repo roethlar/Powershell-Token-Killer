@@ -5,6 +5,20 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **2026-07-09: CONCURRENT GOVERNANCE REFRESH interleaved with the
+  slice-2 build session** (602ee45/03d9162/719c200/bd6ff02, toolkit
+  ce0db15, owner identity, ~00:17-00:18): AGENTS.md + skills + CLAUDE.md
+  + repo .claude/settings.json refreshed mid-build. bd6ff02 ("reset
+  governance") swept one in-flight, comment-only `scripts/ptk_init.ps1`
+  edit from the build session's working tree into its commit — content
+  verified intact at HEAD (Pester 66/66 at 3caa78f; no governance file
+  touched by the build commits, no build file damaged by the refresh).
+  REFRESH FLAGS awaiting owner: `.agents/repo-map.json` and
+  `.agents/artifact-manifest.json` are retired-but-locally-modified
+  ("remove by hand if intended"). Process hazard worth remembering: a
+  refresh that commits working-tree sweeps must not run while a build
+  session has in-flight edits — a guard-proof sabotage state could get
+  committed under a refresh message.
 - **2026-07-09: MULTI-HARNESS SLICE 2 EXECUTED — codex leg.**
   `ptk_init.ps1 -Agent codex`: idempotent registration (existing entry
   left as-is via `codex mcp get`; else `codex mcp add ptk -- <installed
