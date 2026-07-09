@@ -10,6 +10,7 @@
     FunctionsToExport = @(
         'Compress-PtcObject',
         'Compress-PtcOutput',
+        'Get-PtcShellDialectFinding',
         'Resolve-PtcInvokeScript'
     )
     AliasesToExport   = @()

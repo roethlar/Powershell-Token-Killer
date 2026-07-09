@@ -1185,3 +1185,72 @@ Describe 'Compress-PtcOutput' {
         }
     }
 }
+
+Describe 'Get-PtcShellDialectFinding' {
+    # Detection list and false-positive set are frozen in
+    # .agents/plans/shell-dialect.md "Slice 0 results" (probed 2026-07-09).
+    Context 'names every construct on the frozen detection list' {
+        It 'flags <expected> for: <script>' -TestCases @(
+            @{ script = "cat <<EOF`nhello`nEOF"; expected = 'heredoc' }
+            @{ script = "cat <<'EOF'`nhello`nEOF"; expected = 'heredoc' }
+            @{ script = 'if [ -f x.txt ]; then echo hi; fi'; expected = 'if/then' }
+            @{ script = '[ -f x.txt ]'; expected = 'test expression' }
+            @{ script = '[[ -f x.txt ]]'; expected = 'test expression' }
+            @{ script = 'for i in 1 2 3; do echo $i; done'; expected = 'do/done' }
+            @{ script = 'greet() { echo hi; }'; expected = 'function definition' }
+            @{ script = 'diff <(sort a.txt) <(sort b.txt)'; expected = 'process substitution' }
+            @{ script = 'export FOO=1'; expected = 'export' }
+            @{ script = 'FOO=bar echo hi'; expected = 'environment-variable prefix' }
+            @{ script = 'local x=1'; expected = 'local' }
+            @{ script = 'source ./env.sh'; expected = 'source' }
+            @{ script = 'set -e'; expected = 'shell options' }
+            @{ script = 'set -euo pipefail'; expected = 'shell options' }
+            @{ script = 'echo `date`'; expected = 'backticks' }
+            @{ script = 'echo `date +%s`'; expected = 'backticks' }
+        ) {
+            Get-PtcShellDialectFinding -Script $script | Should -Match $expected
+        }
+    }
+
+    Context 'the frozen false-positive set never trips' {
+        It 'stays silent for: <script>' -TestCases @(
+            @{ script = 'echo hi && echo there' }
+            @{ script = 'Get-Date | Out-String' }
+            @{ script = 'node --version 2>/dev/null' }
+            @{ script = 'echo $(1+1)' }
+            @{ script = 'echo ''literal $x''' }
+            @{ script = 'bash -lc ''echo hi''' }
+            @{ script = 'bash -lc ''local x=1; export FOO=1''' }
+            @{ script = 'git commit -m ''set -e belongs in the message''' }
+            @{ script = 'Set-Variable -Name x -Value 1' }
+            @{ script = 'set' }
+            @{ script = 'dotnet test --filter Name=Foo' }
+        ) {
+            Get-PtcShellDialectFinding -Script $script | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'token-aware backtick handling (legitimate escapes never trip)' {
+        It 'ignores a lone escape backtick' {
+            Get-PtcShellDialectFinding -Script 'Write-Host `n' | Should -BeNullOrEmpty
+        }
+
+        It 'ignores adjacent lone escapes (`n `t) - the boundary check holds' {
+            Get-PtcShellDialectFinding -Script 'Write-Host `n `t' | Should -BeNullOrEmpty
+        }
+
+        It 'ignores backticks inside quoted strings' {
+            Get-PtcShellDialectFinding -Script 'echo ''a `date` b''' | Should -BeNullOrEmpty
+        }
+    }
+
+    Context 'accepted misses stay misses (frozen OUT decisions)' {
+        It 'does not flag a trailing backslash - legal Windows path ending' {
+            Get-PtcShellDialectFinding -Script 'Get-ChildItem C:\Temp\' | Should -BeNullOrEmpty
+        }
+
+        It 'does not flag bash-style line continuation (accepted miss)' {
+            Get-PtcShellDialectFinding -Script "echo a \`necho b" | Should -BeNullOrEmpty
+        }
+    }
+}

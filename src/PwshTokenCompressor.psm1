@@ -569,6 +569,121 @@ function Resolve-PtcInvokeScript {
     "& '{0}' {1}" -f $rtk.Replace("'", "''"), $command.Extent.Text
 }
 
+# Shell-dialect detector (shell-dialect plan D1, slice 1; every shape below
+# was probed 2026-07-09 and frozen in .agents/plans/shell-dialect.md "Slice
+# 0 results"). Agents feed this harness bash one-liners, and PowerShell
+# either refuses them with errors that never name the real problem (a
+# heredoc dies as "Missing file specification after redirection operator")
+# or - the worst probed case - silently changes their meaning (echo `date`
+# prints the literal text and exits 0). This names the construct so the
+# invoke path can refuse fast with honest guidance (slice 2) instead of
+# letting the misdiagnosis reach the agent. Detection is deliberately
+# narrow: parse-fatal shapes key on the parser's own error id AND the bash
+# text shape; clean-parse shapes key on exact AST forms; the plan's
+# false-positive set must never trip. An over-match breaks a legitimate
+# script while a miss merely falls back to today's behavior, so precision
+# wins over recall - trailing-\ line continuation is excluded for exactly
+# that reason (a legal Windows path ending; accepted miss, frozen in the
+# plan). Returns a short label naming the construct, or $null.
+function Get-PtcShellDialectFinding {
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)]
+        [AllowEmptyString()]
+        [string]$Script
+    )
+
+    $tokens = $null
+    $parseErrors = $null
+    $ast = [System.Management.Automation.Language.Parser]::ParseInput($Script, [ref]$tokens, [ref]$parseErrors)
+
+    if (@($parseErrors).Count -gt 0) {
+        # Parse-fatal bash shapes. PowerShell already refuses these, but the
+        # errors misdirect (slice-0 probe table), so the id alone is not
+        # enough: an unrelated script hitting the same id must stay
+        # unflagged, hence the paired text-shape checks.
+        $errorIds = @($parseErrors | ForEach-Object { $_.ErrorId })
+        if ($errorIds -contains 'MissingFileSpecification' -and $Script -match '<<-?\s*[''"]?\w') {
+            return 'a bash heredoc (<<WORD ... WORD)'
+        }
+        if ($errorIds -contains 'MissingOpenParenthesisInIfStatement' -and $Script -match '\bthen\b') {
+            return 'a bash if/then/fi statement'
+        }
+        if ($errorIds -contains 'MissingOpenParenthesisAfterKeyword' -and $Script -match '\b(do|done)\b') {
+            return 'a bash do/done loop'
+        }
+        if ($errorIds -contains 'MissingTypename' -and $Script -match '(^|[\s;&|(])\[{1,2}\s') {
+            return 'a bash test expression ([ ... ] or [[ ... ]])'
+        }
+        if ($errorIds -contains 'ExpectedExpression' -and $Script -match '\w+\s*\(\s*\)\s*\{') {
+            return 'a bash function definition (name() { ... })'
+        }
+        if ($errorIds -contains 'RedirectionNotSupported' -and $Script -match '<\(') {
+            return 'bash process substitution (<(...))'
+        }
+        return $null
+    }
+
+    # Clean-parse shapes: these run and fail late as CommandNotFound, or -
+    # the worst case - succeed with silently changed meaning. Only
+    # CommandAst nodes are walked, so anything inside a quoted string
+    # (bash -lc 'local x=1') never enters.
+    $commands = @($ast.FindAll({ param($node) $node -is [System.Management.Automation.Language.CommandAst] }, $true))
+    foreach ($command in $commands) {
+        $elements = @($command.CommandElements)
+        $name = $null
+        if ($elements[0] -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+            $elements[0].StringConstantType -eq [System.Management.Automation.Language.StringConstantType]::BareWord) {
+            $name = $elements[0].Value
+        }
+
+        if ($name -match '^[A-Za-z_][A-Za-z0-9_]*=') {
+            return "a bash environment-variable prefix ($name ...)"
+        }
+        if ($name -in @('export', 'local') -and $elements.Count -ge 2 -and
+            $elements[1].Extent.Text -match '^[A-Za-z_][A-Za-z0-9_]*(=|$)') {
+            return "the bash '$name' builtin"
+        }
+        if ($name -eq 'source' -and $elements.Count -eq 2 -and
+            $elements[1] -is [System.Management.Automation.Language.StringConstantExpressionAst]) {
+            return "the bash 'source' builtin"
+        }
+        if ($name -eq 'set' -and $elements.Count -ge 2 -and
+            $elements[1] -is [System.Management.Automation.Language.CommandParameterAst]) {
+            # Keyed to the probed full argument shape (set alone resolves as
+            # the Set-Variable alias in every pwsh and stays out of reach).
+            $flagsOnly = $true
+            foreach ($element in ($elements | Select-Object -Skip 1)) {
+                $isFlag = $element -is [System.Management.Automation.Language.CommandParameterAst] -and
+                    $null -eq $element.Argument -and
+                    $element.ParameterName -match '^[euxo]{1,4}$'
+                $isPipefail = $element -is [System.Management.Automation.Language.StringConstantExpressionAst] -and
+                    $element.Value -eq 'pipefail'
+                if (-not ($isFlag -or $isPipefail)) { $flagsOnly = $false; break }
+            }
+            if ($flagsOnly) { return "bash 'set' shell options (set -e/-u/-x/-o pipefail)" }
+        }
+
+        # Paired backticks = bash command substitution: parses clean, prints
+        # the literal text, exits 0 - no error at all (worst probed case).
+        # Token-aware: only an element that OPENS with `letter is a
+        # candidate, and the raw text from its offset must close the pair
+        # with a backtick sitting at a word boundary. A lone escape (`n)
+        # has no closing backtick, a line continuation sits at end-of-line,
+        # and adjacent escapes (`n `t) fail the boundary check, so the
+        # frozen legitimate-backtick set never trips.
+        foreach ($element in $elements) {
+            if ($element.Extent.Text -notmatch '^`[A-Za-z]') { continue }
+            $rest = $Script.Substring($element.Extent.StartOffset)
+            if ($rest -match '^`[A-Za-z][^`]*`($|[\s;|&)''"])') {
+                return 'bash command substitution in backticks (`cmd`)'
+            }
+        }
+    }
+
+    return $null
+}
+
 # Bounds the text legs of Compress-PtcOutput (greenfield-design D2, adopted
 # 2026-07-08, amending the Phase 2 never-truncate contract): a generous
 # head+tail window sized so real command output virtually never hits it —
@@ -673,5 +788,6 @@ function Compress-PtcOutput {
 Export-ModuleMember -Function @(
     'Compress-PtcObject',
     'Compress-PtcOutput',
+    'Get-PtcShellDialectFinding',
     'Resolve-PtcInvokeScript'
 )
