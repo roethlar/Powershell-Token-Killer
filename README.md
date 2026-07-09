@@ -84,13 +84,21 @@ dotnet test server/PtkMcpServer.slnx
 pwsh -NoProfile -File server/test-handshake.ps1 -UseRegistrationCommand -TimeoutSec 90
 ```
 
-Inside this repo, the committed `.mcp.json` already registers the server as
-`ptk` for Claude Code. To use it from any project directory, register it
-user-wide:
+Then install and register it user-wide (builds a self-contained binary
+into `~/.ptk` and registers it with Claude Code):
+
+```powershell
+pwsh -File scripts/dev-install.ps1
+```
+
+Or register the checkout directly instead of installing:
 
 ```powershell
 claude mcp add ptk --scope user -- dotnet run -v q --project <path-to-repo>/server/PtkMcpServer
 ```
+
+(The committed `.mcp.json` is deliberately empty — a checkout has no
+project-scope registration; pick one of the two paths above.)
 
 Then use `ptk_invoke` for shell work. Calls are ordinary PowerShell or native
 command lines:
