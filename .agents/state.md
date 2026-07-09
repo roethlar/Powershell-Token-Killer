@@ -714,6 +714,8 @@ short and update it when important repo facts change.
 - **NEXT ACTION (2026-07-09 night): shell-dialect slice 1 — the
   detector.** The plan is APPROVED; slice 0 probe results are frozen in
   the plan file. Slices 1-4 land one commit + battery + codex loop each.
+- Active review loop: see `.agents/review/index.md` (shell-dialect
+  slice-1 loop, sd1-1..sd1-3).
   Owner decisions still open: (a) prioritize new issues **#5**
   (`[errors]` mislabels exit-0 native stderr) and **#6** (queue-wait
   excluded from `timeoutSeconds`; `ptk_state` blocks behind a busy

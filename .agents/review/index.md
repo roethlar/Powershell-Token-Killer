@@ -326,3 +326,21 @@ head `3ec608b` cleared mhi-9 and mhi-11; round 2 at head `d58be68` (base
 guard_confirmed=true and NO NEW FINDINGS (codex-cli 0.142.5). All four
 mhi-9..mhi-12 findings closed. Commits remain unpushed pending the
 owner's master push go.
+
+---
+
+Loop run 2026-07-09 (shell-dialect slice 1) — reviewer: codex (codex-cli
+0.144.0, read-only), scope: commit `6694dc5` (base `d369d9a`) — the
+token-aware dialect detector `Get-PtcShellDialectFinding` + tests
+(shell-dialect plan D1, slice 1). Three findings, all ADMITTED at intake
+(each carries evidence + a deterministic predicted failure); fixes direct
+to `master`, one per commit, per the recorded precedent. Per-finding
+detail: `.agents/review/findings/sd1-{1,2,3}.md`.
+
+## Findings (shell-dialect slice-1 loop)
+
+| ID    | Severity | Impact (one line)                                                      | Status | Branch |
+|-------|----------|--------------------------------------------------------------------------|--------|--------|
+| sd1-1 | MEDIUM   | Session-shadowed export/local/source would be refused once wired         | `[~]`  | master (direct) |
+| sd1-2 | MEDIUM   | A later escape or comment can close the backtick pair (FP on valid pwsh) | `[~]`  | master (direct) |
+| sd1-3 | LOW      | Parse-fatal keys take bash evidence from comments/strings                | `[~]`  | master (direct) |
