@@ -27,8 +27,16 @@ short and update it when important repo facts change.
   LANDED: `9b5e326` (sd1-1 Set-Alias tracking + lexical ordering),
   `20ba7fd` (sd1-3 escape-aware fragments), `f30ddde` (sd1-7
   command-position keywords). Battery: Pester 127/1 skipped, dotnet
-  59/59. NEXT: re-grade round 3 (sd1-1/sd1-3/sd1-7), then record and
-  close or iterate; sd1-4 still awaits owner adjudication. Records:
+  59/59. RE-GRADE ROUND 3 (head `374666b`): all three held on strictly
+  more crafted tails (no new IDs, third consecutive round; all
+  master-verified). FIX ROUND 4 LANDED: `eb5e193` (recursion counts),
+  `f5229a7` (fragments span newlines), `0c43b05` (defined/resolving
+  keywords are not evidence). **LOOP CLOSED CONVERGED** per the ccc9686
+  contrived-tail precedent — every named repro across four rounds is
+  guarded. **Canonical counts: Pester 130 (+1 skip), dotnet 59.**
+  SLICE 1 DONE. NEXT: slice 2 (server wiring — labeled refusal result on
+  both execution paths). OWNER: (a) sd1-4 adjudication, (b) ratify the
+  convergence close or order re-grade round 4, (c) push go. Records:
   `.agents/review/index.md`, `.agents/review/findings/sd1-{1..7}.md`.
 - **2026-07-09 (night): shell-dialect plan APPROVED — owner,
   in-session.** D1 = (a) refuse-fast with platform-aware guidance; D2 =
@@ -736,12 +744,13 @@ short and update it when important repo facts change.
 
 ## Next
 
-- **NEXT ACTION (2026-07-09 night): shell-dialect slice 1 — the
-  detector.** The plan is APPROVED; slice 0 probe results are frozen in
-  the plan file. Slices 1-4 land one commit + battery + codex loop each.
-- Active review loop: see `.agents/review/index.md` (shell-dialect
-  slice-1 loop, sd1-1..sd1-7 — re-grade round 1 recorded; fix round 2
-  open for sd1-1/sd1-3/sd1-6/sd1-7; sd1-4 awaits owner adjudication).
+- **NEXT ACTION (2026-07-10): shell-dialect slice 2 — server wiring.**
+  Slice 1 (detector) is DONE and its codex loop CLOSED CONVERGED
+  (`.agents/review/index.md`). Slices 2-4 land one commit + battery +
+  codex loop each.
+- Review loop: shell-dialect slice-1 loop CLOSED CONVERGED 2026-07-09
+  after four rounds (`.agents/review/index.md`); sd1-4 remains
+  contested — owner adjudication.
   Owner decisions still open: (a) prioritize new issues **#5**
   (`[errors]` mislabels exit-0 native stderr) and **#6** (queue-wait
   excluded from `timeoutSeconds`; `ptk_state` blocks behind a busy
@@ -869,9 +878,8 @@ short and update it when important repo facts change.
 
 - None known.
 
-Active review loop: shell-dialect slice-1 CODE loop OPEN
-(`.agents/review/index.md`, sd1-1..sd1-7). Re-grade round 1 recorded at
-head `acb0f39`: sd1-2 closed; fix round 2 open (sd1-1, sd1-3, sd1-6,
-sd1-7); sd1-4 contested (owner adjudication); sd1-5 declined at intake.
-The earlier plan-TEXT loop (sd-1..sd-10 → `1d7f38b`; sd2-1..sd2-5 →
-`13599a6`; sd3-1 → `809e0d0`) closed with the plan's approval.
+Active review loop: none — the shell-dialect slice-1 code loop CLOSED
+CONVERGED 2026-07-09 after four rounds (`.agents/review/index.md`;
+sd1-4 remains contested, owner adjudication). The earlier plan-TEXT loop
+(sd-1..sd-10 → `1d7f38b`; sd2-1..sd2-5 → `13599a6`; sd3-1 → `809e0d0`)
+closed with the plan's approval.

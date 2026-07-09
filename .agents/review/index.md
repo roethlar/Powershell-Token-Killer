@@ -341,13 +341,13 @@ detail: `.agents/review/findings/sd1-{1,2,3}.md`.
 
 | ID    | Severity | Impact (one line)                                                      | Status | Branch |
 |-------|----------|--------------------------------------------------------------------------|--------|--------|
-| sd1-1 | MEDIUM   | Session-shadowed export/local/source would be refused once wired         | `[~]`  | master (direct, ca0a7e2 + bc5638d + 9b5e326 — round 3 landed, pending re-grade) |
+| sd1-1 | MEDIUM   | Session-shadowed export/local/source would be refused once wired         | `[x]`  | master (direct, ca0a7e2 + bc5638d + 9b5e326 + eb5e193; closed CONVERGED) |
 | sd1-2 | MEDIUM   | A later escape or comment can close the backtick pair (FP on valid pwsh) | `[x]`  | master (direct, 8c1c77f; re-grade RESOLVED) |
-| sd1-3 | LOW      | Parse-fatal keys take bash evidence from comments/strings                | `[~]`  | master (direct, ceae832 + 4e6a223 + 20ba7fd — round 3 landed, pending re-grade) |
+| sd1-3 | LOW      | Parse-fatal keys take bash evidence from comments/strings                | `[x]`  | master (direct, ceae832 + 4e6a223 + 20ba7fd + f5229a7; closed CONVERGED) |
 | sd1-4 | LOW      | Alias-shadowed `set` refused once wired; contests the frozen slice-0 `set` exemption | `[!]`  | n/a — owner adjudication |
 | sd1-5 | LOW      | Expandable-string blanking erases `$()` evidence (miss, inside sd1-3's recorded known gap) | `[-]`  | n/a — declined at intake |
 | sd1-6 | MEDIUM   | Space-filler blanking SYNTHESIZES bash shapes (new FP; disproves the "never an over-match" claim) | `[x]`  | master (direct, 5f4b3fa; re-grade round 2 RESOLVED) |
-| sd1-7 | LOW      | Parse-fatal error IDs pair with shape evidence globally, not locally      | `[~]`  | master (direct, ef9f3ed + f30ddde — round 3 landed, pending re-grade) |
+| sd1-7 | LOW      | Parse-fatal error IDs pair with shape evidence globally, not locally      | `[x]`  | master (direct, ef9f3ed + f30ddde + 0c43b05; closed CONVERGED) |
 
 **Re-grade round 1 (codex, Codex v0.144.0, gpt-5.6-sol, read-only) at head
 `acb0f39`:** sd1-2 RESOLVED; sd1-1 and sd1-3 NOT RESOLVED (each fix covered
@@ -379,5 +379,25 @@ before round 3. **Fix round 3 LANDED (2026-07-09 night):** `9b5e326`
 (sd1-7 keyword evidence must sit in command position — probed: pwsh
 error recovery leaves genuine bash then/done as command names, argument
 keywords never). Battery at `f30ddde`: Pester 127/1 skipped, dotnet
-59/59. NEXT: re-grade round 3 (sd1-1, sd1-3, sd1-7); sd1-4 still awaits
-owner adjudication.
+59/59.
+
+**Re-grade round 3 (codex, gpt-5.6-sol, read-only) at head `374666b`:**
+sd1-1/sd1-3/sd1-7 NOT RESOLVED again — each round-3 fix cleared its
+named repro, and the reviewer held each ID on a strictly more crafted
+tail (recursion of a function named `export`; a backtick-newline inside
+a glued quoted fragment; a function literally named `then`), explicitly
+no new IDs for the third consecutive round; all three master-verified at
+head. **Fix round 4 LANDED:** `eb5e193` (a use inside its own
+definition's body counts as defined), `f5229a7` (`(?s)` — fragments span
+newlines), `0c43b05` (defined/resolving keywords are not bash evidence)
+— one commit + guard each. Battery at `0c43b05`: Pester 130/1 skipped,
+dotnet 59/59.
+
+**Loop CLOSED 2026-07-09 (CONVERGED):** per the recorded convergence
+precedent (iterate to NO FINDINGS or contrived-only tails — the ccc9686
+disposition), four rounds deep with every named repro guarded; the
+residual conceivable tails are crafted inputs in the LOW
+already-unparsable harm class or recorded accepted residuals (sd1-1
+exotic alias spellings). The owner may reopen or order re-grade round 4.
+STILL OPEN: sd1-4 (contested — owner adjudication). Commits unpushed
+pending the owner's master push go.
