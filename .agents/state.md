@@ -41,9 +41,13 @@ short and update it when important repo facts change.
     dev-install or explicit registration are the paths).
   - Codex loops: v2fb-1, v2fb-2, d5-1 (all LOW) fixed one commit each;
     v2fb re-grades RESOLVED; loop closed converged.
-  - **Canonical counts now: Pester 51, dotnet 59.** All commits local;
-    master push owner-gated. The installed 0.2.0 binary still serves the
-    OLD surface — rerun scripts/dev-install.ps1 to go live on v2.
+  - **Canonical counts now: Pester 51, dotnet 59.** Owner pushed master
+    through d881d37 on 2026-07-08 and CI run 28985350456 is GREEN on all
+    three OSes at that head. The installed 0.2.0 binary still serves the
+    OLD surface — stop the ~/.ptk servers, rerun scripts/dev-install.ps1
+    (it refuses while one runs, by design), then /mcp reconnect to go
+    live on v2. Owner fixed the codex config (now points at the
+    installed binary), closing the repo-bin exe-lock annoyance.
 - **2026-07-08 (after the build): SECOND LIVE-USE FEEDBACK BATCH recorded
   (owner-shared notes from heavy real use of the CURRENT installed v1,
   `F:\notes\PTK\vela_session_notes.md` — machine-local, essentials
