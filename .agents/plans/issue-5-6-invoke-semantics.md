@@ -63,10 +63,17 @@ budgets) at approval time.
    `Write-Error -ErrorId NativeCommandError -Message boom` produces FQID
    exactly `NativeCommandError` (Exception type `WriteErrorException`) —
    so a forged record would silently lose its `[errors]` label under an
-   FQID-only split. Pair the FQID with record metadata that Write-Error
-   cannot spoof (exception type / invocation provenance; the exact
-   discriminator is probed at implementation time against a real native
-   stderr record), and put the collision case in the test matrix. The rtk-nag filter
+   FQID-only split. Exception type is NOT a valid second factor either:
+   `Write-Error -Exception ([RemoteException]::new(...))` forges the
+   native record's exception type just as freely. The discriminator must
+   be invocation provenance, which Write-Error's parameters cannot
+   reach: a real native record carries
+   `InvocationInfo.MyCommand.CommandType -eq Application` (verified live
+   in a hosted runspace: native = FQID `NativeCommandError` +
+   `RemoteException` + CommandType `Application`; a Write-Error record's
+   MyCommand is the cmdlet), re-probed at implementation time. Both
+   collision cases — forged `-ErrorId` and forged `-Exception` — go in
+   the test matrix. The rtk-nag filter
    (`CollectErrors`) moves with the banner to the stderr channel (the nag
    IS native stderr). `InvokeTool` renders `[stderr]` as its own section;
    `[errors]` is reserved for genuine error records. The labels attach at
@@ -92,8 +99,9 @@ budgets) at approval time.
    no `[errors]`; nonzero exit → `[stderr]` alongside `[exit] N` —
    including via the terminating-native-preference catch path (i56p-6);
    `Write-Error` → `[errors]`, including with a forged
-   `-ErrorId NativeCommandError` (i56p-5); consistency across raw and
-   route values.
+   `-ErrorId NativeCommandError` and with a forged
+   `-Exception RemoteException` (i56p-5, i56p-9); consistency across raw
+   and route values.
 
 2. **#6a — queue wait inside the budget.** `InvokeAsync` starts the budget
    clock at entry: the gate wait becomes a bounded

@@ -539,3 +539,14 @@ direct to `master`, one per commit, per the recorded precedent.
 | i56p-6 | LOW      | RuntimeException path never captures [exit] N beside preserved stderr     | `[x]`  | master (direct) |
 | i56p-7 | LOW      | server/README output contract omits the new [stderr] section              | `[x]`  | master (direct) |
 | i56p-8 | MEDIUM   | Model-visible timeout texts become false (queue expiry ≠ recycle)         | `[x]`  | master (direct) |
+| i56p-9 | LOW      | Plan offered exception type as unspoofable (Write-Error -Exception forges it) | `[x]`  | master (direct) |
+| i56p-10 | LOW     | Busy ptk_state fast path would skip LastActivityUtc (sd2-3 class)         | `[ ]`  |        |
+
+**Re-grade round 1 (codex, codex-cli 0.144.1, gpt-5.6-sol, read-only) at
+head `720fc0a`:** all eight i56p-1..8 **RESOLVED**; two new LOW findings
+filed (i56p-9, i56p-10), both ADMITTED — i56p-9's forgery claim and the
+native record's true discriminator (InvocationInfo.MyCommand.CommandType
+= Application; exception type RemoteException is forgeable via
+`Write-Error -Exception`) master-verified live in a hosted runspace
+before admission; i56p-10 is the fixed sd2-3 class recurring on the new
+busy fast path.
