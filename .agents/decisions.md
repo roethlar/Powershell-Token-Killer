@@ -34,23 +34,7 @@ live rule now owned elsewhere - archive it per the rule above: move it verbatim 
 
 ## Decisions
 
-### ACTIVE (2026-07-10): everything non-PowerShell routes through rtk (owner direction, in-session)
-
-**Status:** Direction set by owner; implementation requires a plan (not yet
-drafted). The current router hands rtk only scripts that are exactly one
-bare native command with constant arguments (unified-shell-routing plan) —
-deliberately narrow when routing first landed. The owner's direction: rtk
-(v0.43.0 probed locally; per-tool filters for git/gh/docker/kubectl/
-dotnet/pnpm/psql/aws/grep/rg/test-runners plus generic `err`/`test`/
-`summary`/`log`/`read` wrappers and `gain` savings telemetry) already owns
-robust compression routing, so ptk should classify ANY non-PowerShell work
-onto it and let rtk's own dispatch pick the filter. PowerShell-native
-output keeps ptk's object compression. Evidence base: the 2026-07-10
-shaped-vs-raw measurement (object leg 3%, log leg 2%, rtk-git 46%,
-plain-text passthrough 100% kept — the passthrough row never reached rtk
-under the current shape check). Plan to define: chains/pipelines with
-native segments, cmdlet-pattern mapping (e.g. file reads), refusal/dialect
-interaction, and per-filter fidelity risks.
+### ACTIVE (2026-07-09): shell-dialect plan approved — `.agents/plans/shell-dialect.md`
 
 **Status:** Active — approved by owner in-session 2026-07-09. The plan's
 decision points stand as recommended: D1 = (a) detected bash-only shapes get
