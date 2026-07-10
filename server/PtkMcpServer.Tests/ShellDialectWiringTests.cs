@@ -24,12 +24,15 @@ public sealed class ShellDialectWiringTests : IDisposable
     public async Task Foreground_bash_only_script_is_refused_and_nothing_executes()
     {
         // The probe file proves refusal means non-execution: undetected, this
-        // script would fail on `export` but still create the file.
-        var probe = Path.Combine(Path.GetTempPath(), "ptk-dialect-probe-" + Guid.NewGuid().ToString("N"));
+        // script would fail on `export` but still create the file. The
+        // apostrophe in the name makes the interpolation escaping
+        // load-bearing on every host, not only under an exotically named
+        // profile like C:\Users\O'Brien (sd2-4).
+        var probe = Path.Combine(Path.GetTempPath(), "ptk-dialect-probe-o'brien-" + Guid.NewGuid().ToString("N"));
         try
         {
             var text = await InvokeTool.Invoke(
-                _host, _jobs, $"export X=1; New-Item -ItemType File -Path '{probe}'", CancellationToken.None);
+                _host, _jobs, $"export X=1; New-Item -ItemType File -Path '{probe.Replace("'", "''")}'", CancellationToken.None);
 
             Assert.Contains("[ptk:dialect] not executed", text);
             Assert.Contains("the bash 'export' builtin", text);
