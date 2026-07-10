@@ -60,11 +60,16 @@ ubuntu/windows/macos matrix for pushes to `master`/`ci/**` and PRs to
 
 ## Remotes & Sync
 
-Two remotes are configured (`git remote -v`, confirmed 2026-07-09):
+Three remotes are configured (`git remote -v`, confirmed 2026-07-10):
 
 - `origin` — `https://github.com/AlsoBeltrix/PowerShell-Token-Killer.git`
+  (GitHub renamed the repo to capital-W `PowerShell-Token-Killer`; the URL
+  was updated to match on the owner's go, 2026-07-10)
 - `gitea` — `http://q:3000/michael/Powershell-Token-Killer.git` (owner's
   local Gitea mirror; observed in the owner's push flow 2026-07-09)
+- `github` — `https://github.com/roethlar/Powershell-Token-Killer`
+  (observed in config 2026-07-10; not previously recorded — purpose
+  unconfirmed, presumed the owner's personal mirror)
 
 `master` tracks `origin/master`. A `personal` remote
 (`https://github.com/roethlar/-PowerShell-Token-Killer.git`) was recorded
