@@ -4,12 +4,15 @@
 words: "a shared runspace that multiple agents can access concurrently"
 and "a persistent runspace that will survive a harness restart — maybe
 keyed to a guid or something that the model can save and check back out."
-NOT approved for implementation. Like all further building, it sits
-behind the go/no-go adoption test in `.agents/decisions.md` (Open
-Decisions); it also supersedes-on-approval the greenfield design's
-recorded non-goal "runspace pools / parallel foreground calls"
-(`.agents/plans/greenfield-design.md`), which stands until the owner says
-otherwise.
+NOT approved for implementation. The product go/no-go gate is NOT what
+blocks it — that was decided **GO 2026-07-08** and archived
+(`docs/history/decisions-archive.md`). What gates this idea is (a) an
+explicit owner approval and (b) the measured-pain criterion of the
+canonical shared-host decision entry (next paragraph). On approval it
+would also supersede the greenfield design's recorded non-goal "runspace
+pools / parallel foreground calls"
+(`.agents/plans/greenfield-design.md`), which stands until the owner
+says otherwise.
 
 ## What exists today (for contrast)
 
@@ -64,7 +67,8 @@ otherwise.
 
 ## Trigger
 
-Per the recorded build discipline: experienced benefit on real daily
-usage, not anticipated need. The natural evidence would be the Windows
-go/no-go week showing repeated cold-import pain across session restarts
-(the slice-7 Exchange/AD latency numbers speak directly to this).
+Per the recorded build discipline and the canonical entry's own
+criterion: measured pain, not anticipated need — real use showing
+repeated reauth/reimport across sessions on one box, or a real
+multi-agent handoff need. The slice-7 Exchange/AD cold-import latency
+numbers, when run, speak directly to this.
