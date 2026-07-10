@@ -390,9 +390,17 @@ public sealed class RunspaceHost : IDisposable
     private static string FormatDialectRefusal(string finding, bool bashAvailable, bool background)
     {
         var refused = background ? "job not started" : "not executed";
+        // Two quoting layers compose in the wrap (sd2-1): the wrap itself is
+        // a PowerShell command line (its single-quoted argument is a
+        // PowerShell string literal — escape ' by doubling), and bash then
+        // parses the string's VALUE as script text (escape ' with a
+        // backslash). The POSIX '\'' idiom alone parse-fails at the
+        // PowerShell layer before bash ever runs.
         var recovery = bashAvailable
             ? "Rewrite it in PowerShell, or run it unchanged as bash by wrapping the whole script: " +
-              "bash -lc '...' (a literal ' inside the wrap must be written as '\\'')."
+              "bash -lc '...'. The wrap is itself a PowerShell command line, so write a literal ' " +
+              "inside the wrap by doubling it for PowerShell and backslash-escaping it for bash: " +
+              "bash -lc 'echo it\\''s' prints it's."
             : "Rewrite it in PowerShell (bash is not available on this machine).";
         return $"[ptk:dialect] {refused}: the script contains {finding} - bash-only syntax, " +
                $"and this tool runs PowerShell 7. {recovery}";

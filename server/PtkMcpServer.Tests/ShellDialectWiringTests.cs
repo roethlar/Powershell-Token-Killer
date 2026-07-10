@@ -184,7 +184,19 @@ public sealed class ShellDialectWiringTests : IDisposable
             // Both recovery paths, with the apostrophe-escaping note.
             Assert.Contains("Rewrite it in PowerShell", result.Output);
             Assert.Contains("bash -lc", result.Output);
-            Assert.Contains("'\\''", result.Output);
+
+            // The advertised escape example must be present verbatim...
+            const string example = "bash -lc 'echo it\\''s'";
+            Assert.Contains(example, result.Output);
+
+            // ...and must actually work when re-issued through the normal
+            // path (sd2-1: the old POSIX-idiom note parse-failed at the
+            // PowerShell layer). Running it non-raw also proves the
+            // recovery wrapper is never itself refused (plan slice 1(iv)).
+            var executed = await _host.InvokeAsync(example);
+            Assert.True(executed.Success);
+            Assert.DoesNotContain("[ptk:dialect]", executed.Output);
+            Assert.Contains("it's", executed.Output);
         }
         else
         {
