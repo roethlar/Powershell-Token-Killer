@@ -54,11 +54,17 @@ $serverUp = switch ($env:PTK_HOOK_LIVENESS) {
     default { [bool](Get-Process -Name PtkMcpServer -ErrorAction SilentlyContinue) }
 }
 
+# The dialect line is platform-neutral by design (shell-dialect plan D3):
+# the deny is a static string rendered per-box, so "where bash exists"
+# carries the condition instead of an install-time branch - bash -lc is
+# never advised unconditionally on a box that cannot run it.
 $reason =
     'Shell commands run through ptk: call the ptk_invoke MCP tool with "script" set to this same command.' +
     $cwdAdvice +
     'It runs in a persistent warm PowerShell runspace (state and imported modules survive across calls) ' +
-    'and output comes back token-compressed. Only if the command genuinely needs this harness shell ' +
+    'and output comes back token-compressed. The dialect is PowerShell 7, not bash: translate bash-only ' +
+    "syntax, or wrap a bash script whole as bash -lc '...' where bash exists. " +
+    'Only if the command genuinely needs this harness shell ' +
     '(interactive/TTY, or ptk is unavailable), re-run it here with PTK_DIRECT in a comment.' +
     ($serverUp ? '' : (' NOTE: no ptk server process is running on this machine right now - if the ' +
         'ptk tools are not available in this session, re-run this command here with PTK_DIRECT now.'))

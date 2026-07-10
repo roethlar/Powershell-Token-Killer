@@ -411,6 +411,11 @@ Describe 'redirect hook and installer' {
         # (docs/harness-support.md); the guidance must not pin Claude's.
         $decision.permissionDecisionReason | Should -Not -Match 'mcp__ptk'
         $decision.permissionDecisionReason | Should -Match 'PTK_DIRECT'
+        # D3 dialect line (shell-dialect slice 4): the deny teaches the
+        # dialect at the source, platform-neutrally - bash -lc is advised
+        # only "where bash exists", never unconditionally.
+        $decision.permissionDecisionReason | Should -Match 'PowerShell 7, not bash'
+        $decision.permissionDecisionReason | Should -Match "bash -lc '\.\.\.' where bash exists"
     }
 
     It 'appends down-server guidance when no ptk server process is running' {
@@ -688,6 +693,9 @@ Describe 'redirect hook and installer' {
             $text | Should -Match 'recovery hatch'
             $text | Should -Match 'route=pwsh with raw=false'
             $text | Should -Not -Match 'returns full uncompressed'
+            # D3 dialect line (shell-dialect slice 4).
+            $text | Should -Match 'PowerShell 7, not bash'
+            $text | Should -Match 'where bash exists'
 
             pwsh -NoProfile -File $script:initScript -SettingsPath $script:settings -NudgePath $script:nudgeFile -PtkHome $script:fakeHome -Uninstall | Out-Null
             $text = Get-Content -LiteralPath $script:nudgeFile -Raw

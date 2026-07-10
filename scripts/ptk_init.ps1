@@ -121,7 +121,9 @@ $nudgeBlock = @"
 $nudgeBegin
 When the ptk MCP server is available, use ptk_invoke for shell commands
 instead of the built-in shell tools: one warm PowerShell session (imports,
-connections, variables persist across calls), compressed output. Long
+connections, variables persist across calls), compressed output. The
+dialect is PowerShell 7, not bash: translate bash-only syntax, or wrap a
+bash script whole as bash -lc '...' where bash exists. Long
 stateless work: background=true, then poll ptk_job; long work that needs
 the warm session: raise timeoutSeconds. ptk_state diagnoses session drift;
 ptk_reset restores factory state. Compressed output preserves errors, exit

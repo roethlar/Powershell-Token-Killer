@@ -49,6 +49,16 @@ runspace, and only its *output* is shaped (legs 2–4). Routing and shaping can
 never fail a call: any internal failure falls back to labeled, unshaped
 output.
 
+The dialect is PowerShell 7, not bash. A probed set of bash-only constructs
+(`export X=`, heredocs, `[ ... ]` tests, backtick substitution, `set -e`,
+bash-style `if/for` blocks, and friends) gets a fast `[ptk:dialect]` refusal
+naming the construct instead of a confusing late failure — rewrite in
+PowerShell, or run a bash script whole with `bash -lc '...'`, a first-class
+compressed path where bash exists. `route=pwsh` and `raw=true` bypass the
+check as explicit consent. Undetected shapes run exactly as before:
+detection favors precision over recall, so shared-dialect syntax (`&&`,
+pipes, redirects) never trips it.
+
 Install `rtk` — the largest savings live there. Its native-command filters
 are where tools like `git`, `npm`, and `docker` get compressed, and it powers
 the log-shaping leg too; ptk without it only gets you object compression.
@@ -168,7 +178,9 @@ and stays silent where it is not. Suggested text, adapt freely:
 > When the ptk MCP server is available, use `ptk_invoke` for shell
 > commands instead of the built-in shell: one warm PowerShell session
 > (imports, connections, variables persist across calls), compressed
-> output. Long stateless work: `background=true`, then poll `ptk_job`;
+> output. The dialect is PowerShell 7, not bash: translate bash-only
+> syntax, or wrap a bash script whole as `bash -lc '...'` where bash
+> exists. Long stateless work: `background=true`, then poll `ptk_job`;
 > long work that needs the warm session: raise `timeoutSeconds`.
 > `ptk_state` diagnoses session drift; `ptk_reset` restores factory
 > state. Compressed output preserves errors, exit codes, and structure —
