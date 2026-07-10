@@ -532,6 +532,30 @@ public sealed class InvokeToolTests : IDisposable
     }
 
     [Fact]
+    public async Task Wedged_exit_code_bookkeeping_is_bounded_and_surfaced()
+    {
+        // A stalled LASTEXITCODE read must neither hold the response past the
+        // request budget nor hide its recycle as clean success (i56-3).
+        using var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(60));
+        host.ExitCodeReaderOverrideForTests = () => { Thread.Sleep(8000); return 7; };
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var result = await host.InvokeAsync("'payload'", timeoutSeconds: 3);
+        sw.Stop();
+
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(6), $"call took {sw.Elapsed}");
+        Assert.True(result.Success);
+        Assert.Contains("payload", result.Output);
+        Assert.Null(result.ExitCode);
+        Assert.True(result.WarmStateLost);
+        Assert.Contains(result.Errors, e => e.Contains("bookkeeping wedged"));
+
+        host.ExitCodeReaderOverrideForTests = null;
+        var after = await host.InvokeAsync("1 + 1", timeoutSeconds: 30);
+        Assert.True(after.Success);
+    }
+
+    [Fact]
     public async Task A_deadline_already_in_the_past_times_out_immediately()
     {
         // The post-sleep wake case (slice 0): deadlines are wall-clock, so a

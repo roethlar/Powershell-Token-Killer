@@ -12,6 +12,11 @@ namespace PtkMcpServer;
 /// <paramref name="Errors"/>: tools routinely write progress and diagnostics
 /// to stderr while succeeding, so labeling it an error sends agents chasing
 /// defects that do not exist (issue #5).</param>
+/// <param name="WarmStateLost">True when this call recycled the runspace
+/// (execution timeout, wedged stop, wedged bookkeeping). Machine-readable so
+/// callers never infer state loss from message text: a queue expiry and an
+/// execution timeout both set <paramref name="TimedOut"/> but only one
+/// destroys warm state (issue #6).</param>
 public sealed record InvokeResult(
     bool Success,
     string Output,
@@ -19,7 +24,8 @@ public sealed record InvokeResult(
     string[] Warnings,
     bool TimedOut,
     int? ExitCode = null,
-    string[]? Stderr = null);
+    string[]? Stderr = null,
+    bool WarmStateLost = false);
 
 /// <summary>What the session has changed in the process environment since the
 /// post-priming baseline. PATH is additionally reported as an entry-level diff
@@ -338,19 +344,39 @@ public sealed class RunspaceHost : IDisposable
         catch { return 0; }
     }
 
-    // Post-success bookkeeping gets a short fixed grace, not the call deadline
-    // (which a long execution may have nearly spent): if the read wedges, the
-    // response still goes out - with the runspace recycled and no exit code -
-    // rather than never (the slice-0 lesson generalized).
+    // Post-success bookkeeping runs under the call's own wall-clock deadline,
+    // capped by a short grace and floored so a long execution that spent its
+    // budget still gets a moment to read the code (codex finding i56-3: a
+    // fixed monotonic 10s ignored both the request budget and sleep). If the
+    // read wedges, the response still goes out — with the recycle SURFACED,
+    // never as silent success with the warm state gone.
     private static readonly TimeSpan BookkeepingGrace = TimeSpan.FromSeconds(10);
+    private static readonly TimeSpan BookkeepingFloor = TimeSpan.FromSeconds(2);
 
-    private async Task<int> ReadExitCodeBoundedAsync(Runspace runspace)
+    /// <summary>Test hook: wedging the real LASTEXITCODE read requires session
+    /// debugger tricks; tests inject a slow reader here instead.</summary>
+    internal Func<int>? ExitCodeReaderOverrideForTests { get; set; }
+
+    private async Task<(int ExitCode, bool Wedged)> ReadExitCodeBoundedAsync(
+        Runspace runspace, DateTimeOffset callDeadline, CancellationToken cancellationToken)
     {
-        var read = Task.Run(() => ReadExitCode(runspace));
-        if (await Task.WhenAny(read, Task.Delay(BookkeepingGrace)) == read) return await read;
+        var reader = ExitCodeReaderOverrideForTests;
+        var read = Task.Run(() => reader is not null ? reader() : ReadExitCode(runspace));
+        var now = DateTimeOffset.UtcNow;
+        var deadline = callDeadline;
+        if (deadline < now + BookkeepingFloor) deadline = now + BookkeepingFloor;
+        if (deadline > now + BookkeepingGrace) deadline = now + BookkeepingGrace;
+        if (await WaitForDeadlineAsync(read, deadline, cancellationToken) == WaitOutcome.Completed)
+        {
+            return (await read, false);
+        }
         RecycleAbandoning(read, runspace);
-        return 0;
+        return (0, true);
     }
+
+    private const string BookkeepingWedgeNote =
+        "Exit-code bookkeeping wedged after the script finished; the runspace was recycled and " +
+        "all warm state was lost. [exit] is unavailable for this call.";
 
     // rtk prints an install nag to stderr on every routed invocation; it is
     // pure noise in agent context (v2-feedback slice 3). Match the specific
@@ -671,7 +697,8 @@ public sealed class RunspaceHost : IDisposable
             "For stateless long work (builds, watchers), rerun with background=true and poll with ptk_job. " +
             "For work that needs the warm session (live connections, imported modules), rerun with a larger timeoutSeconds."],
         Warnings: [],
-        TimedOut: true);
+        TimedOut: true,
+        WarmStateLost: true);
 
     public async Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default, string route = "auto", int timeoutSeconds = 0, DateTimeOffset? deadline = null)
     {
@@ -837,7 +864,8 @@ public sealed class RunspaceHost : IDisposable
                     Output: string.Empty,
                     Errors: [$"Call canceled by the caller, but the pipeline did not stop within {StopGrace.TotalSeconds:0}s; the runspace was recycled and all warm state was lost."],
                     Warnings: [],
-                    TimedOut: false);
+                    TimedOut: false,
+                    WarmStateLost: true);
             }
 
             if (outcome == WaitOutcome.TimedOut)
@@ -853,8 +881,9 @@ public sealed class RunspaceHost : IDisposable
             {
                 var results = await invokeTask;
                 var output = string.Concat(results.Select(r => r?.ToString()));
-                var exitCode = await ReadExitCodeBoundedAsync(runspace);
+                var (exitCode, wedged) = await ReadExitCodeBoundedAsync(runspace, callDeadline, cancellationToken);
                 var (stderr, errors) = PartitionErrorStream(ps.Streams.Error);
+                if (wedged) errors = [.. errors, BookkeepingWedgeNote];
                 return new InvokeResult(
                     Success: true,
                     Output: output,
@@ -862,7 +891,8 @@ public sealed class RunspaceHost : IDisposable
                     Warnings: [.. ps.Streams.Warning.Select(w => w.ToString())],
                     TimedOut: false,
                     ExitCode: exitCode == 0 ? null : exitCode,
-                    Stderr: stderr);
+                    Stderr: stderr,
+                    WarmStateLost: wedged);
             }
             catch (RuntimeException ex)
             {
@@ -872,7 +902,8 @@ public sealed class RunspaceHost : IDisposable
                 // ($PSNativeCommandUseErrorActionPreference) lands nonzero-exit
                 // commands here; without the read their [exit] N silently
                 // dropped beside the preserved stderr (plan finding i56p-6).
-                var exitCode = await ReadExitCodeBoundedAsync(runspace);
+                var (exitCode, wedged) = await ReadExitCodeBoundedAsync(runspace, callDeadline, cancellationToken);
+                if (wedged) errors = [.. errors, BookkeepingWedgeNote];
                 return new InvokeResult(
                     Success: false,
                     Output: string.Empty,
@@ -880,7 +911,8 @@ public sealed class RunspaceHost : IDisposable
                     Warnings: [.. ps.Streams.Warning.Select(w => w.ToString())],
                     TimedOut: false,
                     ExitCode: exitCode == 0 ? null : exitCode,
-                    Stderr: stderr);
+                    Stderr: stderr,
+                    WarmStateLost: wedged);
             }
         }
         finally
