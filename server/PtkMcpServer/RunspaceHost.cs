@@ -541,11 +541,25 @@ public sealed class RunspaceHost : IDisposable
         // (null), the pre-detector behavior — the check must never block a
         // job — and the abandoned task finishes its work and releases the
         // cold gate on its own.
+        // Abandoning the await must also abandon the queued worker (codex
+        // finding i56-13): with an uncancelable gate wait, every expired
+        // check left a worker queued forever, retaining its script and — once
+        // a wedge cleared — monopolizing the gate with obsolete work. Not
+        // disposed (no `using`): the worker may still hold the token after
+        // this method returns; a timer-less CTS is safe to leave to the GC.
+        var abandonment = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        var workToken = abandonment.Token;
         var work = Task.Run(async () =>
         {
-            await _coldDetectionGate.WaitAsync(CancellationToken.None);
             try
             {
+                await _coldDetectionGate.WaitAsync(workToken);
+            }
+            catch (OperationCanceledException) { return null; }
+            catch (ObjectDisposedException) { return null; } // host torn down mid-queue
+            try
+            {
+                if (_disposed) return null;
                 if (_coldDetectionRunspace is null)
                 {
                     if (_coldDetectionUnavailable) return null;
@@ -576,13 +590,16 @@ public sealed class RunspaceHost : IDisposable
             catch { return null; }
             finally
             {
-                _coldDetectionGate.Release();
+                try { _coldDetectionGate.Release(); } catch (ObjectDisposedException) { /* torn down mid-work */ }
             }
         });
         if (deadline is null) return await work;
-        return await WaitForDeadlineAsync(work, deadline.Value, cancellationToken) == WaitOutcome.Completed
-            ? await work
-            : null;
+        if (await WaitForDeadlineAsync(work, deadline.Value, cancellationToken) == WaitOutcome.Completed)
+        {
+            return await work;
+        }
+        abandonment.Cancel(); // a still-queued worker stops queuing; an active one finishes and releases
+        return null;
     }
 
     internal enum WaitOutcome { Completed, TimedOut, Canceled }
