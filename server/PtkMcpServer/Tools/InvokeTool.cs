@@ -117,6 +117,9 @@ public static class InvokeTool
                         return "[job not started] The session-directory probe timed out while executing; the " +
                                "runspace was recycled and all warm state was lost (ptk_state shows what drifted). " +
                                "Retry to start the job in the fresh session's directory.";
+                    case RunspaceHost.CwdProbeOutcome.Recovering:
+                        return "[job not started] The runspace is being rebuilt after a previous timeout and was " +
+                               "not ready within this call's budget. Nothing was executed. Retry shortly.";
                     case RunspaceHost.CwdProbeOutcome.Failed:
                         return "[job not started] Could not determine the session's current directory, and jobs " +
                                "run in the session's directory by contract - starting elsewhere could run in the " +

@@ -523,6 +523,7 @@ public sealed class InvokeToolTests : IDisposable
         // recovering instead of hanging; once it lands, calls work again.
         var during = await host.InvokeAsync("'probe'", timeoutSeconds: 1);
         Assert.True(during.TimedOut);
+        Assert.True(during.Recovering); // discriminated from queue contention (i56-11)
         Assert.Contains("NOT executed", during.Errors[0]);
 
         host.CreationDelayForTests = TimeSpan.Zero;

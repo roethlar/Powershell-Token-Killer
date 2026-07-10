@@ -17,6 +17,10 @@ namespace PtkMcpServer;
 /// callers never infer state loss from message text: a queue expiry and an
 /// execution timeout both set <paramref name="TimedOut"/> but only one
 /// destroys warm state (issue #6).</param>
+/// <param name="Recovering">True when the call could not run because a
+/// post-recycle rebuild was still in flight — distinct from queue contention,
+/// which the busy messages describe as another call holding the runspace
+/// (codex finding i56-11).</param>
 public sealed record InvokeResult(
     bool Success,
     string Output,
@@ -25,7 +29,8 @@ public sealed record InvokeResult(
     bool TimedOut,
     int? ExitCode = null,
     string[]? Stderr = null,
-    bool WarmStateLost = false);
+    bool WarmStateLost = false,
+    bool Recovering = false);
 
 /// <summary>What the session has changed in the process environment since the
 /// post-priming baseline. PATH is additionally reported as an entry-level diff
@@ -622,7 +627,10 @@ public sealed class RunspaceHost : IDisposable
     public (bool Busy, TimeSpan? ActiveCallAge, int Waiters, bool Recovering) GetGateStatus()
     {
         var startTicks = Interlocked.Read(ref _activeCallStartTicks);
-        var recovering = !_runspaceReady.IsCompleted;
+        // A FAULTED rebuild counts as recovering too (i56-11): the next
+        // invoke retries it, and until then the runspace is not servable —
+        // reporting idle would be false.
+        var recovering = !_runspaceReady.IsCompletedSuccessfully;
         var busy = _gate.CurrentCount == 0 || recovering;
         TimeSpan? age = busy && startTicks != 0
             ? DateTimeOffset.UtcNow - new DateTimeOffset(startTicks, TimeSpan.Zero)
@@ -759,36 +767,57 @@ public sealed class RunspaceHost : IDisposable
         return await InvokeGateHeldAsync(script, raw, "auto", DateTimeOffset.UtcNow + budget, budget, cancellationToken);
     }
 
+    internal enum ReadyOutcome { Ready, TimedOut, Canceled, Faulted }
+
     // After a recycle, the replacement runspace is built off the response's
     // critical path; the next call picks it up here, under its own deadline.
-    // A faulted rebuild fails THIS call and kicks off a fresh attempt so one
-    // bad build cannot brick the server permanently.
-    private async Task<Runspace?> AwaitRunspaceReadyAsync(DateTimeOffset deadline, CancellationToken cancellationToken)
+    // Outcomes stay discriminated (codex finding i56-11): a cancel is not a
+    // timeout, and a faulted rebuild is its own labeled failure — it also
+    // kicks off a fresh attempt so one bad build cannot brick the server.
+    private async Task<(Runspace? Runspace, ReadyOutcome Outcome)> AwaitRunspaceReadyAsync(
+        DateTimeOffset deadline, CancellationToken cancellationToken)
     {
         var ready = _runspaceReady;
-        if (await WaitForDeadlineAsync(ready, deadline, cancellationToken) != WaitOutcome.Completed)
-        {
-            return null;
-        }
+        var wait = await WaitForDeadlineAsync(ready, deadline, cancellationToken);
+        if (wait == WaitOutcome.TimedOut) return (null, ReadyOutcome.TimedOut);
+        if (wait == WaitOutcome.Canceled) return (null, ReadyOutcome.Canceled);
         if (ready.IsCompletedSuccessfully)
         {
             // Metadata publishes at consumption, from the bundle that actually
             // won (i56-12): a superseded rebuild never stamps host state.
             PublishPrimedMetadata(ready.Result);
-            return ready.Result.Runspace;
+            return (ready.Result.Runspace, ReadyOutcome.Ready);
         }
         Console.Error.WriteLine($"ptk: runspace rebuild failed ({ready.Exception?.GetBaseException().Message}); retrying in the background.");
         _runspaceReady = Task.Run(CreatePrimedRunspace);
-        return null;
+        return (null, ReadyOutcome.Faulted);
     }
 
-    private InvokeResult RecoveringResult(TimeSpan budget) => new(
-        Success: false,
-        Output: string.Empty,
-        Errors: [$"Runspace recovering: a previous call timed out and the replacement runspace was not ready within this call's {budget.TotalSeconds:0}s wall-clock budget. " +
-            "The script was NOT executed. Retry shortly, or raise timeoutSeconds."],
-        Warnings: [],
-        TimedOut: true);
+    private InvokeResult RecoveringResult(TimeSpan budget, ReadyOutcome outcome) => outcome switch
+    {
+        ReadyOutcome.Canceled => new InvokeResult(
+            Success: false,
+            Output: string.Empty,
+            Errors: ["Call canceled by the caller while the replacement runspace was being rebuilt. The script was NOT executed."],
+            Warnings: [],
+            TimedOut: false,
+            Recovering: true),
+        ReadyOutcome.Faulted => new InvokeResult(
+            Success: false,
+            Output: string.Empty,
+            Errors: ["Runspace rebuild FAILED after a previous recycle; a fresh rebuild was started. The script was NOT executed. Retry shortly."],
+            Warnings: [],
+            TimedOut: false,
+            Recovering: true),
+        _ => new InvokeResult(
+            Success: false,
+            Output: string.Empty,
+            Errors: [$"Runspace recovering: a previous call timed out and the replacement runspace was not ready within this call's {budget.TotalSeconds:0}s wall-clock budget. " +
+                "The script was NOT executed. Retry shortly, or raise timeoutSeconds."],
+            Warnings: [],
+            TimedOut: true,
+            Recovering: true),
+    };
 
     private async Task<InvokeResult> InvokeGateHeldAsync(string script, bool raw, string route, DateTimeOffset callDeadline, TimeSpan budget, CancellationToken cancellationToken)
     {
@@ -796,10 +825,10 @@ public sealed class RunspaceHost : IDisposable
         var handedOff = false;
         try
         {
-            var runspace = await AwaitRunspaceReadyAsync(callDeadline, cancellationToken);
+            var (runspace, readyOutcome) = await AwaitRunspaceReadyAsync(callDeadline, cancellationToken);
             if (runspace is null)
             {
-                return RecoveringResult(budget);
+                return RecoveringResult(budget, readyOutcome);
             }
 
             // Preflight runs pipelines on the warm runspace (dialect check,
@@ -970,7 +999,7 @@ public sealed class RunspaceHost : IDisposable
         var handedOff = false;
         try
         {
-            var runspace = await AwaitRunspaceReadyAsync(deadline, cancellationToken);
+            var (runspace, _) = await AwaitRunspaceReadyAsync(deadline, cancellationToken);
             if (runspace is null) return text;
             ps.Runspace = runspace;
             ps.AddCommand("Compress-PtcOutput");
@@ -1020,6 +1049,10 @@ public sealed class RunspaceHost : IDisposable
         /// expiry would tell the model its connections survived when they did
         /// not (codex finding i56-6).</summary>
         TimedOutExecuting,
+        /// <summary>A post-recycle rebuild was still in flight; the probe never
+        /// ran. Distinct from queue contention: no other call holds the gate,
+        /// and the queue-expiry message's claims would be false (i56-11).</summary>
+        Recovering,
     }
 
     /// <summary>Current directory of the warm session (background jobs start
@@ -1032,6 +1065,7 @@ public sealed class RunspaceHost : IDisposable
         try
         {
             var result = await InvokeAsync("(Get-Location).Path", raw: true, cancellationToken: cancellationToken, deadline: deadline);
+            if (result.Recovering) return (null, CwdProbeOutcome.Recovering);
             if (result.TimedOut)
             {
                 return (null, result.WarmStateLost ? CwdProbeOutcome.TimedOutExecuting : CwdProbeOutcome.QueueExpired);
