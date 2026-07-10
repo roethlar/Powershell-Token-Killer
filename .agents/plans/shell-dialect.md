@@ -305,7 +305,11 @@ precision principle.
 - `set -e` — `Set-Variable: Missing an argument for parameter
   'Exclude'`, exit 1: a mystery error naming a parameter the agent never
   wrote (probed 2026-07-09, matches the D1 note). **IN**, keyed on the
-  probed full argument shape per slice 1(iii).
+  probed full argument shape per slice 1(iii). *(Amended 2026-07-09 —
+  owner unparked sd1-4: the shape key applies only while `set` still
+  resolves to the stock `Set-Variable` alias; an ambient or preceding
+  script-local re-pointing suppresses the finding. Details:
+  `.agents/decisions.md` amendment + `.agents/review/findings/sd1-4.md`.)*
 - trailing-`\` line continuation — prints the first fragment plus a
   literal `\` line, exit 1 (split-statement semantics). **OUT** — a
   trailing backslash is a legitimate line ending for Windows path

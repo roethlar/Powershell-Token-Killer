@@ -56,6 +56,15 @@ evidence that rewording fails). Slice 0 probe results freeze into the plan
 before implementation; slices 1-4 land one commit + battery + codex loop
 each.
 
+**Amendment (2026-07-09, owner unparked sd1-4 in-session):** the slice-0
+`set` exemption is narrowed — `set -e/-u/-x/-o pipefail` is flagged only
+while `set` still resolves to the stock `Set-Variable` alias; an ambient
+re-pointing or a preceding script-local `Set-Alias`/definition suppresses
+the finding (fix `c43360c`). Rationale: the exemption predated the
+detector's resolution-guard machinery and had become the lone exception to
+the uniform "a name that works in this session is never bash evidence"
+rule, in conflict with the plan's precision-first principle.
+
 ### ACTIVE (2026-07-08): Greenfield design adopted — `.agents/plans/greenfield-design.md`
 
 **Status:** Active — approved by owner in-session 2026-07-08 after the codex

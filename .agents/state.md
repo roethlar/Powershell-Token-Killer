@@ -35,8 +35,11 @@ short and update it when important repo facts change.
   contrived-tail precedent — every named repro across four rounds is
   guarded. **Canonical counts: Pester 130 (+1 skip), dotnet 59.**
   SLICE 1 DONE. NEXT: slice 2 (server wiring — labeled refusal result on
-  both execution paths). OWNER: (a) sd1-4 adjudication, (b) ratify the
-  convergence close or order re-grade round 4, (c) push go. Records:
+  both execution paths). OWNER: (a) ~~sd1-4 adjudication~~ DONE — owner
+  unparked in-session, fixed at `c43360c` (set -e flags only while set
+  still means stock Set-Variable; Pester 132/1 skip, dotnet 59/59;
+  decision amendment recorded), (b) ratify the convergence close or
+  order re-grade round 4, (c) push go. Records:
   `.agents/review/index.md`, `.agents/review/findings/sd1-{1..7}.md`.
 - **2026-07-09 (night): shell-dialect plan APPROVED — owner,
   in-session.** D1 = (a) refuse-fast with platform-aware guidance; D2 =
@@ -749,8 +752,8 @@ short and update it when important repo facts change.
   (`.agents/review/index.md`). Slices 2-4 land one commit + battery +
   codex loop each.
 - Review loop: shell-dialect slice-1 loop CLOSED CONVERGED 2026-07-09
-  after four rounds (`.agents/review/index.md`); sd1-4 remains
-  contested — owner adjudication.
+  after four rounds (`.agents/review/index.md`); sd1-4 owner-unparked
+  and fixed (`c43360c`) — all seven sd1 findings closed.
   Owner decisions still open: (a) prioritize new issues **#5**
   (`[errors]` mislabels exit-0 native stderr) and **#6** (queue-wait
   excluded from `timeoutSeconds`; `ptk_state` blocks behind a busy
@@ -880,6 +883,6 @@ short and update it when important repo facts change.
 
 Active review loop: none — the shell-dialect slice-1 code loop CLOSED
 CONVERGED 2026-07-09 after four rounds (`.agents/review/index.md`;
-sd1-4 remains contested, owner adjudication). The earlier plan-TEXT loop
+sd1-4 owner-unparked and fixed at `c43360c`). The earlier plan-TEXT loop
 (sd-1..sd-10 → `1d7f38b`; sd2-1..sd2-5 → `13599a6`; sd3-1 → `809e0d0`)
 closed with the plan's approval.

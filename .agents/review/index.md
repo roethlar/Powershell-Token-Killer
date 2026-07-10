@@ -344,7 +344,7 @@ detail: `.agents/review/findings/sd1-{1,2,3}.md`.
 | sd1-1 | MEDIUM   | Session-shadowed export/local/source would be refused once wired         | `[x]`  | master (direct, ca0a7e2 + bc5638d + 9b5e326 + eb5e193; closed CONVERGED) |
 | sd1-2 | MEDIUM   | A later escape or comment can close the backtick pair (FP on valid pwsh) | `[x]`  | master (direct, 8c1c77f; re-grade RESOLVED) |
 | sd1-3 | LOW      | Parse-fatal keys take bash evidence from comments/strings                | `[x]`  | master (direct, ceae832 + 4e6a223 + 20ba7fd + f5229a7; closed CONVERGED) |
-| sd1-4 | LOW      | Alias-shadowed `set` refused once wired; contests the frozen slice-0 `set` exemption | `[!]`  | n/a — owner adjudication |
+| sd1-4 | LOW      | Alias-shadowed `set` refused once wired; contests the frozen slice-0 `set` exemption | `[x]`  | master (direct, c43360c — owner unparked the frozen decision and authorized the fix) |
 | sd1-5 | LOW      | Expandable-string blanking erases `$()` evidence (miss, inside sd1-3's recorded known gap) | `[-]`  | n/a — declined at intake |
 | sd1-6 | MEDIUM   | Space-filler blanking SYNTHESIZES bash shapes (new FP; disproves the "never an over-match" claim) | `[x]`  | master (direct, 5f4b3fa; re-grade round 2 RESOLVED) |
 | sd1-7 | LOW      | Parse-fatal error IDs pair with shape evidence globally, not locally      | `[x]`  | master (direct, ef9f3ed + f30ddde + 0c43b05; closed CONVERGED) |
@@ -399,5 +399,9 @@ disposition), four rounds deep with every named repro guarded; the
 residual conceivable tails are crafted inputs in the LOW
 already-unparsable harm class or recorded accepted residuals (sd1-1
 exotic alias spellings). The owner may reopen or order re-grade round 4.
-STILL OPEN: sd1-4 (contested — owner adjudication). Commits unpushed
-pending the owner's master push go.
+sd1-4 was subsequently UNPARKED by owner adjudication (in-session,
+2026-07-09) and fixed at `c43360c` — `set -e` flags only while `set`
+still resolves to the stock `Set-Variable` alias (battery: Pester 132/1
+skipped, dotnet 59/59; decision amendment in `.agents/decisions.md`).
+**All seven sd1 findings are closed.** Commits unpushed pending the
+owner's master push go.
