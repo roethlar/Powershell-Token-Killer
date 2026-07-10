@@ -167,7 +167,13 @@ budgets) at approval time.
    count, jobs, env drift) plus a
    `runspace: busy (active call running Xs, N waiting)` line and marks
    runspace-dependent details unavailable. When the try-acquire wins,
-   current behavior. Queue-wait and execution time become independently
+   current behavior. A served busy report is user activity: the fast
+   path stamps `LastActivityUtc` even though it never enters
+   `InvokeAsync` (today the stamp lives there,
+   `RunspaceHost.cs:472`), or the idle watchdog could stop the server
+   right after it answered — the same class as the fixed sd2-3
+   background-refusal skip. Regression: a busy-path state call refreshes
+   the idle clock. Queue-wait and execution time become independently
    observable: the busy line carries the active call's age, and slice 2's
    fast-fail message carries the queue wait it spent. Regression: state
    returns promptly with the busy indicator both when dispatched during

@@ -540,7 +540,7 @@ direct to `master`, one per commit, per the recorded precedent.
 | i56p-7 | LOW      | server/README output contract omits the new [stderr] section              | `[x]`  | master (direct) |
 | i56p-8 | MEDIUM   | Model-visible timeout texts become false (queue expiry ≠ recycle)         | `[x]`  | master (direct) |
 | i56p-9 | LOW      | Plan offered exception type as unspoofable (Write-Error -Exception forges it) | `[x]`  | master (direct) |
-| i56p-10 | LOW     | Busy ptk_state fast path would skip LastActivityUtc (sd2-3 class)         | `[ ]`  |        |
+| i56p-10 | LOW     | Busy ptk_state fast path would skip LastActivityUtc (sd2-3 class)         | `[x]`  | master (direct) |
 
 **Re-grade round 1 (codex, codex-cli 0.144.1, gpt-5.6-sol, read-only) at
 head `720fc0a`:** all eight i56p-1..8 **RESOLVED**; two new LOW findings
