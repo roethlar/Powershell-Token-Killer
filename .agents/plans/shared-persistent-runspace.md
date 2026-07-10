@@ -92,7 +92,18 @@ decision to make at approval time, not a default this file gets to set.
    crash recovery semantics ("your key survived but its runspace did
    not" needs an honest, machine-readable answer — the issue-6
    `Recovering`/`WarmStateLost` plumbing is the precedent).
-5. **Transport.** MCP stdio-proxy vs. streamable HTTP; what each harness
+5. **Semantic interleaving between calls.** Serialization and the busy
+   telemetry protect a single call, not the state BETWEEN calls: with
+   one key shared, agent B can change cwd/variables/connections — or
+   trigger a timeout recycle or ptk_reset that evicts everything — in
+   the gap between agent A's calls, and A's still-valid GUID silently
+   reaches changed or fresh state (the canonical entry already names
+   shared timeout/reset blast radius the biggest operational hazard).
+   The design needs an explicit shared-state/lease contract, client
+   identity in ptk_state, and a runspace generation counter or change
+   notification so a checkout can tell "same session I left" from
+   "changed under me"; waiter counts alone are insufficient.
+6. **Transport.** MCP stdio-proxy vs. streamable HTTP; what each harness
    on the owner's machines can actually register.
 
 ## Trigger
