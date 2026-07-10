@@ -19,9 +19,11 @@ short and update it when important repo facts change.
   Battery as of `e576962`: dotnet 80/80, Pester 133 passed / 1 skipped
   (canonical counts), handshake PASSED. Loop records:
   `.agents/review/index.md`; findings: `.agents/review/findings/sd*-*.md`.
-  Remaining plan tail (owner-gated): after the owner's next push, post
-  the approved fix references on issue #3 (item 1) and issue #4 and
-  close #4.
+  Plan tail EXECUTED 2026-07-10: the owner pushed mid-session (remote
+  `master` reached `8bb96b1`), so the approved fix references were
+  posted — issue #3 got the item-1 comment (stays open for items 2-4),
+  issue #4 got its comment and was CLOSED. Only the sd4-fix tail
+  (`428ac82`, `e576962`, the loop-close records) remains local-ahead.
 - **Owner decisions recorded 2026-07-09 (in-session, post-handoff):**
   (a) slice-1 convergence close RATIFIED (above); (b) the push
   happened — `master` == `origin/master` == remote HEAD at `c71ea70`,
@@ -35,12 +37,11 @@ short and update it when important repo facts change.
   but execution is DEFERRED until the fixing slices land and are pushed
   (per the plan's Verification section: #3 item 1 needs slice 2; #4
   needs slices 3-4). Do not post before then.
-- GitHub status as of 2026-07-09: issues #1 and #2 CLOSED; #3 open
-  (item 1 is in the shell-dialect plan; items 2-4 recorded there as a
-  candidate small follow-up batch; the MCP permission-bypass ask is its
-  own future owner-gated plan); #4 open (addressed by the plan; close
-  after slices 3-4 land + push, per the deferred-execution decision
-  above); #5/#6 open, triaged after-current-work.
+- GitHub status as of 2026-07-10: issues #1, #2, and #4 CLOSED (#4
+  closed this date with its fix reference); #3 open with the item-1 fix
+  comment posted (items 2-4 remain a candidate small follow-up batch;
+  the MCP permission-bypass ask is its own future owner-gated plan);
+  #5/#6 open, triaged after-current-work.
 - Standing flags carried forward: the release-distribution plan's
   slice 3 (`release.yml`) is now unblocked (shell-dialect complete), and
   its hook-default decision must close before its slice 4
@@ -50,10 +51,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-- Owner push go (master is local-ahead; ask-first policy). After the
-  push: post the approved fix references (issue #3 item 1, issue #4) and
-  close #4; then the #5/#6 batch (triaged after-current-work
-  2026-07-09).
+- Owner push go for the small local-ahead tail (sd4 fixes + loop-close
+  records; ask-first policy). Then the #5/#6 batch (triaged
+  after-current-work 2026-07-09).
 - Remaining owner decision: hook-default (blocks release slice 4 only;
   owner chose "decide later" 2026-07-09 — re-present before that slice).
 - Machine-local (owner's Mac + Windows box): the installed `~/.ptk`
