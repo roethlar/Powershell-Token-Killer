@@ -715,9 +715,10 @@ finding, ADMITTED and fixed with the reviewer''s own architecture:
 
 | ID    | Severity | Impact (one line)                                                    | Status | Branch |
 |-------|----------|-----------------------------------------------------------------------|--------|--------|
-| spr-5 | MEDIUM   | "Daemon-served dashboard is a bolt-on, not a daemon change" self-contradicts | `[x]`  | master (direct, next commit) |
+| spr-5 | MEDIUM   | "Daemon-served dashboard is a bolt-on, not a daemon change" self-contradicts | `[x]`  | master (direct, 6de55e4 - fix and record in one commit) |
 
 **Loop CLOSED 2026-07-10 (converged):** the fix adopts the reviewer''s
 suggested external-companion architecture verbatim (daemon grows no
 HTTP surface; --json stabilizes the data contract, does not make a
 dashboard free) — trivial-docs-fix convergence precedent.
+
