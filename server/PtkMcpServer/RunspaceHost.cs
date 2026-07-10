@@ -886,6 +886,22 @@ public sealed class RunspaceHost : IDisposable
                     TimedOut: false);
             }
 
+            // Completion is not permission to CONTINUE: readiness or preflight
+            // can finish after the wall deadline (sleep, late timers), and
+            // starting the user pipeline then would begin side effects past
+            // budget. Work already DONE returns its results; new work does not
+            // start (codex finding i56-1, reopened leg).
+            if (DateTimeOffset.UtcNow >= callDeadline)
+            {
+                return new InvokeResult(
+                    Success: false,
+                    Output: string.Empty,
+                    Errors: [$"The {budget.TotalSeconds:0}s wall-clock budget expired during pre-execution checks. " +
+                        "The script was NOT executed and warm state is untouched. Retry, or raise timeoutSeconds."],
+                    Warnings: [],
+                    TimedOut: true);
+            }
+
             ps.Runspace = runspace;
             // useLocalScope: false — assignments land in the runspace's session
             // state and survive into the next call; that persistence is the point.
