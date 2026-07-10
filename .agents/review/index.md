@@ -511,3 +511,31 @@ background refusal with no job started; raw counter exactly-once +
 stderr log line + negative legs; rtk-absent seam). With this close, all
 four shell-dialect slice loops (sd1..sd4) are closed and the plan is
 COMPLETE. Commits unpushed pending the owner's master push go.
+
+---
+
+Loop run 2026-07-10 (issue-5/6 batch plan draft) — reviewer: codex
+(codex-cli 0.144.1, gpt-5.6-sol, read-only), scope: commit `deea88c`
+(base `a6a4c5d`) — the DRAFT plan
+`.agents/plans/issue-5-6-invoke-semantics.md` (docs-only; the plan text
+is the artifact — no guard proofs, per the plan-review precedent). Eight
+findings, ALL ADMITTED at intake; the i56p-5 FQID-collision claim was
+master-verified live before admission (`Write-Error -ErrorId
+NativeCommandError` yields FQID exactly `NativeCommandError`). i56p-7
+admitted with the fix scoped to `server/README.md` as the canonical
+output-contract location (the completed greenfield-design plan's label
+list is a historical record — one-canonical-location invariant). Fixes
+direct to `master`, one per commit, per the recorded precedent.
+
+## Findings (issue-5/6 plan loop)
+
+| ID     | Severity | Impact (one line)                                                        | Status | Branch |
+|--------|----------|---------------------------------------------------------------------------|--------|--------|
+| i56p-1 | MEDIUM   | Gate-held preflight (dialect check, ResolveScript) stays outside the promised total budget | `[ ]`  |        |
+| i56p-2 | MEDIUM   | Snapshot-then-probe ptk_state races a new long call and still blocks      | `[ ]`  |        |
+| i56p-3 | MEDIUM   | background=true pre-start steps ignore the request budget; expired request still starts | `[ ]`  |        |
+| i56p-4 | MEDIUM   | Accepted cold-cwd fallback silently runs a job in the wrong project       | `[ ]`  |        |
+| i56p-5 | LOW      | FQID-only partition mislabels forged Write-Error records as [stderr]      | `[ ]`  |        |
+| i56p-6 | LOW      | RuntimeException path never captures [exit] N beside preserved stderr     | `[ ]`  |        |
+| i56p-7 | LOW      | server/README output contract omits the new [stderr] section              | `[ ]`  |        |
+| i56p-8 | MEDIUM   | Model-visible timeout texts become false (queue expiry ≠ recycle)         | `[ ]`  |        |
