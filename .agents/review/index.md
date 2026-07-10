@@ -531,7 +531,7 @@ direct to `master`, one per commit, per the recorded precedent.
 
 | ID     | Severity | Impact (one line)                                                        | Status | Branch |
 |--------|----------|---------------------------------------------------------------------------|--------|--------|
-| i56p-1 | MEDIUM   | Gate-held preflight (dialect check, ResolveScript) stays outside the promised total budget | `[ ]`  |        |
+| i56p-1 | MEDIUM   | Gate-held preflight (dialect check, ResolveScript) stays outside the promised total budget | `[x]`  | master (direct) |
 | i56p-2 | MEDIUM   | Snapshot-then-probe ptk_state races a new long call and still blocks      | `[ ]`  |        |
 | i56p-3 | MEDIUM   | background=true pre-start steps ignore the request budget; expired request still starts | `[ ]`  |        |
 | i56p-4 | MEDIUM   | Accepted cold-cwd fallback silently runs a job in the wrong project       | `[ ]`  |        |

@@ -78,8 +78,14 @@ budgets) at approval time.
    not canceled or recycled — whose message names the busy cause and both
    recovery paths (retry / background=true), distinct from the existing
    ran-too-long recycle message. After acquisition, the remaining budget
-   (total minus queue wait) bounds execution; the recycle-on-timeout
-   behavior is otherwise unchanged. `ShapeTextAsync` (job polls hold the
+   (total minus queue wait) bounds everything the call runs while holding
+   the gate — the preflight pipelines (dialect check, `ResolveScript`,
+   exit-code bookkeeping, `RunspaceHost.cs:489,500,506`) as well as the
+   main pipeline: preflight uses blocking `ps.Invoke()` today, and a
+   session-shadowed helper or a wedged rtk child can hang it exactly like
+   the fixed ShapeTextAsync wedge (d3-1). A preflight overrun is a wedged
+   warm pipeline and recycles like an execution timeout; the
+   recycle-on-timeout behavior is otherwise unchanged. `ShapeTextAsync` (job polls hold the
    same gate) gets the same bounded wait and returns the text unshaped on
    expiry — shaping must never fail a poll. Consequence accepted:
    `TryGetCurrentLocationAsync` (background job start) inherits the fast-
@@ -88,7 +94,9 @@ budgets) at approval time.
    Regression coverage (from the issue): a queued call whose budget
    expires never executes later (observable side effect asserted absent);
    execution timeout still recycles only the call that owns the runspace;
-   queue-expiry leaves the active call's warm state intact.
+   queue-expiry leaves the active call's warm state intact; a
+   slow-shadowed preflight helper cannot hold a small-budget call past
+   its deadline (i56p-1).
 
 3. **#6b — prompt `ptk_state` under load.** `RunspaceHost` maintains a
    lock-free busy snapshot around the gate (busy flag, active-call start
