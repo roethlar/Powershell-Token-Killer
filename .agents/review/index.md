@@ -704,3 +704,20 @@ the verdict contract was prompt-enforced and parsed fail-closed), scope:
 record). **CLOSED first pass: NO FINDINGS** (valid single-object JSON,
 reviewed_sha matches head). Three harnesses (codex, grok, agy) are now
 probed, cached, and have each run at least one real loop.
+
+---
+
+Loop run 2026-07-10 (shared-runspace plan amendments) — reviewer: codex
+(codex-cli 0.144.1, read-only), docs-only scope: `83d431a..e2003cd` —
+the staging adjudication, interaction sketch + admin-CLI requirement,
+and web-option amendments to the previously closed spr loop. One
+finding, ADMITTED and fixed with the reviewer''s own architecture:
+
+| ID    | Severity | Impact (one line)                                                    | Status | Branch |
+|-------|----------|-----------------------------------------------------------------------|--------|--------|
+| spr-5 | MEDIUM   | "Daemon-served dashboard is a bolt-on, not a daemon change" self-contradicts | `[x]`  | master (direct, next commit) |
+
+**Loop CLOSED 2026-07-10 (converged):** the fix adopts the reviewer''s
+suggested external-companion architecture verbatim (daemon grows no
+HTTP surface; --json stabilizes the data contract, does not make a
+dashboard free) — trivial-docs-fix convergence precedent.

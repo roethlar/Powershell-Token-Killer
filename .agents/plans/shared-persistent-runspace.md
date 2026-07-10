@@ -101,11 +101,14 @@ Humans must be able to see and control sessions without asking an agent:
   NOT v1.** Glanceable sessions + browsable audit log is real value,
   but a listening web port adds an auth/attack surface on exactly the
   security-sensitive component; the CLI is required for control either
-  way and inherits OS permissions via the local socket. If built:
-  read-only first, localhost-only, served by the daemon, no control
-  actions without a real auth story; control stays in the CLI.
-  `ptk sessions list --json` ships in v1 regardless, making any later
-  dashboard a bolt-on rather than a daemon change.
+  way and inherits OS permissions via the local socket. If built: an
+  EXTERNAL companion (e.g. a `ptk dashboard` command serving a
+  localhost read-only page fed by the same socket/CLI data the admin
+  commands use) — the daemon itself grows no HTTP surface. Read-only,
+  localhost-only, no control actions without a real auth story; control
+  stays in the CLI. `ptk sessions list --json` ships in v1 to stabilize
+  the data contract a dashboard would consume — it does not by itself
+  make one free.
 
 ## Hard problems to solve before any build
 
