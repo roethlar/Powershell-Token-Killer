@@ -610,6 +610,19 @@ public sealed class RunspaceHost : IDisposable
                 var chunk = remaining < DeadlineCheckChunk ? remaining : DeadlineCheckChunk;
                 if (await _gate.WaitAsync(chunk, cancellationToken))
                 {
+                    // The semaphore wait is monotonic while the deadline is
+                    // wall-clock: across a sleep, the gate can be won AFTER
+                    // the budget expired, and executing then would break the
+                    // never-executes promise for expired queued calls (codex
+                    // finding i56-1). Deterministically untestable without a
+                    // clock seam — the window needs monotonic/wall divergence
+                    // mid-wait — so this guard is by-inspection; the queued
+                    // and past-deadline tests cover the surrounding paths.
+                    if (DateTimeOffset.UtcNow >= deadline)
+                    {
+                        _gate.Release();
+                        return false;
+                    }
                     MarkGateAcquired();
                     return true;
                 }
