@@ -74,6 +74,34 @@ public sealed class RawUsageTests : IDisposable
         Assert.Equal(0, _rawUsage.Count);
     }
 
+    [Fact]
+    public async Task Oversized_job_poll_names_the_log_as_the_recovery_not_raw()
+    {
+        // sd3-2: the elision marker advises raw=true, which ptk_job does not
+        // have; an elided poll must name the honest recovery — the raw log —
+        // in-band. This also pins the JobTool↔marker wording coupling: a
+        // marker reword that silently drops the note fails here.
+        var started = await InvokeTool.Invoke(
+            _host, _jobs, _rawUsage,
+            "1..3000 | ForEach-Object { \"job line $_ \" + ('z' * 20) }",
+            CancellationToken.None, background: true);
+        Assert.Contains("[job 1 started]", started);
+
+        var deadline = DateTime.UtcNow.AddSeconds(60);
+        string status;
+        do
+        {
+            await Task.Delay(250);
+            status = await JobTool.Job(_host, _jobs, "status", CancellationToken.None, id: 1);
+        } while (status.Contains("running") && DateTime.UtcNow < deadline);
+
+        var poll = await JobTool.Job(_host, _jobs, "output", CancellationToken.None, id: 1, offset: 0);
+
+        Assert.Contains("elided", poll);
+        Assert.Contains("raw=true does not apply here", poll);
+        Assert.Contains("job-", poll); // the raw log path is named
+    }
+
     private static string DescriptionOf(ICustomAttributeProvider member) =>
         ((DescriptionAttribute)member.GetCustomAttributes(typeof(DescriptionAttribute), false).Single()).Description;
 

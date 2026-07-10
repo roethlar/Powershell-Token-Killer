@@ -52,6 +52,15 @@ public static class JobTool
                 var shaped = text.Length > 0
                     ? await host.ShapeTextAsync(text, cancellationToken)
                     : "(no new output)";
+                // sd3-2: the module's elision marker advises raw=true — a
+                // ptk_invoke control this tool does not have; re-running the
+                // JOB to recover elided output duplicates side-effecting
+                // work, and the offset has already moved past the middle.
+                // Name the honest recovery in-band, next to the marker.
+                if (shaped.Contains("elided - rerun with raw=true"))
+                {
+                    shaped += $"\n[ptk_job note: raw=true does not apply here - the complete raw log is {snapshot.OutputPath}]";
+                }
                 var state = snapshot.Running ? "running" : $"exited {snapshot.ExitCode}";
                 return $"{shaped}\n[job {id} {state}] next offset: {nextOffset}";
             }
