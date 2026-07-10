@@ -75,6 +75,13 @@ budgets) at approval time.
    `StateTool`'s probe-error and cache gates key on `Errors` and are
    unaffected by design (a native-stderr line must no longer be able to
    block the listAvailable cache or flag the state probe).
+   The documented output contract moves with the code: the
+   `server/README.md` section that enumerates the labeled sections
+   (`[exit]`/`[errors]`/`[warnings]` today) gains `[stderr]`, its meaning
+   (native stderr, neutral — not a failure signal), and its position.
+   The README is the canonical location for that contract; the completed
+   greenfield-design plan's label list is a historical record and is not
+   maintained (one-canonical-location invariant).
    The `RuntimeException` catch path today never reads `LASTEXITCODE`
    (only the success path does, `RunspaceHost.cs:565`), so under
    `$PSNativeCommandUseErrorActionPreference = $true` a native command
