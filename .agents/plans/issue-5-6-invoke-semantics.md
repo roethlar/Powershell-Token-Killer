@@ -13,16 +13,35 @@ were verified against current source before drafting.
 
 ## Slice 0 (added at approval) — root-cause the never-returned call
 
-Live incident, this box, 2026-07-10 ~03:05-03:39: a foreground
-`ptk_invoke` running a long native child (`codex exec`) with
-`timeoutSeconds=900` produced no response for 2018s, at which point the
-MCP client aborted; a subsequent `ptk_state` also never responded; the
-server process was later absent from the process table. The execution
-timeout should have answered at 900s and did not — a broken-timer,
-lost-response, or server-crash failure that the queue-budget work cannot
-explain or fix. Investigate first (harness MCP logs, reproduction with a
-long native child over real stdio), fix, and guard. The slice-2 semantics
-land on top of a timer that provably fires.
+Live incident, this box, 2026-07-10: a foreground `ptk_invoke` running a
+long native child (`codex exec`) with `timeoutSeconds=900` produced no
+response for 2018s wall-clock, at which point the MCP client aborted; a
+subsequent `ptk_state` also never responded (aborted at 1817s); the
+server process was later absent from the process table.
+
+**ROOT CAUSE (investigated 2026-07-10, evidence: the harness MCP log
+`mcp-logs-ptk/2026-07-10T04-58-12-892Z.jsonl` and `pmset -g log`):
+system sleep, not a server defect.** The dispatch landed at 06:59:52
+local inside a 45-second maintenance DarkWake; the machine re-slept 17
+seconds later and stayed asleep (short DarkWake slivers aside) until the
+lid opened at 08:25:39. `Task.Delay` runs on a monotonic clock that
+stops during sleep, so the 900s execution timeout accumulated only the
+few awake minutes and legitimately never came due; the MCP client's
+1800s patience is wall-clock, so it gave up first; `ptk_state` then
+queued behind the genuinely-held gate (the #6b defect, observed live);
+the orphaned codex child wrote its last bytes during the 08:20 DarkWake.
+No timer failed and nothing crashed — the server promises seconds, the
+caller experiences wall time, and sleep drives them apart.
+
+**Fix (folds into slices 2-3):** the call budget is a WALL-CLOCK
+deadline (`DateTimeOffset`), re-checked when timers fire — the
+IdleWatchdog's existing recompute-on-wake loop is the model — so a call
+that slept past its deadline answers promptly on the next wake instead
+of silently extending. Slice 3 is the diagnostic half: a zero-wait busy
+report answers within a DarkWake sliver. Guard: a deadline computed in
+the past (or a clock-jump simulation via an injected clock/short
+deadline) must produce the timeout response on the next timer check;
+exact seam chosen at implementation.
 
 ## Problem
 
