@@ -452,7 +452,9 @@ would be misadvice). Detail: `.agents/review/findings/sd3-1.md`.
 | ID    | Severity | Impact (one line)                                                      | Status | Branch |
 |-------|----------|--------------------------------------------------------------------------|--------|--------|
 | sd3-1 | MEDIUM   | raw surfaces omit the route=pwsh+raw=false pairing (admitted: raw param; declined: marker surfaces) | `[x]`  | master (direct, 1c92cd6 + D2 amendment — owner-delegated adjudication) |
-| sd3-2 | MEDIUM   | Elided job polls advise raw=true, a control ptk_job does not have         | `[x]`  | master (direct, f1c7744) |
+| sd3-2 | MEDIUM   | Elided job polls advise raw=true, a control ptk_job does not have         | `[x]`  | master (direct, f1c7744; mechanism superseded by 0840d13) |
+| sd3-3 | LOW      | Job-poll recovery note fired on marker text the job itself printed        | `[x]`  | master (direct, 302891a + 0840d13; closed round 4) |
+| sd3-4 | MEDIUM   | Elision can lengthen text; the shortening gate suppressed genuine notes   | `[x]`  | master (direct, 0840d13, joint with sd3-3) |
 
 **Re-grade round 1 (codex, codex-cli 0.144.0, read-only) at head
 `1c92cd6`:** sd3-1 graded **CONTESTED** — the admitted raw-parameter fix
@@ -462,4 +464,23 @@ holds that approved D2 requires the pairing per-surface and that truthful
 wording can carry both messages; "omitting those surfaces requires owner
 amendment". Routed to the owner per the playbook (disagreement is a
 recorded verdict, never a silent veto). sd3-2 was filed in the same pass,
-ADMITTED, and fixed at `f1c7744` with its red-leg proof.
+ADMITTED, and fixed at `f1c7744` with its red-leg proof. **sd3-1
+adjudicated 2026-07-10:** the owner delegated the call under the
+agent-experience principle (recorded as an Earned Practice in
+`.agents/repo-guidance.md`); the decline stands, the D2 amendment is in
+`.agents/decisions.md`, sd3-1 CLOSED.
+
+**Rounds 2-4:** round 2 at head `6bd62e0` graded sd3-2 RESOLVED and filed
+sd3-3 (origin-blind note trigger; fixed `302891a` with an anchored-regex +
+shortened-text heuristic). Round 3 at head `302891a` broke that heuristic
+in BOTH directions with live probes (ANSI strip shortens without eliding;
+near-boundary elision lengthens — filed as sd3-4, MEDIUM); both probes
+coder-reproduced verbatim and admitted. Fix `0840d13` deleted downstream
+inference: `-ElisionHint` rides into shaping and the marker composes the
+job's raw-log advice itself, exactly when the module elides.
+
+**Loop CLOSED 2026-07-10 (round 4):** at head `0840d13` (base `302891a`)
+sd3-3 and sd3-4 both **RESOLVED, NO NEW FINDINGS** (codex, codex-cli
+0.144.0, read-only). All four sd3 findings closed. Battery at head:
+dotnet 80/80, Pester 133 passed / 1 skipped (new canonical counts),
+handshake PASSED. Commits unpushed pending the owner's master push go.

@@ -9,18 +9,22 @@ short and update it when important repo facts change.
   owner-approved 2026-07-09; decision entry + the sd1-4 amendment in
   `.agents/decisions.md`). Slice 0 (probes, results frozen in the plan)
   and slice 1 (the token-aware detector `Get-PtcShellDialectFinding` in
-  the module) are DONE. The slice-1 codex review loop CLOSED CONVERGED
-  2026-07-09 (four rounds, all seven findings sd1-1..sd1-7 closed) and
-  the owner **RATIFIED the close** in-session later the same day — no
-  re-grade round 4. **Slice 2 (server wiring) is DONE and its codex loop
-  CLOSED 2026-07-10T01:38Z**: refusal on both execution paths landed at
-  `8c234e8`; six review findings sd2-1..sd2-6 all fixed one commit each
-  and re-graded RESOLVED with no new findings (`.agents/review/index.md`;
-  `.agents/review/findings/sd2-*.md`). Battery as of `79b63fb`: dotnet
-  74/74 (new canonical count), Pester 132 passed / 1 skipped, handshake
-  PASSED. NEXT BUILD: slice 3 (raw posture per D2 — reword inventory +
-  `ptk_state` raw counter at the user-call boundary), then slice 4 (D3
-  texts); one commit + battery + codex loop each.
+  the module) are DONE. Slice-1 loop CLOSED CONVERGED + owner-ratified
+  2026-07-09 (sd1-1..sd1-7). **Slice 2 (server wiring) DONE, loop CLOSED
+  2026-07-10** (`8c234e8` + sd2-1..sd2-6 all RESOLVED). **Slice 3 (raw
+  posture per D2) DONE, loop CLOSED 2026-07-10 round 4**: reword +
+  raw-visibility landed at `fa1b23c`; findings sd3-1 (CONTESTED →
+  owner-delegated adjudication, D2 amendment in `.agents/decisions.md`,
+  agent-experience principle recorded as an Earned Practice in
+  `.agents/repo-guidance.md`), sd3-2, sd3-3, sd3-4 (the elision-hint
+  redesign `0840d13` — marker advice is composed by the elision itself)
+  all closed (`.agents/review/index.md`;
+  `.agents/review/findings/sd3-*.md`). Battery as of `0840d13`: dotnet
+  80/80, Pester 133 passed / 1 skipped (canonical counts), handshake
+  PASSED. NEXT BUILD: slice 4 (D3 texts — dialect line in hook deny +
+  ptk_init nudge + README routing section; docs slice), then the plan's
+  live end-to-end Verification pass, then fix references on issues #3
+  (item 1) and #4 after the owner's next push.
 - **Owner decisions recorded 2026-07-09 (in-session, post-handoff):**
   (a) slice-1 convergence close RATIFIED (above); (b) the push
   happened — `master` == `origin/master` == remote HEAD at `c71ea70`,
@@ -52,10 +56,10 @@ short and update it when important repo facts change.
 
 ## Next
 
-- Shell-dialect slice 3 (raw posture reword + `ptk_state` raw counter at
-  the user-call boundary), then 4 (dialect line in hook deny + nudge +
-  README) — spec and frozen slice-0 evidence live in the plan. Battery
-  baseline: see the counts `as of 79b63fb` in `## Now`.
+- Shell-dialect slice 4 (dialect line in hook deny + nudge + README
+  routing section — docs slice per D3), then the plan's live end-to-end
+  Verification pass. Battery baseline: see the counts `as of 0840d13` in
+  `## Now`.
 - After slices 2-4 land + push: post the approved fix references
   (issue #3 item 1, issue #4) and close #4; then the #5/#6 batch.
 - Remaining owner decision: hook-default (blocks release slice 4 only;
