@@ -75,9 +75,18 @@ budgets) at approval time.
    `StateTool`'s probe-error and cache gates key on `Errors` and are
    unaffected by design (a native-stderr line must no longer be able to
    block the listAvailable cache or flag the state probe).
+   The `RuntimeException` catch path today never reads `LASTEXITCODE`
+   (only the success path does, `RunspaceHost.cs:565`), so under
+   `$PSNativeCommandUseErrorActionPreference = $true` a native command
+   that writes stderr and exits nonzero would keep its diagnostics but
+   drop `[exit] N`, failing the matrix below — the catch path captures
+   the exit code too.
    Regression matrix (from the issue): exit-0 native stderr → `[stderr]`,
-   no `[errors]`; nonzero exit → `[stderr]` alongside `[exit] N`;
-   `Write-Error` → `[errors]`; consistency across raw and route values.
+   no `[errors]`; nonzero exit → `[stderr]` alongside `[exit] N` —
+   including via the terminating-native-preference catch path (i56p-6);
+   `Write-Error` → `[errors]`, including with a forged
+   `-ErrorId NativeCommandError` (i56p-5); consistency across raw and
+   route values.
 
 2. **#6a — queue wait inside the budget.** `InvokeAsync` starts the budget
    clock at entry: the gate wait becomes a bounded
