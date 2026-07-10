@@ -68,6 +68,36 @@ client identity, a generation/change signal so a client can tell "same
 session I left" from "changed under me," and loud shared
 timeout/reset messages.
 
+## Interaction sketch (owner-shaped, 2026-07-10)
+
+There is no mode switch — you hand out a key, per conversation,
+reversibly. No key = today's private per-session behavior, unchanged;
+the daemon starts lazily on the first keyed request and never otherwise.
+"Keep this session" → the agent calls a `ptk_session` tool, gets a GUID
+(visible in the conversation, so the human and the model can both save
+it), and passes it on subsequent `ptk_invoke` calls. A fresh chat checks
+the key back out. Sharing (stage 2) requires the key to have been
+CREATED shareable — opt-in at creation, never something that happens to
+an existing private key. `ptk_state` always names the mode in effect.
+
+## Admin visibility and control — CLI, no model in the loop (owner requirement, 2026-07-10)
+
+Humans must be able to see and control sessions without asking an agent:
+
+- **For free from process-per-key:** every session is a real OS process
+  — visible in Task Manager/`ps`, killable with stock OS tools. Sessions
+  are never invisible state inside one opaque daemon.
+- **Proper admin CLI** against the same daemon socket: `ptk sessions
+  list` (key, age, client count, busy/idle, last activity, shareable
+  flag), `ptk sessions kill <key>`, `ptk daemon status|stop`, and an
+  audit-log tail. The daemon is the natural home for the append-only
+  audit log (timestamp, session key, client, script, exit) already
+  proposed in GitHub issue #3 — this requirement and that proposal
+  should land as one design.
+- **Does not reopen D5:** the retired CLI face was a shell-dispatch
+  surface the MCP tools replaced; this is an admin/observability face
+  for a daemon, a different job.
+
 ## Hard problems to solve before any build
 
 1. **Environment variables are process-wide** — RESOLVED BY STAGING:
