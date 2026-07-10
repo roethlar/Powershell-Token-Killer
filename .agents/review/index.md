@@ -625,8 +625,8 @@ commit follow.
 
 | ID     | Severity | Impact (one line)                                                        | Status | Branch |
 |--------|----------|---------------------------------------------------------------------------|--------|--------|
-| i56-11 | MEDIUM   | Readiness outcomes collapse: cancel→false timeout; recovery→false queue-expiry text | `[ ]`  |        |
-| i56-12 | MEDIUM   | Superseded rebuild overwrites ModuleLoaded/baseline for the post-reset runspace | `[ ]`  |        |
-| i56-13 | MEDIUM   | Expired cold checks accumulate uncancelable queued workers; disposal races | `[ ]`  |        |
-| i56-14 | LOW      | Canceled-preflight recycle leaves WarmStateLost false                     | `[ ]`  |        |
-| i56-15 | LOW      | Cached listAvailable falsely reports enumeration-in-progress              | `[ ]`  |        |
+| i56-11 | MEDIUM   | Readiness outcomes collapse: cancel→false timeout; recovery→false queue-expiry text | `[x]`  | master (direct, f767c0c; adds InvokeResult.Recovering + CwdProbeOutcome.Recovering) |
+| i56-12 | MEDIUM   | Superseded rebuild overwrites ModuleLoaded/baseline for the post-reset runspace | `[x]`  | master (direct, ccbafa8; red-leg proven via stale failed-import rebuild) |
+| i56-13 | MEDIUM   | Expired cold checks accumulate uncancelable queued workers; disposal races | `[x]`  | master (direct, 6d33a94; race legs stated untested) |
+| i56-14 | LOW      | Canceled-preflight recycle leaves WarmStateLost false                     | `[x]`  | master (direct, 5476b57 joint with i56-5 reopen - one line) |
+| i56-15 | LOW      | Cached listAvailable falsely reports enumeration-in-progress              | `[x]`  | master (direct, 6f6fdca) |
