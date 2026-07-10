@@ -327,6 +327,109 @@ public sealed class InvokeToolTests : IDisposable
         }
     }
 
+    // Issue #5 matrix: native stderr is neutral [stderr]; [errors] is reserved
+    // for genuine PowerShell error records. The partition predicate is
+    // invocation provenance (Application command), not the forgeable FQID or
+    // exception type.
+    private static string NativeStderr(string message, int exit = 0) =>
+        OperatingSystem.IsWindows()
+            ? $"cmd /c \"echo {message} 1>&2 & exit /b {exit}\""
+            : $"sh -c 'echo {message} 1>&2; exit {exit}'";
+
+    [Fact]
+    public async Task Successful_native_stderr_is_neutral_not_an_error()
+    {
+        var text = await InvokeTool.Invoke(
+            _host, _jobs, _rawUsage, NativeStderr("normal diagnostic"), CancellationToken.None);
+
+        Assert.Contains("[stderr]", text);
+        Assert.Contains("normal diagnostic", text);
+        Assert.DoesNotContain("[errors]", text);
+        Assert.DoesNotContain("[exit]", text);
+    }
+
+    [Fact]
+    public async Task Native_stderr_with_nonzero_exit_keeps_both_sections()
+    {
+        var text = await InvokeTool.Invoke(
+            _host, _jobs, _rawUsage, NativeStderr("failing diagnostic", exit: 7), CancellationToken.None);
+
+        Assert.Contains("[stderr]", text);
+        Assert.Contains("failing diagnostic", text);
+        Assert.Contains("[exit] 7", text);
+    }
+
+    [Fact]
+    public async Task Native_stderr_labeling_is_consistent_across_raw_and_route()
+    {
+        var raw = await InvokeTool.Invoke(
+            _host, _jobs, _rawUsage, NativeStderr("raw diagnostic"), CancellationToken.None, raw: true);
+        Assert.Contains("[stderr]", raw);
+        Assert.DoesNotContain("[errors]", raw);
+
+        var routed = await InvokeTool.Invoke(
+            _host, _jobs, _rawUsage, NativeStderr("routed diagnostic"), CancellationToken.None, route: "pwsh");
+        Assert.Contains("[stderr]", routed);
+        Assert.DoesNotContain("[errors]", routed);
+    }
+
+    [Fact]
+    public async Task Forged_native_error_id_stays_under_errors()
+    {
+        var text = await InvokeTool.Invoke(
+            _host, _jobs, _rawUsage,
+            "Write-Error -ErrorId NativeCommandError -Message forged-id", CancellationToken.None);
+
+        Assert.Contains("[errors]", text);
+        Assert.Contains("forged-id", text);
+        Assert.DoesNotContain("[stderr]", text);
+    }
+
+    [Fact]
+    public async Task Forged_native_exception_stays_under_errors()
+    {
+        var text = await InvokeTool.Invoke(
+            _host, _jobs, _rawUsage,
+            "Write-Error -Exception ([System.Management.Automation.RemoteException]::new('forged-ex'))",
+            CancellationToken.None);
+
+        Assert.Contains("[errors]", text);
+        Assert.Contains("forged-ex", text);
+        Assert.DoesNotContain("[stderr]", text);
+    }
+
+    [Fact]
+    public async Task Combined_forged_id_and_exception_stays_under_errors()
+    {
+        // An FQID+exception classifier passes the isolated forgeries but not
+        // this one; only invocation provenance holds (plan finding i56p-11).
+        var text = await InvokeTool.Invoke(
+            _host, _jobs, _rawUsage,
+            "Write-Error -ErrorId NativeCommandError -Exception ([System.Management.Automation.RemoteException]::new('forged-both'))",
+            CancellationToken.None);
+
+        Assert.Contains("[errors]", text);
+        Assert.Contains("forged-both", text);
+        Assert.DoesNotContain("[stderr]", text);
+    }
+
+    [Fact]
+    public async Task Terminating_native_error_path_keeps_exit_code_and_stderr()
+    {
+        // $PSNativeCommandUseErrorActionPreference + Stop routes a nonzero-exit
+        // native command through the RuntimeException catch, which previously
+        // dropped [exit] N (plan finding i56p-6).
+        var script =
+            "$ErrorActionPreference = 'Stop'; $PSNativeCommandUseErrorActionPreference = $true; " +
+            NativeStderr("terminating diagnostic", exit: 7);
+        var text = await InvokeTool.Invoke(_host, _jobs, _rawUsage, script, CancellationToken.None);
+
+        Assert.Contains("[exit] 7", text);
+        Assert.Contains("[stderr]", text);
+        Assert.Contains("terminating diagnostic", text);
+        Assert.Contains("[errors]", text); // the terminating record itself is a genuine error
+    }
+
     [Fact]
     public async Task Background_starts_a_job_and_its_output_is_pollable()
     {

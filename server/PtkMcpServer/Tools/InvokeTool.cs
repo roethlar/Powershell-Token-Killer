@@ -109,6 +109,16 @@ public static class InvokeTool
             sb.Append($"[exit] {exitCode}");
         }
 
+        // Neutral by design: native tools write progress and diagnostics to
+        // stderr while succeeding, so this section is not a failure signal -
+        // [errors] below is (issue #5).
+        if (result.Stderr is { Length: > 0 })
+        {
+            sb.AppendLine();
+            sb.AppendLine("[stderr]");
+            foreach (var line in result.Stderr) sb.AppendLine(line);
+        }
+
         if (result.Errors.Length > 0)
         {
             sb.AppendLine();

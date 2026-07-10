@@ -8,13 +8,18 @@ namespace PtkMcpServer;
 /// errors surface in <paramref name="Errors"/> without failing the call.</param>
 /// <param name="ExitCode">Nonzero $LASTEXITCODE left by a native command, else null.
 /// Reported for visibility; it does not affect <paramref name="Success"/>.</param>
+/// <param name="Stderr">Native-command stderr, kept apart from
+/// <paramref name="Errors"/>: tools routinely write progress and diagnostics
+/// to stderr while succeeding, so labeling it an error sends agents chasing
+/// defects that do not exist (issue #5).</param>
 public sealed record InvokeResult(
     bool Success,
     string Output,
     string[] Errors,
     string[] Warnings,
     bool TimedOut,
-    int? ExitCode = null);
+    int? ExitCode = null,
+    string[]? Stderr = null);
 
 /// <summary>What the session has changed in the process environment since the
 /// post-priming baseline. PATH is additionally reported as an entry-level diff
@@ -322,8 +327,35 @@ public sealed class RunspaceHost : IDisposable
     // pure noise in agent context (v2-feedback slice 3). Match the specific
     // banner, not the bare "[rtk] /!\" prefix: anything else on stderr - even
     // rtk-prefixed - is a real diagnostic and must survive (codex v2fb-1).
-    private static string[] CollectErrors(IEnumerable<string> errors) =>
-        [.. errors.Where(e => !e.StartsWith(@"[rtk] /!\ No hook installed", StringComparison.Ordinal))];
+    private static string[] FilterRtkNag(IEnumerable<string> stderr) =>
+        [.. stderr.Where(e => !e.StartsWith(@"[rtk] /!\ No hook installed", StringComparison.Ordinal))];
+
+    // Native stderr arrives on the error stream as records whose provenance
+    // Write-Error cannot forge: the FQID and even the exception type are
+    // caller-settable (-ErrorId NativeCommandError, -Exception RemoteException
+    // - both verified live), but only a real native invocation carries an
+    // Application command in its InvocationInfo. A record that fails the
+    // compound check stays an error: mislabeling real stderr as [errors] is
+    // the old behavior; the reverse would hide a genuine failure (issue #5).
+    private static bool IsNativeStderrRecord(ErrorRecord record) =>
+        record.FullyQualifiedErrorId is "NativeCommandError" or "NativeCommandErrorMessage"
+        && record.InvocationInfo?.MyCommand?.CommandType == CommandTypes.Application;
+
+    /// <summary>Splits the error stream into neutral native stderr and genuine
+    /// error records; <paramref name="terminatingError"/> (the catch path's
+    /// RuntimeException text) is always a genuine error.</summary>
+    private static (string[] Stderr, string[] Errors) PartitionErrorStream(
+        IEnumerable<ErrorRecord> records, string? terminatingError = null)
+    {
+        var stderr = new List<string>();
+        var errors = new List<string>();
+        foreach (var record in records)
+        {
+            (IsNativeStderrRecord(record) ? stderr : errors).Add(record.ToString());
+        }
+        if (terminatingError is not null) errors.Add(terminatingError);
+        return (FilterRtkNag(stderr), [.. errors]);
+    }
 
     // Asks the module to classify/rewrite the script (single native commands
     // route through rtk — unified-shell-routing plan). Any failure returns the
@@ -563,24 +595,33 @@ public sealed class RunspaceHost : IDisposable
                 var results = await invokeTask;
                 var output = string.Concat(results.Select(r => r?.ToString()));
                 var exitCode = ReadExitCode();
+                var (stderr, errors) = PartitionErrorStream(ps.Streams.Error);
                 return new InvokeResult(
                     Success: true,
                     Output: output,
-                    Errors: CollectErrors(ps.Streams.Error.Select(e => e.ToString())),
+                    Errors: errors,
                     Warnings: [.. ps.Streams.Warning.Select(w => w.ToString())],
                     TimedOut: false,
-                    ExitCode: exitCode == 0 ? null : exitCode);
+                    ExitCode: exitCode == 0 ? null : exitCode,
+                    Stderr: stderr);
             }
             catch (RuntimeException ex)
             {
-                var errors = ps.Streams.Error.Select(e => e.ToString())
-                    .Append(ex.ErrorRecord?.ToString() ?? ex.Message);
+                var (stderr, errors) = PartitionErrorStream(
+                    ps.Streams.Error, ex.ErrorRecord?.ToString() ?? ex.Message);
+                // The terminating-native-error configuration
+                // ($PSNativeCommandUseErrorActionPreference) lands nonzero-exit
+                // commands here; without the read their [exit] N silently
+                // dropped beside the preserved stderr (plan finding i56p-6).
+                var exitCode = ReadExitCode();
                 return new InvokeResult(
                     Success: false,
                     Output: string.Empty,
-                    Errors: CollectErrors(errors),
+                    Errors: errors,
                     Warnings: [.. ps.Streams.Warning.Select(w => w.ToString())],
-                    TimedOut: false);
+                    TimedOut: false,
+                    ExitCode: exitCode == 0 ? null : exitCode,
+                    Stderr: stderr);
             }
         }
         finally

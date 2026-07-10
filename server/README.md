@@ -53,8 +53,13 @@ Check with `claude mcp list`; remove with `claude mcp remove ptk`.
 | `ptk_state` | optional `listAvailable` | Session introspection and health check: engine, server PID/uptime, cwd, loaded modules, and drift — env vars changed since server start, PATH as an entry diff, variable count. With `listAvailable: true`, also enumerate installed modules once and cache the result. |
 | `ptk_reset` | none | Recycle the runspace to factory state: discards variables, loaded modules, current directory, default parameters, and connections, and restores environment variables to their server-start values. |
 
-`ptk_invoke` returns command output, then labeled sections when present:
-`[exit] N`, `[errors]`, and `[warnings]`. Empty output returns `(no output)`.
+`ptk_invoke` returns command output, then labeled sections when present, in
+this order: `[exit] N`, `[stderr]`, `[errors]`, and `[warnings]`. Empty
+output returns `(no output)`. `[stderr]` is neutral, not a failure signal:
+native tools routinely write progress and diagnostics to stderr while
+succeeding (an exit-0 test run, for example), so native stderr is reported
+under its own label. `[errors]` is reserved for genuine PowerShell error
+records (`Write-Error`, exceptions, terminating errors).
 
 ## `ptk_invoke` Behavior
 
