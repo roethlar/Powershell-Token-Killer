@@ -451,4 +451,15 @@ would be misadvice). Detail: `.agents/review/findings/sd3-1.md`.
 
 | ID    | Severity | Impact (one line)                                                      | Status | Branch |
 |-------|----------|--------------------------------------------------------------------------|--------|--------|
-| sd3-1 | MEDIUM   | raw surfaces omit the route=pwsh+raw=false pairing (admitted: raw param; declined: marker surfaces) | `[~]`  | master (direct) |
+| sd3-1 | MEDIUM   | raw surfaces omit the route=pwsh+raw=false pairing (admitted: raw param; declined: marker surfaces) | `[!]`  | master (direct, 1c92cd6 admitted part) |
+| sd3-2 | MEDIUM   | Elided job polls advise raw=true, a control ptk_job does not have         | `[x]`  | master (direct, f1c7744) |
+
+**Re-grade round 1 (codex, codex-cli 0.144.0, read-only) at head
+`1c92cd6`:** sd3-1 graded **CONTESTED** — the admitted raw-parameter fix
+is accepted as correct and guarded, and the reviewer grants the technical
+premise (route=pwsh + raw=false cannot recover an elided middle), but
+holds that approved D2 requires the pairing per-surface and that truthful
+wording can carry both messages; "omitting those surfaces requires owner
+amendment". Routed to the owner per the playbook (disagreement is a
+recorded verdict, never a silent veto). sd3-2 was filed in the same pass,
+ADMITTED, and fixed at `f1c7744` with its red-leg proof.
