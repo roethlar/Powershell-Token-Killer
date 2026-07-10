@@ -597,7 +597,7 @@ public sealed class RunspaceHost : IDisposable
     /// (e.g. a hung rtk child on the log leg) is timed out and the runspace
     /// recycled, exactly like a timed-out foreground call: a poll must never hold
     /// the gate forever.</summary>
-    public async Task<string> ShapeTextAsync(string text, CancellationToken cancellationToken = default)
+    public async Task<string> ShapeTextAsync(string text, CancellationToken cancellationToken = default, string? elisionHint = null)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!ModuleLoaded || text.Length == 0) return text;
@@ -609,6 +609,11 @@ public sealed class RunspaceHost : IDisposable
         {
             ps.Runspace = _runspace;
             ps.AddCommand("Compress-PtcOutput");
+            // Context-correct elision advice, composed BY the elision itself
+            // (sd3-2..sd3-4): the caller knows its recovery path; inferring
+            // elision downstream from the shaped text proved unsound in both
+            // directions.
+            if (elisionHint is not null) ps.AddParameter("ElisionHint", elisionHint);
             var input = new PSDataCollection<object> { text };
             input.Complete();
 

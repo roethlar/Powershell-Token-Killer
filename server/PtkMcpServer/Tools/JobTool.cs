@@ -49,31 +49,19 @@ public static class JobTool
                 // "running" one poll late rather than losing tail output.
                 var chunk = jobs.ReadOutput(id, offset)!;
                 var (text, nextOffset) = chunk.Value;
+                // sd3-2..sd3-4: the marker's default advice (raw=true) is a
+                // ptk_invoke control this tool does not have — re-running
+                // the JOB duplicates side-effecting work and the offset has
+                // already moved past the middle. The recovery hint rides
+                // INTO shaping, so the marker itself names the honest
+                // recovery (the raw log) exactly when the module elides;
+                // two downstream inference heuristics both proved unsound
+                // (ANSI stripping shortens without eliding, near-boundary
+                // elision lengthens).
                 var shaped = text.Length > 0
-                    ? await host.ShapeTextAsync(text, cancellationToken)
+                    ? await host.ShapeTextAsync(text, cancellationToken,
+                        elisionHint: $"read the complete raw log at {snapshot.OutputPath} if the elided middle matters")
                     : "(no new output)";
-                // sd3-2: the module's elision marker advises raw=true — a
-                // ptk_invoke control this tool does not have; re-running the
-                // JOB to recover elided output duplicates side-effecting
-                // work, and the offset has already moved past the middle.
-                // Name the honest recovery in-band, next to the marker.
-                // sd3-3: key on "shaping elided THIS poll", not on marker-
-                // shaped text the job itself printed: a genuine marker is
-                // always its own line (anchored regex — quoted or prefixed
-                // source copies never match), and elision always shortens
-                // the text, while under-limit passthrough returns it
-                // unchanged (so even an exact marker-line copy cannot
-                // qualify; trailing whitespace normalized because shaping
-                // may trim a final newline without eliding anything).
-                var elided = System.Text.RegularExpressions.Regex.IsMatch(
-                        shaped,
-                        @"^\[\d+ (lines|chars|lines and \d+ chars) elided - rerun with raw=true only if the elided middle matters\]\r?$",
-                        System.Text.RegularExpressions.RegexOptions.Multiline)
-                    && shaped.TrimEnd().Length < text.TrimEnd().Length;
-                if (elided)
-                {
-                    shaped += $"\n[ptk_job note: raw=true does not apply here - the complete raw log is {snapshot.OutputPath}]";
-                }
                 var state = snapshot.Running ? "running" : $"exited {snapshot.ExitCode}";
                 return $"{shaped}\n[job {id} {state}] next offset: {nextOffset}";
             }

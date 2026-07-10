@@ -97,21 +97,25 @@ public sealed class RawUsageTests : IDisposable
 
         var poll = await JobTool.Job(_host, _jobs, "output", CancellationToken.None, id: 1, offset: 0);
 
-        Assert.Contains("elided", poll);
-        Assert.Contains("raw=true does not apply here", poll);
+        // The marker itself carries the job-context recovery (sd3-2..sd3-4:
+        // the hint rides into shaping; nothing is inferred downstream).
+        Assert.Contains("elided - read the complete raw log at", poll);
         Assert.Contains("job-", poll); // the raw log path is named
+        Assert.DoesNotContain("rerun with raw=true", poll);
     }
 
     [Fact]
     public async Task Job_printed_marker_text_gets_no_false_recovery_note()
     {
-        // sd3-3: a job whose OWN output contains the marker line (a grep
-        // over this repo's source, a cat of previously elided output) must
-        // not trigger the recovery note on an under-limit poll — shaping
-        // passed the text through unchanged, so nothing was elided.
+        // sd3-3: a job whose OWN output contains marker text (a grep over
+        // this repo's source, a cat of previously elided output — plain or
+        // ANSI-colored, the tail that broke the length heuristic) must not
+        // yield job-context recovery advice on an under-limit poll: the
+        // module composes that advice only when IT elides.
         var started = await InvokeTool.Invoke(
             _host, _jobs, _rawUsage,
-            "Write-Output '[5 lines elided - rerun with raw=true only if the elided middle matters]'",
+            "Write-Output '[5 lines elided - rerun with raw=true only if the elided middle matters]'\n" +
+            "Write-Output \"$([char]27)[31m[6 lines elided - rerun with raw=true only if the elided middle matters]$([char]27)[0m\"",
             CancellationToken.None, background: true);
         Assert.Contains("[job 1 started]", started);
 
@@ -126,7 +130,10 @@ public sealed class RawUsageTests : IDisposable
         var poll = await JobTool.Job(_host, _jobs, "output", CancellationToken.None, id: 1, offset: 0);
 
         Assert.Contains("elided", poll); // the job's own text came through
-        Assert.DoesNotContain("raw=true does not apply here", poll);
+        // "raw log" catches any form of fabricated log-recovery advice —
+        // the current hint phrasing and the earlier appended-note phrasing
+        // alike; the job's own printed text contains neither.
+        Assert.DoesNotContain("raw log", poll);
     }
 
     private static string DescriptionOf(ICustomAttributeProvider member) =>

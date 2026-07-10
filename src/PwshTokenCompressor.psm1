@@ -908,7 +908,15 @@ function Limit-PtcPassthrough {
     param(
         [AllowNull()][string]$Text,
         [int]$MaxLines = $script:PtcPassthroughMaxLines,
-        [int]$MaxChars = $script:PtcPassthroughMaxChars
+        [int]$MaxChars = $script:PtcPassthroughMaxChars,
+        # The marker's recovery advice. The default speaks to the ptk_invoke
+        # context; callers shaping output whose recovery differs (ptk_job
+        # polls have no raw parameter - the recovery is the job's log file)
+        # pass their own hint, so the advice is composed BY the elision
+        # itself and can never be false or missing (sd3-2..sd3-4: two
+        # downstream inference heuristics both failed - ANSI stripping
+        # shortens without eliding, near-boundary elision lengthens).
+        [string]$ElisionHint = 'rerun with raw=true only if the elided middle matters'
     )
 
     if ($null -eq $Text) { return '' }
@@ -919,7 +927,7 @@ function Limit-PtcPassthrough {
         $headCount = [int][Math]::Ceiling($MaxLines * 0.75)
         $tailCount = $MaxLines - $headCount
         $elidedLineCount = $lines.Count - $MaxLines
-        $marker = '[{0} lines elided - rerun with raw=true only if the elided middle matters]' -f $elidedLineCount
+        $marker = '[{0} lines elided - {1}]' -f $elidedLineCount, $ElisionHint
         $Text = (@($lines | Select-Object -First $headCount) + $marker +
             @($lines | Select-Object -Last $tailCount)) -join [Environment]::NewLine
     }
@@ -931,10 +939,10 @@ function Limit-PtcPassthrough {
         # when both bounds fired this marker must carry both facts - every
         # elision stays explicit.
         $elided = if ($elidedLineCount -gt 0) {
-            '[{0} lines and {1} chars elided - rerun with raw=true only if the elided middle matters]' -f
-                $elidedLineCount, ($Text.Length - $MaxChars)
+            '[{0} lines and {1} chars elided - {2}]' -f
+                $elidedLineCount, ($Text.Length - $MaxChars), $ElisionHint
         } else {
-            '[{0} chars elided - rerun with raw=true only if the elided middle matters]' -f ($Text.Length - $MaxChars)
+            '[{0} chars elided - {1}]' -f ($Text.Length - $MaxChars), $ElisionHint
         }
         $marker = '{0}{1}{0}' -f [Environment]::NewLine, $elided
         $Text = $Text.Substring(0, $head) + $marker + $Text.Substring($Text.Length - $tail)
@@ -954,11 +962,16 @@ function Compress-PtcOutput {
         [Parameter(ValueFromPipeline)]
         [AllowNull()]
         [object]$InputObject,
-        [int]$MaxItems = $script:DefaultMaxItems
+        [int]$MaxItems = $script:DefaultMaxItems,
+        # Overrides the elision markers' recovery advice for callers whose
+        # recovery path is not raw=true (see Limit-PtcPassthrough).
+        [string]$ElisionHint
     )
 
     begin {
         $items = [System.Collections.Generic.List[object]]::new()
+        $limitArgs = @{}
+        if ($ElisionHint) { $limitArgs['ElisionHint'] = $ElisionHint }
     }
     process {
         if ($null -ne $InputObject) { $items.Add($InputObject) }
@@ -983,8 +996,8 @@ function Compress-PtcOutput {
                 # colored log would dodge the rtk dedup leg. raw=true calls
                 # never reach shaping (they return complete Out-String text).
                 $text = Remove-PtcAnsi (@($array | ForEach-Object { "$_" }) -join [Environment]::NewLine)
-                if (Test-PtcLogShaped -Text $text) { return (Limit-PtcPassthrough (Invoke-PtcRtkLog -Text $text)) }
-                return (Limit-PtcPassthrough $text)
+                if (Test-PtcLogShaped -Text $text) { return (Limit-PtcPassthrough (Invoke-PtcRtkLog -Text $text) @limitArgs) }
+                return (Limit-PtcPassthrough $text @limitArgs)
             }
 
             return ($array | Compress-PtcObject -MaxItems $MaxItems)
@@ -993,7 +1006,7 @@ function Compress-PtcOutput {
             $raw = ($array | Out-String).TrimEnd()
             # Bound the fallback too (P3: no unbounded path), but never let the
             # bounder violate the never-throw contract of this catch.
-            try { $raw = Limit-PtcPassthrough $raw } catch { }
+            try { $raw = Limit-PtcPassthrough $raw @limitArgs } catch { }
             return "[ptk:shape ERROR - $($_.Exception.Message). Returning unshaped output.]`n$raw"
         }
     }

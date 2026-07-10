@@ -1049,6 +1049,17 @@ Describe 'Compress-PtcOutput' {
         @($result -split "`r?`n").Count | Should -Be 401
     }
 
+    It 'composes the elision marker with a caller-supplied recovery hint' {
+        # sd3-2..sd3-4: callers whose recovery is not raw=true (ptk_job
+        # polls) pass their own advice; the marker is composed BY the
+        # elision, never inferred downstream.
+        $lines = 1..1000 | ForEach-Object { "line $_" }
+        $result = $lines | Compress-PtcOutput -ElisionHint 'read the job log instead'
+
+        $result | Should -Match '\[600 lines elided - read the job log instead\]'
+        $result | Should -Not -Match 'rerun with raw=true'
+    }
+
     It 'bounds pathological character counts even at few lines' {
         $big = ('x' * 20000)
         $result = "$big-A", "$big-B", "$big-C" | Compress-PtcOutput
