@@ -60,7 +60,7 @@ public sealed class RunspaceHost : IDisposable
     // first, and the next gate holder awaits the rebuild under ITS own
     // deadline (codex finding i56-2). Swapped only while holding the gate;
     // read lock-free by GetGateStatus.
-    private Task<Runspace> _runspaceReady;
+    private Task<PrimedRunspace> _runspaceReady;
     private bool _disposed;
 
     // Background jobs execute in a cold `pwsh -NoProfile` child, so their
@@ -114,7 +114,9 @@ public sealed class RunspaceHost : IDisposable
             Console.Error.WriteLine(
                 "ptk: PwshTokenCompressor module not found (set PTK_MODULE_PATH); output shaping disabled, calls return plain Out-String text.");
         }
-        _runspaceReady = Task.FromResult(CreatePrimedRunspace());
+        var initialPrimed = CreatePrimedRunspace();
+        PublishPrimedMetadata(initialPrimed);
+        _runspaceReady = Task.FromResult(initialPrimed);
         // Environment variables are process-wide, not runspace state, and engine
         // startup/priming legitimately touches some (e.g. PSModulePath) — so the
         // drift baseline is captured AFTER the first primed runspace exists;
@@ -234,15 +236,28 @@ public sealed class RunspaceHost : IDisposable
     /// delay here to prove the timeout response does not wait for it.</summary>
     internal TimeSpan CreationDelayForTests { get; set; }
 
+    /// <summary>A runspace plus the metadata its own priming produced. The
+    /// bundle is immutable and host-global fields are published only when a
+    /// bundle is CONSUMED as current: a superseded background rebuild finishing
+    /// after a reset must not stamp its import result over the runspace that
+    /// actually won (codex finding i56-12).</summary>
+    private sealed record PrimedRunspace(Runspace Runspace, bool ModuleLoaded, int BaselineVariableCount);
+
     /// <summary>Creates a runspace and imports the compressor module into it, so
-    /// recycle/reset paths get shaping back automatically.</summary>
-    private Runspace CreatePrimedRunspace()
+    /// recycle/reset paths get shaping back automatically. Pure: touches no
+    /// host-global state.</summary>
+    private PrimedRunspace CreatePrimedRunspace()
     {
         if (CreationDelayForTests > TimeSpan.Zero) Thread.Sleep(CreationDelayForTests);
         var runspace = CreateRunspace();
-        ModuleLoaded = _modulePath is not null && TryImportModule(runspace, _modulePath);
-        BaselineVariableCount = TryCountVariables(runspace);
-        return runspace;
+        var moduleLoaded = _modulePath is not null && TryImportModule(runspace, _modulePath);
+        return new PrimedRunspace(runspace, moduleLoaded, TryCountVariables(runspace));
+    }
+
+    private void PublishPrimedMetadata(PrimedRunspace primed)
+    {
+        ModuleLoaded = primed.ModuleLoaded;
+        BaselineVariableCount = primed.BaselineVariableCount;
     }
 
     // Seeds $global:LASTEXITCODE first so the baseline matches later counts
@@ -755,7 +770,13 @@ public sealed class RunspaceHost : IDisposable
         {
             return null;
         }
-        if (ready.IsCompletedSuccessfully) return ready.Result;
+        if (ready.IsCompletedSuccessfully)
+        {
+            // Metadata publishes at consumption, from the bundle that actually
+            // won (i56-12): a superseded rebuild never stamps host state.
+            PublishPrimedMetadata(ready.Result);
+            return ready.Result.Runspace;
+        }
         Console.Error.WriteLine($"ptk: runspace rebuild failed ({ready.Exception?.GetBaseException().Message}); retrying in the background.");
         _runspaceReady = Task.Run(CreatePrimedRunspace);
         return null;
@@ -1052,10 +1073,12 @@ public sealed class RunspaceHost : IDisposable
             // drift still visible. The never-returned hazard (i56-2) belongs
             // to the timeout paths, where the response is the priority.
             var oldReady = _runspaceReady;
-            _runspaceReady = Task.FromResult(CreatePrimedRunspace());
+            var fresh = CreatePrimedRunspace();
+            PublishPrimedMetadata(fresh);
+            _runspaceReady = Task.FromResult(fresh);
             RestoreEnvironmentBaseline();
             _ = oldReady.ContinueWith(
-                t => { try { t.Result.Dispose(); } catch { /* wedged runspace */ } },
+                t => { try { t.Result.Runspace.Dispose(); } catch { /* wedged runspace */ } },
                 TaskContinuationOptions.OnlyOnRanToCompletion);
         }
         finally
@@ -1125,14 +1148,14 @@ public sealed class RunspaceHost : IDisposable
         var ready = _runspaceReady;
         if (ready.IsCompletedSuccessfully)
         {
-            try { ready.Result.Dispose(); } catch { /* best effort on teardown */ }
+            try { ready.Result.Runspace.Dispose(); } catch { /* best effort on teardown */ }
         }
         else
         {
             // A pending rebuild is disposed when it materializes; a faulted
             // one has nothing to dispose.
             _ = ready.ContinueWith(
-                t => { try { t.Result.Dispose(); } catch { /* best effort */ } },
+                t => { try { t.Result.Runspace.Dispose(); } catch { /* best effort */ } },
                 TaskContinuationOptions.OnlyOnRanToCompletion);
         }
         try { _coldDetectionRunspace?.Dispose(); } catch { /* best effort on teardown */ }

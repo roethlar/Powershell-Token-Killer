@@ -591,6 +591,59 @@ public sealed class InvokeToolTests : IDisposable
     }
 
     [Fact]
+    public async Task Superseded_rebuild_does_not_stomp_the_reset_runspaces_metadata()
+    {
+        // Timeline: a timeout starts a SLOW background rebuild; a reset then
+        // synchronously publishes a good runspace; the module files vanish
+        // before the stale rebuild's import runs, so its bundle carries
+        // ModuleLoaded=false. That obsolete result must not overwrite the
+        // winning runspace's metadata (i56-12).
+        var moduleDir = Directory.CreateTempSubdirectory("ptk-stale-rebuild-");
+        try
+        {
+            foreach (var f in Directory.GetFiles(
+                Path.Combine(AppContext.BaseDirectory, FindRepoSrc()), "PwshTokenCompressor.*"))
+            {
+                File.Copy(f, Path.Combine(moduleDir.FullName, Path.GetFileName(f)));
+            }
+            var manifest = Path.Combine(moduleDir.FullName, "PwshTokenCompressor.psd1");
+            using var host = new RunspaceHost(
+                callTimeout: TimeSpan.FromSeconds(2), modulePathOverride: manifest);
+            Assert.True(host.ModuleLoaded);
+
+            host.CreationDelayForTests = TimeSpan.FromSeconds(4);
+            var timedOut = await host.InvokeAsync("Start-Sleep -Seconds 60");
+            Assert.True(timedOut.TimedOut); // stale rebuild now sleeping
+
+            host.CreationDelayForTests = TimeSpan.Zero;
+            await host.ResetAsync(); // wins with the module still present
+            Assert.True(host.ModuleLoaded);
+
+            foreach (var f in Directory.GetFiles(moduleDir.FullName)) File.Delete(f);
+            await Task.Delay(TimeSpan.FromSeconds(6)); // stale rebuild imports nothing, completes
+
+            Assert.True(host.ModuleLoaded, "obsolete rebuild stamped its failed import over the current runspace");
+        }
+        finally
+        {
+            moduleDir.Delete(recursive: true);
+        }
+    }
+
+    private static string FindRepoSrc()
+    {
+        for (var dir = new DirectoryInfo(AppContext.BaseDirectory); dir is not null; dir = dir.Parent!)
+        {
+            if (Directory.Exists(Path.Combine(dir.FullName, "src"))
+                && File.Exists(Path.Combine(dir.FullName, "src", "PwshTokenCompressor.psd1")))
+            {
+                return Path.GetRelativePath(AppContext.BaseDirectory, Path.Combine(dir.FullName, "src"));
+            }
+        }
+        throw new InvalidOperationException("repo src not found");
+    }
+
+    [Fact]
     public async Task A_deadline_already_in_the_past_times_out_immediately()
     {
         // The post-sleep wake case (slice 0): deadlines are wall-clock, so a
