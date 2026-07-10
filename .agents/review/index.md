@@ -399,6 +399,8 @@ disposition), four rounds deep with every named repro guarded; the
 residual conceivable tails are crafted inputs in the LOW
 already-unparsable harm class or recorded accepted residuals (sd1-1
 exotic alias spellings). The owner may reopen or order re-grade round 4.
+**Owner RATIFIED the convergence close 2026-07-09 (in-session, later the
+same day) — no re-grade round 4 ordered; the loop record is final.**
 sd1-4 was subsequently UNPARKED by owner adjudication (in-session,
 2026-07-09) and fixed at `c43360c` — `set -e` flags only while `set`
 still resolves to the stock `Set-Variable` alias (battery: Pester 132/1
