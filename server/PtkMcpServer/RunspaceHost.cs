@@ -364,14 +364,15 @@ public sealed class RunspaceHost : IDisposable
         catch { return 0; }
     }
 
-    // Post-success bookkeeping runs under the call's own wall-clock deadline,
-    // capped by a short grace and floored so a long execution that spent its
-    // budget still gets a moment to read the code (codex finding i56-3: a
-    // fixed monotonic 10s ignored both the request budget and sleep). If the
-    // read wedges, the response still goes out — with the recycle SURFACED,
-    // never as silent success with the warm state gone.
+    // Post-success bookkeeping runs strictly inside the call's wall-clock
+    // deadline, additionally capped by a short grace (codex finding i56-3,
+    // both legs: a fixed monotonic 10s ignored budget and sleep, and a floor
+    // past the deadline overshot the advertised total). A budget already
+    // exhausted when bookkeeping starts skips the read — the caller gets its
+    // output on time without [exit] rather than late with it. If the read
+    // wedges mid-flight, the response still goes out with the recycle
+    // SURFACED, never as silent success with the warm state gone.
     private static readonly TimeSpan BookkeepingGrace = TimeSpan.FromSeconds(10);
-    private static readonly TimeSpan BookkeepingFloor = TimeSpan.FromSeconds(2);
 
     /// <summary>Test hook: wedging the real LASTEXITCODE read requires session
     /// debugger tricks; tests inject a slow reader here instead.</summary>
@@ -380,12 +381,11 @@ public sealed class RunspaceHost : IDisposable
     private async Task<(int ExitCode, bool Wedged)> ReadExitCodeBoundedAsync(
         Runspace runspace, DateTimeOffset callDeadline, CancellationToken cancellationToken)
     {
+        var now = DateTimeOffset.UtcNow;
+        if (callDeadline <= now) return (0, false);
         var reader = ExitCodeReaderOverrideForTests;
         var read = Task.Run(() => reader is not null ? reader() : ReadExitCode(runspace));
-        var now = DateTimeOffset.UtcNow;
-        var deadline = callDeadline;
-        if (deadline < now + BookkeepingFloor) deadline = now + BookkeepingFloor;
-        if (deadline > now + BookkeepingGrace) deadline = now + BookkeepingGrace;
+        var deadline = callDeadline > now + BookkeepingGrace ? now + BookkeepingGrace : callDeadline;
         if (await WaitForDeadlineAsync(read, deadline, cancellationToken) == WaitOutcome.Completed)
         {
             return (await read, false);
