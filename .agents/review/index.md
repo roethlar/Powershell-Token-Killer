@@ -533,7 +533,7 @@ direct to `master`, one per commit, per the recorded precedent.
 |--------|----------|---------------------------------------------------------------------------|--------|--------|
 | i56p-1 | MEDIUM   | Gate-held preflight (dialect check, ResolveScript) stays outside the promised total budget | `[x]`  | master (direct) |
 | i56p-2 | MEDIUM   | Snapshot-then-probe ptk_state races a new long call and still blocks      | `[x]`  | master (direct) |
-| i56p-3 | MEDIUM   | background=true pre-start steps ignore the request budget; expired request still starts | `[ ]`  |        |
+| i56p-3 | MEDIUM   | background=true pre-start steps ignore the request budget; expired request still starts | `[x]`  | master (direct) |
 | i56p-4 | MEDIUM   | Accepted cold-cwd fallback silently runs a job in the wrong project       | `[ ]`  |        |
 | i56p-5 | LOW      | FQID-only partition mislabels forged Write-Error records as [stderr]      | `[ ]`  |        |
 | i56p-6 | LOW      | RuntimeException path never captures [exit] N beside preserved stderr     | `[ ]`  |        |

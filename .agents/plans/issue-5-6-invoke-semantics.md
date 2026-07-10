@@ -85,12 +85,17 @@ budgets) at approval time.
    session-shadowed helper or a wedged rtk child can hang it exactly like
    the fixed ShapeTextAsync wedge (d3-1). A preflight overrun is a wedged
    warm pipeline and recycles like an execution timeout; the
-   recycle-on-timeout behavior is otherwise unchanged. `ShapeTextAsync` (job polls hold the
-   same gate) gets the same bounded wait and returns the text unshaped on
-   expiry — shaping must never fail a poll. Consequence accepted:
-   `TryGetCurrentLocationAsync` (background job start) inherits the fast-
-   fail and starts the job with the cold default cwd instead of blocking
-   indefinitely behind a long foreground call.
+   recycle-on-timeout behavior is otherwise unchanged. `ShapeTextAsync`
+   (job polls hold the same gate) gets the same bounded wait and returns
+   the text unshaped on expiry — shaping must never fail a poll. The
+   request budget is established at the tool boundary, BEFORE the
+   foreground/background branch: the background pre-start steps — the
+   cold-table dialect check and the warm-gate cwd probe
+   (`InvokeTool.cs:85,89`), which today run under the server default
+   regardless of the caller's `timeoutSeconds` — run under the same
+   remaining budget, so a background retry after a queue expiry cannot
+   itself block for the 300s default, and a request whose budget expires
+   pre-start returns the fast busy failure with no job started.
    Regression coverage (from the issue): a queued call whose budget
    expires never executes later (observable side effect asserted absent);
    execution timeout still recycles only the call that owns the runspace;
