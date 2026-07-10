@@ -535,7 +535,7 @@ direct to `master`, one per commit, per the recorded precedent.
 | i56p-2 | MEDIUM   | Snapshot-then-probe ptk_state races a new long call and still blocks      | `[x]`  | master (direct) |
 | i56p-3 | MEDIUM   | background=true pre-start steps ignore the request budget; expired request still starts | `[x]`  | master (direct) |
 | i56p-4 | MEDIUM   | Accepted cold-cwd fallback silently runs a job in the wrong project       | `[x]`  | master (direct) |
-| i56p-5 | LOW      | FQID-only partition mislabels forged Write-Error records as [stderr]      | `[ ]`  |        |
+| i56p-5 | LOW      | FQID-only partition mislabels forged Write-Error records as [stderr]      | `[x]`  | master (direct) |
 | i56p-6 | LOW      | RuntimeException path never captures [exit] N beside preserved stderr     | `[ ]`  |        |
 | i56p-7 | LOW      | server/README output contract omits the new [stderr] section              | `[ ]`  |        |
 | i56p-8 | MEDIUM   | Model-visible timeout texts become false (queue expiry ≠ recycle)         | `[ ]`  |        |

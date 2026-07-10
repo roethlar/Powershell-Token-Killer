@@ -55,10 +55,18 @@ budgets) at approval time.
 ## Slices
 
 1. **#5 — neutral stderr channel.** `InvokeResult` gains a `Stderr`
-   collection; `InvokeAsync` partitions error records by
-   FullyQualifiedErrorId (`NativeCommandError`/`NativeCommandErrorMessage`
-   → `Stderr`, everything else → `Errors`) before stringification, on both
-   the success and the `RuntimeException` paths. The rtk-nag filter
+   collection; `InvokeAsync` partitions error records before
+   stringification, on both the success and the `RuntimeException`
+   paths: native-stderr records → `Stderr`, everything else → `Errors`.
+   The predicate is compound provenance, not FullyQualifiedErrorId
+   alone: the FQID is forgeable — verified live in this session,
+   `Write-Error -ErrorId NativeCommandError -Message boom` produces FQID
+   exactly `NativeCommandError` (Exception type `WriteErrorException`) —
+   so a forged record would silently lose its `[errors]` label under an
+   FQID-only split. Pair the FQID with record metadata that Write-Error
+   cannot spoof (exception type / invocation provenance; the exact
+   discriminator is probed at implementation time against a real native
+   stderr record), and put the collision case in the test matrix. The rtk-nag filter
    (`CollectErrors`) moves with the banner to the stderr channel (the nag
    IS native stderr). `InvokeTool` renders `[stderr]` as its own section;
    `[errors]` is reserved for genuine error records. The labels attach at
