@@ -420,6 +420,11 @@ public sealed class RunspaceHost : IDisposable
     public async Task<string?> TryGetBackgroundDialectRefusalAsync(string script, CancellationToken cancellationToken = default)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
+        // A served refusal is user activity (sd2-3): this is a user-call
+        // boundary like InvokeAsync/ResetAsync, and a refused background
+        // call returns before anything else touches the idle clock — the
+        // watchdog must not stop a server right after it answered.
+        LastActivityUtc = DateTimeOffset.UtcNow;
         if (_modulePath is null) return null;
         await _coldDetectionGate.WaitAsync(cancellationToken);
         try

@@ -118,6 +118,21 @@ public sealed class ShellDialectWiringTests : IDisposable
     }
 
     [Fact]
+    public async Task Background_refusal_counts_as_activity_for_the_idle_watchdog()
+    {
+        // sd2-3: a refused background call returns before the cwd probe
+        // (the first InvokeAsync touch), so it must stamp the idle clock
+        // itself or the watchdog can stop a server right after it answered.
+        var before = _host.LastActivityUtc;
+        await Task.Delay(50);
+
+        var refusal = await _host.TryGetBackgroundDialectRefusalAsync("export X=1");
+
+        Assert.NotNull(refusal);
+        Assert.True(_host.LastActivityUtc > before);
+    }
+
+    [Fact]
     public async Task Background_raw_bypasses_detection_and_starts_the_job()
     {
         var text = await InvokeTool.Invoke(
