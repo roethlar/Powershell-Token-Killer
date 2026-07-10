@@ -45,6 +45,17 @@ public sealed class RunspaceHost : IDisposable
     private Runspace _runspace;
     private bool _disposed;
 
+    // Background jobs execute in a cold `pwsh -NoProfile` child, so their
+    // dialect check must resolve names against the cold default command table,
+    // never warm session state (shell-dialect plan, slice 1(iii)): a
+    // warm-defined `export` function must not exempt a script that will die
+    // without it. One pristine runspace, created on first use and reused; it
+    // only ever runs the detector and the bash probe, never user code, so it
+    // keeps the default command table for the life of the server.
+    private Runspace? _coldDetectionRunspace;
+    private bool _coldDetectionUnavailable;
+    private readonly SemaphoreSlim _coldDetectionGate = new(1, 1);
+
     /// <summary>Timestamp of the most recent invoke/reset; read by the idle watchdog.</summary>
     public DateTimeOffset LastActivityUtc { get; private set; } = DateTimeOffset.UtcNow;
 
@@ -334,6 +345,106 @@ public sealed class RunspaceHost : IDisposable
         catch { return script; }
     }
 
+    // Runs the module's dialect detector (shell-dialect plan D1, slice 2)
+    // against the given runspace and, on a finding, composes the labeled
+    // refusal. The runspace argument IS the resolution context (plan slice
+    // 1(iii)): the warm runspace for foreground calls — a session-defined
+    // `export` function is legitimate PowerShell there and exempts the script
+    // — and the cold detection runspace for background jobs. Any failure
+    // returns null: detection must never be able to fail a call, so
+    // degradation is toward a miss (the pre-detector behavior).
+    private static string? TryGetDialectRefusal(Runspace runspace, string script, bool background)
+    {
+        try
+        {
+            using var ps = PowerShell.Create();
+            ps.Runspace = runspace;
+            ps.AddCommand("Get-PtcShellDialectFinding").AddParameter("Script", script);
+            var results = ps.Invoke();
+            if (results.Count == 0 || results[0]?.BaseObject is not string finding || finding.Length == 0)
+            {
+                return null;
+            }
+            return FormatDialectRefusal(finding, ProbeBashAvailable(runspace), background);
+        }
+        catch { return null; }
+    }
+
+    // The bash -lc recovery wrap is offered only when bash actually resolves
+    // as an Application in the resolution context (plan D1): advising it on a
+    // box that cannot run it would send the model into a second dead end.
+    private static bool ProbeBashAvailable(Runspace runspace)
+    {
+        try
+        {
+            using var ps = PowerShell.Create();
+            ps.Runspace = runspace;
+            ps.AddScript(
+                "$null -ne $ExecutionContext.InvokeCommand.GetCommand('bash', [System.Management.Automation.CommandTypes]::Application)");
+            var results = ps.Invoke();
+            return results.Count > 0 && results[0]?.BaseObject is bool available && available;
+        }
+        catch { return false; }
+    }
+
+    private static string FormatDialectRefusal(string finding, bool bashAvailable, bool background)
+    {
+        var refused = background ? "job not started" : "not executed";
+        var recovery = bashAvailable
+            ? "Rewrite it in PowerShell, or run it unchanged as bash by wrapping the whole script: " +
+              "bash -lc '...' (a literal ' inside the wrap must be written as '\\'')."
+            : "Rewrite it in PowerShell (bash is not available on this machine).";
+        return $"[ptk:dialect] {refused}: the script contains {finding} - bash-only syntax, " +
+               $"and this tool runs PowerShell 7. {recovery}";
+    }
+
+    /// <summary>Dialect check for a script about to start as a background job
+    /// (shell-dialect plan, slice 2): must run BEFORE the job starts, so a
+    /// detected script is refused fast instead of dying in its log. Resolves
+    /// against a cold command table because that is where the job will run.
+    /// Null means no finding — or no way to check, which falls back to
+    /// today's behavior rather than blocking the job.</summary>
+    public async Task<string?> TryGetBackgroundDialectRefusalAsync(string script, CancellationToken cancellationToken = default)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        if (_modulePath is null) return null;
+        await _coldDetectionGate.WaitAsync(cancellationToken);
+        try
+        {
+            if (_coldDetectionRunspace is null)
+            {
+                if (_coldDetectionUnavailable) return null;
+                var runspace = CreateRunspace();
+                try
+                {
+                    using var ps = PowerShell.Create();
+                    ps.Runspace = runspace;
+                    ps.AddCommand("Import-Module")
+                      .AddParameter("Name", _modulePath)
+                      .AddParameter("ErrorAction", "Stop");
+                    ps.Invoke();
+                    _coldDetectionRunspace = runspace;
+                }
+                catch
+                {
+                    // Same module, same path as the warm import, so this is
+                    // near-unreachable when the warm import succeeded; a
+                    // permanent skip beats re-paying runspace creation on
+                    // every background job just to fail again.
+                    try { runspace.Dispose(); } catch { /* best effort */ }
+                    _coldDetectionUnavailable = true;
+                    return null;
+                }
+            }
+            return TryGetDialectRefusal(_coldDetectionRunspace, script, background: true);
+        }
+        catch { return null; }
+        finally
+        {
+            _coldDetectionGate.Release();
+        }
+    }
+
     public async Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default, string route = "auto", int timeoutSeconds = 0)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
@@ -350,6 +461,24 @@ public sealed class RunspaceHost : IDisposable
             // truth, executed exactly as written.
             if (ModuleLoaded && !raw && route != "pwsh")
             {
+                // Dialect check first (shell-dialect plan D1, slice 2): a
+                // probed bash-only construct gets a fast labeled refusal with
+                // recovery guidance instead of dying later as a misdirected
+                // pwsh error — or worse, running with silently changed
+                // meaning. raw=true and route=pwsh bypass by consent (each
+                // says "run exactly this"), and the check runs regardless of
+                // rtk availability — it precedes routing entirely.
+                var refusal = TryGetDialectRefusal(_runspace, script, background: false);
+                if (refusal is not null)
+                {
+                    return new InvokeResult(
+                        Success: false,
+                        Output: refusal,
+                        Errors: [],
+                        Warnings: [],
+                        TimedOut: false);
+                }
+
                 script = ResolveScript(script, route);
             }
 
@@ -564,6 +693,8 @@ public sealed class RunspaceHost : IDisposable
         if (_disposed) return;
         _disposed = true;
         try { _runspace.Dispose(); } catch { /* best effort on teardown */ }
+        try { _coldDetectionRunspace?.Dispose(); } catch { /* best effort on teardown */ }
         _gate.Dispose();
+        _coldDetectionGate.Dispose();
     }
 }

@@ -44,10 +44,29 @@ public static class InvokeTool
             "modules); stateless long work should use background=true instead.")]
         int timeoutSeconds = 0)
     {
+        route = route?.ToLowerInvariant() switch
+        {
+            "pwsh" => "pwsh",
+            "rtk" => "rtk",
+            _ => "auto",
+        };
+
         if (background)
         {
             try
             {
+                // Dialect check BEFORE the job starts (shell-dialect plan,
+                // slice 2): a detected bash-only script is refused fast, never
+                // started as a job that dies in its log. Same consent bypasses
+                // as the foreground path (raw=true, route=pwsh); the check
+                // resolves against a cold command table because that is where
+                // the job will run.
+                if (!raw && route != "pwsh")
+                {
+                    var refusal = await host.TryGetBackgroundDialectRefusalAsync(script, cancellationToken);
+                    if (refusal is not null) return refusal;
+                }
+
                 var cwd = await host.TryGetCurrentLocationAsync(cancellationToken);
                 var job = jobs.Start(script, cwd);
                 return $"[job {job.Id} started] pid {job.Pid}, cold process (no warm session state), log: {job.OutputPath}\n" +
@@ -59,13 +78,6 @@ public static class InvokeTool
                 return $"[job start failed] {ex.Message}";
             }
         }
-
-        route = route?.ToLowerInvariant() switch
-        {
-            "pwsh" => "pwsh",
-            "rtk" => "rtk",
-            _ => "auto",
-        };
         var result = await host.InvokeAsync(script, raw, cancellationToken, route, timeoutSeconds);
 
         var sb = new StringBuilder();
