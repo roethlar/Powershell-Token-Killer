@@ -77,10 +77,12 @@ Routing rules:
   strings, redirections, parse errors, and `.cmd`/`.bat` shims stay on the
   PowerShell path.
 - If `rtk` is absent, the script runs unchanged.
-- Probed bash-only constructs get a fast labeled `[ptk:dialect]` refusal
-  naming the construct and the platform-aware recovery paths, on both the
-  foreground and `background=true` paths; `route=pwsh` and `raw=true`
-  bypass as explicit consent.
+- Constructs on the detector's probed detection list get a fast labeled
+  `[ptk:dialect]` refusal naming the construct and the platform-aware
+  recovery paths, on both the foreground and `background=true` paths;
+  `route=pwsh` and `raw=true` bypass as explicit consent. Detection
+  favors precision over recall: undetected bash shapes run exactly as
+  before.
 
 Output shaping:
 
