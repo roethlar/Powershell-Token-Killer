@@ -5,6 +5,18 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **issue-5/6 batch plan DRAFT awaiting owner approval (2026-07-10)**
+  (`.agents/plans/issue-5-6-invoke-semantics.md`): the owner-triaged
+  next batch — #5 neutral `[stderr]` channel, #6 total wall-clock
+  timeout budget + never-queueing busy-aware ptk_state. Codex plan loop
+  CLOSED CONVERGED (rounds: 8 findings → 2 LOW → 1 LOW test-case tail;
+  i56p-1..11 all fixed, one commit each; record in
+  `.agents/review/index.md`). NO CODE CHANGED — implementation starts
+  only on owner approval. Two live data points banked during the loop:
+  the warm ptk server wedged and died under a codex-dispatch call
+  (ptk_state blocked 1817s behind it — a #6 datum), and codex called
+  ptk_invoke from inside a read-only review sandbox (an issue-3
+  permission-surface datum).
 - **shell-dialect plan COMPLETE 2026-07-10**
   (`.agents/plans/shell-dialect.md`; decision entry + the sd1-4 and
   sd3-1 amendments in `.agents/decisions.md`). All slices done and
@@ -51,9 +63,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-- Owner push go for the small local-ahead tail (sd4 fixes + loop-close
-  records; ask-first policy). Then the #5/#6 batch (triaged
-  after-current-work 2026-07-09).
+- Owner approval of the issue-5/6 plan draft (above) — gates all
+  implementation. Owner push go for the local-ahead tail (sd4 fixes +
+  both loops' records + the plan draft; ask-first policy).
 - Remaining owner decision: hook-default (blocks release slice 4 only;
   owner chose "decide later" 2026-07-09 — re-present before that slice).
 - Machine-local (owner's Mac + Windows box): the installed `~/.ptk`
