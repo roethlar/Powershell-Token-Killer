@@ -1030,7 +1030,19 @@ public sealed class RunspaceHost : IDisposable
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         LastActivityUtc = DateTimeOffset.UtcNow;
-        await _gate.WaitAsync(cancellationToken);
+        // Reset waits unbounded by design (the caller asked for the rebuilt
+        // world), but it still counts as a waiter: a queued reset is exactly
+        // the caller ptk_state should report, since it will discard all warm
+        // state the moment the active call finishes (codex finding i56-9).
+        Interlocked.Increment(ref _gateWaiters);
+        try
+        {
+            await _gate.WaitAsync(cancellationToken);
+        }
+        finally
+        {
+            Interlocked.Decrement(ref _gateWaiters);
+        }
         MarkGateAcquired();
         try
         {
