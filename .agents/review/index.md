@@ -407,3 +407,25 @@ still resolves to the stock `Set-Variable` alias (battery: Pester 132/1
 skipped, dotnet 59/59; decision amendment in `.agents/decisions.md`).
 **All seven sd1 findings are closed.** Commits unpushed pending the
 owner's master push go.
+
+---
+
+Loop run 2026-07-09 (shell-dialect slice 2) — reviewer: codex (codex-cli
+0.144.0, read-only), scope: commit `8c234e8` (base `3121fc0`) — the
+detector refusal wired on both execution paths (shell-dialect plan D1,
+slice 2). Six findings, all ADMITTED at intake; the two live-verifiable
+claims (sd2-1 parse failure of the advised escape, sd2-2 warm shadow over
+the Application lookup) were master-verified before triage. Fixes direct
+to `master`, one per commit, per the recorded precedent. Per-finding
+detail: `.agents/review/findings/sd2-{1..6}.md`.
+
+## Findings (shell-dialect slice-2 loop)
+
+| ID    | Severity | Impact (one line)                                                      | Status | Branch |
+|-------|----------|--------------------------------------------------------------------------|--------|--------|
+| sd2-1 | MEDIUM   | Refusal's apostrophe note is POSIX-layer; following it parse-fails in pwsh | `[ ]`  | master (direct) |
+| sd2-2 | LOW      | bash probe ignores warm shadowing; advice can run the shadow, not bash    | `[ ]`  | master (direct) |
+| sd2-3 | LOW      | Background refusal skips LastActivityUtc; idle watchdog can kill mid-use  | `[ ]`  | master (direct) |
+| sd2-4 | LOW      | Non-execution guard breaks on apostrophes in the temp path                | `[ ]`  | master (direct) |
+| sd2-5 | LOW      | route=pwsh consent unguarded on the background branch                     | `[ ]`  | master (direct) |
+| sd2-6 | LOW      | Detection-precedes-routing unguarded on the forced-rtk leg                | `[ ]`  | master (direct) |
