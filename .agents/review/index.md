@@ -676,3 +676,20 @@ identification — closed on the trivial-docs-fix convergence precedent
 (the mhi-5 disposition). The plan remains an IDEA record, NOT approved;
 the keys-vs-attach-only staging call is the owner's. Commits unpushed
 pending the owner's push go.
+
+---
+
+Loop run 2026-07-10 (grok second pass, unpushed docs batch) — reviewer:
+grok (grok 0.2.93, read-only sandbox; incantation probed fresh per the
+playbook and cached in `harnesses.local.json`), docs-only scope:
+`5c0c2cc..ad9aa77` — the shared-persistent-runspace idea plan (post
+codex loop) plus the drift fixes and loop records. **CLOSED first pass:
+NO FINDINGS** (structured verdict no_findings=true at reviewed head
+`ad9aa77`); the reviewer independently re-verified the plan's technical
+claims (runspace pipeline behavior, process-scoped env, Graph
+ContextScope Process, the GO decision and the OPEN shared-host entry)
+against code and records. Two reviewer observations not filed as
+findings, handled coder-side: a stale issue-5/6 "gates all
+implementation" Next bullet in state.md (fixed with this close) and a
+process note that the spr loop used index rows without per-finding docs
+(accepted — the trivial-docs-fix convergence precedent covers it).

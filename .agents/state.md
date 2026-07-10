@@ -79,9 +79,11 @@ short and update it when important repo facts change.
 
 ## Next
 
-- Owner approval of the issue-5/6 plan draft (above) — gates all
-  implementation. Owner push go for the local-ahead tail (sd4 fixes +
-  both loops' records + the plan draft; ask-first policy).
+- Owner push go for the local-ahead docs tail (shared-runspace idea
+  plan + its two review loops' records + drift fixes; ask-first
+  policy). The issue-5/6 approval/push bullet that lived here is DONE —
+  approved, built, pushed, issues closed (see `## Now`); caught stale by
+  the grok reviewloop pass 2026-07-10.
 - Remaining owner decision: hook-default (blocks release slice 4 only;
   owner chose "decide later" 2026-07-09 — re-present before that slice).
 - Machine-local (owner's Mac + Windows box): the installed `~/.ptk`
