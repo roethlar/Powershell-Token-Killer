@@ -60,6 +60,25 @@ public sealed class StateToolTests : IDisposable
     }
 
     [Fact]
+    public async Task Concurrent_listAvailable_state_calls_do_not_queue_on_the_cache_gate()
+    {
+        // A slow first enumeration holds the cache gate; a second state call
+        // must report and return, not block behind it (i56-7).
+        StateTool.ClearAvailableCacheForTests();
+        await _host.InvokeAsync("function global:Get-Module { Start-Sleep -Seconds 5 }", route: "pwsh");
+        var first = StateTool.State(_host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None);
+        await Task.Delay(700); // let the first call take the cache gate and start enumerating
+
+        var sw = System.Diagnostics.Stopwatch.StartNew();
+        var second = await StateTool.State(_host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None);
+        sw.Stop();
+
+        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3), $"second state call took {sw.Elapsed}");
+        Assert.Contains($"pid {Environment.ProcessId}", second);
+        await first;
+    }
+
+    [Fact]
     public async Task Busy_state_call_refreshes_the_idle_clock()
     {
         // A served busy report is user activity (plan finding i56p-10): the

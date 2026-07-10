@@ -101,7 +101,15 @@ public static class StateTool
 
         if (listAvailable)
         {
-            await CacheGate.WaitAsync(cancellationToken);
+            // Zero-wait like every other status probe (codex finding i56-7):
+            // a second state call must not block for minutes behind another
+            // caller's slow first enumeration - that would withhold even the
+            // host-level facts this tool promises to always deliver.
+            if (!CacheGate.Wait(0))
+            {
+                sb.AppendLine("modules available: enumeration already in progress in another state call (not cached)");
+                return sb.ToString().TrimEnd();
+            }
             try
             {
                 if (_availableCache is null)
