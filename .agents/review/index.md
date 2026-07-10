@@ -588,5 +588,27 @@ root cause: system sleep vs monotonic timers — no code defect). Coder-side
 verification at head: dotnet 94/94 (all three slices guard-proven by
 revert/sabotage: 4+3+3 red legs), Pester 133 passed / 1 skipped, handshake
 PASSED, live MCP-stdio issue-repro checks 11/11 (ptk_state 306ms during a
-3s call; 1s-budget queue expiry at 1305ms, never executed). **Status:
-review dispatched, verdict pending.**
+3s call; 1s-budget queue expiry at 1305ms, never executed). Verdict: **10 findings** (2 HIGH, 5 MEDIUM, 3 LOW), reviewed_sha
+`0673023` (docs commit atop the reviewed head; code identical to
+`1841e46`). Triage: 9 ADMITTED, i56-1 ADMITTED IN PART (late-gate leg
+admitted; the completed-work leg DECLINED — returning results that
+finished during a sleep race beats discarding them to honor an elapsed
+deadline: nothing runs past budget either way, and the caller gets the
+answer it paid for). i56-5 extends the i56p-4 fail-closed rationale to
+ALL null-cwd cases on the background path (behavior change beyond the
+plan letter, recorded here).
+
+## Findings (issue-5/6 implementation loop)
+
+| ID     | Severity | Impact (one line)                                                        | Status | Branch |
+|--------|----------|---------------------------------------------------------------------------|--------|--------|
+| i56-1  | HIGH     | Sleep race: gate acquired past the wall deadline still executes the expired call | `[ ]`  |        |
+| i56-2  | MEDIUM   | Synchronous runspace rebuild on the timeout path can block the response (slice-0 class) | `[ ]`  |        |
+| i56-3  | MEDIUM   | Exit-code bookkeeping ignores the deadline and hides its own recycle      | `[ ]`  |        |
+| i56-4  | MEDIUM   | Cold pre-start (gate wait, import, detection) escapes the request deadline | `[ ]`  |        |
+| i56-5  | HIGH     | Canceled/failed cwd probe still starts the job in the server directory    | `[ ]`  |        |
+| i56-6  | MEDIUM   | A cwd execution timeout is misreported as queue expiry (warm state claim false) | `[ ]`  |        |
+| i56-7  | MEDIUM   | Second listAvailable ptk_state blocks on the cache gate for minutes       | `[ ]`  |        |
+| i56-8  | LOW      | Busy on the listAvailable leg omits the promised age/waiter line          | `[ ]`  |        |
+| i56-9  | LOW      | Queued ptk_reset invisible to waiter accounting                           | `[ ]`  |        |
+| i56-10 | LOW      | README operational note still equates every timeout with state loss       | `[ ]`  |        |
