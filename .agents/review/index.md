@@ -451,7 +451,7 @@ would be misadvice). Detail: `.agents/review/findings/sd3-1.md`.
 
 | ID    | Severity | Impact (one line)                                                      | Status | Branch |
 |-------|----------|--------------------------------------------------------------------------|--------|--------|
-| sd3-1 | MEDIUM   | raw surfaces omit the route=pwsh+raw=false pairing (admitted: raw param; declined: marker surfaces) | `[!]`  | master (direct, 1c92cd6 admitted part) |
+| sd3-1 | MEDIUM   | raw surfaces omit the route=pwsh+raw=false pairing (admitted: raw param; declined: marker surfaces) | `[x]`  | master (direct, 1c92cd6 + D2 amendment — owner-delegated adjudication) |
 | sd3-2 | MEDIUM   | Elided job polls advise raw=true, a control ptk_job does not have         | `[x]`  | master (direct, f1c7744) |
 
 **Re-grade round 1 (codex, codex-cli 0.144.0, read-only) at head

@@ -74,6 +74,15 @@ dropped. Push policy stays in `.agents/push-policy.md`, not here.
 
 ## Earned Practices
 
-None recorded yet beyond the portable Git Safety rules in `AGENTS.md`. Add an
-entry here only once a real, citable incident in this repo earns a
-repo-specific rule.
+- **Agent experience leads on model-facing guidance text (owner,
+  2026-07-10, sd3-1 adjudication).** ptk's model-visible wording — tool
+  descriptions, in-band markers, nudge text, refusal guidance — is
+  guidance by an agent for an agent. When an approved plan's letter runs
+  contrary to what the implementing agent and the reviewer judge works
+  best for model interaction, lean toward that judgment and surface the
+  final question to the owner rather than implementing wording the agents
+  believe misleads. Incident: sd3-1 (`.agents/review/findings/sd3-1.md`)
+  — the plan's per-surface pairing requirement would have put a useless
+  recovery suggestion inside every elision marker; the owner delegated
+  the call and the marker stayed lean, with the D2 amendment recorded in
+  `.agents/decisions.md`.

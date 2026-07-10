@@ -65,6 +65,18 @@ detector's resolution-guard machinery and had become the lone exception to
 the uniform "a name that works in this session is never bash evidence"
 rule, in conflict with the plan's precision-first principle.
 
+**Amendment (2026-07-10, sd3-1 adjudication — owner delegated the call
+in-session):** D2's "every reworded surface that describes raw also names
+the route=pwsh + raw=false pairing" is scoped to surfaces serving the
+FIDELITY motive (tool and parameter descriptions, the nudge block, the
+README/server-README override sections — all of which now teach it). The
+in-band elision markers and the sentences that describe them advise only
+`raw=true`, because elision applies on every shaped route: the pairing
+cannot recover an elided middle, and teaching it at that moment would be
+false advice (live proof in `.agents/review/findings/sd3-1.md`). Decided
+under the owner's agent-experience principle, recorded in
+`.agents/repo-guidance.md` (Earned Practices).
+
 ### ACTIVE (2026-07-08): Greenfield design adopted — `.agents/plans/greenfield-design.md`
 
 **Status:** Active — approved by owner in-session 2026-07-08 after the codex
