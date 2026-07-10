@@ -53,8 +53,10 @@ public static class StateTool
         sb.AppendLine(
             $"ptk server: pid {Environment.ProcessId}, up {FormatUptime(DateTimeOffset.UtcNow - host.StartedUtc)}, " +
             $"shaping {(host.ModuleLoaded ? "on" : "off")}, raw calls this session: {rawUsage.Count}");
+        var busyLineEmitted = false;
         if (result is null)
         {
+            busyLineEmitted = true;
             sb.AppendLine(FormatBusyLine(host));
             sb.AppendLine("runspace-dependent details (engine, cwd, variables, loaded modules) unavailable while busy.");
         }
@@ -129,6 +131,10 @@ public static class StateTool
                     if (available is null)
                     {
                         sb.AppendLine("modules available: unavailable while the runspace is busy (not cached)");
+                        // A long call can win the gate BETWEEN the main probe
+                        // and this one; the promised busy snapshot must not
+                        // vanish just because the main leg was idle (i56-8).
+                        if (!busyLineEmitted) sb.AppendLine(FormatBusyLine(host));
                     }
                     else if (available.Success && available.Errors.Length == 0)
                     {

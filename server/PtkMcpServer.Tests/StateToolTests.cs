@@ -56,6 +56,10 @@ public sealed class StateToolTests : IDisposable
 
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3), $"ptk_state took {sw.Elapsed}");
         Assert.Contains("unavailable while the runspace is busy (not cached)", state);
+        // The busy snapshot appears exactly once even when both legs lose
+        // (i56-8 dedupe); the main-idle/enumeration-busy race leg shares this
+        // code path but has no deterministic interleave without a seam.
+        Assert.Equal(1, state.Split("runspace: busy").Length - 1);
         await slow;
     }
 
