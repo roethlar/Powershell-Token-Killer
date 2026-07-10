@@ -183,6 +183,45 @@ public sealed class ShellDialectWiringTests : IDisposable
     }
 
     [Fact]
+    public async Task Detection_precedes_forced_rtk_routing()
+    {
+        // sd2-6: `export X=1` satisfies the resolver's single-command
+        // constant-args shape and route=rtk skips the Application check, so
+        // a wiring that routed BEFORE detecting would hand the detector
+        // `& '<rtk>' export X=1` (operator-invoked, export in argument
+        // position: no finding) and execute the stub instead of refusing.
+        var dir = Directory.CreateTempSubdirectory("ptk-dialect-rtk-");
+        string stub;
+        if (OperatingSystem.IsWindows())
+        {
+            stub = Path.Combine(dir.FullName, "rtk-stub.cmd");
+            File.WriteAllText(stub, "@echo off\r\necho RTKROUTE %*\r\nexit /b 0\r\n");
+        }
+        else
+        {
+            stub = Path.Combine(dir.FullName, "rtk-stub.sh");
+            File.WriteAllText(stub, "#!/bin/sh\necho \"RTKROUTE $@\"\nexit 0\n");
+            File.SetUnixFileMode(stub,
+                UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+        }
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            var text = await InvokeTool.Invoke(
+                _host, _jobs, "export X=1", CancellationToken.None, route: "rtk");
+
+            Assert.Contains("[ptk:dialect] not executed", text);
+            Assert.DoesNotContain("RTKROUTE", text);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Moduleless_host_skips_detection_on_both_paths()
     {
         // No module means no detector; both paths degrade to today's behavior
