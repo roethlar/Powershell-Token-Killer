@@ -914,7 +914,7 @@ table is a valid review result.
 | ahs-33 | HIGH    | Accepted calls/jobs can overbook the terminal-event reserve | `[x]` | master (direct, 69caf6c) |
 | ahs-34 | MEDIUM  | Idle exit can discard an unconfirmed containment quarantine | `[x]` | master (direct, 00bb110) |
 | ahs-35 | HIGH    | Unix broker death after arming can remove the hard-parent-death proof | `[x]` | master (direct, f6a20f3) |
-| ahs-36 | MEDIUM  | Worker-starting lifecycle tools have no defined startup deadline function | `[x]` | master (direct, da32d9c) |
+| ahs-36 | MEDIUM  | Worker-starting lifecycle tools have no defined startup deadline function | `[~]` | master (direct, da32d9c) |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -1148,3 +1148,16 @@ an empty findings array. Those rows are `[x]`; all 36 ahs findings are closed
 by Grok/coder grade. Because Grok's fixes landed after Claude's accepted pass,
 the same final plan content still requires one Claude regression confirmation
 before the overall dual-review loop closes.
+
+**Claude final regression check — REOPENED** (Claude Code 2.1.207, default
+claude-opus-4-8, read-only), reviewed head
+`d58dcaee1a65c0b7e8eb2d57498fe58277e4f0b4` against base
+`875efa05b7ef6c01354466f3f93211316d30c901`, plan blob
+`d6fc86faf9943444ce89cc7f141203048dd155e7`,
+`guard_confirmed=true`, 2026-07-11T11:21:25Z. ahs-35 is RESOLVED. ahs-36 is
+NOT_RESOLVED on one precise schema leg: the `open` branch says it permits only
+open-time binding fields without explicitly including `timeoutSeconds`, while
+close/restart name their deadline field. A strict `oneOf` implementation would
+therefore reject the open override that the lifecycle deadline contract and
+acceptance matrix require. The finding is admitted as an ahs-36 residual; no
+new ID is needed.
