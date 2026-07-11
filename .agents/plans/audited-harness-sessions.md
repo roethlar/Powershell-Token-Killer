@@ -631,6 +631,28 @@ producer. The supervisor assigns stable event/call IDs and appends
 including `ptk_state`, `ptk_session`, `ptk_output`, and every `ptk_job`
 action, receives a terminal event while the journal is healthy.
 
+Acceptance is capacity-reserved, not optimistic. Because every record has a
+fixed maximum size, `AuditJournal` computes the worst-case post-effect event
+set for the operation and atomically reserves those bytes in the physically
+allocated terminal segment **before** appending `call.accepted`. Foreground
+calls reserve execution plus call terminals; a background start reserves its
+start-call terminal and, before process start, a separate job-terminal slot
+that remains charged after the MCP call completes; each live worker retains a
+worker-exit/loss slot. Reset/close/kill reuse the already-held job/worker
+lifecycle slots and reserve their own call/control terminals. Fixed exporter
+and recovery transitions have separately budgeted slots.
+
+If the full reservation cannot be acquired, reject before acceptance and user
+effects, using only the minimal unrecorded health diagnostic path. A failed
+`call.accepted` append releases its reservation. Successful terminal appends
+consume their assigned capacity and release any overestimate; reservations
+cannot be borrowed by another call. Thus effective free space is physical
+free bytes minus all outstanding call/job/worker reservations, and concurrency
+or job admission naturally stops before future terminal facts are overbooked.
+Reservations cannot prevent media/write failure, which remains an explicit
+degraded/unknown interval, but ordinary load cannot exhaust promised terminal
+capacity.
+
 There is one diagnostic exception when the journal cannot admit a new call,
 including anchored high-water reserve mode: `ptk_state` may return a minimal
 supervisor-only
@@ -923,6 +945,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 
 - Add schema, journal, required pre-effect commits, health, rotation,
   retention, sequence/hash chain, server lifecycle, and in-memory test sink.
+- Add atomic worst-case terminal-capacity reservation at call acceptance and
+  persistent job/worker lifecycle reservations; no side effect may begin on
+  unreserved future audit obligations.
 - Add the protected exact-script evidence store in the same slice. Evidence
   write+flush and the referencing dispatch append+flush are the ordered
   pre-effect commit; no script-bearing call may execute with only a digest.
@@ -1134,6 +1159,12 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   and receives its own durable dispatch record.
 - Concurrent events produce no torn records, duplicate sequence, or broken
   chain.
+- Fill the ordinary spool to just below high water, then race foreground
+  calls, background starts, and worker opens across sessions. Each operation
+  either reserves its complete worst-case terminal set before acceptance or
+  is rejected with zero effects. After every accepted operation/job/worker is
+  driven terminal during collector outage, all promised terminal events fit;
+  no burst can overbook the preallocated segment.
 - Rotation/retention bound a long-lived supervisor; a live file is not swept.
 - Export retry/checkpoint and duplicate delivery; network loss proceeds only
   while spool remains healthy.
