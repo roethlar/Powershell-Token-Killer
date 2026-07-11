@@ -162,9 +162,31 @@ makes every deny rule and the read-only preset defeatable by adding one
 parameter to the refused call. Verification must run the identical
 denied script down both paths and see two refusals.
 
-## Verification
+## Verification (slp-10 — an acceptance matrix, not a happy path)
 
-Battery + guard proofs per slice (red-leg proven); live checks: the
-issue-#3 bypass scenario replayed against an active deny rule; a
-sandboxed reviewer session demonstrating refusal + audit trail; codex
-reviewloop per the recorded process.
+Battery + guard proofs per slice (red-leg proven), plus a per-slice
+acceptance matrix; a single foreground deny replay proves almost
+nothing about the properties this plan claims.
+
+- **Slice 1 (audit):** every tool (`ptk_invoke` fg/bg, `ptk_job`
+  status/output/kill, `ptk_state`, `ptk_reset`) produces its event(s);
+  job events correlate call→start→end; refused/timed-out/recycled
+  outcomes logged; concurrent writers; rotation under load; forced
+  write failure = call succeeds + loud degraded-audit signal; log-off
+  configuration produces zero writes.
+- **Slice 2 (gate):** policy states — absent, active, malformed,
+  deleted-after-load (fail-closed per slp-5); the SAME denied script
+  refused on foreground AND background (slp-2); deny-beats-allow;
+  unknown-command fail-closed; repointed-alias context test (slp-3);
+  dynamic invocation (`Invoke-Expression`, `& $cmd`) fail-closed;
+  native regex deny/allow incl. `raw=true` and each `route` value;
+  control actions checked before side effects — a refused reset kills
+  no jobs (slp-6); refusal text names the rule.
+- **Slice 3 (preset):** the shipped preset loads cleanly, its
+  read-only verdicts hold for a destructive-cmdlet sample and both
+  scriptless control actions, and a documented edit (allowing one
+  command) behaves.
+- **Live checks:** the issue-#3 bypass scenario replayed against an
+  active deny rule end-to-end over MCP stdio; a sandboxed reviewer
+  session demonstrating refusal + audit trail; codex reviewloop per
+  the recorded process.
