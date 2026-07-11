@@ -151,17 +151,27 @@ not have.
    - logs: 80 synthetic `INFO worker[n]: step n completed in nms`
      lines (2%)
    - passthrough: `Get-Content README.md -Raw` (100%)
-   plus, added for this slice, at least 3 native cases the new routing
-   is expected to change (compound `&&` chain, `cargo test`/`npm
-   test`-shaped output where available, a `head`-class file read).
+   plus these FROZEN native cases added for this slice (exact
+   commands, all runnable from the repo root with only git/coreutils —
+   no cargo/npm dependence):
+   - compound: `git status && git log --oneline -20`
+   - file-read class: `head -40 README.md`
+   - rtk git-filter class: `git show --stat HEAD`
    One run per case (output is deterministic enough at this size;
    re-run twice only if a ratio moves >5 points between runs).
    `rtk gain` accumulates HISTORICAL tracking data — snapshot or reset
    its counter before the run and report only the delta, never the
-   accumulated total. Materiality bar for the owner's justification
-   question: the native-case subtotal ratio must improve by ≥10
-   percentage points over the frozen baseline, or the finding "routing
-   widened, savings did not move" is recorded just as loudly.
+   accumulated total. **Baseline and aggregation:** before integration
+   lands (slice-1 exit), run this exact protocol at the
+   pre-integration HEAD and record every case's raw/shaped character
+   counts in this plan; the post-integration run re-measures the same
+   list. The native subtotal is `sum(shaped chars) / sum(raw chars)`
+   across the native cases — sums, never a mean of per-case ratios.
+   Materiality bar for the owner's justification question: the
+   post-integration native subtotal must improve on the recorded
+   pre-integration native subtotal by ≥10 percentage points, or the
+   finding "routing widened, savings did not move" is recorded just
+   as loudly.
 
 4. **Reconcile the durable contracts (rrp-10):** the repo's standing
    record says the opposite of this plan — the greenfield decision and
