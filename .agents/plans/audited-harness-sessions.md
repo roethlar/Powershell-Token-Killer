@@ -66,12 +66,14 @@ The implementation must preserve these owner-settled rules:
 - `raw=true` must cease being a lower-friction execution bypass. Output
   recovery reads bytes captured from the same invocation; it never reruns the
   script.
-- Approval of this plan explicitly supersedes only the `raw=true` half of the
-  active shell-dialect D1 consent rule: raw no longer changes interpreter or
-  routing. `route=pwsh` remains explicit consent to execute the original text
-  as PowerShell and bypass automatic dialect/RTK routing. The deferred
-  decisions-log reconciliation must record that split; the hold is not
-  permission for an implementer to guess.
+- Approval of this plan explicitly supersedes two bounded parts of active
+  shell-dialect D1: `raw=true` no longer changes interpreter/routing, and a
+  parse-fatal script may run as Bash only after the independent three-part
+  proof below. `route=pwsh` remains explicit consent to execute the original
+  text as PowerShell and bypass automatic dialect/RTK routing. Clean-parsing
+  dialect findings retain D1's labeled refusal. The deferred decisions-log
+  reconciliation must record that split; the hold is not permission for an
+  implementer to guess.
 - A failed optimization/style check is not a legitimate reason to return a
   failed tool call. Failure is reserved for an actual execution/lifecycle
   problem or for mandatory audit being unavailable.
@@ -310,11 +312,16 @@ before the worker receives permission to execute.
   to prefilter the bytes written to the file.
 - `.cmd`/`.bat`, wrapper-context, alias/function shadowing, and any other
   fidelity exclusion execute the original once.
-- A narrow, high-confidence Bash-dialect finding runs the exact original
-  script through `bash -lc` when Bash is available, with argument-list
+- Automatic Bash execution requires all three independent conditions:
+  PowerShell reports a parse-fatal script; PTK's detector identifies a
+  specific Bash construct from non-comment/non-string evidence; and a
+  bounded, no-execution `bash -n -c <exact-script>` validation succeeds.
+  Only then run the same exact bytes through `bash -lc`, with argument-list
   passing rather than string concatenation. Bash itself is an internal native
-  RTK delegation. If Bash is unavailable, that is an actual not-started
-  failure; do not pretend PowerShell executed it.
+  RTK delegation. A clean-parsing dialect finding, missing Bash, failed
+  `bash -n` validation, or expired validation budget keeps the existing
+  labeled not-started refusal; do not execute it under a guessed interpreter.
+  `route=pwsh` bypasses this path as explicit PowerShell consent.
 - RTK absent, routing timeout, routing error, or pre-execution resolution
   change falls back to the original once. No fallback occurs after execution
   begins.
@@ -638,7 +645,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Replace string-only resolution with `ExecutionPlan` and provenance.
 - Route safe terminal native commands through RTK; keep mixed/dataflow and
   fidelity exclusions exact and single-execution.
-- Internally run high-confidence Bash syntax through Bash when present.
+- Add the three-part parse-fatal + detector + bounded-`bash -n` gate, then run
+  only proven Bash syntax through Bash. Retain D1 refusal for every other
+  finding.
 - Preserve current cwd, pinned RTK path, remaining deadline, live resolution,
   exit code, streams, and preference state.
 - Remove double `rtk log` shaping.
@@ -755,8 +764,16 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - `git diff | Set-Content patch.txt` writes an applyable unfiltered patch;
   `git diff > patch.txt` is accepted without prefiltering file bytes.
 - RTK-filtered stdout is not passed through `rtk log` again.
-- Bash-only fixture executes exact bytes through Bash when present and has a
-  truthful not-started result when absent.
+- A parse-fatal, detector-positive, `bash -n`-valid fixture executes exact
+  bytes through Bash when present and has a truthful not-started result when
+  absent.
+- ``Write-Output `tColumn` Name`` (the recorded sd1-2 valid-PowerShell
+  false-positive class) never executes under Bash even if the dialect
+  detector is test-sabotaged to return a finding, because PowerShell parsing
+  succeeds.
+- `foo 'bar'() { echo hi; }` (the recorded sd1-6 synthesized-shape class)
+  never executes under Bash when the detector is test-sabotaged, because
+  `bash -n` rejects the exact text.
 - Foreground/background effective routes match their respective warm/cold
   resolution contexts.
 
