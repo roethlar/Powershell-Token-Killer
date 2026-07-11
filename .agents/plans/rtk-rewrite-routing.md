@@ -94,6 +94,17 @@ not have.
    script is refused or bash-wrapped before routing; the bash-wrapped
    path may hand the inner script to rtk rewrite too — decided by the
    slice-1 matrix). `route=pwsh`/`raw=true` consent bypasses unchanged.
+   **route=rtk gets a defined meaning (rrp-6):** today `route=rtk`
+   force-routes a safe-shaped script through the configured binary,
+   skipping the Application check (pinned by an existing Pester test
+   and the tool description). Under rewrite-based routing a forced
+   script that rtk passes through (exit 1) would silently execute as
+   plain PowerShell — indistinguishable from `auto`. Slice 2 must
+   decide and record one of: force-routing retained (wrap as `rtk
+   <script>` regardless), rewrite-only (forced = rewrite attempted,
+   labeled no-op result when rtk declines), or the flag retired. The
+   chosen semantics update the tests and the model-visible tool
+   description in the same slice.
 3. **Measure and record:** re-run the 2026-07-10 shaped-vs-raw
    measurement plus `rtk gain` on a realistic mixed workload; record
    the numbers in this plan. This is the evidence for the owner's
