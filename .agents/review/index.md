@@ -913,8 +913,8 @@ table is a valid review result.
 | ahs-32 | MEDIUM  | Post-launch startup containment can wait forever after its deadline | `[x]` | master (direct, 70e1d39 + 7ec5d7a) |
 | ahs-33 | HIGH    | Accepted calls/jobs can overbook the terminal-event reserve | `[x]` | master (direct, 69caf6c) |
 | ahs-34 | MEDIUM  | Idle exit can discard an unconfirmed containment quarantine | `[x]` | master (direct, 00bb110) |
-| ahs-35 | HIGH    | Unix broker death after arming can remove the hard-parent-death proof | `[~]` | master (direct, f6a20f3) |
-| ahs-36 | MEDIUM  | Worker-starting lifecycle tools have no defined startup deadline function | `[~]` | master (direct, da32d9c) |
+| ahs-35 | HIGH    | Unix broker death after arming can remove the hard-parent-death proof | `[x]` | master (direct, f6a20f3) |
+| ahs-36 | MEDIUM  | Worker-starting lifecycle tools have no defined startup deadline function | `[x]` | master (direct, da32d9c) |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -1137,3 +1137,14 @@ quarantines the generation before recovery. `da32d9c` (ahs-36) adds
 positive-override cap / template-ceiling / lazy-invoke deadline function, with
 containment grace only after that budget expires. Both rows remain `[~]`
 pending Grok re-grade; no product code is authorized.
+
+**Grok re-grade round 2 — ACCEPTED / GROK LOOP CLOSED** (grok 0.2.93,
+read-only sandbox), reviewed head
+`f401089b1a6bbbf6fa4c860d4f99394848eed6e6` against base
+`875efa05b7ef6c01354466f3f93211316d30c901`,
+`guard_confirmed=true`, 2026-07-11T11:15:40Z. The structured result matched
+both SHAs, returned explicit RESOLVED comments for ahs-35 and ahs-36, and had
+an empty findings array. Those rows are `[x]`; all 36 ahs findings are closed
+by Grok/coder grade. Because Grok's fixes landed after Claude's accepted pass,
+the same final plan content still requires one Claude regression confirmation
+before the overall dual-review loop closes.
