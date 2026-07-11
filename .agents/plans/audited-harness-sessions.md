@@ -439,7 +439,17 @@ Audit begins at the MCP supervisor boundary. The hook is not an audit
 producer. The supervisor assigns stable event/call IDs and appends
 `call.accepted` before routing or worker startup. Every accepted tool,
 including `ptk_state`, `ptk_session`, `ptk_output`, and every `ptk_job`
-action, receives a terminal event.
+action, receives a terminal event while the journal is healthy.
+
+There is one diagnostic exception when the journal itself cannot accept an
+event: `ptk_state` may return a minimal supervisor-only
+`audit=unavailable, unrecorded=true` response containing the failure class,
+degraded-since time, and spool/export configuration identity. It must not
+query or reveal runspace, session, job, output, script, or credential data and
+is not treated as an accepted audited operation. Count these emergency probes
+and their first/last timestamps in memory; the first successful
+`audit.recovered` event records that gap summary. `ptk_session list`,
+`ptk_output`, job reads, and every effectful action remain fail-closed.
 
 ### Pre-effect rule
 
@@ -654,7 +664,8 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   write+flush and the referencing dispatch append+flush are the ordered
   pre-effect commit; no script-bearing call may execute with only a digest.
 - Audit every current tool boundary and all no-start/terminal outcomes.
-- `ptk_state` reports audit health without exposing credentials.
+- `ptk_state` reports audit health without exposing credentials; its narrow
+  journal-unavailable response follows the diagnostic exception above.
 - Guard: forced journal failure produces no foreground/background/reset/kill
   side effect.
 
@@ -788,6 +799,11 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   connection. No session-mode job can occupy/starve the serialized runspace.
 - Required-journal failure before foreground, job start, reset, close, and
   kill proves zero side effects.
+- With an unwritable/corrupt spool, `ptk_state` returns only the labeled
+  unrecorded audit-health diagnostic; `ptk_session list`, output/job reads,
+  invoke, job start/kill, reset, and close all refuse with zero side effects.
+  On recovery, the next durable event records the emergency-probe count and
+  first/last timestamps.
 - Hard-kill after a dispatch commit but before its terminal event; the exact
   script evidence referenced by that dispatch remains retrievable. Inject
   evidence-write, evidence-flush, event-append, and event-flush failures
