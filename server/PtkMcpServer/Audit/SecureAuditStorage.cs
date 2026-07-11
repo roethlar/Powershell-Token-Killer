@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Security.Cryptography;
 
 namespace PtkMcpServer.Audit;
 
@@ -203,6 +204,39 @@ internal static class SecureAuditStorage
         if (!File.Exists(path))
             throw new IOException("The protected file is missing.");
         VerifyFileProtection(path);
+    }
+
+    internal static byte[] ReadProtectedFile(string path, int maximumBytes)
+    {
+        if (maximumBytes < 1)
+            throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+
+        VerifyProtectedFile(path);
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read,
+            bufferSize: 16 * 1024,
+            FileOptions.SequentialScan);
+        if (stream.Length < 0 || stream.Length > maximumBytes)
+            throw new IOException("The protected file exceeds its configured bound.");
+
+        var bytes = new byte[checked((int)stream.Length)];
+        try
+        {
+            stream.ReadExactly(bytes);
+            if (stream.ReadByte() != -1)
+                throw new IOException("The protected file changed while it was read.");
+
+            VerifyProtectedFile(path);
+            return bytes;
+        }
+        catch
+        {
+            CryptographicOperations.ZeroMemory(bytes);
+            throw;
+        }
     }
 
     internal static void VerifyProtectedDirectory(string path)
