@@ -916,6 +916,12 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   recovery is unavailable and that the command was not rerun. Preserve the
   sd3-3/sd3-4 invariant: the elision function composes the caller-supplied
   hint into its marker; no downstream text scan invents it.
+- Intentionally replace
+  `RawUsageTests.Invoke_descriptions_teach_recovery_only_raw_and_the_pwsh_pairing`:
+  tool/parameter descriptions teach ordinary shaped invocation followed by
+  `ptk_output` when a handle exists, label legacy `raw` deprecated/non-bypass,
+  and teach `route=pwsh` as interpreter/routing consent without pairing it to
+  a raw-output switch.
 - Make legacy `raw=true` non-routing and non-bypass behavior; keep it only for
   the announced compatibility interval.
 - Replace the shipped
@@ -940,6 +946,10 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   cold job for a connection-dependent request.
 - Make output polling provenance-aware and stop exposing filesystem paths as
   the model recovery interface.
+- Intentionally replace
+  `RawUsageTests.Oversized_job_poll_names_the_log_as_the_recovery_not_raw`:
+  an elided job poll names its stable `ptk_output` handle, that handle retrieves
+  the same job artifact, and no model-facing text contains the raw log path.
 
 ### Slice 6 — extract `SessionRuntime` without behavior change
 
@@ -1178,8 +1188,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Existing Pester suite, .NET suite, and MCP handshake remain green after
   every code slice, with the named heredoc refusal guard replaced in slice 3,
   the two named obsolete raw-consent guards plus the four named Pester marker
-  guards replaced in slice 4, and the route-pwsh consent guard
-  retained/strengthened.
+  guards and the named .NET invoke-description guard replaced in slice 4, the
+  named .NET job-log-path guard replaced in slice 5, and the route-pwsh consent
+  guard retained/strengthened.
 - New tests receive red-leg guard proof per repo guidance.
 - Default tool schemas remain compatible through the declared raw transition.
 - Real MCP stdio tests cover audit IDs, RTK path, output handle, two sessions,
