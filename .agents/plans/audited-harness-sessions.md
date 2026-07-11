@@ -624,9 +624,15 @@ and prolonged local-spool backlog.
 
 ## Jobs and process containment
 
-Jobs are keyed by session, worker boot ID/generation, and job ID. A job in one
-session is not visible or controllable through another. `ptk_job list` is
-session-local; `ptk_session list` shows only counts.
+The supervisor allocates a monotonically increasing 64-bit public job ID that
+is never reused during its harness lifetime, including across failed starts,
+worker replacement, reset, or close. It passes that ID into the worker start
+commit; any worker-local counter is private and never accepted by MCP. Job
+records retain session, worker boot ID/generation, and public ID. A job in one
+session is not visible or controllable through another, and an old-generation
+status/output/kill returns the old job's terminal/tombstone result or not-found
+rather than matching a new worker's job. `ptk_job list` is session-local;
+`ptk_session list` shows only counts.
 
 `JobManager` emits completion independently of polling and exactly once.
 Status/output/kill/list are all audited. Output reads record offsets and byte
@@ -821,6 +827,8 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 
 - Add dynamic semantic session aliases, optional frozen templates, lifecycle
   state machine, `ptk_session`, and explicit session arguments on all tools.
+- Move public job-ID allocation to the supervisor's nonreusing 64-bit
+  sequence; worker-local IDs never cross MCP.
 - Prove isolation of variables, aliases, cwd, environment, modules, auth
   process, caches, jobs, reset, timeout, and concurrency.
 - Unknown/lost/faulted sessions fail visibly and never masquerade as a fresh
@@ -966,6 +974,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Reset/restart increments generation and affects only the named session.
 - Stale generation and non-force busy close/reset have zero side effects.
 - Worker loss fails pending calls once and requires explicit restart.
+- Start a job, replace its worker, then start another job. The public IDs
+  differ, and status/output/kill using the old ID cannot observe or affect the
+  new job even when the worker's private counter reused its first value.
 - Closing `default` kills its jobs/worker, leaves the reserved slot cold, and
   the next unqualified invoke starts exactly one new generation. Closing a
   named session never auto-reopens it and never redirects its calls to
