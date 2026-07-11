@@ -236,9 +236,18 @@ not have.
   contradicts the fail-open invariant, so slice 2 must invoke `rtk
   rewrite` with its own short bound (seconds, not the call budget) and
   kill it on expiry, falling back to the unchanged script with enough
-  budget left to actually run it. Seams to test: rewrite timeout →
-  fallback executes; rewrite failure → fallback executes; warm state
-  preserved in both.
+  budget left to actually run it. **The bound must know the budget
+  (rrp-14):** the routing resolver currently receives no deadline, and
+  a call's `timeoutSeconds` is a TOTAL wall-clock budget that queue
+  wait already eats — a fixed rewrite bound larger than the remaining
+  budget means the OUTER deadline fires first, the original never
+  starts, and the runspace recycles. Slice 2 plumbs the remaining
+  deadline into the routing step; if the time left is under the
+  rewrite bound plus a fallback reserve, the rewrite is SKIPPED
+  entirely and the original runs unrouted. Seams to test: rewrite
+  timeout → fallback executes; rewrite failure → fallback executes;
+  a near-expired queued call skips the rewrite and still executes;
+  warm state preserved in all three.
 - **Preference-independent capture (rrp-11):** reviewer-probed live on
   PS 7.6 — with `$PSNativeCommandUseErrorActionPreference = $true` and
   `$ErrorActionPreference = 'Stop'` in the warm session, a SUCCESSFUL
