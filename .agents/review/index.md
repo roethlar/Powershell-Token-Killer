@@ -910,9 +910,9 @@ table is a valid review result.
 | ahs-29 | HIGH    | Timeout replacement has no deadlock-free transition or post-deadline grace | `[x]` | master (direct, 6294340) |
 | ahs-30 | MEDIUM  | New audited reads can consume the reserve needed for terminal events | `[x]` | master (direct, 23586fb) |
 | ahs-31 | MEDIUM  | Side-effect-free prepare forbids the required external `bash -n` validator | `[x]` | master (direct, e4e261d) |
-| ahs-32 | MEDIUM  | Post-launch startup containment can wait forever after its deadline | `[~]` | master (direct, 70e1d39 + 7ec5d7a) |
+| ahs-32 | MEDIUM  | Post-launch startup containment can wait forever after its deadline | `[x]` | master (direct, 70e1d39 + 7ec5d7a) |
 | ahs-33 | HIGH    | Accepted calls/jobs can overbook the terminal-event reserve | `[x]` | master (direct, 69caf6c) |
-| ahs-34 | MEDIUM  | Idle exit can discard an unconfirmed containment quarantine | `[~]` | master (direct, 00bb110) |
+| ahs-34 | MEDIUM  | Idle exit can discard an unconfirmed containment quarantine | `[x]` | master (direct, 00bb110) |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -1103,3 +1103,14 @@ wait-forever instruction with the bounded confirmed/quarantined contract, and
 `00bb110` (ahs-34) makes every quarantine/containment observer aggregate live
 work with a delayed-death versus idle-timer acceptance case. Both rows remain
 `[~]` pending fixed-SHA review; no product code is authorized.
+
+**Claude re-grade round 6 — ACCEPTED / CLAUDE LOOP CLOSED** (Claude Code
+2.1.207, default claude-opus-4-8, read-only), reviewed head
+`e77780c9d6a39d49a49f47693d04c23e5c1b1190` against base
+`875efa05b7ef6c01354466f3f93211316d30c901`,
+`guard_confirmed=true`, 2026-07-11T11:03:18Z. The structured result matched
+both SHAs, returned explicit RESOLVED comments for ahs-32 and ahs-34, and had
+an empty findings array. Those rows are `[x]`; all 34 ahs findings are now
+closed by Claude/coder grade. This closes the requested Claude reviewloop only;
+the independent Grok loop remains required, and any Grok-driven plan change
+will receive a final Claude confirmation on the same final plan head.
