@@ -752,7 +752,7 @@ direct to `master`, one per commit.
 | rrp-7  | MEDIUM   | Recorded exit-code observation wrong (passthrough=1, not 3); CI has no rtk | `[x]`  | master (direct, 7e63a52) |
 | rrp-8  | MEDIUM   | Env/sudo-prefixed find defeats the find-before-pipe guard                 | `[x]`  | master (direct, 3358936) |
 | rrp-9  | MEDIUM   | Savings measurement not reproducible by a cold agent                      | `[~]`  | master (direct, fe9e2cf) |
-| rrp-10 | MEDIUM   | No slice reconciles the still-active single-command-routing contracts     | `[~]`  | master (direct, 0f22e24) |
+| rrp-10 | MEDIUM   | No slice reconciles the still-active single-command-routing contracts     | `[x]`  | master (direct, 0f22e24) |
 
 ## Findings (security-layer plan loop)
 
@@ -781,14 +781,34 @@ ADMITTED (the rrp-11 preference-throw was reviewer-probed live on PS
 
 | ID     | Severity | Impact (one line)                                                        | Status | Branch |
 |--------|----------|---------------------------------------------------------------------------|--------|--------|
-| rrp-11 | MEDIUM   | Session native-error preferences make a successful rewrite throw; routing silently dies | `[~]`  | master (direct, 1ec00e4) |
-| rrp-12 | MEDIUM   | Rebinding host path into `docker exec ... rtk ...` breaks a valid command | `[~]`  | master (direct, 0e3e34e) |
+| rrp-11 | MEDIUM   | Session native-error preferences make a successful rewrite throw; routing silently dies | `[x]`  | master (direct, 1ec00e4) |
+| rrp-12 | MEDIUM   | Rebinding host path into `docker exec ... rtk ...` breaks a valid command | `[x]`  | master (direct, 0e3e34e) |
 | slp-11 | MEDIUM   | Rotated audit files accumulate unbounded until disk exhaustion            | `[~]`  | master (direct, f4cdc7d) |
-| slp-12 | MEDIUM   | Hard-killed server leaves job-start events reading as running forever     | `[~]`  | master (direct, df13998) |
+| slp-12 | MEDIUM   | Hard-killed server leaves job-start events reading as running forever     | `[x]`  | master (direct, df13998) |
 
 Round-1 statuses: all ten slp rows and rrp-1..5/7/8 flipped `[x]`;
 rrp-6/9/10 remain `[~]` pending the round-3 grade of their completions.
-**Re-grade round 3 pending** over rrp-6/9/10 completions + the four new
-findings. Both plans remain DRAFTs awaiting owner approval. Commits
-unpushed pending the owner's master push go.
+
+**Re-grade round 3 (codex, codex-cli 0.144.1, read-only) at head
+`27f40ea`:** rrp-10, rrp-11, rrp-12, slp-12 **RESOLVED** (flipped
+`[x]`). Held on sharper legs: rrp-6 (the rrp-12 wrapper-discard path
+executed unrouted WITHOUT a label under forced route=rtk — completed
+`c287ed5`: every unrouted outcome labeled), rrp-9 (command strings
+frozen but inputs weren't — HEAD/worktree drift moves ratios
+independently of routing; completed `dc1b2c4`: pinned ref `63b4cbc`,
+generated fixture), slp-11 (retention enforced only at startup;
+completed `4ae312e`: enforced at every rotation). Three NEW findings,
+ALL ADMITTED (rrp-13 reviewer-probed live; rrp-14/15 verified against
+`RunspaceHost.cs` and the probed rtk behavior):
+
+| ID     | Severity | Impact (one line)                                                        | Status | Branch |
+|--------|----------|---------------------------------------------------------------------------|--------|--------|
+| rrp-13 | MEDIUM   | Rewrite child inherits server cwd; rtk reads the WRONG project's rules   | `[~]`  | master (direct, 9f06e5d) |
+| rrp-14 | HIGH     | Fixed rewrite bound can exceed remaining budget; outer deadline recycles warm state | `[~]`  | master (direct, b30a1af) |
+| rrp-15 | HIGH     | `Set-Alias git ...; git status` — preflight resolution lies for later segments | `[~]`  | master (direct, 0ad0769) |
+
+**Re-grade round 4 pending** over rrp-6/9/13/14/15 + slp-11. Round
+sizes strictly diminishing: 20 → 7 → 6. Both plans remain DRAFTs
+awaiting owner approval. Commits unpushed pending the owner's master
+push go.
 
