@@ -214,6 +214,18 @@ definition are frozen and SHA-256-digested at catalog load. No inline secret
 belongs in this file. Missing configuration means no templates, not a startup
 failure.
 
+The catalog is versioned and all-or-nothing. Canonicalized duplicate/invalid
+names, unsupported schema, malformed JSON, an absent/unreadable bootstrap, or
+an invalid definition faults the entire external catalog; never partially
+load it. Resolve a relative bootstrap path against the catalog file's
+directory, never the worker/session cwd, then read and freeze its bytes before
+any open. `default` and explicit template-less dynamic opens remain available,
+but every template-backed open refuses with the persistent catalog error.
+An unknown requested template likewise refuses before alias binding or worker
+creation and never falls back to an empty dynamic session. Surface the catalog
+digest/error in supervisor state and the startup audit without exposing
+bootstrap contents.
+
 Editing configuration cannot mutate a live supervisor catalog. Restart the
 harness to reload it. Template names and labels are operational metadata;
 the effective upstream identity remains authoritative.
@@ -808,6 +820,8 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Probe Windows Job Object and Unix process-group teardown strategy in small
   disposable children.
 - Freeze session/profile JSON schema and supervisor/worker frame limits.
+  Include all-or-nothing validation, catalog-relative bootstrap resolution,
+  frozen bytes/digests, and the explicit unknown-template refusal.
 - Reconcile this plan with the still-relevant rrp regression cases; do not
   copy the old plan's unsafe broad compound-routing claim.
 
@@ -1081,6 +1095,12 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   before the busy check; work never starts in a dying generation, duplicate
   workers never appear, and late replies cannot populate the replacement.
 - Bootstrap runs once, faults visibly, and becomes the drift baseline.
+- Missing catalog yields no templates. Malformed/unsupported/duplicate
+  catalog data and missing/unreadable bootstrap paths disable every template
+  as one visible catalog fault while default and explicit dynamic sessions
+  remain available. Relative paths resolve against the catalog directory even
+  when the session cwd is attacker-controlled; an unknown template never
+  opens an empty session.
 - An alias opened from template digest A refuses a later open using digest B,
   both while live and after close; its original binding/target labels remain
   unchanged and no worker starts. Reopen with digest A starts only the expected
