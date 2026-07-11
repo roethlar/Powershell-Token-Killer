@@ -706,6 +706,15 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   the explicit recovery-unavailable result for RTK-filtered calls without
   changing their route.
 - Replace raw rerun markers with opaque handle instructions.
+- Intentionally replace the `$ElisionHint` default and the four Pester guards
+  named `bounds pathological line counts with a labeled head+tail window`,
+  `bounds pathological character counts even at few lines`, `keeps line
+  elision explicit when the char bound cuts the line marker`, and `bounds the
+  labeled log-leg fallback too`. The server supplies a stable `ptk_output`
+  handle hint when that invocation has an artifact; otherwise the marker says
+  recovery is unavailable and that the command was not rerun. Preserve the
+  sd3-3/sd3-4 invariant: the elision function composes the caller-supplied
+  hint into its marker; no downstream text scan invents it.
 - Make legacy `raw=true` non-routing and non-bypass behavior; keep it only for
   the announced compatibility interval.
 - Replace the shipped
@@ -895,8 +904,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 
 - Existing Pester suite, .NET suite, and MCP handshake remain green after
   every code slice, with the named heredoc refusal guard replaced in slice 3,
-  only the two named obsolete raw-consent guards replaced in slice 4, and the
-  route-pwsh consent guard retained/strengthened.
+  the two named obsolete raw-consent guards plus the four named Pester marker
+  guards replaced in slice 4, and the route-pwsh consent guard
+  retained/strengthened.
 - New tests receive red-leg guard proof per repo guidance.
 - Default tool schemas remain compatible through the declared raw transition.
 - Real MCP stdio tests cover audit IDs, RTK path, output handle, two sessions,
