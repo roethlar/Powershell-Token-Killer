@@ -560,7 +560,8 @@ exactly one later asynchronous terminal event regardless of polling.
 Control/lifecycle events include `job.kill_requested`, `reset.requested`,
 `session.opened`, `session.close_requested`, `worker.started`,
 `worker.exited`, `worker.lost`, `runspace.recycled`,
-`audit.export_checkpoint`, `audit.degraded`, and `audit.recovered`.
+`audit.export_stalled`, `audit.export_recovered`, `audit.degraded`, and
+`audit.recovered`.
 
 Queue expiry is `not_started`. A timeout after execution begins is not assumed
 stopped; if descendant or remote outcome cannot be proven, use
@@ -612,6 +613,15 @@ an OpenTelemetry Collector. Document collector routes to common SIEMs plus
 Windows Event Log/WEF and RFC 5424 syslog/TLS adapters; PTK does not carry a
 vendor SDK per SIEM. A collector running under a different OS principal and a
 remote append-controlled index are the recommended protected deployment.
+
+The exporter checkpoint is atomic sidecar state containing spool file
+identity, byte offset, sequence, and acknowledged event ID. It is not a core
+audit event, is never exported, and does not participate in the event hash
+chain. Acknowledging an event updates only that sidecar. Core events are
+emitted only on exporter lifecycle transitions or hysteresis-bounded backlog
+threshold crossings, not on each acknowledgment, so an idle fully
+acknowledged exporter drains and becomes quiescent rather than recursively
+creating checkpoint traffic.
 
 Freeze one operator-controlled protection mode at supervisor startup; there
 is no per-call/model override:
@@ -935,6 +945,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Rotation/retention bound a long-lived supervisor; a live file is not swept.
 - Export retry/checkpoint and duplicate delivery; network loss proceeds only
   while spool remains healthy.
+- After the collector acknowledges the final event, the atomic checkpoint
+  advances without creating another exportable event; an idle exporter emits
+  no unbounded checkpoint/event loop.
 - In anchored mode, an offline collector pins unacknowledged segments through
   age and byte sweeps; reaching the high-water mark refuses a new side-effect
   sentinel while a started job can still append its terminal event from the
