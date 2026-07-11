@@ -48,6 +48,20 @@ script-local-shadowed `git`; `.cmd`/`.bat` shim.
    `>/dev/null` and friends are the suspected Windows breakers. Any
    shape PS7 cannot execute faithfully is either excluded from routing
    or transformed; the matrix freezes into this plan.
+   **Data semantics, not just syntax (rrp-3):** rtk rewrites the
+   PRODUCER side of a pipe and leaves consumers in place — probed live:
+   `git log --oneline | Measure-Object -Line` → `rtk git log --oneline
+   | Measure-Object -Line` (the count silently measures rtk-filtered
+   output), and `git diff | Set-Content patch.diff` → `rtk git diff |
+   Set-Content patch.diff` (a compressed non-applyable "patch" written
+   while the call reports success). The current design keeps pipelines
+   unrouted for exactly this fidelity reason. The matrix must therefore
+   cover filtered-producer → consumer SEMANTICS, and pipelines whose
+   downstream consumes the data (redirection to file, `Set-Content`,
+   counts, parsing, control flow) are excluded from routing unless
+   their fidelity is proven case-by-case. Whether any pipeline routing
+   ships at all is an explicit owner decision at approval — "parses and
+   runs" is not "same data".
 2. **Integration:** the module's native-routing leg
    (`Resolve-PtcInvokeScript`) calls `rtk rewrite` (honoring
    `PTK_RTK_PATH`) instead of the single-command shape check, executes
