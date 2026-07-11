@@ -746,7 +746,16 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Mark the incompatible implementation directions in
   `security-layer.md`, `rtk-rewrite-routing.md`, and
   `shared-persistent-runspace.md` superseded/parked with a pointer here.
+- Amend `unified-shell-routing.md` with a pointer here and mark its frozen
+  single-bare-native routing rule plus `raw=true`-skips-routing clause
+  superseded; retain its still-current hook/one-PTK-surface decisions.
+- Amend `shell-dialect.md` with a pointer here and mark only the changed D1/D2
+  clauses superseded: the `raw=true` consent bypass and the parse-fatal,
+  independently Bash-validated subset of “no auto-translation.” Retain the
+  clean-parse refusal, `route=pwsh` consent, and unaffected precision guards.
 - Reconcile `.agents/decisions.md` only after the owner releases its hold.
+  That deferred amendment must carry the same exact D1/D2 split rather than
+  replacing the whole shell-dialect decision.
 - Run owner-controlled AD, on-prem Exchange, and EXO proof: distinct worker
   PIDs/identities/targets, warm reuse, independent reset, job behavior, and
   harness teardown.
