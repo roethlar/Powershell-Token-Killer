@@ -96,6 +96,16 @@ script-local-shadowed `git`; `.cmd`/`.bat` shim.
 - The existing per-command rewrite (`& '<rtk>' <cmd>`) executes rtk as
   a PowerShell native call; multi-segment rewritten lines execute as a
   PS7 statement — the slice-1 matrix is the safety net.
+- **A hung rewrite must not eat the call (rrp-4):** routing runs inside
+  the call's total wall-clock budget; a slow or wedged `rtk rewrite`
+  process would consume the budget so the user's original command never
+  executes — and an executing-timeout abort recycles warm state. That
+  contradicts the fail-open invariant, so slice 2 must invoke `rtk
+  rewrite` with its own short bound (seconds, not the call budget) and
+  kill it on expiry, falling back to the unchanged script with enough
+  budget left to actually run it. Seams to test: rewrite timeout →
+  fallback executes; rewrite failure → fallback executes; warm state
+  preserved in both.
 - Windows behavior must be probed on the real Windows box (slice-1
   matrix includes it; the dev-install refresh is a prerequisite there).
 
