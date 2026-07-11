@@ -361,32 +361,40 @@ then shape those same captured results in a private internal pipeline. Tests
 must prove shaping/recovery do not change `$LASTEXITCODE`, `$Error`, cwd,
 variables, or module/connection state.
 
-RTK filtering happens before PTK sees the unfiltered bytes. Therefore removal
-of preemptive raw execution has a hard external prerequisite: RTK must provide
-a machine-readable per-call capture contract that writes the original
+RTK filtering happens before PTK sees the unfiltered bytes. Therefore raw
+recovery for an RTK-filtered call has a hard external prerequisite: RTK must
+provide a machine-readable per-call capture contract that writes the original
 stdout/stderr and completion metadata from the same child invocation for
 filtered, passthrough, success, and failure cases. Human
 `[full output: path]` hints and user-configured tee mode are not sufficient.
-This plan does not authorize changes in the adjacent RTK repository; the
-integration slice stops and reports the blocker if that contract is absent.
+This plan does not authorize changes in the adjacent RTK repository.
 
-Until the RTK capture contract is available, a command for which PTK promises
-recovery must execute directly under PTK capture rather than run through a
-lossy, unrecoverable RTK path. It must never execute twice.
+**Selected seam-absent contract:** RTK routing and compression win. A
+successfully RTK-routed call with no machine-readable raw artifact returns its
+filtered result with `recovery=unavailable: rtk capture unsupported` and no
+`ptk_output` handle. PTK must not bypass RTK merely to manufacture a recovery
+promise, must not expose RTK's human filesystem hint as an opaque handle, and
+must never rerun the command. PowerShell, native-direct, generic-log, and any
+other path whose same-invocation unshaped bytes PTK actually captured still
+returns a handle when shaping was lossy. Once the RTK seam exists, the same
+RTK-routed result gains a truthful handle without changing execution routing.
 
 ### `raw=true` transition
 
 For one compatibility release, accept `raw=true` but do not let it affect
 dialect handling, routing, process selection, or whether output is captured.
-It returns the normal shaped result plus the same-invocation recovery handle;
-it does not return a cheaper immediate bypass. Stop advertising raw as a
+It returns the normal shaped result plus a same-invocation recovery handle
+only when that execution path produced a raw artifact; an RTK-routed call
+without the upstream seam gets the explicit unavailable marker instead. It
+does not return a cheaper immediate bypass. Stop advertising raw as a
 recovery instruction. Remove the argument and `RawUsageCounter` in the next
 breaking tool-schema revision.
 
-Every current “rerun with raw=true” marker becomes a stable
-`ptk_output` handle instruction. That second call reads captured bytes; the
-original command has already completed and cannot be degraded by model
-reconstruction.
+Every current “rerun with raw=true” marker becomes either a stable
+`ptk_output` handle instruction when the same invocation captured raw bytes,
+or an honest recovery-unavailable marker when it did not. A `ptk_output` call
+reads captured bytes; the original command has already completed and cannot
+be degraded by model reconstruction.
 
 ## Mandatory audit contract
 
@@ -578,8 +586,10 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 ### Slice 0 — freeze external and platform contracts (no product code)
 
 - Probe and record the RTK machine-readable raw-capture seam. If absent,
-  record the exact upstream requirement and stop the recovery-dependent slice;
-  do not fake recovery or authorize cross-repo changes.
+  record the exact upstream requirement and freeze the seam-absent contract:
+  RTK routing stays active, RTK-filtered calls advertise no recovery handle,
+  and other captured paths remain recoverable. Do not fake recovery or
+  authorize cross-repo changes.
 - Freeze OTLP collector test endpoint/auth behavior and the JSONL schema
   version.
 - Probe Windows Job Object and Unix process-group teardown strategy in small
@@ -621,8 +631,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 ### Slice 4 — same-invocation output recovery and raw retirement
 
 - Land `OutputStore`/`ptk_output` and two-stage foreground capture/shaping.
-- Integrate the verified RTK raw-capture seam; otherwise use direct
-  single-execution capture for recoverability.
+- Integrate the verified RTK raw-capture seam when available; otherwise ship
+  the explicit recovery-unavailable result for RTK-filtered calls without
+  changing their route.
 - Replace raw rerun markers with opaque handle instructions.
 - Make legacy `raw=true` non-routing and non-bypass behavior; keep it only for
   the announced compatibility interval.
@@ -727,7 +738,13 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 ### Output recovery
 
 - PowerShell objects, bounded text, log shaping, RTK filtering, stderr,
-  warnings/errors, and background streams recover from the same invocation.
+  warnings/errors, and background streams recover from the same invocation
+  whenever their execution path produced a raw artifact.
+- With the RTK capture seam present, an RTK-filtered call returns a working
+  handle for its pre-filter stdout/stderr.
+- With the seam absent, the same call remains RTK-routed, returns no handle,
+  and reports `recovery=unavailable`; PowerShell/direct captures in the same
+  server still return working handles.
 - A persistent counter/file sentinel proves `ptk_output` never reruns.
 - Retrieval after underlying files/state change returns the captured snapshot.
 - Offset/search reads are stable; expired/evicted/incomplete handles are
