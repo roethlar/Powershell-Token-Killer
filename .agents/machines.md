@@ -36,6 +36,19 @@ installed-payload update._
   ACL and rejects post-creation ACL reintroduction; both guards were proved
   red before the fix and green after it.
 
+### Audited-harness Slice 2 in-flight checkout validation
+
+_Verified 2026-07-11 through `5238984`; this was checkout validation, not an
+installed-payload update._
+
+- At `8470b4b`, the full .NET suite passed 390/390, the PowerShell module suite
+  passed 134/136 with its two Windows-only skips, and the stdio handshake
+  passed with a zero-warning build.
+- At `5238984`, the full .NET suite passed 402/402. The export identity has an
+  independent literal byte-vector guard, forced eight-publisher collision
+  coverage, strict-UTF-8 rejection, corrupt/missing-key refusal, and
+  crash-temp/link guards; each new behavior was proved red before restoration.
+
 ## `NETWATCH-01` — Michael's Windows machine
 
 _Verified 2026-07-11 for audited-session slice 0 at repo base `2a83723`._
@@ -82,6 +95,16 @@ installed Windows payload was not changed._
 - All four disposable validation directories and their four transfer archives
   were removed from `F:\dev` after local landing; no installed payload or
   persistent host configuration was changed.
+
+### Audited-harness Slice 2 in-flight checkout validation
+
+_Verified 2026-07-11 at `8470b4b` in a disposable copy under `F:\dev`; the
+installed Windows payload and existing repository were not changed._
+
+- The full .NET suite passed 390/390; the PowerShell module suite passed
+  136/136; the stdio handshake passed with a zero-warning build.
+- The transfer archive and disposable validation directory were removed after
+  the run.
 
 ## Disposable Ubuntu 26.04 ARM64 validation
 

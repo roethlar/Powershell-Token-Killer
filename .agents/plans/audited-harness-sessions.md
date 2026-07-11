@@ -3,7 +3,10 @@
 **Status:** IMPLEMENTING — owner-approved 2026-07-11 after Claude and Grok
 reviewloop convergence. Slices 0-1 are complete: Slice 1's mandatory audit
 foundation landed at `460c106` and passed the required Claude reviewloop on
-2026-07-11; Slice 2 is next.
+2026-07-11. Slice 2 is implementing: job/control/retrieval lifecycle work is
+committed at `8470b4b`, and the protected export-configuration identity
+foundation is committed at `5238984`; OTLP checkpoint/export/retention remains
+in flight.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
