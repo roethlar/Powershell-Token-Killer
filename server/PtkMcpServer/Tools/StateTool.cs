@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using ModelContextProtocol.Server;
+using PtkMcpServer.Audit;
 
 namespace PtkMcpServer.Tools;
 
@@ -29,16 +30,23 @@ public static class StateTool
         RawUsageCounter rawUsage,
         [Description("Also enumerate every installed module instead of only loaded ones.")]
         bool listAvailable = false,
-        CancellationToken cancellationToken = default)
+        CancellationToken cancellationToken = default,
+        AuditCallContextAccessor? auditContext = null)
     {
+        var audit = auditContext?.Current;
+        if (audit is not null && !audit.AuthorizeControl("state.probe_requested"))
+            return AuditCallContext.NotStartedMessage;
+        var runspaceLossRecorded = false;
+
         // No assignments in this script: probing the session must not add
         // variables to it (the report would perturb its own drift numbers).
         var script = string.Join('\n',
             "\"engine: $($PSVersionTable.PSVersion)\"",
-            "\"cwd: $((Get-Location).Path)\"",
-            $"\"variables: $(@(Get-Variable).Count) (baseline {host.BaselineVariableCount})\"",
-            "$(if (@(Get-Module).Count -eq 0) { 'modules loaded: (none)' } else { 'modules loaded:' })",
-            "Get-Module | Sort-Object Name | ForEach-Object { '  ' + $_.Name + ' ' + $_.Version }");
+            "\"cwd: $((Microsoft.PowerShell.Management\\Get-Location).Path)\"",
+            $"\"variables: $(@(Microsoft.PowerShell.Utility\\Get-Variable).Count) (baseline {host.BaselineVariableCount})\"",
+            "$(if (@(Microsoft.PowerShell.Core\\Get-Module).Count -eq 0) { 'modules loaded: (none)' } else { 'modules loaded:' })",
+            "Microsoft.PowerShell.Core\\Get-Module | Microsoft.PowerShell.Utility\\Sort-Object Name | " +
+            "Microsoft.PowerShell.Core\\ForEach-Object { '  ' + $_.Name + ' ' + $_.Version }");
         // Zero-wait acquire: the health check must never queue behind the
         // workload it exists to diagnose (issue #6). Null = busy; the failed
         // acquire IS the busy signal — no snapshot-then-queue race window.
@@ -46,6 +54,15 @@ public static class StateTool
             script,
             raw: true, // this tool formats its own lines; never shape them
             cancellationToken: cancellationToken);
+        if (result?.WarmStateLost == true && audit is not null)
+        {
+            audit.RecordControlOutcome(
+                "runspace.recycled",
+                "completed",
+                detailCode: "state_probe_timed_out",
+                warmStateLost: true);
+            runspaceLossRecorded = true;
+        }
 
         var sb = new StringBuilder();
         // raw count: user-level raw=true calls only (shell-dialect plan D2) —
@@ -53,6 +70,7 @@ public static class StateTool
         sb.AppendLine(
             $"ptk server: pid {Environment.ProcessId}, up {FormatUptime(DateTimeOffset.UtcNow - host.StartedUtc)}, " +
             $"shaping {(host.ModuleLoaded ? "on" : "off")}, raw calls this session: {rawUsage.Count}");
+        if (audit is not null) sb.AppendLine(audit.HealthStatusLine());
         var busyLineEmitted = false;
         if (result is null)
         {
@@ -63,8 +81,9 @@ public static class StateTool
         else
         {
             if (result.Output.TrimEnd().Length > 0) sb.AppendLine(result.Output.TrimEnd());
-            // A session can break the probe itself (e.g. a shadowing Get-Module):
-            // surface that instead of silently reporting partial state as the truth.
+            // A probe can still fail (provider/module faults, cancellation, or
+            // non-terminating errors): surface that instead of silently
+            // reporting partial state as the truth.
             if (!result.Success || result.Errors.Length > 0)
             {
                 sb.AppendLine("[state probe errors]");
@@ -131,14 +150,24 @@ public static class StateTool
                     // between the first probe and this one, and queueing here
                     // would reintroduce the blocked health check (issue #6).
                     var available = await host.TryInvokeIfIdleAsync(
-                        "Get-Module -ListAvailable | Sort-Object Name -Unique | " +
-                        "ForEach-Object { '  {0} {1}' -f $_.Name, $_.Version }",
+                        "Microsoft.PowerShell.Core\\Get-Module -ListAvailable | " +
+                        "Microsoft.PowerShell.Utility\\Sort-Object Name -Unique | " +
+                        "Microsoft.PowerShell.Core\\ForEach-Object { '  {0} {1}' -f $_.Name, $_.Version }",
                         raw: true, // this tool formats its own lines; never shape them
                         cancellationToken: cancellationToken);
+                    if (available?.WarmStateLost == true && audit is not null && !runspaceLossRecorded)
+                    {
+                        audit.RecordControlOutcome(
+                            "runspace.recycled",
+                            "completed",
+                            detailCode: "module_probe_timed_out",
+                            warmStateLost: true);
+                        runspaceLossRecorded = true;
+                    }
                     // Cache only a clean probe: a failed/canceled enumeration must
                     // not masquerade as "(none)", and Success=true still carries
-                    // non-terminating errors (a poisoned Get-Module can Write-Error
-                    // and emit fake data), so both must be clear before caching.
+                    // non-terminating errors can accompany fake/partial data,
+                    // so both must be clear before caching.
                     if (available is null)
                     {
                         sb.AppendLine("modules available: unavailable while the runspace is busy (not cached)");

@@ -1,5 +1,6 @@
 using System.ComponentModel;
 using ModelContextProtocol.Server;
+using PtkMcpServer.Audit;
 
 namespace PtkMcpServer.Tools;
 
@@ -20,9 +21,11 @@ public static class JobTool
         JobManager jobs,
         [Description("status | output | kill | list")] string action,
         CancellationToken cancellationToken,
-        [Description("Job id (required for status/output/kill).")] int id = 0,
-        [Description("Byte offset for action=output: pass the previous poll's 'next offset'; 0 reads from the start.")] long offset = 0)
+        [Description("Job id (required for status/output/kill).")] long id = 0,
+        [Description("Byte offset for action=output: pass the previous poll's 'next offset'; 0 reads from the start.")] long offset = 0,
+        AuditCallContextAccessor? auditContext = null)
     {
+        var audit = auditContext?.Current;
         switch (action?.ToLowerInvariant())
         {
             case "list":
@@ -37,12 +40,16 @@ public static class JobTool
             }
             case "kill":
             {
+                if (audit is not null && !audit.AuthorizeControl("job.kill_requested", id))
+                    return AuditCallContext.NotStartedMessage;
                 return jobs.Kill(id)
                     ? $"[job {id} killed]"
                     : $"[no such job or already exited: {id}]";
             }
             case "output":
             {
+                if (audit is not null && !audit.AuthorizeControl("job.output_requested", id))
+                    return AuditCallContext.NotStartedMessage;
                 var snapshot = jobs.Snapshot(id);
                 if (snapshot is null) return $"[no such job: {id}]";
                 // Snapshot BEFORE reading: a job that exits mid-poll reports
@@ -58,10 +65,20 @@ public static class JobTool
                 // two downstream inference heuristics both proved unsound
                 // (ANSI stripping shortens without eliding, near-boundary
                 // elision lengthens).
-                var shaped = text.Length > 0
-                    ? await host.ShapeTextAsync(text, cancellationToken,
-                        elisionHint: $"read the complete raw log at {snapshot.OutputPath} if the elided middle matters")
-                    : "(no new output)";
+                var elisionHint = $"read the complete raw log at {snapshot.OutputPath} if the elided middle matters";
+                var shaped = text.Length == 0
+                    ? "(no new output)"
+                    : audit is null
+                        ? await host.ShapeTextAsync(text, cancellationToken, elisionHint)
+                        : await host.ShapeTextAuditedAsync(
+                            text,
+                            cancellationToken,
+                            elisionHint,
+                            () => audit.RecordControlOutcome(
+                                "runspace.recycled",
+                                "completed",
+                                detailCode: "job_output_shaping_timed_out",
+                                warmStateLost: true));
                 var state = snapshot.Running ? "running" : $"exited {snapshot.ExitCode}";
                 return $"{shaped}\n[job {id} {state}] next offset: {nextOffset}";
             }

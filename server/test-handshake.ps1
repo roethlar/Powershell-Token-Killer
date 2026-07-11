@@ -87,6 +87,10 @@ $psi.RedirectStandardInput = $true
 $psi.RedirectStandardOutput = $true
 $psi.RedirectStandardError = $true
 $psi.UseShellExecute = $false
+$auditRoot = Join-Path (
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) (
+    '.ptk/test-handshake-audit-' + [guid]::NewGuid().ToString('N'))
+$psi.Environment['PTK_AUDIT_ROOT'] = $auditRoot
 # Pin the child to this script's PowerShell location: Process.Start would
 # otherwise resolve against the process-wide cwd, which an interactive
 # session's Set-Location does not change.
@@ -144,6 +148,11 @@ try {
             throw "$required missing from tools/list; got: $($names -join ', ')"
         }
     }
+    foreach ($tool in @($tools.result.tools)) {
+        if (@($tool.inputSchema.properties.PSObject.Properties.Name) -contains 'auditContext') {
+            throw "host-only auditContext leaked into the $($tool.name) MCP input schema"
+        }
+    }
     Write-Host "tools/list ok: $($names -join ', ')"
 
     Send-Rpc @{
@@ -174,7 +183,6 @@ try {
     }
     Write-Host 'ptk_invoke cross-call state ok: 42'
 
-    Write-Host 'HANDSHAKE PASSED'
 }
 catch {
     Write-Host "HANDSHAKE FAILED: $_"
@@ -182,7 +190,151 @@ catch {
 }
 finally {
     if (-not $proc.HasExited) { $proc.Kill($true) }
+    $proc.WaitForExit()
+    $serverError = $proc.StandardError.ReadToEnd()
+    if (-not $failed) {
+        try {
+            $segments = @(Get-ChildItem -LiteralPath (Join-Path $auditRoot 'spool') -Filter '*.jsonl' |
+                Sort-Object Name)
+            if ($segments.Count -eq 0) { throw 'no audit JSONL segment was created' }
+            $rawAudit = ($segments | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName }) -join ''
+            $events = @($segments | ForEach-Object {
+                Get-Content -LiteralPath $_.FullName | ForEach-Object { $_ | ConvertFrom-Json }
+            })
+            if ($events[0].event_type -ne 'server.started') {
+                throw "first audit event was '$($events[0].event_type)', not server.started"
+            }
+            for ($index = 0; $index -lt $events.Count; $index++) {
+                if ($events[$index].sequence -ne ($index + 1)) {
+                    throw "audit sequence gap at record $($index + 1)"
+                }
+            }
+            $invokeAccepted = @($events | Where-Object {
+                $_.event_type -eq 'call.accepted' -and $_.request.tool -eq 'ptk_invoke'
+            })
+            if ($invokeAccepted.Count -ne 2) {
+                throw "expected two accepted invoke audit events; got $($invokeAccepted.Count)"
+            }
+            foreach ($accepted in $invokeAccepted) {
+                if ($accepted.actor.client_name -ne 'ptk-handshake') {
+                    throw 'MCP client attribution was not captured at the boundary'
+                }
+                if (@($accepted.request.provided_fields).Count -ne 1 -or
+                    $accepted.request.provided_fields[0] -ne 'script') {
+                    throw 'provided_fields did not preserve the exact invoke boundary'
+                }
+                if (-not $accepted.request.script_evidence_id -or
+                    -not $accepted.request.original_script_digest) {
+                    throw 'accepted invoke did not reference exact script evidence'
+                }
+            }
+            if ($rawAudit.Contains('$warm = 41') -or $rawAudit.Contains('$warm + 1')) {
+                throw 'exact script text leaked into the core audit stream'
+            }
+            $evidence = @(Get-ChildItem -LiteralPath (Join-Path $auditRoot 'evidence') -Filter '*.script')
+            if ($evidence.Count -ne 2) { throw "expected two evidence payloads; got $($evidence.Count)" }
+            $payloads = @($evidence | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName })
+            if ($payloads -notcontains '$warm = 41' -or $payloads -notcontains '$warm + 1') {
+                throw 'evidence payloads did not preserve the exact submitted scripts'
+            }
+            Write-Host 'audit ok: boundary attribution, provided fields, evidence references, and core secrecy verified'
+        }
+        catch {
+            Write-Host "AUDIT VERIFICATION FAILED: $_"
+            $failed = $true
+        }
+    }
+    if ($failed -and -not [string]::IsNullOrWhiteSpace($serverError)) {
+        Write-Host "server stderr:`n$serverError"
+    }
     $proc.Dispose()
+    if (Test-Path -LiteralPath $auditRoot) {
+        Remove-Item -LiteralPath $auditRoot -Recurse -Force
+    }
 }
 
+# A broken protected root must leave the stdio/MCP supervisor available for
+# its narrow emergency diagnostic while keeping every runtime dependency and
+# user effect behind the audit gate.
+if (-not $failed) {
+    $diagnosticParent = Join-Path (
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) (
+        '.ptk/test-handshake-diagnostic-' + [guid]::NewGuid().ToString('N'))
+    $blocker = Join-Path $diagnosticParent 'not-a-directory'
+    $marker = Join-Path $diagnosticParent 'must-not-exist'
+    $proc = $null
+    try {
+        [void](New-Item -ItemType Directory -Path $diagnosticParent)
+        Set-Content -LiteralPath $blocker -Value 'blocked'
+        $psi.Environment['PTK_AUDIT_ROOT'] = Join-Path $blocker 'audit'
+        $proc = [System.Diagnostics.Process]::Start($psi)
+
+        Send-Rpc @{
+            jsonrpc = '2.0'; id = 101; method = 'initialize'
+            params = @{
+                protocolVersion = '2025-06-18'
+                capabilities    = @{}
+                clientInfo      = @{ name = 'ptk-handshake-diagnostic'; version = '0.0.0' }
+            }
+        }
+        $diagnosticInit = Read-RpcResponse -Id 101
+        if (-not $diagnosticInit.result.serverInfo.name) {
+            throw 'diagnostic-only initialize failed'
+        }
+        Send-Rpc @{ jsonrpc = '2.0'; method = 'notifications/initialized' }
+        Send-Rpc @{ jsonrpc = '2.0'; id = 102; method = 'tools/list' }
+        $diagnosticTools = @((Read-RpcResponse -Id 102).result.tools.name)
+        if ($diagnosticTools -notcontains 'ptk_state' -or
+            $diagnosticTools -notcontains 'ptk_invoke') {
+            throw 'diagnostic-only tools/list was incomplete'
+        }
+
+        Send-Rpc @{
+            jsonrpc = '2.0'; id = 103; method = 'tools/call'
+            params = @{ name = 'ptk_state'; arguments = @{} }
+        }
+        $diagnosticState = (Read-RpcResponse -Id 103).result.content[0].text
+        if ($diagnosticState -notmatch '(?m)^audit=unavailable$' -or
+            $diagnosticState -notmatch '(?m)^unrecorded=true$' -or
+            $diagnosticState -match 'ptk server:') {
+            throw "diagnostic-only ptk_state leaked or omitted state: '$diagnosticState'"
+        }
+
+        $literalMarker = "'" + $marker.Replace("'", "''") + "'"
+        Send-Rpc @{
+            jsonrpc = '2.0'; id = 104; method = 'tools/call'
+            params = @{
+                name = 'ptk_invoke'
+                arguments = @{ script = "Set-Content -LiteralPath $literalMarker -Value ran" }
+            }
+        }
+        $diagnosticInvoke = (Read-RpcResponse -Id 104).result
+        if (-not $diagnosticInvoke.isError -or
+            $diagnosticInvoke.content[0].text -notmatch 'operation was not started' -or
+            (Test-Path -LiteralPath $marker)) {
+            throw 'diagnostic-only invoke was not rejected before its effect'
+        }
+        Write-Host 'audit outage ok: MCP diagnostic remains available and invoke stays fail-closed'
+    }
+    catch {
+        Write-Host "DIAGNOSTIC HANDSHAKE FAILED: $_"
+        $failed = $true
+    }
+    finally {
+        if ($null -ne $proc -and -not $proc.HasExited) { $proc.Kill($true) }
+        if ($null -ne $proc) {
+            $proc.WaitForExit()
+            $diagnosticError = $proc.StandardError.ReadToEnd()
+            if ($failed -and -not [string]::IsNullOrWhiteSpace($diagnosticError)) {
+                Write-Host "diagnostic server stderr:`n$diagnosticError"
+            }
+            $proc.Dispose()
+        }
+        if (Test-Path -LiteralPath $diagnosticParent) {
+            Remove-Item -LiteralPath $diagnosticParent -Recurse -Force
+        }
+    }
+}
+
+if (-not $failed) { Write-Host 'HANDSHAKE PASSED' }
 exit ($failed ? 1 : 0)

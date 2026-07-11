@@ -5,10 +5,14 @@ runspace. Agent shell calls can run inside that runspace through `ptk_invoke`,
 so variables, imported modules, and established connections survive across
 calls for the life of the MCP server process.
 
-The server imports `src/PwshTokenCompressor.psd1` into the warm runspace and
-uses `Compress-PtcOutput` to shape tool output. If the module cannot be found or
-imported, calls fall back to plain `Out-String` output and the server writes the
-problem to stderr.
+During runspace priming the server freezes the compressor source in memory,
+captures its shaping command, and detaches the module from the user-visible
+session. Routing and dialect preflight execute as C# parser logic over
+data-only command facts captured through CLR APIs; no PowerShell command or
+scriptblock runs before dispatch authorization. User scripts therefore cannot
+replace preflight through shadowing, debugger hooks, type data, or later module
+file edits. If the module cannot be found or loaded, calls fall back to plain
+`Out-String` output and the server writes the problem to stderr.
 
 ## Prerequisites
 
@@ -52,6 +56,32 @@ Check with `claude mcp list`; remove with `claude mcp remove ptk`.
 | `ptk_job` | `action` (`status`/`output`/`kill`/`list`), `id`, `offset` | Manage background jobs: `output` returns new output since `offset`, shaped and bounded, ending with the next offset to pass; the complete raw log path is in `status`. |
 | `ptk_state` | optional `listAvailable` | Session introspection and health check: engine, server PID/uptime, cwd, loaded modules, and drift — env vars changed since server start, PATH as an entry diff, variable count. With `listAvailable: true`, also enumerate installed modules once and cache the result. Never queues: while another call holds the runspace it answers promptly with host-level facts plus a busy line (active-call age, waiter count), marking runspace-dependent details unavailable. |
 | `ptk_reset` | none | Recycle the runspace to factory state: discards variables, loaded modules, current directory, default parameters, and connections, and restores environment variables to their server-start values. |
+
+## Mandatory local audit
+
+Audit is owned by the MCP supervisor and cannot be disabled by a tool argument
+or user script. The default is local-only protected storage under
+`~/.ptk/audit`; no SIEM, collector, endpoint, or credentials are required.
+Core JSONL events live under `spool/`. Exact submitted script bytes live as
+separate owner-only evidence files under `evidence/`; core events contain only
+their opaque ID and SHA-256 digest, not script text.
+
+Admission is fail-closed. PTK durably stores script evidence, reserves the
+worst-case terminal capacity, and flushes the accepted/dispatch records before
+user work, reset, or job control can begin. Foreground calls and spawned jobs
+retain terminal obligations, and graceful shutdown drains them before writing
+`server.stopped`. If protected audit storage is unavailable, ordinary tools do
+not run. `ptk_state` alone may return the minimal supervisor-only
+`audit=unavailable, unrecorded=true` diagnostic; it does not inspect the
+runspace or jobs in that mode.
+
+Local journal retention defaults to 30 days. Exact-script evidence has a
+bounded quota but is not independently evicted while retained journal records
+may still reference it; PTK fails new script-bearing admission when that quota
+is full pending coordinated journal/evidence retention.
+`PTK_AUDIT_ROOT` may select a different absolute operator-controlled root at
+process startup. SIEM/OTLP export is not part of this slice yet; local-only
+operation remains complete without it.
 
 `ptk_invoke` returns command output, then labeled sections when present, in
 this order: `[exit] N`, `[stderr]`, `[errors]`, and `[warnings]`. Empty
@@ -206,6 +236,7 @@ Set these in the MCP registration `env` block when defaults do not fit:
 | `PTK_CALL_TIMEOUT_SECONDS` | `300` | Default per-call limit: a total wall-clock budget covering queue wait plus execution. A call whose budget expires while still queued behind another call fails fast without executing (warm state intact); a call that overruns while executing fails with the runspace recycled. |
 | `PTK_MAX_CALL_TIMEOUT_SECONDS` | `3600` | Cap on the per-call `timeoutSeconds` override. |
 | `PTK_IDLE_EXIT_SECONDS` | `14400` | Idle self-exit backstop for orphaned servers, in seconds. |
+| `PTK_AUDIT_ROOT` | `~/.ptk/audit` | Absolute protected root for mandatory local audit JSONL and exact-script evidence. Local logging requires no SIEM configuration. |
 | `PTK_MODULE_PATH` | auto-discovered `src/PwshTokenCompressor.psd1` | Explicit module manifest to import into the runspace. If set to a missing file, shaping is disabled. |
 | `PTK_RTK_PATH` | `rtk` on `PATH` | Explicit `rtk` binary for native routing and log shaping. If set to a missing file, `rtk` is treated as absent. |
 
@@ -234,4 +265,10 @@ Set these in the MCP registration `env` block when defaults do not fit:
 The server is not a security boundary. `ptk_invoke` runs arbitrary PowerShell
 with the same authority as the MCP client process. A destructive-cmdlet policy
 gate is intentionally not implemented in the current code; review scripts at
-the client permission prompt instead of blanket-allowing the tool.
+the client permission prompt instead of blanket-allowing the tool. Mandatory
+audit adds durable attribution, ordering, capacity guarantees, and tamper
+evidence; it does not grant or remove PowerShell/OS permissions. Run the
+harness under the restricted identity whose upstream RBAC is meant to govern
+the work. Local-only files are protected from other identities but are not
+claimed immutable against the same account; anchored SIEM export is a later
+slice.

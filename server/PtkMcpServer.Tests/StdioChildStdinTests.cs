@@ -22,6 +22,7 @@ public sealed class StdioChildStdinTests
     {
         var serverDll = Path.Combine(AppContext.BaseDirectory, "PtkMcpServer.dll");
         Assert.True(File.Exists(serverDll), $"server dll not found at {serverDll}");
+        var auditRoot = NewAuditRoot();
 
         var psi = new ProcessStartInfo
         {
@@ -35,6 +36,7 @@ public sealed class StdioChildStdinTests
         };
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add(serverDll);
+        psi.Environment["PTK_AUDIT_ROOT"] = auditRoot;
 
         using var proc = Process.Start(psi)!;
         _ = proc.StandardError.ReadToEndAsync();
@@ -68,7 +70,7 @@ public sealed class StdioChildStdinTests
         }
         finally
         {
-            try { proc.Kill(entireProcessTree: true); } catch { /* already gone */ }
+            await StopAndCleanAsync(proc, auditRoot);
         }
     }
 
@@ -82,6 +84,7 @@ public sealed class StdioChildStdinTests
     {
         var serverDll = Path.Combine(AppContext.BaseDirectory, "PtkMcpServer.dll");
         Assert.True(File.Exists(serverDll), $"server dll not found at {serverDll}");
+        var auditRoot = NewAuditRoot();
 
         var psi = new ProcessStartInfo
         {
@@ -95,6 +98,7 @@ public sealed class StdioChildStdinTests
         };
         psi.ArgumentList.Add("exec");
         psi.ArgumentList.Add(serverDll);
+        psi.Environment["PTK_AUDIT_ROOT"] = auditRoot;
 
         using var proc = Process.Start(psi)!;
         _ = proc.StandardError.ReadToEndAsync();
@@ -123,8 +127,24 @@ public sealed class StdioChildStdinTests
         }
         finally
         {
-            try { proc.Kill(entireProcessTree: true); } catch { /* already gone */ }
+            await StopAndCleanAsync(proc, auditRoot);
         }
+    }
+
+    private static string NewAuditRoot()
+    {
+        // These tests exercise stdio behavior, so they must not inherit or
+        // contend with the operator's live mandatory-audit journal.
+        var profile = Environment.GetFolderPath(Environment.SpecialFolder.UserProfile);
+        Assert.True(Path.IsPathFullyQualified(profile), "test user profile must be absolute");
+        return Path.Combine(profile, ".ptk", "test-stdio-audit-" + Guid.NewGuid().ToString("N"));
+    }
+
+    private static async Task StopAndCleanAsync(Process proc, string auditRoot)
+    {
+        try { proc.Kill(entireProcessTree: true); } catch { /* already gone */ }
+        try { await proc.WaitForExitAsync().WaitAsync(TimeSpan.FromSeconds(5)); } catch { /* best effort */ }
+        try { Directory.Delete(auditRoot, recursive: true); } catch { /* preserve the test result */ }
     }
 
     private static async Task SendAsync(Process proc, string json)

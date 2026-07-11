@@ -1,4 +1,4 @@
-Set-StrictMode -Version Latest
+Microsoft.PowerShell.Core\Set-StrictMode -Version Latest
 
 $script:DefaultMaxItems = 40
 $script:DefaultWidth = 140
@@ -21,7 +21,7 @@ function Limit-PtcText {
 
     $clean = Remove-PtcAnsi $Text
     $lines = @($clean -split "`r?`n")
-    $shown = foreach ($line in $lines | Select-Object -First $MaxLines) {
+    $shown = foreach ($line in $lines | Microsoft.PowerShell.Utility\Select-Object -First $MaxLines) {
         if ($line.Length -gt $Width) {
             $line.Substring(0, [Math]::Max(0, $Width - 1)) + '...'
         } else {
@@ -47,7 +47,7 @@ function Format-PtcSize {
 
 function Join-PtcLines {
     param([string[]]$Lines)
-    ($Lines | Where-Object { $_ -ne $null }) -join [Environment]::NewLine
+    ($Lines | Microsoft.PowerShell.Core\Where-Object { $_ -ne $null }) -join [Environment]::NewLine
 }
 
 function Get-PtcDisplayProperties {
@@ -63,8 +63,8 @@ function Get-PtcDisplayProperties {
     )
 
     $names = @($Object.PSObject.Properties |
-        Where-Object { $_.MemberType -in 'NoteProperty', 'Property', 'AliasProperty' } |
-        Select-Object -ExpandProperty Name)
+        Microsoft.PowerShell.Core\Where-Object { $_.MemberType -in 'NoteProperty', 'Property', 'AliasProperty' } |
+        Microsoft.PowerShell.Utility\Select-Object -ExpandProperty Name)
 
     $ordered = @()
     foreach ($name in $preferred) {
@@ -74,7 +74,7 @@ function Get-PtcDisplayProperties {
         if ($ordered -notcontains $name) { $ordered += $name }
     }
 
-    $ordered | Select-Object -First $MaxProperties
+    $ordered | Microsoft.PowerShell.Utility\Select-Object -First $MaxProperties
 }
 
 function ConvertTo-PtcScalar {
@@ -143,7 +143,7 @@ function Format-PtcTable {
     $take = [Math]::Min($MaxItems, $Rows.Count)
     $sliced = ($take -gt 0) ? @($Rows[0..($take - 1)]) : @()
     if ($Properties.Count -eq 0) {
-        $lines = @($sliced | ForEach-Object { [string]$_ })
+        $lines = @($sliced | Microsoft.PowerShell.Core\ForEach-Object { [string]$_ })
         if ($Rows.Count -gt $MaxItems) { $lines += '+{0} more' -f ($Rows.Count - $MaxItems) }
         return $lines
     }
@@ -160,9 +160,9 @@ function Format-PtcTable {
     }
 
     $lines = @()
-    $header = ($Properties | ForEach-Object { $_.PadRight($widths[$_]) }) -join '  '
+    $header = ($Properties | Microsoft.PowerShell.Core\ForEach-Object { $_.PadRight($widths[$_]) }) -join '  '
     $lines += $header.TrimEnd()
-    $lines += (($Properties | ForEach-Object { ('-' * $widths[$_]) }) -join '  ')
+    $lines += (($Properties | Microsoft.PowerShell.Core\ForEach-Object { ('-' * $widths[$_]) }) -join '  ')
 
     foreach ($row in $visible) {
         $cells = foreach ($prop in $Properties) {
@@ -187,14 +187,14 @@ function Compress-PtcFileSystem {
     )
 
     $items = @($InputObject)
-    $dirs = @($items | Where-Object { [bool](Get-PtcPropertyValue -Object $_ -Name 'PSIsContainer') })
-    $files = @($items | Where-Object { -not [bool](Get-PtcPropertyValue -Object $_ -Name 'PSIsContainer') })
-    $totalBytes = ($files | ForEach-Object { [long](Get-PtcPropertyValue -Object $_ -Name 'Length') } | Measure-Object -Sum).Sum
+    $dirs = @($items | Microsoft.PowerShell.Core\Where-Object { [bool](Get-PtcPropertyValue -Object $_ -Name 'PSIsContainer') })
+    $files = @($items | Microsoft.PowerShell.Core\Where-Object { -not [bool](Get-PtcPropertyValue -Object $_ -Name 'PSIsContainer') })
+    $totalBytes = ($files | Microsoft.PowerShell.Core\ForEach-Object { [long](Get-PtcPropertyValue -Object $_ -Name 'Length') } | Microsoft.PowerShell.Utility\Measure-Object -Sum).Sum
     if ($null -eq $totalBytes) { $totalBytes = 0 }
 
     $lines = @("fs: {0} dirs, {1} files, {2}" -f $dirs.Count, $files.Count, (Format-PtcSize $totalBytes))
 
-    $dirRows = @((Select-PtcFirst @($dirs | Sort-Object Name) $MaxItems) | ForEach-Object {
+    $dirRows = @((Select-PtcFirst @($dirs | Microsoft.PowerShell.Utility\Sort-Object Name) $MaxItems) | Microsoft.PowerShell.Core\ForEach-Object {
         [pscustomobject]@{
             Type = 'dir'
             Name = $_.Name + '\'
@@ -202,7 +202,7 @@ function Compress-PtcFileSystem {
         }
     })
 
-    $fileRows = @((Select-PtcFirst @($files | Sort-Object Name) $MaxItems) | ForEach-Object {
+    $fileRows = @((Select-PtcFirst @($files | Microsoft.PowerShell.Utility\Sort-Object Name) $MaxItems) | Microsoft.PowerShell.Core\ForEach-Object {
         [pscustomobject]@{
             Type = 'file'
             Name = $_.Name
@@ -228,7 +228,7 @@ function Compress-PtcMatchInfo {
     )
 
     $matches = @($InputObject)
-    $groups = @($matches | Group-Object Path | Sort-Object Name)
+    $groups = @($matches | Microsoft.PowerShell.Utility\Group-Object Path | Microsoft.PowerShell.Utility\Sort-Object Name)
     $lines = @('{0} matches in {1} files' -f $matches.Count, $groups.Count)
 
     foreach ($group in (Select-PtcFirst $groups $MaxItems)) {
@@ -256,7 +256,7 @@ function Compress-PtcProcess {
     )
 
     $items = @($InputObject)
-    $rows = @((Select-PtcFirst @($items | Sort-Object CPU -Descending) $MaxItems) | ForEach-Object {
+    $rows = @((Select-PtcFirst @($items | Microsoft.PowerShell.Utility\Sort-Object CPU -Descending) $MaxItems) | Microsoft.PowerShell.Core\ForEach-Object {
         [pscustomobject]@{
             ProcessName = $_.ProcessName
             Id = $_.Id
@@ -275,8 +275,8 @@ function Compress-PtcService {
     )
 
     $items = @($InputObject)
-    $status = @($items | Group-Object Status | Sort-Object Name | ForEach-Object { '{0}={1}' -f $_.Name, $_.Count })
-    $rows = @((Select-PtcFirst @($items | Sort-Object Status, Name) $MaxItems) | ForEach-Object {
+    $status = @($items | Microsoft.PowerShell.Utility\Group-Object Status | Microsoft.PowerShell.Utility\Sort-Object Name | Microsoft.PowerShell.Core\ForEach-Object { '{0}={1}' -f $_.Name, $_.Count })
+    $rows = @((Select-PtcFirst @($items | Microsoft.PowerShell.Utility\Sort-Object Status, Name) $MaxItems) | Microsoft.PowerShell.Core\ForEach-Object {
         [pscustomobject]@{
             Status = $_.Status
             Name = $_.Name
@@ -299,7 +299,7 @@ function Compress-PtcGenericObject {
         return Limit-PtcText -Text $items[0] -MaxLines $MaxItems
     }
 
-    $stringCount = @($items | Where-Object { $_ -is [string] }).Count
+    $stringCount = @($items | Microsoft.PowerShell.Core\Where-Object { $_ -is [string] }).Count
     if ($stringCount -eq $items.Count) {
         return Limit-PtcText -Text ($items -join [Environment]::NewLine) -MaxLines $MaxItems
     }
@@ -308,7 +308,7 @@ function Compress-PtcGenericObject {
         # a String+MatchInfo repro rendered a Length-only table and lost the
         # payload). Render every item by its string form: strings are
         # themselves, MatchInfo.ToString() is path:line:content.
-        return Limit-PtcText -Text (@($items | ForEach-Object { [string]$_ }) -join [Environment]::NewLine) -MaxLines $MaxItems
+        return Limit-PtcText -Text (@($items | Microsoft.PowerShell.Core\ForEach-Object { [string]$_ }) -join [Environment]::NewLine) -MaxLines $MaxItems
     }
 
     # Index, don't Select-Object: piping a PSObject through Select-Object
@@ -317,11 +317,11 @@ function Compress-PtcGenericObject {
     # (visible across warm-session calls).
     $first = $items[0]
     $props = @(Get-PtcDisplayProperties -Object $first)
-    $typeNames = @($items | ForEach-Object { $_.PSObject.TypeNames[0] } | Select-Object -Unique)
+    $typeNames = @($items | Microsoft.PowerShell.Core\ForEach-Object { $_.PSObject.TypeNames[0] } | Microsoft.PowerShell.Utility\Select-Object -Unique)
     $header = if ($typeNames.Count -gt 1) {
         # Bound the type list too: a stream of many distinct types must not
         # grow the header line without limit (i1-1).
-        $shown = @($typeNames | Select-Object -First 3) -join ', '
+        $shown = @($typeNames | Microsoft.PowerShell.Utility\Select-Object -First 3) -join ', '
         $suffix = ($typeNames.Count -gt 3) ? (', +{0} more' -f ($typeNames.Count - 3)) : ''
         "objects: {0} (mixed: {1}{2})" -f $items.Count, $shown, $suffix
     }
@@ -375,11 +375,11 @@ function Compress-PtcObject {
         # legitimately absent on real objects is guarded conditionally instead:
         # DirectoryInfo has no Length, but a *file* without a known Length is a
         # projection whose size is unknown, not zero, so it goes generic.
-        $typeNames = @($array | ForEach-Object { $_.PSObject.TypeNames[0] } | Select-Object -Unique)
+        $typeNames = @($array | Microsoft.PowerShell.Core\ForEach-Object { $_.PSObject.TypeNames[0] } | Microsoft.PowerShell.Utility\Select-Object -Unique)
         $allMatchType = {
             param([string[]]$Pattern)
             foreach ($typeName in $typeNames) {
-                $matched = @($Pattern | Where-Object { $typeName -like $_ }).Count -gt 0
+                $matched = @($Pattern | Microsoft.PowerShell.Core\Where-Object { $typeName -like $_ }).Count -gt 0
                 if (-not $matched) { return $false }
             }
             $true
@@ -430,9 +430,9 @@ function Compress-PtcObject {
 # across most of the first 40 lines). Ported from the experiment/ptk-router spike.
 function Test-PtcLogShaped {
     param([string]$Text)
-    $lines = @($Text -split "`r?`n" | Where-Object { $_.Trim() }) | Select-Object -First 40
+    $lines = @($Text -split "`r?`n" | Microsoft.PowerShell.Core\Where-Object { $_.Trim() }) | Microsoft.PowerShell.Utility\Select-Object -First 40
     if (@($lines).Count -lt 5) { return $false }
-    $levelHits = @($lines | Where-Object {
+    $levelHits = @($lines | Microsoft.PowerShell.Core\Where-Object {
         $_ -match '\[(INFO|WARN|WARNING|ERROR|FATAL|DEBUG|TRACE)\]' -or
         $_ -match '\b(INFO|WARN|ERROR|FATAL)\b.*:' -or
         $_ -match '^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}'
@@ -443,15 +443,64 @@ function Test-PtcLogShaped {
 # An explicitly set PTK_RTK_PATH wins outright: if it points at nothing, rtk is
 # treated as absent rather than silently falling back to a different binary on
 # PATH, so a misconfiguration stays visible.
+function Get-PtcLoadedCommand {
+    param(
+        [Parameter(Mandatory)][string]$Name,
+        [Parameter(Mandatory)][System.Management.Automation.CommandTypes]$CommandType
+    )
+
+    # InvokeCommand.GetCommand performs module auto-loading. Routing and
+    # dialect detection run before execution is authorized, so command lookup
+    # must be observational: already-loaded/session commands and PATH
+    # commands only. Escape wildcard metacharacters to retain exact-name
+    # semantics and filter defensively in case a provider returns aliases.
+    $escaped = [System.Management.Automation.WildcardPattern]::Escape($Name)
+    # Pattern-mode enumeration stays inside the already-loaded/session command
+    # table and PATH without the exact-name module auto-loader. It is also
+    # consistent across Windows and Unix, where Get-Command -ListImported with
+    # an Application filter does not return the same PATH results.
+    $matches = @($ExecutionContext.InvokeCommand.GetCommands(
+            $escaped, $CommandType, $true) |
+        Microsoft.PowerShell.Core\Where-Object { $_.Name -eq $Name } |
+        Microsoft.PowerShell.Utility\Select-Object -First 1)
+    if ($matches.Count -gt 0) { return $matches[0] }
+
+    # Pattern-mode lookup deliberately avoids the exact-name auto-loader, but
+    # on Windows it also omits extension expansion (`git` is reported as
+    # `git.exe`). Reproduce only the external-command leg after session
+    # commands had their chance to shadow it. Enumerating ExternalScript and
+    # Application together preserves PowerShell's .ps1-before-.exe order;
+    # filtering applications against PATHEXT excludes non-invocable files.
+    $extensionCommandTypes = $CommandType -band (
+        [System.Management.Automation.CommandTypes]::Application -bor
+        [System.Management.Automation.CommandTypes]::ExternalScript)
+    if ($IsWindows -and $extensionCommandTypes -ne 0) {
+        $extensions = if ($env:PATHEXT) {
+            @($env:PATHEXT -split ';' | Microsoft.PowerShell.Core\Where-Object { $_ })
+        }
+        else {
+            @('.COM', '.EXE', '.BAT', '.CMD')
+        }
+        $extensionMatches = @($ExecutionContext.InvokeCommand.GetCommands(
+                "$escaped.*", $extensionCommandTypes, $true) |
+            Microsoft.PowerShell.Core\Where-Object {
+                [System.IO.Path]::GetFileNameWithoutExtension($_.Name) -ieq $Name -and
+                ($_.CommandType -eq [System.Management.Automation.CommandTypes]::ExternalScript -or
+                 ($_.CommandType -eq [System.Management.Automation.CommandTypes]::Application -and
+                  [System.IO.Path]::GetExtension($_.Name) -in $extensions))
+            } |
+            Microsoft.PowerShell.Utility\Select-Object -First 1)
+        if ($extensionMatches.Count -gt 0) { return $extensionMatches[0] }
+    }
+    return $null
+}
+
 function Get-PtcRtkCommand {
-    if (Test-Path env:PTK_RTK_PATH) {
-        if ($env:PTK_RTK_PATH -and (Test-Path -LiteralPath $env:PTK_RTK_PATH)) { return $env:PTK_RTK_PATH }
+    if (Microsoft.PowerShell.Management\Test-Path env:PTK_RTK_PATH) {
+        if ($env:PTK_RTK_PATH -and (Microsoft.PowerShell.Management\Test-Path -LiteralPath $env:PTK_RTK_PATH)) { return $env:PTK_RTK_PATH }
         return $null
     }
-    # Intrinsics resolver: a PATH miss must not leave a hidden entry in the
-    # caller's $Error (routing probes this on every shaped call).
-    $cmd = $ExecutionContext.InvokeCommand.GetCommand(
-        'rtk', [System.Management.Automation.CommandTypes]::Application)
+    $cmd = Get-PtcLoadedCommand 'rtk' ([System.Management.Automation.CommandTypes]::Application)
     if ($cmd) { return $cmd.Source }
     return $null
 }
@@ -467,12 +516,12 @@ function Invoke-PtcRtkLog {
     # (Compress-PtcOutput's contract), so restore the snapshot on the way out.
     # Snapshot the value, not the PSVariable: Get-Variable returns the live
     # variable object, whose .Value would mutate when rtk overwrites it.
-    $exitCodeVariable = Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+    $exitCodeVariable = Microsoft.PowerShell.Utility\Get-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
     $hadExitCode = $null -ne $exitCodeVariable
     $savedExitCode = if ($hadExitCode) { $exitCodeVariable.Value } else { $null }
     $tmp = [System.IO.Path]::GetTempFileName()
     try {
-        Set-Content -LiteralPath $tmp -Value $Text -NoNewline
+        Microsoft.PowerShell.Management\Set-Content -LiteralPath $tmp -Value $Text -NoNewline
         $result = & $rtk log $tmp 2>$null
         $ok = $?
         if (-not $ok -or @($result).Count -eq 0) {
@@ -480,11 +529,11 @@ function Invoke-PtcRtkLog {
         }
         "[ptk:log via rtk]`n" + (@($result) -join [Environment]::NewLine)
     } finally {
-        Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
+        Microsoft.PowerShell.Management\Remove-Item -LiteralPath $tmp -Force -ErrorAction SilentlyContinue
         if ($hadExitCode) {
-            Set-Variable -Name LASTEXITCODE -Scope Global -Value $savedExitCode
+            Microsoft.PowerShell.Utility\Set-Variable -Name LASTEXITCODE -Scope Global -Value $savedExitCode
         } else {
-            Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
+            Microsoft.PowerShell.Utility\Remove-Variable -Name LASTEXITCODE -Scope Global -ErrorAction SilentlyContinue
         }
     }
 }
@@ -537,7 +586,7 @@ function Resolve-PtcInvokeScript {
     if ($elements[0] -isnot [System.Management.Automation.Language.StringConstantExpressionAst]) { return $Script }
     $name = $elements[0].Value
     if ([System.IO.Path]::GetFileNameWithoutExtension($name) -eq 'rtk') { return $Script }
-    foreach ($element in ($elements | Select-Object -Skip 1)) {
+    foreach ($element in ($elements | Microsoft.PowerShell.Utility\Select-Object -Skip 1)) {
         # StringConstantExpressionAst derives from ConstantExpressionAst, so
         # one check covers bare words, quoted literals, and numbers. A
         # parameter like -m is constant unless its attached argument is not
@@ -553,10 +602,10 @@ function Resolve-PtcInvokeScript {
         # Resolve in this runspace: aliases, cmdlets, and functions shadow
         # native binaries here exactly as they would at execution time (on
         # Windows, ls is an alias and `rtk ls` fails - slice-0 probe). The
-        # intrinsics API resolves without polluting $Error the way
-        # Get-Command -ErrorAction SilentlyContinue does on a miss.
-        $resolved = $ExecutionContext.InvokeCommand.GetCommand(
-            $name, [System.Management.Automation.CommandTypes]::All)
+        # Lookup is intentionally restricted to the imported/session command
+        # table so prepare cannot auto-import a discoverable module and run its
+        # top-level code before the audited dispatch barrier.
+        $resolved = Get-PtcLoadedCommand $name ([System.Management.Automation.CommandTypes]::All)
         if ($null -eq $resolved -or $resolved.CommandType -ne [System.Management.Automation.CommandTypes]::Application) { return $Script }
         # Batch shims (npm.cmd, npx.cmd) get special argument quoting from
         # PowerShell that an rtk.exe re-invocation would not reproduce -
@@ -743,8 +792,7 @@ function Get-PtcShellDialectFinding {
                             break
                         }
                     }
-                    if ($keywordDefined -or $null -ne $ExecutionContext.InvokeCommand.GetCommand(
-                            $first.Value, [System.Management.Automation.CommandTypes]::All)) { continue }
+                    if ($keywordDefined -or $null -ne (Get-PtcLoadedCommand $first.Value ([System.Management.Automation.CommandTypes]::All))) { continue }
                     $start = $commandAst.Extent.StartOffset
                     if ($start -ge $parseError.Extent.StartOffset) { return $true }
                     if ($start -le $parseError.Extent.EndOffset -and
@@ -820,8 +868,7 @@ function Get-PtcShellDialectFinding {
                 }
             }
             if (-not $isLocallyDefined -and
-                $null -eq $ExecutionContext.InvokeCommand.GetCommand(
-                    $name, [System.Management.Automation.CommandTypes]::All)) {
+                $null -eq (Get-PtcLoadedCommand $name ([System.Management.Automation.CommandTypes]::All))) {
                 return $label
             }
         }
@@ -830,7 +877,7 @@ function Get-PtcShellDialectFinding {
             # Keyed to the probed full argument shape: set always resolves
             # (stock alias -> Set-Variable), so shape is the discriminator.
             $flagsOnly = $true
-            foreach ($element in ($elements | Select-Object -Skip 1)) {
+            foreach ($element in ($elements | Microsoft.PowerShell.Utility\Select-Object -Skip 1)) {
                 $isFlag = $element -is [System.Management.Automation.Language.CommandParameterAst] -and
                     $null -eq $element.Argument -and
                     $element.ParameterName -match '^[euxo]{1,4}$'
@@ -857,8 +904,7 @@ function Get-PtcShellDialectFinding {
                     }
                 }
                 if (-not $setOverridden) {
-                    $resolvedSet = $ExecutionContext.InvokeCommand.GetCommand(
-                        'set', [System.Management.Automation.CommandTypes]::All)
+                    $resolvedSet = Get-PtcLoadedCommand 'set' ([System.Management.Automation.CommandTypes]::All)
                     $setOverridden = $null -ne $resolvedSet -and
                         -not ($resolvedSet.CommandType -eq [System.Management.Automation.CommandTypes]::Alias -and
                               $resolvedSet.Definition -eq 'Set-Variable')
@@ -928,8 +974,8 @@ function Limit-PtcPassthrough {
         $tailCount = $MaxLines - $headCount
         $elidedLineCount = $lines.Count - $MaxLines
         $marker = '[{0} lines elided - {1}]' -f $elidedLineCount, $ElisionHint
-        $Text = (@($lines | Select-Object -First $headCount) + $marker +
-            @($lines | Select-Object -Last $tailCount)) -join [Environment]::NewLine
+        $Text = (@($lines | Microsoft.PowerShell.Utility\Select-Object -First $headCount) + $marker +
+            @($lines | Microsoft.PowerShell.Utility\Select-Object -Last $tailCount)) -join [Environment]::NewLine
     }
 
     if ($Text.Length -gt $MaxChars) {
@@ -995,7 +1041,7 @@ function Compress-PtcOutput {
                 # defeats Test-PtcLogShaped's line-start timestamp anchor, so a
                 # colored log would dodge the rtk dedup leg. raw=true calls
                 # never reach shaping (they return complete Out-String text).
-                $text = Remove-PtcAnsi (@($array | ForEach-Object { "$_" }) -join [Environment]::NewLine)
+                $text = Remove-PtcAnsi (@($array | Microsoft.PowerShell.Core\ForEach-Object { "$_" }) -join [Environment]::NewLine)
                 if (Test-PtcLogShaped -Text $text) { return (Limit-PtcPassthrough (Invoke-PtcRtkLog -Text $text) @limitArgs) }
                 return (Limit-PtcPassthrough $text @limitArgs)
             }
@@ -1003,7 +1049,7 @@ function Compress-PtcOutput {
             return ($array | Compress-PtcObject -MaxItems $MaxItems)
         }
         catch {
-            $raw = ($array | Out-String).TrimEnd()
+            $raw = ($array | Microsoft.PowerShell.Utility\Out-String).TrimEnd()
             # Bound the fallback too (P3: no unbounded path), but never let the
             # bounder violate the never-throw contract of this catch.
             try { $raw = Limit-PtcPassthrough $raw @limitArgs } catch { }
@@ -1012,7 +1058,7 @@ function Compress-PtcOutput {
     }
 }
 
-Export-ModuleMember -Function @(
+Microsoft.PowerShell.Core\Export-ModuleMember -Function @(
     'Compress-PtcObject',
     'Compress-PtcOutput',
     'Get-PtcShellDialectFinding',

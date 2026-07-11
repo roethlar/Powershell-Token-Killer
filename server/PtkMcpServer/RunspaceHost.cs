@@ -1,7 +1,33 @@
+using System.Collections.ObjectModel;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
+using System.Text;
 
 namespace PtkMcpServer;
+
+/// <summary>Machine-readable terminal disposition of one invocation. Timeout
+/// remains a separate fact because it can expire before user execution starts
+/// or leave an already-started effect with an unknown outcome.</summary>
+public enum InvokeDisposition
+{
+    NotStarted,
+    Completed,
+    Failed,
+    Canceled,
+    OutcomeUnknown,
+}
+
+/// <summary>Immutable routing facts presented to the pre-execution audit
+/// barrier. Values use the audit schema's exact machine strings.</summary>
+internal sealed record InvocationPreparation(
+    string EffectiveRoute,
+    string RequestedRoute,
+    string[] PermittedFallbacks,
+    string? FallbackReason);
+
+internal delegate ValueTask<bool> InvocationAuthorizationCallback(
+    InvocationPreparation preparation,
+    CancellationToken cancellationToken);
 
 /// <summary>Result of one script invocation in the warm runspace.</summary>
 /// <param name="Success">False on a terminating error or timeout; non-terminating
@@ -21,12 +47,19 @@ namespace PtkMcpServer;
 /// post-recycle rebuild was still in flight — distinct from queue contention,
 /// which the busy messages describe as another call holding the runspace
 /// (codex finding i56-11).</param>
+/// <param name="Disposition">Structured terminal state for audit consumers;
+/// never inferred from human-facing output or error strings.</param>
+/// <param name="UserExecutionStarted">True once the user pipeline has been
+/// handed to PowerShell. Preflight activity and warm-state loss alone never
+/// set this field.</param>
 public sealed record InvokeResult(
     bool Success,
     string Output,
     string[] Errors,
     string[] Warnings,
     bool TimedOut,
+    InvokeDisposition Disposition,
+    bool UserExecutionStarted,
     int? ExitCode = null,
     string[]? Stderr = null,
     bool WarmStateLost = false,
@@ -58,6 +91,7 @@ public sealed class RunspaceHost : IDisposable
     private readonly TimeSpan _callTimeout;
     private readonly TimeSpan _maxCallTimeout;
     private readonly string? _modulePath;
+    private readonly string? _moduleSource;
     // The warm runspace, as a task: recycle paths swap in a REBUILD that runs
     // off the response's critical path. The slice-0 incident class — a stalled
     // Runspace.Open or module import silently withholding the labeled timeout
@@ -67,17 +101,87 @@ public sealed class RunspaceHost : IDisposable
     // read lock-free by GetGateStatus.
     private Task<PrimedRunspace> _runspaceReady;
     private bool _disposed;
+    private readonly object _ownedWorkGate = new();
+    private readonly HashSet<Task> _ownedBackgroundWork = [];
+    private Exception? _ownedBackgroundWorkFailure;
 
-    // Background jobs execute in a cold `pwsh -NoProfile` child, so their
-    // dialect check must resolve names against the cold default command table,
-    // never warm session state (shell-dialect plan, slice 1(iii)): a
-    // warm-defined `export` function must not exempt a script that will die
-    // without it. One pristine runspace, created on first use and reused; it
-    // only ever runs the detector and the bash probe, never user code, so it
-    // keeps the default command table for the life of the server.
-    private Runspace? _coldDetectionRunspace;
-    private bool _coldDetectionUnavailable;
-    private readonly SemaphoreSlim _coldDetectionGate = new(1, 1);
+    internal void TrackOwnedBackgroundWorkForTests(Task work) => TrackOwnedBackgroundWork(work);
+
+    private void TrackOwnedBackgroundWork(Task work)
+    {
+        ArgumentNullException.ThrowIfNull(work);
+        lock (_ownedWorkGate)
+            _ownedBackgroundWork.Add(work);
+        _ = work.ContinueWith(
+            completed =>
+            {
+                lock (_ownedWorkGate)
+                {
+                    _ownedBackgroundWork.Remove(completed);
+                    if (completed.IsFaulted)
+                    {
+                        _ownedBackgroundWorkFailure ??=
+                            completed.Exception?.GetBaseException() ??
+                            new IOException("Owned runspace cleanup failed.");
+                    }
+                }
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+    }
+
+    private async Task DrainOwnedBackgroundWorkAsync()
+    {
+        while (true)
+        {
+            Task[] pending;
+            Exception? failure;
+            lock (_ownedWorkGate)
+            {
+                pending = [.. _ownedBackgroundWork];
+                failure = _ownedBackgroundWorkFailure;
+            }
+
+            if (pending.Length == 0)
+            {
+                if (failure is not null)
+                    throw new IOException("Owned runspace cleanup could not be confirmed.", failure);
+                return;
+            }
+
+            try { await Task.WhenAll(pending).ConfigureAwait(false); }
+            catch { /* the tracked continuation preserves the authoritative failure */ }
+        }
+    }
+
+    private static Collection<PSObject> InvokeWithoutAmbientAudit(PowerShell powerShell)
+    {
+        using var suppressed = ExecutionContext.SuppressFlow();
+        return powerShell.Invoke();
+    }
+
+    private static Task<PSDataCollection<PSObject>> InvokeAsyncWithoutAmbientAudit(
+        PowerShell powerShell)
+    {
+        using var suppressed = ExecutionContext.SuppressFlow();
+        return powerShell.InvokeAsync();
+    }
+
+    private static Task<PSDataCollection<PSObject>> InvokeAsyncWithoutAmbientAudit(
+        PowerShell powerShell,
+        PSDataCollection<object> input)
+    {
+        using var suppressed = ExecutionContext.SuppressFlow();
+        return powerShell.InvokeAsync(input);
+    }
+
+    // Background jobs execute in a cold `pwsh -NoProfile` child. Preserve the
+    // stock alias/function/cmdlet table captured before the first user runspace
+    // is published, then overlay live PATH applications for each job request.
+    // The classifier itself is pure C#; there is no second enumerable runspace
+    // for prior user code (or a ThreadJob) to poison.
+    private readonly TrustedCommandSnapshot _backgroundStockCommands;
 
     /// <summary>Timestamp of the most recent invoke/reset; read by the idle watchdog.</summary>
     public DateTimeOffset LastActivityUtc { get; private set; } = DateTimeOffset.UtcNow;
@@ -89,8 +193,10 @@ public sealed class RunspaceHost : IDisposable
     /// ptk_state reports the current count against it. -1 when the probe failed.</summary>
     public int BaselineVariableCount { get; private set; }
 
-    /// <summary>True when the PwshTokenCompressor module is imported into the current
-    /// warm runspace; false disables output shaping (calls fall back to Out-String).</summary>
+    /// <summary>True when the trusted PwshTokenCompressor shaping handle was captured
+    /// for the current warm runspace; false disables shaping and its paired
+    /// routing/dialect behavior. The module is detached after capture; trusted
+    /// preflight itself is pure C# over data-only command facts.</summary>
     public bool ModuleLoaded { get; private set; }
 
     // PowerShell decodes native stdout with Console.OutputEncoding, which in a
@@ -114,12 +220,22 @@ public sealed class RunspaceHost : IDisposable
         // default is the owner's own setting and is not second-guessed.
         _maxCallTimeout = maxCallTimeout ?? TimeSpan.FromSeconds(3600);
         _modulePath = modulePathOverride ?? ResolveModulePath();
+        _moduleSource = TryCaptureModuleSource(_modulePath);
         if (_modulePath is null)
         {
             Console.Error.WriteLine(
                 "ptk: PwshTokenCompressor module not found (set PTK_MODULE_PATH); output shaping disabled, calls return plain Out-String text.");
         }
         var initialPrimed = CreatePrimedRunspace();
+        try
+        {
+            _backgroundStockCommands = CaptureBackgroundStockCommands(initialPrimed.Runspace);
+        }
+        catch
+        {
+            initialPrimed.Runspace.Dispose();
+            throw;
+        }
         PublishPrimedMetadata(initialPrimed);
         _runspaceReady = Task.FromResult(initialPrimed);
         // Environment variables are process-wide, not runspace state, and engine
@@ -241,12 +357,38 @@ public sealed class RunspaceHost : IDisposable
     /// delay here to prove the timeout response does not wait for it.</summary>
     internal TimeSpan CreationDelayForTests { get; set; }
 
+    private volatile bool _moduleImportDisabledForTests;
+
+    /// <summary>Test hook for a superseded rebuild whose module construction
+    /// fails after another runspace has already won publication.</summary>
+    internal bool ModuleImportDisabledForTests
+    {
+        get => _moduleImportDisabledForTests;
+        set => _moduleImportDisabledForTests = value;
+    }
+
+    /// <summary>Test hook for deadline/cancellation behavior while the pure C#
+    /// preflight and its CLR command snapshot are active.</summary>
+    internal TimeSpan PreflightDelayForTests { get; set; }
+
+    /// <summary>Test hook for state-probe error/cache branches without
+    /// allowing user functions to shadow module-qualified probe commands.</summary>
+    internal Func<string, InvokeResult?>? IdleInvocationOverrideForTests { get; set; }
+
+    /// <summary>Test hook for current-directory failure and timeout branches.
+    /// Production reads the provider intrinsic directly.</summary>
+    internal Func<string?>? CurrentLocationReaderOverrideForTests { get; set; }
+
     /// <summary>A runspace plus the metadata its own priming produced. The
     /// bundle is immutable and host-global fields are published only when a
     /// bundle is CONSUMED as current: a superseded background rebuild finishing
     /// after a reset must not stamp its import result over the runspace that
     /// actually won (codex finding i56-12).</summary>
-    private sealed record PrimedRunspace(Runspace Runspace, bool ModuleLoaded, int BaselineVariableCount);
+    private sealed record PrimedRunspace(
+        Runspace Runspace,
+        bool ModuleLoaded,
+        int BaselineVariableCount,
+        CommandInfo? CompressCommand);
 
     /// <summary>Creates a runspace and imports the compressor module into it, so
     /// recycle/reset paths get shaping back automatically. Pure: touches no
@@ -255,8 +397,33 @@ public sealed class RunspaceHost : IDisposable
     {
         if (CreationDelayForTests > TimeSpan.Zero) Thread.Sleep(CreationDelayForTests);
         var runspace = CreateRunspace();
-        var moduleLoaded = _modulePath is not null && TryImportModule(runspace, _modulePath);
-        return new PrimedRunspace(runspace, moduleLoaded, TryCountVariables(runspace));
+        var imported = !ModuleImportDisabledForTests && _moduleSource is not null &&
+            TryImportModule(runspace, _moduleSource, _modulePath!);
+        var compressCommand = imported
+            ? TryCaptureModuleCommand(runspace, "Compress-PtcOutput")
+            : null;
+        var moduleLoaded = imported &&
+            compressCommand is not null &&
+            TryDetachModule(runspace);
+        return new PrimedRunspace(
+            runspace,
+            moduleLoaded,
+            TryCountVariables(runspace),
+            moduleLoaded ? compressCommand : null);
+    }
+
+    private static CommandInfo? TryCaptureModuleCommand(Runspace runspace, string name)
+    {
+        try
+        {
+            var command = runspace.SessionStateProxy.InvokeCommand.GetCommand(
+                $"PwshTokenCompressor\\{name}",
+                CommandTypes.Function);
+            return command is FunctionInfo { ModuleName: "PwshTokenCompressor" }
+                ? command
+                : null;
+        }
+        catch { return null; }
     }
 
     private void PublishPrimedMetadata(PrimedRunspace primed)
@@ -274,7 +441,7 @@ public sealed class RunspaceHost : IDisposable
             using var ps = PowerShell.Create();
             ps.Runspace = runspace;
             ps.AddScript("$global:LASTEXITCODE = 0; @(Get-Variable).Count", useLocalScope: false);
-            var results = ps.Invoke();
+            var results = InvokeWithoutAmbientAudit(ps);
             return results.Count > 0 && results[0]?.BaseObject is int count ? count : -1;
         }
         catch { return -1; }
@@ -315,38 +482,376 @@ public sealed class RunspaceHost : IDisposable
         return null;
     }
 
-    private static bool TryImportModule(Runspace runspace, string modulePath)
+    private static string? TryCaptureModuleSource(string? modulePath)
+    {
+        if (modulePath is null) return null;
+
+        // The product module is a manifest plus a same-named script module.
+        // Capture the executable source once, before the initial runspace is
+        // published and before user code can mutate the checkout. All later
+        // warm/cold imports consume this immutable string, never the path.
+        var sourcePath = string.Equals(
+            Path.GetExtension(modulePath), ".psd1", StringComparison.OrdinalIgnoreCase)
+            ? Path.ChangeExtension(modulePath, ".psm1")
+            : modulePath;
+        try
+        {
+            using var stream = new FileStream(
+                sourcePath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read);
+            using var reader = new StreamReader(
+                stream,
+                new UTF8Encoding(encoderShouldEmitUTF8Identifier: false, throwOnInvalidBytes: true),
+                detectEncodingFromByteOrderMarks: true);
+            return reader.ReadToEnd();
+        }
+        catch (Exception ex)
+        {
+            Console.Error.WriteLine(
+                $"ptk: capture of module source '{sourcePath}' failed ({ex.Message}); output shaping disabled, calls return plain Out-String text.");
+            return null;
+        }
+    }
+
+    private static bool TryImportModule(
+        Runspace runspace,
+        string moduleSource,
+        string moduleOrigin)
     {
         try
         {
             using var ps = PowerShell.Create();
             ps.Runspace = runspace;
-            ps.AddCommand("Import-Module")
-              .AddParameter("Name", modulePath)
+            ps.AddCommand("Microsoft.PowerShell.Core\\New-Module")
+              .AddParameter("Name", "PwshTokenCompressor")
+              .AddParameter("ScriptBlock", ScriptBlock.Create(moduleSource))
               .AddParameter("ErrorAction", "Stop");
-            ps.Invoke();
+            var created = InvokeWithoutAmbientAudit(ps);
+            var module = created
+                .Select(result => result?.BaseObject)
+                .OfType<PSModuleInfo>()
+                .SingleOrDefault();
+            if (ps.HadErrors || module is null)
+                throw new InvalidOperationException("PTK in-memory module construction failed.");
+
+            ps.Commands.Clear();
+            ps.AddCommand("Microsoft.PowerShell.Core\\Import-Module")
+              .AddParameter("ModuleInfo", module)
+              .AddParameter("Global")
+              .AddParameter("Force")
+              .AddParameter("ErrorAction", "Stop");
+            _ = InvokeWithoutAmbientAudit(ps);
+            if (ps.HadErrors)
+                throw new InvalidOperationException("PTK module import failed.");
             return true;
         }
         catch (Exception ex)
         {
             Console.Error.WriteLine(
-                $"ptk: import of '{modulePath}' failed ({ex.Message}); output shaping disabled, calls return plain Out-String text.");
+                $"ptk: import of frozen module from '{moduleOrigin}' failed ({ex.Message}); output shaping disabled, calls return plain Out-String text.");
             return false;
         }
+    }
+
+    private static bool TryDetachModule(Runspace runspace)
+    {
+        try
+        {
+            using var ps = PowerShell.Create();
+            ps.Runspace = runspace;
+            ps.AddCommand("Microsoft.PowerShell.Core\\Remove-Module")
+              .AddParameter("Name", "PwshTokenCompressor")
+              .AddParameter("Force")
+              .AddParameter("ErrorAction", "Stop");
+            _ = InvokeWithoutAmbientAudit(ps);
+            if (ps.HadErrors) return false;
+
+            ps.Commands.Clear();
+            ps.AddCommand("Microsoft.PowerShell.Core\\Get-Command")
+              .AddParameter(
+                  "Name",
+                  WildcardPattern.Escape("PwshTokenCompressor\\Compress-PtcOutput"))
+              .AddParameter("CommandType", CommandTypes.Function)
+              .AddParameter("ListImported")
+              .AddParameter("ErrorAction", "Ignore");
+            // Get-Command marks the PowerShell instance HadErrors when the
+            // expected post-removal lookup misses even with ErrorAction=Ignore.
+            // The empty imported-only result is the detachment proof.
+            return InvokeWithoutAmbientAudit(ps).Count == 0;
+        }
+        catch { return false; }
+    }
+
+    private sealed record CommandLookupRequest(
+        string Name,
+        CommandTypes QueryTypes,
+        CommandTypes StoredTypes);
+
+    /// <summary>Runs read-only CLR command-table enumeration. Pattern-mode
+    /// enumeration stays inside the already-loaded/session table and PATH; it
+    /// neither auto-imports modules nor enters lookup callbacks. No ambient
+    /// variable, debugger, delegate, type-data, or session state is changed.</summary>
+    private static T WithReadOnlyCommandLookup<T>(
+        Runspace runspace,
+        Func<CommandInvocationIntrinsics, T> inspection)
+    {
+        try
+        {
+            return inspection(runspace.SessionStateProxy.InvokeCommand);
+        }
+        catch (TrustedPreflightIsolationException) { throw; }
+        catch (Exception ex)
+        {
+            throw new TrustedPreflightIsolationException(
+                "Trusted CLR command snapshot failed.", ex);
+        }
+    }
+
+    private static ResolvedCommand? CaptureResolvedCommand(
+        CommandInvocationIntrinsics invocation,
+        string name,
+        CommandTypes queryTypes)
+    {
+        var escapedName = WildcardPattern.Escape(name);
+        var command = invocation
+            .GetCommands(escapedName, queryTypes, nameIsPattern: true)
+            .FirstOrDefault(candidate =>
+                string.Equals(candidate.Name, name, StringComparison.OrdinalIgnoreCase));
+
+        // Pattern-mode lookup is the no-auto-load command-table surface, but
+        // Windows does not apply extension expansion to the exact pattern
+        // (`git` is exposed as `git.exe`). Preserve session-command precedence
+        // by expanding only after the exact lookup misses. Enumerating
+        // ExternalScript and Application together retains PowerShell's
+        // .ps1-before-.exe order; PATHEXT filters non-invocable applications.
+        var extensionQueryTypes = queryTypes &
+                                  (CommandTypes.Application | CommandTypes.ExternalScript);
+        if (command is null &&
+            OperatingSystem.IsWindows() &&
+            extensionQueryTypes != 0)
+        {
+            var pathExtensions = (Environment.GetEnvironmentVariable("PATHEXT") ??
+                                  ".COM;.EXE;.BAT;.CMD")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries);
+            command = invocation
+                .GetCommands($"{escapedName}.*", extensionQueryTypes, nameIsPattern: true)
+                .FirstOrDefault(candidate =>
+                    string.Equals(
+                        Path.GetFileNameWithoutExtension(candidate.Name),
+                        name,
+                        StringComparison.OrdinalIgnoreCase) &&
+                    (candidate.CommandType == CommandTypes.ExternalScript ||
+                     candidate.CommandType == CommandTypes.Application &&
+                     pathExtensions.Contains(
+                         Path.GetExtension(candidate.Name),
+                         StringComparer.OrdinalIgnoreCase)));
+        }
+        return command is null
+            ? null
+            : new ResolvedCommand(
+                command.CommandType,
+                command.Source,
+                command.Definition);
+    }
+
+    private static TrustedCommandSnapshot CaptureCommandFacts(
+        Runspace runspace,
+        IEnumerable<CommandLookupRequest> requests)
+    {
+        return WithReadOnlyCommandLookup(runspace, invocation =>
+        {
+            var snapshot = new TrustedCommandSnapshot();
+            foreach (var request in requests
+                         .DistinctBy(
+                             request => (request.Name.ToUpperInvariant(), request.QueryTypes, request.StoredTypes)))
+            {
+                snapshot.Set(
+                    request.Name,
+                    request.StoredTypes,
+                    CaptureResolvedCommand(invocation, request.Name, request.QueryTypes));
+            }
+            return snapshot;
+        });
+    }
+
+    private static TrustedCommandSnapshot CaptureBackgroundStockCommands(Runspace runspace)
+    {
+        return WithReadOnlyCommandLookup(runspace, invocation =>
+        {
+            // A cold child receives stock aliases/functions/cmdlets but resolves
+            // PATH applications at launch time. Exclude applications/scripts
+            // here so each background request can overlay the current process
+            // environment and observe both additions and removals.
+            var names = invocation
+                .GetCommands("*", CommandTypes.All, nameIsPattern: true)
+                .Where(command => command.CommandType is not
+                    (CommandTypes.Application or CommandTypes.ExternalScript))
+                .Select(command => command.Name)
+                .Distinct(StringComparer.OrdinalIgnoreCase)
+                .ToArray();
+            var snapshot = new TrustedCommandSnapshot();
+            foreach (var name in names)
+            {
+                var resolved = CaptureResolvedCommand(invocation, name, CommandTypes.All);
+                if (resolved is not null && resolved.CommandType is not
+                    (CommandTypes.Application or CommandTypes.ExternalScript))
+                {
+                    snapshot.Set(name, CommandTypes.All, resolved);
+                }
+            }
+            return snapshot;
+        });
+    }
+
+    private TrustedCommandSnapshot CaptureBackgroundCommandFacts(string script)
+    {
+        var snapshot = _backgroundStockCommands.Clone();
+        foreach (var name in TrustedPreflightClassifier
+                     .GetRequiredCommandNames(script)
+                     .Append("bash")
+                     .Distinct(StringComparer.OrdinalIgnoreCase))
+        {
+            if (snapshot.Resolve(name, CommandTypes.All) is not null) continue;
+            snapshot.Set(name, CommandTypes.All, ResolveCurrentPathCommand(name));
+        }
+        return snapshot;
+    }
+
+    private static ResolvedCommand? ResolveCurrentPathCommand(string name)
+    {
+        // Dialect classification only asks about literal command names. A name
+        // containing a path separator is not a bash builtin/shadow candidate,
+        // and its relative base belongs to the later audited CWD probe.
+        if (string.IsNullOrWhiteSpace(name) ||
+            name.Contains(Path.DirectorySeparatorChar) ||
+            name.Contains(Path.AltDirectorySeparatorChar))
+        {
+            return null;
+        }
+
+        var path = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var pathExtensions = OperatingSystem.IsWindows()
+            ? (Environment.GetEnvironmentVariable("PATHEXT") ?? ".COM;.EXE;.BAT;.CMD")
+                .Split(';', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries)
+            : Array.Empty<string>();
+
+        foreach (var entry in path.Split(Path.PathSeparator))
+        {
+            var directory = entry.Trim().Trim('"');
+            // Empty/relative PATH entries resolve against the future job's warm
+            // working directory, which is intentionally probed only after this
+            // detector. Never substitute the server process CWD. Conservatively
+            // treat the name as a non-Application collision: avoid a false bash
+            // refusal, but do not offer bash-wrap guidance we cannot prove.
+            if (directory.Length == 0 || !Path.IsPathFullyQualified(directory))
+                return new ResolvedCommand(CommandTypes.ExternalScript);
+
+            if (OperatingSystem.IsWindows())
+            {
+                if (Path.HasExtension(name))
+                {
+                    var exact = Path.Combine(directory, name);
+                    var resolved = ClassifyPathCommand(exact, pathExtensions);
+                    if (resolved is not null) return resolved;
+                }
+                else
+                {
+                    foreach (var extension in pathExtensions)
+                    {
+                        var resolved = ClassifyPathCommand(
+                            Path.Combine(directory, name + extension),
+                            pathExtensions);
+                        if (resolved is not null) return resolved;
+                    }
+                    var script = ClassifyPathCommand(
+                        Path.Combine(directory, name + ".ps1"),
+                        pathExtensions);
+                    if (script is not null) return script;
+                }
+            }
+            else
+            {
+                var exact = Path.Combine(directory, name);
+                if (File.Exists(exact))
+                {
+                    if (Path.GetExtension(exact).Equals(".ps1", StringComparison.OrdinalIgnoreCase))
+                        return PathCommand(exact, CommandTypes.ExternalScript);
+                    try
+                    {
+                        var mode = File.GetUnixFileMode(exact);
+                        var executable = UnixFileMode.UserExecute |
+                                         UnixFileMode.GroupExecute |
+                                         UnixFileMode.OtherExecute;
+                        if ((mode & executable) != 0)
+                            return PathCommand(exact, CommandTypes.Application);
+                    }
+                    catch { /* An unreadable candidate is not safely resolvable. */ }
+                }
+                var script = Path.Combine(directory, name + ".ps1");
+                if (File.Exists(script))
+                    return PathCommand(script, CommandTypes.ExternalScript);
+            }
+        }
+        return null;
+    }
+
+    private static ResolvedCommand? ClassifyPathCommand(
+        string path,
+        IReadOnlyList<string> pathExtensions)
+    {
+        if (!File.Exists(path)) return null;
+        var extension = Path.GetExtension(path);
+        if (extension.Equals(".ps1", StringComparison.OrdinalIgnoreCase))
+            return PathCommand(path, CommandTypes.ExternalScript);
+        return pathExtensions.Contains(extension, StringComparer.OrdinalIgnoreCase)
+            ? PathCommand(path, CommandTypes.Application)
+            : null;
+    }
+
+    private static ResolvedCommand PathCommand(string path, CommandTypes type)
+    {
+        var fullPath = Path.GetFullPath(path);
+        return new ResolvedCommand(type, fullPath, fullPath);
+    }
+
+    private static TrustedCommandSnapshot CaptureForegroundCommandFacts(
+        Runspace runspace,
+        string script)
+    {
+        var requests = TrustedPreflightClassifier
+            .GetRequiredCommandNames(script)
+            .Select(name => new CommandLookupRequest(name, CommandTypes.All, CommandTypes.All))
+            .Append(new CommandLookupRequest("bash", CommandTypes.All, CommandTypes.All))
+            .Append(new CommandLookupRequest(
+                "rtk",
+                CommandTypes.Application,
+                CommandTypes.Application));
+        return CaptureCommandFacts(runspace, requests);
+    }
+
+    private static string? ResolveEffectiveRtkPath(TrustedCommandSnapshot commands)
+    {
+        var configured = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        if (configured is not null)
+            return configured.Length > 0 && File.Exists(configured) ? configured : null;
+        return commands.Resolve("rtk", CommandTypes.Application)?.Source;
     }
 
     // Exit-code bookkeeping runs as tiny extra pipelines on the warm runspace
     // (sub-ms each). Both must hold the gate and must never fail a call. They
     // take the runspace explicitly so an abandoned preflight/bookkeeping task
     // can never touch the replacement runspace after a recycle.
-    private static void ResetExitCode(Runspace runspace)
+    private void ResetExitCode(Runspace runspace)
     {
         try
         {
+            ExitCodeResetObserverForTests?.Invoke();
             using var ps = PowerShell.Create();
             ps.Runspace = runspace;
             ps.AddScript("$global:LASTEXITCODE = 0", useLocalScope: false);
-            ps.Invoke();
+            _ = InvokeWithoutAmbientAudit(ps);
         }
         catch { /* bookkeeping only */ }
     }
@@ -358,7 +863,7 @@ public sealed class RunspaceHost : IDisposable
             using var ps = PowerShell.Create();
             ps.Runspace = runspace;
             ps.AddScript("if ($global:LASTEXITCODE -is [int]) { $global:LASTEXITCODE } else { 0 }", useLocalScope: false);
-            var results = ps.Invoke();
+            var results = InvokeWithoutAmbientAudit(ps);
             return results.Count > 0 && results[0]?.BaseObject is int code ? code : 0;
         }
         catch { return 0; }
@@ -377,6 +882,10 @@ public sealed class RunspaceHost : IDisposable
     /// <summary>Test hook: wedging the real LASTEXITCODE read requires session
     /// debugger tricks; tests inject a slow reader here instead.</summary>
     internal Func<int>? ExitCodeReaderOverrideForTests { get; set; }
+
+    /// <summary>Test hook that makes the authorization-before-bookkeeping
+    /// ordering observable without exposing runspace internals.</summary>
+    internal Action? ExitCodeResetObserverForTests { get; set; }
 
     private async Task<(int ExitCode, bool Wedged)> ReadExitCodeBoundedAsync(
         Runspace runspace, DateTimeOffset callDeadline, CancellationToken cancellationToken)
@@ -432,72 +941,8 @@ public sealed class RunspaceHost : IDisposable
         return (FilterRtkNag(stderr), [.. errors]);
     }
 
-    // Asks the module to classify/rewrite the script (single native commands
-    // route through rtk — unified-shell-routing plan). Any failure returns the
-    // script unchanged: routing must never be able to fail a call.
-    private static string ResolveScript(Runspace runspace, string script, string route)
-    {
-        try
-        {
-            using var ps = PowerShell.Create();
-            ps.Runspace = runspace;
-            ps.AddCommand("Resolve-PtcInvokeScript")
-              .AddParameter("Script", script)
-              .AddParameter("Route", route);
-            var results = ps.Invoke();
-            return results.Count > 0 && results[0]?.BaseObject is string resolved && resolved.Length > 0
-                ? resolved
-                : script;
-        }
-        catch { return script; }
-    }
-
-    // Runs the module's dialect detector (shell-dialect plan D1, slice 2)
-    // against the given runspace and, on a finding, composes the labeled
-    // refusal. The runspace argument IS the resolution context (plan slice
-    // 1(iii)): the warm runspace for foreground calls — a session-defined
-    // `export` function is legitimate PowerShell there and exempts the script
-    // — and the cold detection runspace for background jobs. Any failure
-    // returns null: detection must never be able to fail a call, so
-    // degradation is toward a miss (the pre-detector behavior).
-    private static string? TryGetDialectRefusal(Runspace runspace, string script, bool background)
-    {
-        try
-        {
-            using var ps = PowerShell.Create();
-            ps.Runspace = runspace;
-            ps.AddCommand("Get-PtcShellDialectFinding").AddParameter("Script", script);
-            var results = ps.Invoke();
-            if (results.Count == 0 || results[0]?.BaseObject is not string finding || finding.Length == 0)
-            {
-                return null;
-            }
-            return FormatDialectRefusal(finding, ProbeBashAvailable(runspace), background);
-        }
-        catch { return null; }
-    }
-
-    // The bash -lc recovery wrap is offered only when bash actually resolves
-    // as an Application in the resolution context (plan D1): advising it on a
-    // box that cannot run it would send the model into a second dead end.
-    // Normal command precedence, not an Application-filtered lookup (sd2-2):
-    // a warm function or alias named bash shadows the binary, and following
-    // the advice would run the shadow — the wrap is offered only when
-    // re-issuing it would actually execute bash.
-    private static bool ProbeBashAvailable(Runspace runspace)
-    {
-        try
-        {
-            using var ps = PowerShell.Create();
-            ps.Runspace = runspace;
-            ps.AddScript(
-                "[System.Management.Automation.CommandTypes]::Application -eq " +
-                "($ExecutionContext.InvokeCommand.GetCommand('bash', [System.Management.Automation.CommandTypes]::All)).CommandType");
-            var results = ps.Invoke();
-            return results.Count > 0 && results[0]?.BaseObject is bool available && available;
-        }
-        catch { return false; }
-    }
+    private static bool BashAvailable(TrustedCommandSnapshot commands) =>
+        commands.Resolve("bash", CommandTypes.All)?.CommandType == CommandTypes.Application;
 
     private static string FormatDialectRefusal(string finding, bool bashAvailable, bool background)
     {
@@ -532,73 +977,25 @@ public sealed class RunspaceHost : IDisposable
         // call returns before anything else touches the idle clock — the
         // watchdog must not stop a server right after it answered.
         LastActivityUtc = DateTimeOffset.UtcNow;
-        if (_modulePath is null) return null;
-        // The WHOLE cold-side check — gate wait, first-use runspace creation
-        // and import, detection — runs as one unit raced against the request's
-        // wall-clock deadline (codex finding i56-4): a single monotonic gate
-        // wait was sleep-unsafe, and the synchronous creation/import after it
-        // escaped the budget entirely. Deadline expiry degrades to a miss
-        // (null), the pre-detector behavior — the check must never block a
-        // job — and the abandoned task finishes its work and releases the
-        // cold gate on its own.
-        // Abandoning the await must also abandon the queued worker (codex
-        // finding i56-13): with an uncancelable gate wait, every expired
-        // check left a worker queued forever, retaining its script and — once
-        // a wedge cleared — monopolizing the gate with obsolete work. Not
-        // disposed (no `using`): the worker may still hold the token after
-        // this method returns; a timer-less CTS is safe to leave to the GC.
-        var abandonment = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
-        var workToken = abandonment.Token;
-        var work = Task.Run(async () =>
+        if (_moduleSource is null) return null;
+        var callDeadline = deadline ?? DateTimeOffset.UtcNow + _callTimeout;
+        var work = Task.Run(() =>
         {
             try
             {
-                await _coldDetectionGate.WaitAsync(workToken);
-            }
-            catch (OperationCanceledException) { return null; }
-            catch (ObjectDisposedException) { return null; } // host torn down mid-queue
-            try
-            {
-                if (_disposed) return null;
-                if (_coldDetectionRunspace is null)
-                {
-                    if (_coldDetectionUnavailable) return null;
-                    var runspace = CreateRunspace();
-                    try
-                    {
-                        using var ps = PowerShell.Create();
-                        ps.Runspace = runspace;
-                        ps.AddCommand("Import-Module")
-                          .AddParameter("Name", _modulePath)
-                          .AddParameter("ErrorAction", "Stop");
-                        ps.Invoke();
-                        _coldDetectionRunspace = runspace;
-                    }
-                    catch
-                    {
-                        // Same module, same path as the warm import, so this is
-                        // near-unreachable when the warm import succeeded; a
-                        // permanent skip beats re-paying runspace creation on
-                        // every background job just to fail again.
-                        try { runspace.Dispose(); } catch { /* best effort */ }
-                        _coldDetectionUnavailable = true;
-                        return null;
-                    }
-                }
-                return TryGetDialectRefusal(_coldDetectionRunspace, script, background: true);
+                var commands = CaptureBackgroundCommandFacts(script);
+                var finding = TrustedPreflightClassifier.GetShellDialectFinding(script, commands);
+                return finding is null
+                    ? null
+                    : FormatDialectRefusal(finding, BashAvailable(commands), background: true);
             }
             catch { return null; }
-            finally
-            {
-                try { _coldDetectionGate.Release(); } catch (ObjectDisposedException) { /* torn down mid-work */ }
-            }
-        });
-        if (deadline is null) return await work;
-        if (await WaitForDeadlineAsync(work, deadline.Value, cancellationToken) == WaitOutcome.Completed)
+        }, CancellationToken.None);
+        TrackOwnedBackgroundWork(work);
+        if (await WaitForDeadlineAsync(work, callDeadline, cancellationToken) == WaitOutcome.Completed)
         {
             return await work;
         }
-        abandonment.Cancel(); // a still-queued worker stops queuing; an active one finishes and releases
         return null;
     }
 
@@ -729,10 +1126,12 @@ public sealed class RunspaceHost : IDisposable
                 "The script was NOT executed and warm state is untouched. " +
                 "Retry when the active call finishes, raise timeoutSeconds, or use background=true for stateless work."],
             Warnings: [],
-            TimedOut: true);
+            TimedOut: true,
+            Disposition: InvokeDisposition.NotStarted,
+            UserExecutionStarted: false);
     }
 
-    private InvokeResult ExecutionTimeoutResult(TimeSpan budget) => new(
+    private InvokeResult ExecutionTimeoutResult(TimeSpan budget, bool userExecutionStarted) => new(
         Success: false,
         Output: string.Empty,
         Errors: [$"Call timed out: it exceeded its {budget.TotalSeconds:0}s wall-clock budget (queue wait + execution); the runspace was recycled and all warm state was lost. " +
@@ -741,9 +1140,35 @@ public sealed class RunspaceHost : IDisposable
             "For work that needs the warm session (live connections, imported modules), rerun with a larger timeoutSeconds."],
         Warnings: [],
         TimedOut: true,
+        Disposition: userExecutionStarted
+            ? InvokeDisposition.OutcomeUnknown
+            : InvokeDisposition.NotStarted,
+        UserExecutionStarted: userExecutionStarted,
         WarmStateLost: true);
 
-    public async Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default, string route = "auto", int timeoutSeconds = 0, DateTimeOffset? deadline = null)
+    public Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default, string route = "auto", int timeoutSeconds = 0, DateTimeOffset? deadline = null) =>
+        InvokeCoreAsync(script, raw, cancellationToken, route, timeoutSeconds, deadline, authorizationCallback: null);
+
+    /// <summary>Audited invocation path. The callback is the fail-closed
+    /// pre-effect commit barrier and is never called for a dialect refusal.</summary>
+    internal Task<InvokeResult> InvokeAsync(
+        string script,
+        InvocationAuthorizationCallback authorizationCallback,
+        bool raw = false,
+        CancellationToken cancellationToken = default,
+        string route = "auto",
+        int timeoutSeconds = 0,
+        DateTimeOffset? deadline = null) =>
+        InvokeCoreAsync(script, raw, cancellationToken, route, timeoutSeconds, deadline, authorizationCallback);
+
+    private async Task<InvokeResult> InvokeCoreAsync(
+        string script,
+        bool raw,
+        CancellationToken cancellationToken,
+        string route,
+        int timeoutSeconds,
+        DateTimeOffset? deadline,
+        InvocationAuthorizationCallback? authorizationCallback)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var budget = EffectiveBudget(timeoutSeconds);
@@ -755,7 +1180,8 @@ public sealed class RunspaceHost : IDisposable
         {
             return QueueExpiryResult(budget);
         }
-        return await InvokeGateHeldAsync(script, raw, route, callDeadline, budget, cancellationToken);
+        return await InvokeGateHeldAsync(
+            script, raw, route, callDeadline, budget, cancellationToken, authorizationCallback);
     }
 
     /// <summary>Runs the script only if the runspace is idle RIGHT NOW; null
@@ -771,6 +1197,11 @@ public sealed class RunspaceHost : IDisposable
         // refreshes the idle clock — the watchdog must not stop a server right
         // after it answered.
         LastActivityUtc = DateTimeOffset.UtcNow;
+        if (IdleInvocationOverrideForTests is { } idleOverride &&
+            idleOverride(script) is { } overridden)
+        {
+            return overridden;
+        }
         if (!_gate.Wait(0)) return null;
         // A pending rebuild counts as busy for a zero-wait probe: waiting for
         // it would reintroduce the queueing this API exists to avoid.
@@ -781,7 +1212,9 @@ public sealed class RunspaceHost : IDisposable
         }
         MarkGateAcquired();
         var budget = _callTimeout;
-        return await InvokeGateHeldAsync(script, raw, "auto", DateTimeOffset.UtcNow + budget, budget, cancellationToken);
+        return await InvokeGateHeldAsync(
+            script, raw, "auto", DateTimeOffset.UtcNow + budget, budget, cancellationToken,
+            authorizationCallback: null);
     }
 
     internal enum ReadyOutcome { Ready, TimedOut, Canceled, Faulted }
@@ -791,7 +1224,7 @@ public sealed class RunspaceHost : IDisposable
     // Outcomes stay discriminated (codex finding i56-11): a cancel is not a
     // timeout, and a faulted rebuild is its own labeled failure — it also
     // kicks off a fresh attempt so one bad build cannot brick the server.
-    private async Task<(Runspace? Runspace, ReadyOutcome Outcome)> AwaitRunspaceReadyAsync(
+    private async Task<(PrimedRunspace? Primed, ReadyOutcome Outcome)> AwaitRunspaceReadyAsync(
         DateTimeOffset deadline, CancellationToken cancellationToken)
     {
         var ready = _runspaceReady;
@@ -803,7 +1236,7 @@ public sealed class RunspaceHost : IDisposable
             // Metadata publishes at consumption, from the bundle that actually
             // won (i56-12): a superseded rebuild never stamps host state.
             PublishPrimedMetadata(ready.Result);
-            return (ready.Result.Runspace, ReadyOutcome.Ready);
+            return (ready.Result, ReadyOutcome.Ready);
         }
         Console.Error.WriteLine($"ptk: runspace rebuild failed ({ready.Exception?.GetBaseException().Message}); retrying in the background.");
         _runspaceReady = Task.Run(CreatePrimedRunspace);
@@ -818,6 +1251,8 @@ public sealed class RunspaceHost : IDisposable
             Errors: ["Call canceled by the caller while the replacement runspace was being rebuilt. The script was NOT executed."],
             Warnings: [],
             TimedOut: false,
+            Disposition: InvokeDisposition.NotStarted,
+            UserExecutionStarted: false,
             Recovering: true),
         ReadyOutcome.Faulted => new InvokeResult(
             Success: false,
@@ -825,6 +1260,8 @@ public sealed class RunspaceHost : IDisposable
             Errors: ["Runspace rebuild FAILED after a previous recycle; a fresh rebuild was started. The script was NOT executed. Retry shortly."],
             Warnings: [],
             TimedOut: false,
+            Disposition: InvokeDisposition.NotStarted,
+            UserExecutionStarted: false,
             Recovering: true),
         _ => new InvokeResult(
             Success: false,
@@ -833,46 +1270,111 @@ public sealed class RunspaceHost : IDisposable
                 "The script was NOT executed. Retry shortly, or raise timeoutSeconds."],
             Warnings: [],
             TimedOut: true,
+            Disposition: InvokeDisposition.NotStarted,
+            UserExecutionStarted: false,
             Recovering: true),
     };
 
-    private async Task<InvokeResult> InvokeGateHeldAsync(string script, bool raw, string route, DateTimeOffset callDeadline, TimeSpan budget, CancellationToken cancellationToken)
+    private static InvokeResult AuthorizationFailureResult(bool timedOut) => new(
+        Success: false,
+        Output: string.Empty,
+        Errors: timedOut
+            ? ["The wall-clock budget expired during pre-execution authorization. The script was NOT executed."]
+            : ["Pre-execution authorization failed or was refused. The script was NOT executed."],
+        Warnings: [],
+        TimedOut: timedOut,
+        Disposition: InvokeDisposition.NotStarted,
+        UserExecutionStarted: false);
+
+    private sealed class TrustedPreflightIsolationException(
+        string message,
+        Exception? innerException = null) : Exception(message, innerException);
+
+    private static InvocationPreparation PrepareInvocation(
+        string originalScript,
+        string resolvedScript,
+        bool raw,
+        string route)
+    {
+        var requestedRoute = route?.ToLowerInvariant() switch
+        {
+            "pwsh" => "pwsh",
+            "rtk" => "rtk",
+            _ => "auto",
+        };
+        var effectiveRoute = string.Equals(resolvedScript, originalScript, StringComparison.Ordinal)
+            ? "powershell_direct"
+            : "rtk";
+        var permittedFallbacks = raw || requestedRoute == "pwsh"
+            ? Array.Empty<string>()
+            : ["powershell_direct"];
+        var fallbackReason = !raw && requestedRoute == "rtk" && effectiveRoute == "powershell_direct"
+            ? "rtk_resolution_returned_original"
+            : null;
+        return new InvocationPreparation(
+            effectiveRoute,
+            requestedRoute,
+            permittedFallbacks,
+            fallbackReason);
+    }
+
+    private async Task<InvokeResult> InvokeGateHeldAsync(
+        string script,
+        bool raw,
+        string route,
+        DateTimeOffset callDeadline,
+        TimeSpan budget,
+        CancellationToken cancellationToken,
+        InvocationAuthorizationCallback? authorizationCallback)
     {
         var ps = PowerShell.Create();
         var handedOff = false;
         try
         {
-            var (runspace, readyOutcome) = await AwaitRunspaceReadyAsync(callDeadline, cancellationToken);
-            if (runspace is null)
+            var (primed, readyOutcome) = await AwaitRunspaceReadyAsync(callDeadline, cancellationToken);
+            if (primed is null)
             {
                 return RecoveringResult(budget, readyOutcome);
             }
+            var runspace = primed.Runspace;
 
-            // Preflight runs pipelines on the warm runspace (dialect check,
-            // routing, exit-code bookkeeping) BEFORE the timed main pipeline,
-            // so it sits inside the same deadline: a session-shadowed helper
-            // or wedged rtk child hanging preflight is the d3-1 wedge class
-            // (plan finding i56p-1). raw skips routing as well as shaping:
-            // raw means the uncompressed truth, executed exactly as written;
-            // route=pwsh bypasses by the same consent (shell-dialect plan).
-            var checkDialect = ModuleLoaded && !raw && route != "pwsh";
+            // Trusted preflight executes no PowerShell. Read-only CLR pattern
+            // enumeration captures plain facts without entering lookup hooks
+            // or auto-import and without mutating any ambient user state; the
+            // C# classifier then decides over those values only. raw skips
+            // routing and shaping; route=pwsh bypasses by explicit consent.
+            var checkDialect = primed.ModuleLoaded &&
+                               !raw &&
+                               !string.Equals(route, "pwsh", StringComparison.OrdinalIgnoreCase);
+            var preflightDelay = PreflightDelayForTests;
             var preflight = Task.Run(() =>
             {
+                if (preflightDelay > TimeSpan.Zero)
+                    Thread.Sleep(preflightDelay);
                 var resolved = script;
                 if (checkDialect)
                 {
-                    // Dialect check first (shell-dialect plan D1, slice 2): a
-                    // probed bash-only construct gets a fast labeled refusal
-                    // with recovery guidance instead of dying later as a
-                    // misdirected pwsh error.
-                    var refusal = TryGetDialectRefusal(runspace, script, background: false);
-                    if (refusal is not null) return (Refusal: refusal, Script: script);
-                    resolved = ResolveScript(runspace, script, route);
+                    var commands = CaptureForegroundCommandFacts(runspace, script);
+                    var finding = TrustedPreflightClassifier.GetShellDialectFinding(script, commands);
+                    if (finding is not null)
+                    {
+                        return (
+                            Refusal: FormatDialectRefusal(
+                                finding,
+                                BashAvailable(commands),
+                                background: false),
+                            Script: script);
+                    }
+                    if (route.Equals("auto", StringComparison.OrdinalIgnoreCase) ||
+                        route.Equals("rtk", StringComparison.OrdinalIgnoreCase))
+                    {
+                        resolved = TrustedPreflightClassifier.ResolveScript(
+                            script,
+                            route,
+                            ResolveEffectiveRtkPath(commands),
+                            commands);
+                    }
                 }
-                // Reset before each call so a previous call's native exit code
-                // is never reported against a script that ran no native
-                // command (the stale-LASTEXITCODE bug).
-                ResetExitCode(runspace);
                 return (Refusal: (string?)null, Script: resolved);
             }, CancellationToken.None);
 
@@ -893,26 +1395,53 @@ public sealed class RunspaceHost : IDisposable
                         Output: string.Empty,
                         Errors: ["Call canceled by the caller during pre-execution checks; the script was not started and warm state was preserved."],
                         Warnings: [],
-                        TimedOut: false);
+                        TimedOut: false,
+                        Disposition: InvokeDisposition.NotStarted,
+                        UserExecutionStarted: false);
                 }
             }
             if (preflightOutcome != WaitOutcome.Completed)
             {
-                // A stuck preflight pipeline is a wedged warm runspace; there
-                // is no PowerShell handle to stop here, so recycle.
+                // Snapshot capture touches the runspace's CLR session table. If
+                // the combined snapshot/classifier task wedges, its access can
+                // no longer be proven finished; recycle rather than dispatch or
+                // preserve a runspace still observed by abandoned host work.
                 RecycleAbandoning(preflight, runspace);
                 return preflightOutcome == WaitOutcome.TimedOut
-                    ? ExecutionTimeoutResult(budget)
+                    ? ExecutionTimeoutResult(budget, userExecutionStarted: false)
                     : new InvokeResult(
                         Success: false,
                         Output: string.Empty,
                         Errors: [$"Call canceled by the caller, and preflight did not finish within {StopGrace.TotalSeconds:0}s; the runspace was recycled and all warm state was lost."],
                         Warnings: [],
                         TimedOut: false,
+                        Disposition: InvokeDisposition.NotStarted,
+                        UserExecutionStarted: false,
                         WarmStateLost: true); // the flag must match the text (i56-14)
             }
 
-            var (preflightRefusal, resolvedScript) = await preflight;
+            (string? preflightRefusal, string resolvedScript) preflightResult;
+            try
+            {
+                preflightResult = await preflight;
+            }
+            catch (TrustedPreflightIsolationException)
+            {
+                // A failed CLR snapshot leaves preflight unproven. Do not
+                // dispatch or preserve a runspace still potentially observed
+                // by abandoned host work.
+                RecycleAbandoning(Task.CompletedTask, runspace);
+                return new InvokeResult(
+                    Success: false,
+                    Output: string.Empty,
+                    Errors: ["Trusted pre-execution isolation failed; the script was NOT executed and the runspace was recycled."],
+                    Warnings: [],
+                    TimedOut: false,
+                    Disposition: InvokeDisposition.NotStarted,
+                    UserExecutionStarted: false,
+                    WarmStateLost: true);
+            }
+            var (preflightRefusal, resolvedScript) = preflightResult;
             if (preflightRefusal is not null)
             {
                 return new InvokeResult(
@@ -920,7 +1449,9 @@ public sealed class RunspaceHost : IDisposable
                     Output: preflightRefusal,
                     Errors: [],
                     Warnings: [],
-                    TimedOut: false);
+                    TimedOut: false,
+                    Disposition: InvokeDisposition.NotStarted,
+                    UserExecutionStarted: false);
             }
 
             // Completion is not permission to CONTINUE: readiness or preflight
@@ -936,16 +1467,81 @@ public sealed class RunspaceHost : IDisposable
                     Errors: [$"The {budget.TotalSeconds:0}s wall-clock budget expired during pre-execution checks. " +
                         "The script was NOT executed and warm state is untouched. Retry, or raise timeoutSeconds."],
                     Warnings: [],
-                    TimedOut: true);
+                    TimedOut: true,
+                    Disposition: InvokeDisposition.NotStarted,
+                    UserExecutionStarted: false);
             }
+
+            if (authorizationCallback is not null)
+            {
+                var preparation = PrepareInvocation(script, resolvedScript, raw, route);
+                Task<bool> authorization;
+                try
+                {
+                    // Invoke exactly once. AsTask only observes that one
+                    // ValueTask; it never retries a failed audit commit. The
+                    // persistence barrier is server-owned: client cancellation
+                    // must not abandon it and let a terminal record overtake a
+                    // late dispatch append.
+                    authorization = authorizationCallback(
+                        preparation, CancellationToken.None).AsTask();
+                }
+                catch (Exception)
+                {
+                    return AuthorizationFailureResult(timedOut: false);
+                }
+
+                bool authorized;
+                try
+                {
+                    authorized = await authorization;
+                }
+                catch (Exception)
+                {
+                    return AuthorizationFailureResult(timedOut: false);
+                }
+
+                if (!authorized)
+                {
+                    return AuthorizationFailureResult(timedOut: false);
+                }
+
+                // Only after the durable barrier settles may the client token
+                // or deadline terminate this request. In either case no
+                // bookkeeping reset or user pipeline has started.
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return AuthorizationFailureResult(timedOut: false);
+                }
+
+                // Audit durability consumes the same request budget. Never
+                // begin execution merely because authorization completed a
+                // moment after its deadline.
+                if (DateTimeOffset.UtcNow >= callDeadline)
+                {
+                    return AuthorizationFailureResult(timedOut: true);
+                }
+            }
+
+            // Reset only after the audited barrier authorizes this exact
+            // preparation. A refusal/exception therefore performs no later
+            // session mutation (the stale-LASTEXITCODE guard still precedes
+            // every actual user pipeline).
+            ResetExitCode(runspace);
 
             ps.Runspace = runspace;
             // useLocalScope: false — assignments land in the runspace's session
             // state and survive into the next call; that persistence is the point.
-            ps.AddScript(resolvedScript, useLocalScope: false)
-              .AddCommand(ModuleLoaded && !raw ? "Compress-PtcOutput" : "Out-String");
+            ps.AddScript(resolvedScript, useLocalScope: false);
+            if (!raw && primed.CompressCommand is not null)
+                ps.AddScript(
+                        "$input | & $args[0]",
+                        useLocalScope: true)
+                  .AddArgument(primed.CompressCommand);
+            else
+                ps.AddCommand("Microsoft.PowerShell.Utility\\Out-String");
 
-            var invokeTask = ps.InvokeAsync();
+            var invokeTask = InvokeAsyncWithoutAmbientAudit(ps);
             var outcome = await WaitForDeadlineAsync(invokeTask, callDeadline, cancellationToken);
 
             if (outcome == WaitOutcome.Canceled)
@@ -960,7 +1556,9 @@ public sealed class RunspaceHost : IDisposable
                         Output: string.Empty,
                         Errors: ["Call canceled by the caller; the pipeline was stopped and warm state was preserved."],
                         Warnings: [],
-                        TimedOut: false);
+                        TimedOut: false,
+                        Disposition: InvokeDisposition.Canceled,
+                        UserExecutionStarted: true);
                 }
 
                 handedOff = true;
@@ -971,6 +1569,8 @@ public sealed class RunspaceHost : IDisposable
                     Errors: [$"Call canceled by the caller, but the pipeline did not stop within {StopGrace.TotalSeconds:0}s; the runspace was recycled and all warm state was lost."],
                     Warnings: [],
                     TimedOut: false,
+                    Disposition: InvokeDisposition.OutcomeUnknown,
+                    UserExecutionStarted: true,
                     WarmStateLost: true);
             }
 
@@ -980,7 +1580,7 @@ public sealed class RunspaceHost : IDisposable
                 AbandonAndRecycle(ps, invokeTask, runspace);
                 // Teach the recovery paths at the moment of failure — the one
                 // place a model reliably reads documentation (design P4).
-                return ExecutionTimeoutResult(budget);
+                return ExecutionTimeoutResult(budget, userExecutionStarted: true);
             }
 
             try
@@ -996,6 +1596,8 @@ public sealed class RunspaceHost : IDisposable
                     Errors: errors,
                     Warnings: [.. ps.Streams.Warning.Select(w => w.ToString())],
                     TimedOut: false,
+                    Disposition: InvokeDisposition.Completed,
+                    UserExecutionStarted: true,
                     ExitCode: exitCode == 0 ? null : exitCode,
                     Stderr: stderr,
                     WarmStateLost: wedged);
@@ -1016,6 +1618,8 @@ public sealed class RunspaceHost : IDisposable
                     Errors: errors,
                     Warnings: [.. ps.Streams.Warning.Select(w => w.ToString())],
                     TimedOut: false,
+                    Disposition: InvokeDisposition.Failed,
+                    UserExecutionStarted: true,
                     ExitCode: exitCode == 0 ? null : exitCode,
                     Stderr: stderr,
                     WarmStateLost: wedged);
@@ -1035,7 +1639,24 @@ public sealed class RunspaceHost : IDisposable
     /// (e.g. a hung rtk child on the log leg) is timed out and the runspace
     /// recycled, exactly like a timed-out foreground call: a poll must never hold
     /// the gate forever.</summary>
-    public async Task<string> ShapeTextAsync(string text, CancellationToken cancellationToken = default, string? elisionHint = null)
+    public Task<string> ShapeTextAsync(
+        string text,
+        CancellationToken cancellationToken = default,
+        string? elisionHint = null) =>
+        ShapeTextCoreAsync(text, cancellationToken, elisionHint, runspaceRecycled: null);
+
+    internal Task<string> ShapeTextAuditedAsync(
+        string text,
+        CancellationToken cancellationToken,
+        string? elisionHint,
+        Action runspaceRecycled) =>
+        ShapeTextCoreAsync(text, cancellationToken, elisionHint, runspaceRecycled);
+
+    private async Task<string> ShapeTextCoreAsync(
+        string text,
+        CancellationToken cancellationToken,
+        string? elisionHint,
+        Action? runspaceRecycled)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!ModuleLoaded || text.Length == 0) return text;
@@ -1052,19 +1673,24 @@ public sealed class RunspaceHost : IDisposable
         var handedOff = false;
         try
         {
-            var (runspace, _) = await AwaitRunspaceReadyAsync(deadline, cancellationToken);
-            if (runspace is null) return text;
+            var (primed, _) = await AwaitRunspaceReadyAsync(deadline, cancellationToken);
+            if (primed?.CompressCommand is null) return text;
+            var runspace = primed.Runspace;
             ps.Runspace = runspace;
-            ps.AddCommand("Compress-PtcOutput");
+            ps.AddScript(
+                    "if ($args.Count -gt 1) { $input | & $args[0] -ElisionHint $args[1] } " +
+                    "else { $input | & $args[0] }",
+                    useLocalScope: true)
+              .AddArgument(primed.CompressCommand);
             // Context-correct elision advice, composed BY the elision itself
             // (sd3-2..sd3-4): the caller knows its recovery path; inferring
             // elision downstream from the shaped text proved unsound in both
             // directions.
-            if (elisionHint is not null) ps.AddParameter("ElisionHint", elisionHint);
+            if (elisionHint is not null) ps.AddArgument(elisionHint);
             var input = new PSDataCollection<object> { text };
             input.Complete();
 
-            var invokeTask = ps.InvokeAsync(input);
+            var invokeTask = InvokeAsyncWithoutAmbientAudit(ps, input);
             var outcome = await WaitForDeadlineAsync(invokeTask, deadline, cancellationToken);
             if (outcome != WaitOutcome.Completed)
             {
@@ -1074,6 +1700,7 @@ public sealed class RunspaceHost : IDisposable
                 }
                 handedOff = true;
                 AbandonAndRecycle(ps, invokeTask, runspace);
+                runspaceRecycled?.Invoke();
                 return text + Environment.NewLine +
                     "[ptk: shaping timed out; the runspace was recycled; raw text returned]";
             }
@@ -1113,28 +1740,69 @@ public sealed class RunspaceHost : IDisposable
     /// than silently start the job in the server process cwd — the wrong
     /// project (plan finding i56p-4; codex finding i56-5). Cancellation
     /// propagates.</summary>
-    public async Task<(string? Path, CwdProbeOutcome Outcome)> TryGetCurrentLocationAsync(CancellationToken cancellationToken = default, DateTimeOffset? deadline = null)
+    public async Task<(string? Path, CwdProbeOutcome Outcome)> TryGetCurrentLocationAsync(
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? deadline = null,
+        Action? canceledRecycleObserver = null)
     {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        var callDeadline = deadline ?? DateTimeOffset.UtcNow + _callTimeout;
+        LastActivityUtc = DateTimeOffset.UtcNow;
+        if (!await TryEnterGateAsync(callDeadline, cancellationToken))
+            return (null, CwdProbeOutcome.QueueExpired);
+
+        MarkGateAcquired();
         try
         {
-            var result = await InvokeAsync("(Get-Location).Path", raw: true, cancellationToken: cancellationToken, deadline: deadline);
-            // The inner call classifies some cancellations as results (a
-            // wedged stop, a canceled bookkeeping read); a canceled REQUEST
-            // must never look like a usable probe, or the job starts for a
-            // caller who aborted (i56-5, reopened leg).
-            cancellationToken.ThrowIfCancellationRequested();
-            if (result.Recovering) return (null, CwdProbeOutcome.Recovering);
-            if (result.TimedOut)
+            var (primed, readyOutcome) = await AwaitRunspaceReadyAsync(callDeadline, cancellationToken);
+            if (primed is null)
             {
-                return (null, result.WarmStateLost ? CwdProbeOutcome.TimedOutExecuting : CwdProbeOutcome.QueueExpired);
+                return readyOutcome == ReadyOutcome.Canceled
+                    ? throw new OperationCanceledException(cancellationToken)
+                    : (null, CwdProbeOutcome.Recovering);
             }
-            var path = result.Output.Trim();
-            return result.Success && path.Length > 0 && Directory.Exists(path)
+            var runspace = primed.Runspace;
+
+            // Read the provider intrinsic directly. Running `(Get-Location).Path`
+            // as a user-scope script allowed a prior call to shadow Get-Location
+            // and execute arbitrary effects before the background job's durable
+            // start authorization.
+            var locationReader = CurrentLocationReaderOverrideForTests;
+            var probe = Task.Run(() =>
+            {
+                if (locationReader is not null)
+                    return locationReader();
+                var location = runspace.SessionStateProxy.Path.CurrentLocation;
+                return string.Equals(location.Provider?.Name, "FileSystem", StringComparison.OrdinalIgnoreCase)
+                    ? location.Path
+                    : null;
+            }, CancellationToken.None);
+            var probeOutcome = await WaitForDeadlineAsync(probe, callDeadline, cancellationToken);
+            if (probeOutcome == WaitOutcome.Canceled)
+            {
+                if (await Task.WhenAny(probe, Task.Delay(StopGrace)) == probe)
+                    throw new OperationCanceledException(cancellationToken);
+                RecycleAbandoning(probe, runspace);
+                canceledRecycleObserver?.Invoke();
+                throw new OperationCanceledException(cancellationToken);
+            }
+            if (probeOutcome == WaitOutcome.TimedOut)
+            {
+                RecycleAbandoning(probe, runspace);
+                return (null, CwdProbeOutcome.TimedOutExecuting);
+            }
+
+            var path = await probe;
+            return path is { Length: > 0 }
                 ? (path, CwdProbeOutcome.Ok)
                 : (null, CwdProbeOutcome.Failed);
         }
         catch (OperationCanceledException) { throw; }
         catch { return (null, CwdProbeOutcome.Failed); }
+        finally
+        {
+            ReleaseGate();
+        }
     }
 
     /// <summary>Discard all warm state and start a fresh runspace. Caller-facing
@@ -1169,9 +1837,7 @@ public sealed class RunspaceHost : IDisposable
             PublishPrimedMetadata(fresh);
             _runspaceReady = Task.FromResult(fresh);
             RestoreEnvironmentBaseline();
-            _ = oldReady.ContinueWith(
-                t => { try { t.Result.Runspace.Dispose(); } catch { /* wedged runspace */ } },
-                TaskContinuationOptions.OnlyOnRanToCompletion);
+            TrackOwnedBackgroundWork(DisposeRunspaceWhenReadyAsync(oldReady));
         }
         finally
         {
@@ -1183,10 +1849,16 @@ public sealed class RunspaceHost : IDisposable
     // and the runspace is recycled anyway.
     private static readonly TimeSpan StopGrace = TimeSpan.FromSeconds(5);
 
+    /// <summary>Test hook for the otherwise platform/race-dependent path where
+    /// cancellation cannot confirm that an already-started pipeline stopped.</summary>
+    internal bool ForcePipelineStopFailureForTests { get; set; }
+
     /// <summary>Stops a canceled pipeline in place. True = it stopped within the
     /// grace period and the runspace is safe to keep using; false = treat as wedged.</summary>
-    private static async Task<bool> TryStopPipelineAsync(PowerShell ps, Task invokeTask)
+    private async Task<bool> TryStopPipelineAsync(PowerShell ps, Task invokeTask)
     {
+        if (ForcePipelineStopFailureForTests) return false;
+
         try
         {
             var stopTask = Task.Factory.FromAsync(ps.BeginStop, ps.EndStop, null);
@@ -1210,13 +1882,14 @@ public sealed class RunspaceHost : IDisposable
     private void AbandonAndRecycle(PowerShell wedged, Task abandonedInvoke, Runspace old)
     {
         _runspaceReady = Task.Run(CreatePrimedRunspace);
-        _ = Task.Run(async () =>
+        var cleanup = Task.Run(async () =>
         {
             try { wedged.Stop(); } catch { /* best effort */ }
             try { await abandonedInvoke; } catch { /* observe, else unobserved-task noise */ }
-            try { wedged.Dispose(); } catch { /* best effort */ }
-            try { old.Dispose(); } catch { /* wedged runspace */ }
+            wedged.Dispose();
+            old.Dispose();
         });
+        TrackOwnedBackgroundWork(cleanup);
     }
 
     // Recycle when there is no PowerShell handle to stop (a wedged preflight
@@ -1226,11 +1899,41 @@ public sealed class RunspaceHost : IDisposable
     private void RecycleAbandoning(Task abandonedWork, Runspace old)
     {
         _runspaceReady = Task.Run(CreatePrimedRunspace);
-        _ = Task.Run(async () =>
+        var cleanup = Task.Run(async () =>
         {
-            try { old.Dispose(); } catch { /* wedged runspace */ }
+            Exception? disposalFailure = null;
+            try { old.Dispose(); }
+            catch (Exception exception) { disposalFailure = exception; }
             try { await abandonedWork; } catch { /* observe, else unobserved-task noise */ }
+            if (disposalFailure is not null)
+                throw new IOException("Abandoned runspace disposal failed.", disposalFailure);
         });
+        TrackOwnedBackgroundWork(cleanup);
+    }
+
+    private static async Task DisposeRunspaceWhenReadyAsync(Task<PrimedRunspace> ready)
+    {
+        PrimedRunspace primed;
+        try { primed = await ready.ConfigureAwait(false); }
+        catch { return; } // A faulted rebuild never published a live replacement.
+        primed.Runspace.Dispose();
+    }
+
+    /// <summary>
+    /// Completes teardown of the current or rebuilding runspace. Unlike the
+    /// synchronous best-effort Dispose path, audited server shutdown awaits a
+    /// pending rebuild so server.stopped cannot overtake runspace creation or
+    /// destruction that still belongs to this process lifetime.
+    /// </summary>
+    internal async Task ShutdownAsync()
+    {
+        if (_disposed) return;
+
+        _disposed = true;
+        var ready = _runspaceReady;
+        await DisposeRunspaceWhenReadyAsync(ready).ConfigureAwait(false);
+        await DrainOwnedBackgroundWorkAsync().ConfigureAwait(false);
+        _gate.Dispose();
     }
 
     public void Dispose()
@@ -1250,8 +1953,6 @@ public sealed class RunspaceHost : IDisposable
                 t => { try { t.Result.Runspace.Dispose(); } catch { /* best effort */ } },
                 TaskContinuationOptions.OnlyOnRanToCompletion);
         }
-        try { _coldDetectionRunspace?.Dispose(); } catch { /* best effort on teardown */ }
         _gate.Dispose();
-        _coldDetectionGate.Dispose();
     }
 }

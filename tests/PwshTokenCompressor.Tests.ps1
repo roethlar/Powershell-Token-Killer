@@ -2,6 +2,17 @@ BeforeAll {
     Import-Module (Join-Path $PSScriptRoot '../src/PwshTokenCompressor.psd1') -Force
 }
 
+Describe 'standalone module lifecycle' {
+    It 'can unload and force-reimport outside the server-owned runspace' {
+        $manifest = Join-Path $PSScriptRoot '../src/PwshTokenCompressor.psd1'
+
+        { Remove-Module PwshTokenCompressor -Force -ErrorAction Stop } | Should -Not -Throw
+        { Import-Module $manifest -Force -ErrorAction Stop } | Should -Not -Throw
+
+        (Get-Command Compress-PtcOutput).ModuleName | Should -Be 'PwshTokenCompressor'
+    }
+}
+
 Describe 'Compress-PtcObject' {
     It 'compresses filesystem objects before formatting' {
         # Deterministic fixture: the live repo root is environment-sensitive (a
@@ -355,6 +366,25 @@ Describe 'Resolve-PtcInvokeScript routing' {
         } finally {
             $env:PATH = $savedPath
             Remove-Item -LiteralPath $shimDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'keeps a same-name external script ahead of an application on Windows' -Skip:(-not $IsWindows) {
+        # PowerShell resolves a PATH-local .ps1 before a same-name .exe. The
+        # observational wildcard fallback must preserve that order instead of
+        # routing the executable through rtk.
+        $shadowDir = Join-Path ([System.IO.Path]::GetTempPath()) ("ptc-script-shadow-{0}" -f ([guid]::NewGuid()))
+        New-Item -ItemType Directory -Path $shadowDir -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $shadowDir 'ptcshadow.ps1') -Value "'script-shadow'"
+        Set-Content -LiteralPath (Join-Path $shadowDir 'ptcshadow.exe') -Value ''
+        $savedPath = $env:PATH
+        try {
+            $env:PATH = "$shadowDir$([System.IO.Path]::PathSeparator)$env:PATH"
+            Resolve-PtcInvokeScript -Script 'ptcshadow' |
+                Should -BeExactly 'ptcshadow'
+        } finally {
+            $env:PATH = $savedPath
+            Remove-Item -LiteralPath $shadowDir -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
 

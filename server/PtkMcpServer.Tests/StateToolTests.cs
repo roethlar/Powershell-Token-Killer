@@ -67,25 +67,80 @@ public sealed class StateToolTests : IDisposable
     public async Task Concurrent_listAvailable_state_calls_do_not_queue_on_the_cache_gate()
     {
         // A slow first enumeration holds the cache gate; a second state call
-        // must report and return, not block behind it (i56-7). The shadow
-        // slows ONLY the -ListAvailable leg: slowing the main probe too kept
-        // the first call out of the cache gate at check time and made the
-        // original draft of this guard vacuous (passed with the gate
-        // blocking).
+        // must report and return, not block behind it (i56-7).
         StateTool.ClearAvailableCacheForTests();
-        await _host.InvokeAsync(
-            "function global:Get-Module { param([switch]$ListAvailable) if ($ListAvailable) { Start-Sleep -Seconds 5 } }",
-            route: "pwsh");
-        var first = StateTool.State(_host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None);
-        await Task.Delay(1500); // let the first call pass its main probe and take the cache gate
+        using var entered = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        _host.IdleInvocationOverrideForTests = script =>
+        {
+            if (!script.Contains("-ListAvailable", StringComparison.Ordinal)) return null;
+            entered.Set();
+            if (!release.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("test did not release module enumeration");
+            return new InvokeResult(
+                Success: true,
+                Output: "  InjectedModule 1.0",
+                Errors: [],
+                Warnings: [],
+                TimedOut: false,
+                Disposition: InvokeDisposition.Completed,
+                UserExecutionStarted: true);
+        };
+        Task<string>? first = null;
+        try
+        {
+            first = Task.Run(() =>
+                StateTool.State(_host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None));
+            Assert.True(entered.Wait(TimeSpan.FromSeconds(5)), "first enumeration never took the cache gate");
 
-        var sw = System.Diagnostics.Stopwatch.StartNew();
-        var second = await StateTool.State(_host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None);
-        sw.Stop();
+            var sw = System.Diagnostics.Stopwatch.StartNew();
+            var second = await StateTool.State(_host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None);
+            sw.Stop();
 
-        Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3), $"second state call took {sw.Elapsed}");
-        Assert.Contains($"pid {Environment.ProcessId}", second);
-        await first;
+            Assert.True(sw.Elapsed < TimeSpan.FromSeconds(3), $"second state call took {sw.Elapsed}");
+            Assert.Contains($"pid {Environment.ProcessId}", second);
+            Assert.Contains("enumeration already in progress in another state call (not cached)", second);
+            release.Set();
+            await first.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        finally
+        {
+            release.Set();
+            _host.IdleInvocationOverrideForTests = null;
+            if (first is not null)
+            {
+                try { await first.WaitAsync(TimeSpan.FromSeconds(10)); }
+                catch { /* preserve the primary assertion failure */ }
+            }
+            StateTool.ClearAvailableCacheForTests();
+        }
+    }
+
+    [Fact]
+    public async Task Global_GetModule_shadow_cannot_replace_state_probes()
+    {
+        StateTool.ClearAvailableCacheForTests();
+        try
+        {
+            var setup = await _host.InvokeAsync(
+                "function global:Get-Module { throw 'USER GET-MODULE SHADOW RAN' }; " +
+                "(Microsoft.PowerShell.Core\\Get-Command Get-Module -CommandType Function).Name",
+                raw: true,
+                route: "pwsh");
+            Assert.True(setup.Success);
+            Assert.Empty(setup.Errors);
+            Assert.Contains("Get-Module", setup.Output);
+
+            var state = await StateTool.State(
+                _host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None);
+            Assert.DoesNotContain("USER GET-MODULE SHADOW RAN", state);
+            Assert.DoesNotContain("[state probe errors]", state);
+            Assert.Contains("Microsoft.PowerShell.Utility", state);
+        }
+        finally
+        {
+            StateTool.ClearAvailableCacheForTests();
+        }
     }
 
     [Fact]
@@ -173,16 +228,23 @@ public sealed class StateToolTests : IDisposable
         StateTool.ClearAvailableCacheForTests();
         try
         {
-            // A session can shadow the very cmdlets the probe uses; the state
-            // report must say so rather than present partial output as truth.
-            await _host.InvokeAsync("function global:Get-Module { throw 'poisoned by session' }");
+            // A failed trusted enumeration must be surfaced rather than
+            // cached as empty or presented as partial truth.
+            _host.IdleInvocationOverrideForTests = _ => new InvokeResult(
+                Success: false,
+                Output: string.Empty,
+                Errors: ["injected module enumeration failure"],
+                Warnings: [],
+                TimedOut: false,
+                Disposition: InvokeDisposition.Failed,
+                UserExecutionStarted: true);
 
             var poisoned = await StateTool.State(_host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None);
             Assert.Contains("[state probe errors]", poisoned);
-            Assert.Contains("poisoned by session", poisoned);
+            Assert.Contains("injected module enumeration failure", poisoned);
             Assert.Contains("probe reported errors (not cached)", poisoned);
 
-            await _host.InvokeAsync("Remove-Item function:Get-Module");
+            _host.IdleInvocationOverrideForTests = null;
 
             var healthy = await StateTool.State(_host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None);
             Assert.DoesNotContain("[state probe errors]", healthy);
@@ -200,15 +262,21 @@ public sealed class StateToolTests : IDisposable
         StateTool.ClearAvailableCacheForTests();
         try
         {
-            // Success=true still carries non-terminating errors: a poisoned
-            // Get-Module that Write-Errors AND emits fake data must not be cached.
-            await _host.InvokeAsync(
-                "function global:Get-Module { Write-Error 'poison'; [pscustomobject]@{ Name = 'FakeModule'; Version = '0.0' } }");
+            // Success=true may still carry non-terminating errors alongside
+            // fake/partial data; that result must not be cached.
+            _host.IdleInvocationOverrideForTests = _ => new InvokeResult(
+                Success: true,
+                Output: "  FakeModule 0.0",
+                Errors: ["injected non-terminating probe error"],
+                Warnings: [],
+                TimedOut: false,
+                Disposition: InvokeDisposition.Completed,
+                UserExecutionStarted: true);
 
             var poisoned = await StateTool.State(_host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None);
             Assert.Contains("not cached", poisoned);
 
-            await _host.InvokeAsync("Remove-Item function:Get-Module");
+            _host.IdleInvocationOverrideForTests = null;
 
             var healthy = await StateTool.State(_host, _jobs, _rawUsage, listAvailable: true, CancellationToken.None);
             Assert.DoesNotContain("FakeModule", healthy);

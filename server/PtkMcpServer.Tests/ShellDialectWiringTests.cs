@@ -293,4 +293,110 @@ public sealed class ShellDialectWiringTests : IDisposable
             Assert.DoesNotContain("bash -lc", result.Output);
         }
     }
+
+    [Fact]
+    public async Task Background_detection_tracks_live_path_application_addition_and_removal()
+    {
+        var directory = Directory.CreateTempSubdirectory("ptk-background-path-");
+        var savedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var executable = OperatingSystem.IsWindows()
+            ? Path.Combine(directory.FullName, "export.cmd")
+            : Path.Combine(directory.FullName, "export");
+        try
+        {
+            var initial = await _host.TryGetBackgroundDialectRefusalAsync("export X=1");
+            Assert.Contains("[ptk:dialect]", initial);
+
+            File.WriteAllText(
+                executable,
+                OperatingSystem.IsWindows() ? "@exit /b 0\r\n" : "#!/bin/sh\nexit 0\n");
+            if (!OperatingSystem.IsWindows())
+            {
+                File.SetUnixFileMode(
+                    executable,
+                    UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute);
+            }
+            var changedPath = directory.FullName + Path.PathSeparator + savedPath;
+            var mutation = await _host.InvokeAsync(
+                $"$env:PATH = '{changedPath.Replace("'", "''")}'",
+                raw: true,
+                route: "pwsh");
+            Assert.True(mutation.Success, string.Join(Environment.NewLine, mutation.Errors));
+
+            Assert.Null(await _host.TryGetBackgroundDialectRefusalAsync("export X=1"));
+
+            File.Delete(executable);
+            var afterRemoval = await _host.TryGetBackgroundDialectRefusalAsync("export X=1");
+            Assert.Contains("[ptk:dialect]", afterRemoval);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", savedPath);
+            directory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Background_detection_remains_prompt_while_foreground_holds_the_warm_gate()
+    {
+        using var cancellation = new CancellationTokenSource();
+        var foreground = _host.InvokeAsync(
+            "Start-Sleep -Seconds 30",
+            raw: true,
+            cancellationToken: cancellation.Token,
+            route: "pwsh");
+        try
+        {
+            var busyDeadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+            while (!_host.GetGateStatus().Busy)
+            {
+                if (DateTimeOffset.UtcNow >= busyDeadline)
+                    throw new TimeoutException("Foreground call never acquired the warm gate.");
+                await Task.Delay(10);
+            }
+
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(5);
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var refusal = await _host.TryGetBackgroundDialectRefusalAsync(
+                "export X=1",
+                deadline: deadline);
+
+            Assert.Contains("[ptk:dialect]", refusal);
+            Assert.True(
+                stopwatch.Elapsed < TimeSpan.FromSeconds(2),
+                $"Background classification waited {stopwatch.Elapsed} for the warm gate.");
+        }
+        finally
+        {
+            cancellation.Cancel();
+            _ = await foreground.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Fact]
+    public async Task Background_relative_path_collision_is_conservative_and_never_uses_process_cwd()
+    {
+        var savedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PATH",
+                "relative-job-tools" + Path.PathSeparator + savedPath);
+
+            // The future job CWD might contain an `export` command. Refusing it
+            // from the unrelated server process CWD would be a false positive.
+            Assert.Null(await _host.TryGetBackgroundDialectRefusalAsync("export X=1"));
+
+            // Parse-fatal evidence is still identified, but an unproven `bash`
+            // collision must not produce wrap advice.
+            var parseFatal = await _host.TryGetBackgroundDialectRefusalAsync(
+                "cat <<EOF\nhello\nEOF");
+            Assert.Contains("[ptk:dialect]", parseFatal);
+            Assert.DoesNotContain("bash -lc", parseFatal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", savedPath);
+        }
+    }
 }

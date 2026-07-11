@@ -147,6 +147,277 @@ public sealed class InvokeToolTests : IDisposable
     }
 
     [Fact]
+    public async Task Authorization_observes_exact_rtk_preparation_before_exit_reset_and_execution()
+    {
+        var (dir, stub) = CreateRtkStub("echo RTKROUTE %*\nexit /b 0");
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            var order = new List<string>();
+            var authorizationCalls = 0;
+            InvocationPreparation? observed = null;
+            _host.ExitCodeResetObserverForTests = () => order.Add("reset");
+
+            var result = await _host.InvokeAsync(
+                "git status",
+                (preparation, cancellationToken) =>
+                {
+                    authorizationCalls++;
+                    observed = preparation;
+                    order.Add("authorize");
+                    return ValueTask.FromResult(true);
+                },
+                route: "auto");
+
+            Assert.True(result.Success);
+            Assert.Contains("RTKROUTE git status", result.Output);
+            Assert.Equal(1, authorizationCalls);
+            Assert.NotNull(observed);
+            Assert.Equal("rtk", observed.EffectiveRoute);
+            Assert.Equal("auto", observed.RequestedRoute);
+            Assert.Equal(["powershell_direct"], observed.PermittedFallbacks);
+            Assert.Null(observed.FallbackReason);
+            Assert.Equal(["authorize", "reset"], order);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("function global:git { param([Parameter(ValueFromRemainingArguments=$true)]$rest) 'shadow' }")]
+    [InlineData("Set-Alias -Name git -Value Get-Date -Scope Global")]
+    public async Task Warm_function_or_alias_shadow_keeps_native_name_on_direct_route(string shadowScript)
+    {
+        var (dir, stub) = CreateRtkStub("echo must-not-run\nexit /b 0");
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            var shadow = await _host.InvokeAsync(shadowScript, raw: true, route: "pwsh");
+            Assert.True(shadow.Success, string.Join(Environment.NewLine, shadow.Errors));
+            InvocationPreparation? observed = null;
+
+            var result = await _host.InvokeAsync(
+                "git status",
+                (preparation, _) =>
+                {
+                    observed = preparation;
+                    return ValueTask.FromResult(false);
+                },
+                route: "auto");
+
+            Assert.Equal(InvokeDisposition.NotStarted, result.Disposition);
+            Assert.NotNull(observed);
+            Assert.Equal("powershell_direct", observed.EffectiveRoute);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Windows_external_script_shadows_same_name_application_before_rtk_routing()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var commandDir = Directory.CreateTempSubdirectory("ptk-script-shadow-");
+        var commandName = "ptkshadow" + Guid.NewGuid().ToString("N");
+        File.WriteAllText(Path.Combine(commandDir.FullName, commandName + ".ps1"), "'script-shadow'");
+        File.WriteAllBytes(Path.Combine(commandDir.FullName, commandName + ".exe"), []);
+        var (rtkDir, stub) = CreateRtkStub("echo must-not-run\nexit /b 0");
+        var savedPath = Environment.GetEnvironmentVariable("PATH");
+        var savedRtk = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PATH",
+                commandDir.FullName + Path.PathSeparator + savedPath);
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            InvocationPreparation? observed = null;
+
+            var result = await _host.InvokeAsync(
+                commandName,
+                (preparation, _) =>
+                {
+                    observed = preparation;
+                    return ValueTask.FromResult(false);
+                },
+                route: "auto");
+
+            Assert.Equal(InvokeDisposition.NotStarted, result.Disposition);
+            Assert.NotNull(observed);
+            Assert.Equal("powershell_direct", observed.EffectiveRoute);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", savedPath);
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", savedRtk);
+            rtkDir.Delete(recursive: true);
+            commandDir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Forced_rtk_original_path_reports_its_exact_fallback_metadata()
+    {
+        InvocationPreparation? observed = null;
+
+        var result = await _host.InvokeAsync(
+            "$global:forcedFallbackRan = 1",
+            (preparation, cancellationToken) =>
+            {
+                observed = preparation;
+                return ValueTask.FromResult(true);
+            },
+            route: "rtk");
+
+        Assert.True(result.Success);
+        Assert.NotNull(observed);
+        Assert.Equal("powershell_direct", observed.EffectiveRoute);
+        Assert.Equal("rtk", observed.RequestedRoute);
+        Assert.Equal(["powershell_direct"], observed.PermittedFallbacks);
+        Assert.Equal("rtk_resolution_returned_original", observed.FallbackReason);
+    }
+
+    [Theory]
+    [InlineData(true, "rtk")]
+    [InlineData(false, "pwsh")]
+    public async Task Explicit_direct_consent_permits_no_fallback(bool raw, string route)
+    {
+        InvocationPreparation? observed = null;
+
+        var result = await _host.InvokeAsync(
+            "'direct execution'",
+            (preparation, cancellationToken) =>
+            {
+                observed = preparation;
+                return ValueTask.FromResult(true);
+            },
+            raw: raw,
+            route: route);
+
+        Assert.True(result.Success);
+        Assert.NotNull(observed);
+        Assert.Equal("powershell_direct", observed.EffectiveRoute);
+        Assert.Equal(route, observed.RequestedRoute);
+        Assert.Empty(observed.PermittedFallbacks);
+        Assert.Null(observed.FallbackReason);
+    }
+
+    [Fact]
+    public async Task Authorization_refusal_runs_once_before_reset_and_prevents_user_execution()
+    {
+        var authorizationCalls = 0;
+        var resetCalls = 0;
+        _host.ExitCodeResetObserverForTests = () => resetCalls++;
+
+        var refused = await _host.InvokeAsync(
+            "$global:authorizationRefusalSentinel = 'RAN'",
+            (preparation, cancellationToken) =>
+            {
+                authorizationCalls++;
+                return ValueTask.FromResult(false);
+            },
+            route: "pwsh");
+
+        Assert.False(refused.Success);
+        Assert.Equal(InvokeDisposition.NotStarted, refused.Disposition);
+        Assert.False(refused.UserExecutionStarted);
+        Assert.Equal(1, authorizationCalls);
+        Assert.Equal(0, resetCalls);
+        Assert.DoesNotContain("authorizationRefusalSentinel", string.Join('\n', refused.Errors));
+
+        _host.ExitCodeResetObserverForTests = null;
+        var sentinel = await _host.InvokeAsync(
+            "if ($null -eq $global:authorizationRefusalSentinel) { 'never-ran' } else { $global:authorizationRefusalSentinel }",
+            route: "pwsh");
+        Assert.Contains("never-ran", sentinel.Output);
+    }
+
+    [Fact]
+    public async Task Authorization_exception_is_sanitized_and_prevents_user_execution()
+    {
+        const string secret = "audit-secret-that-must-not-escape";
+        var authorizationCalls = 0;
+        var resetCalls = 0;
+        _host.ExitCodeResetObserverForTests = () => resetCalls++;
+
+        var refused = await _host.InvokeAsync(
+            "$global:authorizationExceptionSentinel = 'RAN'",
+            (preparation, cancellationToken) =>
+            {
+                authorizationCalls++;
+                throw new InvalidOperationException(secret);
+            },
+            route: "pwsh");
+
+        Assert.False(refused.Success);
+        Assert.Equal(InvokeDisposition.NotStarted, refused.Disposition);
+        Assert.False(refused.UserExecutionStarted);
+        Assert.DoesNotContain(secret, string.Join('\n', refused.Errors));
+        Assert.DoesNotContain("authorizationExceptionSentinel", string.Join('\n', refused.Errors));
+        Assert.Equal(1, authorizationCalls);
+        Assert.Equal(0, resetCalls);
+
+        _host.ExitCodeResetObserverForTests = null;
+        var sentinel = await _host.InvokeAsync(
+            "if ($null -eq $global:authorizationExceptionSentinel) { 'never-ran' } else { $global:authorizationExceptionSentinel }",
+            route: "pwsh");
+        Assert.Contains("never-ran", sentinel.Output);
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_waits_for_server_owned_authorization_barrier_then_never_executes()
+    {
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var release = new TaskCompletionSource<bool>(TaskCreationOptions.RunContinuationsAsynchronously);
+        var barrierTokenCanBeCanceled = true;
+        var resetCalls = 0;
+        _host.ExitCodeResetObserverForTests = () => resetCalls++;
+        using var cts = new CancellationTokenSource();
+
+        var invocation = _host.InvokeAsync(
+            "$global:barrierCancellationSentinel = 'RAN'",
+            (preparation, barrierToken) =>
+            {
+                barrierTokenCanBeCanceled = barrierToken.CanBeCanceled;
+                entered.SetResult();
+                return new ValueTask<bool>(release.Task);
+            },
+            cancellationToken: cts.Token,
+            route: "pwsh");
+
+        await entered.Task;
+        cts.Cancel();
+        await Task.Delay(150);
+        var completedBeforeRelease = invocation.IsCompleted;
+        var resetCallsBeforeRelease = resetCalls;
+
+        release.SetResult(true);
+        var result = await invocation;
+        Assert.False(barrierTokenCanBeCanceled);
+        Assert.False(completedBeforeRelease);
+        Assert.Equal(0, resetCallsBeforeRelease);
+        Assert.False(result.Success);
+        Assert.False(result.TimedOut);
+        Assert.Equal(InvokeDisposition.NotStarted, result.Disposition);
+        Assert.False(result.UserExecutionStarted);
+        Assert.Equal(0, resetCalls);
+
+        _host.ExitCodeResetObserverForTests = null;
+        var sentinel = await _host.InvokeAsync(
+            "if ($null -eq $global:barrierCancellationSentinel) { 'never-ran' } else { $global:barrierCancellationSentinel }",
+            route: "pwsh");
+        Assert.Contains("never-ran", sentinel.Output);
+    }
+
+    [Fact]
     public async Task Single_native_command_routes_through_rtk()
     {
         var (dir, stub) = CreateRtkStub("echo RTKROUTE %*\nexit /b 0");
@@ -447,6 +718,8 @@ public sealed class InvokeToolTests : IDisposable
         Assert.False(queued.Success);
         Assert.True(queued.TimedOut);
         Assert.Contains("NOT executed", queued.Errors[0]);
+        Assert.Equal(InvokeDisposition.NotStarted, queued.Disposition);
+        Assert.False(queued.UserExecutionStarted);
         // Fails fast at budget expiry, not after the active call finishes.
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(4), $"queued call took {sw.Elapsed}");
 
@@ -461,13 +734,12 @@ public sealed class InvokeToolTests : IDisposable
     [Fact]
     public async Task Preflight_cannot_outlive_the_budget()
     {
-        // A session-shadowed detector hangs preflight before the main
-        // pipeline's timer used to start (plan finding i56p-1, d3-1 class).
-        using var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(60));
-        var define = await host.InvokeAsync(
-            "function global:Get-PtcShellDialectFinding { param($Script) Start-Sleep -Seconds 60 }",
-            route: "pwsh");
-        Assert.True(define.Success);
+        // A wedged trusted preflight must remain inside the main pipeline's
+        // wall-clock budget (plan finding i56p-1, d3-1 class).
+        using var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(60))
+        {
+            PreflightDelayForTests = TimeSpan.FromSeconds(8),
+        };
 
         var sw = System.Diagnostics.Stopwatch.StartNew();
         var result = await host.InvokeAsync("'hello'", timeoutSeconds: 2);
@@ -475,9 +747,13 @@ public sealed class InvokeToolTests : IDisposable
 
         Assert.False(result.Success);
         Assert.True(result.TimedOut);
+        Assert.True(result.WarmStateLost);
+        Assert.Equal(InvokeDisposition.NotStarted, result.Disposition);
+        Assert.False(result.UserExecutionStarted);
         Assert.True(sw.Elapsed < TimeSpan.FromSeconds(20), $"preflight-stuck call took {sw.Elapsed}");
 
         // The wedged runspace was recycled; the next call works.
+        host.PreflightDelayForTests = TimeSpan.Zero;
         var after = await host.InvokeAsync("1 + 1");
         Assert.True(after.Success);
         Assert.Contains("2", after.Output);
@@ -525,6 +801,8 @@ public sealed class InvokeToolTests : IDisposable
         Assert.True(during.TimedOut);
         Assert.True(during.Recovering); // discriminated from queue contention (i56-11)
         Assert.Contains("NOT executed", during.Errors[0]);
+        Assert.Equal(InvokeDisposition.NotStarted, during.Disposition);
+        Assert.False(during.UserExecutionStarted);
 
         host.CreationDelayForTests = TimeSpan.Zero;
         var after = await host.InvokeAsync("1 + 1", timeoutSeconds: 30);
@@ -550,6 +828,8 @@ public sealed class InvokeToolTests : IDisposable
         Assert.Null(result.ExitCode);
         Assert.True(result.WarmStateLost);
         Assert.Contains(result.Errors, e => e.Contains("bookkeeping wedged"));
+        Assert.Equal(InvokeDisposition.Completed, result.Disposition);
+        Assert.True(result.UserExecutionStarted);
 
         host.ExitCodeReaderOverrideForTests = null;
         var after = await host.InvokeAsync("1 + 1", timeoutSeconds: 30);
@@ -559,11 +839,17 @@ public sealed class InvokeToolTests : IDisposable
     [Fact]
     public async Task Cwd_probe_execution_timeout_reports_state_loss_not_queue_expiry()
     {
-        // A shadowed Get-Location makes the probe time out EXECUTING: the
-        // recycle must be reported - claiming "warm state untouched" here
-        // sends the model on with dead connections (i56-6).
-        using var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(60));
-        await host.InvokeAsync("function global:Get-Location { Start-Sleep -Seconds 60 }", route: "pwsh");
+        // A wedged provider-intrinsic read times out EXECUTING: the recycle
+        // must be reported - claiming "warm state untouched" here sends the
+        // model on with dead connections (i56-6).
+        using var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(60))
+        {
+            CurrentLocationReaderOverrideForTests = () =>
+            {
+                Thread.Sleep(TimeSpan.FromSeconds(8));
+                return null;
+            },
+        };
 
         var text = await InvokeTool.Invoke(
             host, _jobs, _rawUsage, "'x'", CancellationToken.None, background: true, timeoutSeconds: 3);
@@ -580,8 +866,10 @@ public sealed class InvokeToolTests : IDisposable
         // A probe that yields no usable path fails the start (i56-5): jobs
         // run in the session directory by contract, and the server process
         // cwd is the wrong project.
-        using var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(60));
-        await host.InvokeAsync("function global:Get-Location { 'not-a-real-path' }", route: "pwsh");
+        using var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(60))
+        {
+            CurrentLocationReaderOverrideForTests = () => null,
+        };
 
         var text = await InvokeTool.Invoke(
             host, _jobs, _rawUsage, "'x'", CancellationToken.None, background: true);
@@ -595,10 +883,11 @@ public sealed class InvokeToolTests : IDisposable
     public async Task Superseded_rebuild_does_not_stomp_the_reset_runspaces_metadata()
     {
         // Timeline: a timeout starts a SLOW background rebuild; a reset then
-        // synchronously publishes a good runspace; the module files vanish
-        // before the stale rebuild's import runs, so its bundle carries
-        // ModuleLoaded=false. That obsolete result must not overwrite the
-        // winning runspace's metadata (i56-12).
+        // synchronously publishes a good runspace. The stale rebuild is forced
+        // to finish with ModuleLoaded=false after that publication. Its obsolete
+        // metadata must not overwrite the winning runspace (i56-12). Source-file
+        // deletion can no longer create this condition because module source is
+        // intentionally frozen before the first user call.
         var moduleDir = Directory.CreateTempSubdirectory("ptk-stale-rebuild-");
         try
         {
@@ -620,8 +909,8 @@ public sealed class InvokeToolTests : IDisposable
             await host.ResetAsync(); // wins with the module still present
             Assert.True(host.ModuleLoaded);
 
-            foreach (var f in Directory.GetFiles(moduleDir.FullName)) File.Delete(f);
-            await Task.Delay(TimeSpan.FromSeconds(6)); // stale rebuild imports nothing, completes
+            host.ModuleImportDisabledForTests = true;
+            await host.ShutdownAsync(); // drains the stale rebuild deterministically
 
             Assert.True(host.ModuleLoaded, "obsolete rebuild stamped its failed import over the current runspace");
         }
@@ -655,6 +944,17 @@ public sealed class InvokeToolTests : IDisposable
             never, DateTimeOffset.UtcNow.AddSeconds(-1), CancellationToken.None);
 
         Assert.Equal(RunspaceHost.WaitOutcome.TimedOut, outcome);
+
+        var result = await _host.InvokeAsync(
+            "$global:pastDeadlineRan = $true",
+            deadline: DateTimeOffset.UtcNow.AddSeconds(-1));
+        Assert.True(result.TimedOut);
+        Assert.Equal(InvokeDisposition.NotStarted, result.Disposition);
+        Assert.False(result.UserExecutionStarted);
+        var check = await _host.InvokeAsync(
+            "if ($null -eq $global:pastDeadlineRan) { 'never-ran' } else { 'RAN' }",
+            route: "pwsh");
+        Assert.Contains("never-ran", check.Output);
     }
 
     [Fact]

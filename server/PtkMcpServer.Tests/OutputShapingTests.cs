@@ -10,9 +10,26 @@ public sealed class OutputShapingTests : IDisposable
     public void Dispose() => _host.Dispose();
 
     [Fact]
-    public void Compressor_module_loads_into_the_warm_runspace()
+    public async Task Trusted_compressor_is_live_but_detached_from_the_user_session()
     {
         Assert.True(_host.ModuleLoaded);
+
+        var visibility = await _host.InvokeAsync(
+            "@(Microsoft.PowerShell.Core\\Get-Module PwshTokenCompressor -All).Count; " +
+            "[int]($null -ne $ExecutionContext.InvokeCommand.GetCommand(" +
+            "'PwshTokenCompressor\\Compress-PtcOutput', " +
+            "[System.Management.Automation.CommandTypes]::Function))",
+            raw: true,
+            route: "pwsh");
+        Assert.True(visibility.Success);
+        Assert.Empty(visibility.Errors);
+        Assert.Equal(["0", "0"], visibility.Output
+            .Split('\n', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries));
+
+        var shaped = await _host.InvokeAsync(
+            "[pscustomobject]@{ Name = 'a' }, [pscustomobject]@{ Name = 'b' }");
+        Assert.True(shaped.Success);
+        Assert.StartsWith("objects: 2", shaped.Output.Trim());
     }
 
     [Fact]

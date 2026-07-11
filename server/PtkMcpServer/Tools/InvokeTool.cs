@@ -1,6 +1,7 @@
 using System.ComponentModel;
 using System.Text;
 using ModelContextProtocol.Server;
+using PtkMcpServer.Audit;
 
 namespace PtkMcpServer.Tools;
 
@@ -57,8 +58,13 @@ public static class InvokeTool
             "without executing (warm state intact). Use for long work that NEEDS " +
             "the warm session (live connections, imported modules); stateless long " +
             "work should use background=true instead.")]
-        int timeoutSeconds = 0)
+        int timeoutSeconds = 0,
+        AuditCallContextAccessor? auditContext = null)
     {
+        var audit = auditContext?.Current;
+        if (audit is not null && !audit.BeginValidation())
+            return AuditCallContext.NotStartedMessage;
+
         // Raw-usage visibility (shell-dialect plan D2): counted here at the
         // user-call boundary only — internal raw:true probes below this
         // layer (ptk_state, the background cwd probe) must not inflate the
@@ -86,7 +92,8 @@ public static class InvokeTool
                 // the caller's timeoutSeconds, so a 1s-budget background
                 // retry could still block for minutes behind a busy runspace
                 // (plan finding i56p-3).
-                var deadline = host.ComputeDeadline(timeoutSeconds);
+                var deadline = audit?.Metadata.Request.DeadlineUtc
+                    ?? host.ComputeDeadline(timeoutSeconds);
 
                 // Dialect check BEFORE the job starts (shell-dialect plan,
                 // slice 2): a detected bash-only script is refused fast, never
@@ -97,7 +104,8 @@ public static class InvokeTool
                 if (!raw && route != "pwsh")
                 {
                     var refusal = await host.TryGetBackgroundDialectRefusalAsync(script, cancellationToken, deadline);
-                    if (refusal is not null) return refusal;
+                    if (refusal is not null)
+                        return RecordJobNotStarted(audit, "dialect_refused", refusal);
                 }
 
                 // Anything but Ok fails the start rather than degrading to the
@@ -106,25 +114,41 @@ public static class InvokeTool
                 // not (plan finding i56p-4; codex findings i56-5, i56-6). The
                 // messages differ because only an executing-probe timeout
                 // costs warm state.
-                var (cwd, cwdOutcome) = await host.TryGetCurrentLocationAsync(cancellationToken, deadline);
+                var (cwd, cwdOutcome) = await host.TryGetCurrentLocationAsync(
+                    cancellationToken,
+                    deadline,
+                    () => audit?.RecordControlOutcome(
+                        "runspace.recycled",
+                        "completed",
+                        detailCode: "cwd_probe_canceled_wedged",
+                        warmStateLost: true));
                 switch (cwdOutcome)
                 {
                     case RunspaceHost.CwdProbeOutcome.QueueExpired:
-                        return "[job not started] Runspace busy: the wall-clock budget expired while probing the " +
+                        return RecordJobNotStarted(audit, "cwd_queue_expired",
+                               "[job not started] Runspace busy: the wall-clock budget expired while probing the " +
                                "session's current directory behind another call. Nothing was executed and warm state " +
-                               "is untouched. Retry when the active call finishes, or raise timeoutSeconds.";
+                               "is untouched. Retry when the active call finishes, or raise timeoutSeconds.");
                     case RunspaceHost.CwdProbeOutcome.TimedOutExecuting:
-                        return "[job not started] The session-directory probe timed out while executing; the " +
+                        audit?.RecordControlOutcome(
+                            "runspace.recycled",
+                            "completed",
+                            detailCode: "cwd_probe_timed_out",
+                            warmStateLost: true);
+                        return RecordJobNotStarted(audit, "cwd_probe_timed_out",
+                               "[job not started] The session-directory probe timed out while executing; the " +
                                "runspace was recycled and all warm state was lost (ptk_state shows what drifted). " +
-                               "Retry to start the job in the fresh session's directory.";
+                               "Retry to start the job in the fresh session's directory.");
                     case RunspaceHost.CwdProbeOutcome.Recovering:
-                        return "[job not started] The runspace is being rebuilt after a previous timeout and was " +
-                               "not ready within this call's budget. Nothing was executed. Retry shortly.";
+                        return RecordJobNotStarted(audit, "runspace_recovering",
+                               "[job not started] The runspace is being rebuilt after a previous timeout and was " +
+                               "not ready within this call's budget. Nothing was executed. Retry shortly.");
                     case RunspaceHost.CwdProbeOutcome.Failed:
-                        return "[job not started] Could not determine the session's current directory, and jobs " +
+                        return RecordJobNotStarted(audit, "cwd_probe_failed",
+                               "[job not started] Could not determine the session's current directory, and jobs " +
                                "run in the session's directory by contract - starting elsewhere could run in the " +
                                "wrong project. Run a foreground ptk_invoke (e.g. Get-Location) to diagnose, or " +
-                               "Set-Location explicitly and retry.";
+                               "Set-Location explicitly and retry.");
                 }
                 // Last look at the clock before the point of no return: the
                 // cwd continuation can resume after a sleep pushed the wall
@@ -133,20 +157,66 @@ public static class InvokeTool
                 cancellationToken.ThrowIfCancellationRequested();
                 if (DateTimeOffset.UtcNow >= deadline)
                 {
-                    return "[job not started] The wall-clock budget expired during pre-start checks. " +
-                           "Nothing was executed. Retry, or raise timeoutSeconds.";
+                    return RecordJobNotStarted(audit, "prestart_deadline_expired",
+                           "[job not started] The wall-clock budget expired during pre-start checks. " +
+                           "Nothing was executed. Retry, or raise timeoutSeconds.");
                 }
-                var job = jobs.Start(script, cwd);
-                return $"[job {job.Id} started] pid {job.Pid}, cold process (no warm session state), log: {job.OutputPath}\n" +
-                       $"Poll with ptk_job action=output id={job.Id} (then pass the returned next offset); " +
-                       $"ptk_job action=status id={job.Id} for exit state.";
+
+                var plan = jobs.PrepareStart(script, cwd);
+                var terminalLease = audit?.AuthorizeJobStart(plan.Id, cwd);
+                if (audit is not null && terminalLease is null)
+                    return AuditCallContext.NotStartedMessage;
+
+                JobSnapshot job;
+                try
+                {
+                    Func<JobSnapshot, Task>? onTerminal = terminalLease is null
+                        ? null
+                        : terminalLease.CompleteAsync;
+                    job = jobs.CommitStart(plan, onTerminal);
+                }
+                catch (Exception)
+                {
+                    terminalLease?.ReleaseWithoutTerminal();
+                    const string failed = "[job start failed] The background process could not be started.";
+                    audit?.RecordJobStartFailed(plan.Id, "process_start_failed", failed);
+                    return failed;
+                }
+
+                var started = $"[job {job.Id} started] pid {job.Pid}, cold process (no warm session state), log: {job.OutputPath}\n" +
+                              $"Poll with ptk_job action=output id={job.Id} (then pass the returned next offset); " +
+                              $"ptk_job action=status id={job.Id} for exit state.";
+                var startRecorded = audit?.RecordJobStarted(job.Id, started) ?? true;
+                jobs.ConfirmStartRecorded(job.Id);
+                return startRecorded
+                    ? started
+                    : $"[job {job.Id} started] Required audit persistence failed after launch; the execution outcome is unknown.";
             }
-            catch (Exception ex)
+            catch (OperationCanceledException)
             {
-                return $"[job start failed] {ex.Message}";
+                return RecordJobNotStarted(
+                    audit,
+                    "canceled",
+                    "[job not started] The request was canceled before the background process started.");
+            }
+            catch (Exception)
+            {
+                return RecordJobNotStarted(
+                    audit,
+                    "prestart_failed",
+                    "[job not started] Background pre-start checks failed; the original operation was not started.");
             }
         }
-        var result = await host.InvokeAsync(script, raw, cancellationToken, route, timeoutSeconds);
+        var result = audit is null
+            ? await host.InvokeAsync(script, raw, cancellationToken, route, timeoutSeconds)
+            : await host.InvokeAsync(
+                script,
+                audit.AuthorizeInvocationAsync,
+                raw,
+                cancellationToken,
+                route,
+                timeoutSeconds,
+                audit.Metadata.Request.DeadlineUtc);
 
         var sb = new StringBuilder();
         var output = result.Output.TrimEnd();
@@ -182,6 +252,20 @@ public static class InvokeTool
             foreach (var warning in result.Warnings) sb.AppendLine(warning);
         }
 
-        return sb.ToString().TrimEnd();
+        var response = sb.ToString().TrimEnd();
+        if (audit?.AuthorizationPersistenceFailed == true && !result.UserExecutionStarted)
+            response = AuditCallContext.NotStartedMessage;
+        audit?.RecordInvokeResult(result, response);
+        return response;
+    }
+
+    private static string RecordJobNotStarted(
+        AuditCallContext? audit,
+        string detailCode,
+        string response)
+    {
+        audit?.RecordValidationNoStart(detailCode);
+        audit?.RecordJobNotStarted(detailCode, response);
+        return response;
     }
 }
