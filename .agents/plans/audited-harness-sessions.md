@@ -181,7 +181,8 @@ Rules:
 - `default` always exists and preserves unqualified-call behavior.
 - Session names are harness-local, nonsecret semantic aliases, canonical
   lowercase, and match `[a-z0-9][a-z0-9._-]{0,63}`.
-- The first successful `open` freezes an alias binding for the harness:
+- The first catalog-validated and lifecycle-admitted `open` freezes an alias
+  binding for the harness before worker launch or bootstrap:
   dynamic-versus-template source, template name/digest, bootstrap digest,
   declared labels, and effective cold-background policy. Reopening a live or
   closed alias with the identical binding is idempotent or starts its next
@@ -1136,6 +1137,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   both while live and after close; its original binding/target labels remain
   unchanged and no worker starts. Reopen with digest A starts only the expected
   next generation.
+- If digest A's first bootstrap fails, the slot is faulted but remains bound to
+  A. A later open/restart with B refuses without launch; explicit restart with
+  A is the only way to attempt the next worker generation under that alias.
 - Reset/restart increments generation and affects only the named session.
 - Stale generation and non-force busy close/reset/restart have zero side
   effects and share one observable busy contract.
