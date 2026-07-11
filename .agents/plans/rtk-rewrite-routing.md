@@ -166,13 +166,22 @@ not have.
    - logs: 80 synthetic `INFO worker[n]: step n completed in nms`
      lines (2%)
    - passthrough: `Get-Content README.md -Raw` (100%)
-   plus these FROZEN native cases added for this slice (exact
-   commands, all runnable from the repo root with only git/coreutils —
-   no cargo/npm dependence):
-   - compound: `git status && git log --oneline -20`
-   - file-read class: `head -40 README.md`
-   - rtk git-filter class: `git show --stat HEAD`
-   One run per case (output is deterministic enough at this size;
+   plus these FROZEN native cases added for this slice. **Inputs are
+   frozen, not just command strings:** every git case pins the
+   immutable ref `63b4cbc` (never `HEAD`, never worktree state — HEAD
+   moves between the pre- and post-integration runs and would move the
+   ratios independently of routing), and the file-read case reads a
+   generated fixture, not a living repo file:
+   - compound: `git --no-pager log --oneline -20 63b4cbc && git show
+     --stat 63b4cbc`
+   - file-read class: `head -40 measure-fixture.txt` (the protocol
+     first generates it: 200 lines of `line <n>: 0123456789` — byte
+     identical on every run)
+   - rtk git-filter class: `git show --stat 63b4cbc`
+   The original 2026-07-10 baseline rows above keep their historical
+   commands for continuity of THAT comparison; the rrp-9 subtotal and
+   bar below are computed over the frozen-input native cases only.
+   One run per case (identical inputs make repeats redundant;
    re-run twice only if a ratio moves >5 points between runs).
    `rtk gain` accumulates HISTORICAL tracking data — snapshot or reset
    its counter before the run and report only the delta, never the
