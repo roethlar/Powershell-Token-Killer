@@ -879,14 +879,14 @@ table is a valid review result.
 
 | ID    | Severity | Impact (one line) | Status | Branch |
 |-------|----------|-------------------|--------|--------|
-| ahs-1 | HIGH     | Missing RTK capture leaves compression and raw recovery mutually contradictory | `[~]` | master (direct) |
-| ahs-2 | HIGH     | Raw transition silently contradicts active D1 consent and shipped guards | `[~]` | master (direct) |
-| ahs-3 | HIGH     | Auto-Bash turns detector false positives into wrong-interpreter execution | `[~]` | master (direct) |
-| ahs-4 | MEDIUM   | Exact-script evidence is not part of the durable pre-effect commit | `[~]` | master (direct) |
-| ahs-5 | MEDIUM   | Closing reserved `default` can permanently brick unqualified tools | `[~]` | master (direct) |
-| ahs-6 | MEDIUM   | Reconciliation omits approved routing/dialect contracts this plan replaces | `[~]` | master (direct) |
-| ahs-7 | MEDIUM   | Warm background-session concurrency and kill semantics are undefined | `[~]` | master (direct) |
-| ahs-8 | LOW      | Fail-closed audit prevents `ptk_state` from reporting the audit failure | `[~]` | master (direct) |
+| ahs-1 | HIGH     | Missing RTK capture leaves compression and raw recovery mutually contradictory | `[~]` | master (direct, 5288b7b) |
+| ahs-2 | HIGH     | Raw transition silently contradicts active D1 consent and shipped guards | `[~]` | master (direct, 12eddd8) |
+| ahs-3 | HIGH     | Auto-Bash turns detector false positives into wrong-interpreter execution | `[~]` | master (direct, e0710eb) |
+| ahs-4 | MEDIUM   | Exact-script evidence is not part of the durable pre-effect commit | `[~]` | master (direct, 098dcd3) |
+| ahs-5 | MEDIUM   | Closing reserved `default` can permanently brick unqualified tools | `[~]` | master (direct, 5c458f8) |
+| ahs-6 | MEDIUM   | Reconciliation omits approved routing/dialect contracts this plan replaces | `[~]` | master (direct, 61f6d53) |
+| ahs-7 | MEDIUM   | Warm background-session concurrency and kill semantics are undefined | `[~]` | master (direct, 2f8e419) |
+| ahs-8 | LOW      | Fail-closed audit prevents `ptk_state` from reporting the audit failure | `[~]` | master (direct, 5ee1aa3) |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -900,3 +900,15 @@ evidence, and adjacent RTK tee implementation. The reviewer separately
 confirmed the current-implementation inventory, owner-settled scope,
 assurance limits, and slp-11/slp-12 retention/terminal-unknown handling; it
 filed no finding on the deliberate busy-reset contract revision.
+
+**Claude fix round 1 LANDED:** eight admitted findings, exactly one plan fix
+per commit: `5288b7b` (ahs-1, RTK routing wins and recovery is honestly
+unavailable without the upstream seam), `12eddd8` (ahs-2, raw consent
+explicitly superseded while route-pwsh consent remains),
+`e0710eb` (ahs-3, parse-fatal + detector + bounded `bash -n` proof),
+`098dcd3` (ahs-4, exact script evidence is ordered before dispatch),
+`5c458f8` (ahs-5, reserved default close/restart semantics),
+`61f6d53` (ahs-6, approved routing/dialect plan reconciliation),
+`2f8e419` (ahs-7, warm session jobs deferred), and
+`5ee1aa3` (ahs-8, minimal unrecorded audit-health diagnostic).
+All rows remain pending until Claude re-grades the revised fixed SHA.
