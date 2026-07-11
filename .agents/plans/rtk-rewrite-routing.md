@@ -126,12 +126,17 @@ not have.
    skipping the Application check (pinned by an existing Pester test
    and the tool description). Under rewrite-based routing a forced
    script that rtk passes through (exit 1) would silently execute as
-   plain PowerShell — indistinguishable from `auto`. Slice 2 must
-   decide and record one of: force-routing retained (wrap as `rtk
-   <script>` regardless), rewrite-only (forced = rewrite attempted,
-   labeled no-op result when rtk declines), or the flag retired. The
-   chosen semantics update the tests and the model-visible tool
-   description in the same slice.
+   plain PowerShell — indistinguishable from `auto`. **Selected
+   contract (the owner may veto at approval): `route=rtk` is
+   rewrite-mandatory-with-labeled-outcome.** rtk rewrite is always
+   attempted; exit 0/3 with stdout executes the rebound rewritten
+   line; exit 1/2 executes the script UNCHANGED and prepends a labeled
+   `[rtk] no rewrite (passthrough|deny) — executed unrouted` line, so
+   a forced call is always distinguishable from `auto` (which stays
+   silent). Force-wrapping arbitrary text as `rtk <script>` is retired
+   with the shape check that made it safe. The existing pinned Pester
+   test and the model-visible tool description change to exactly this
+   contract in the same slice.
 3. **Measure and record (protocol frozen here — rrp-9):** the
    measurement is self-contained in this plan, not a reference to a
    session artifact. Method: drive the BUILT server over real MCP
