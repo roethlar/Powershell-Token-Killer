@@ -172,7 +172,14 @@ Rules:
 - `default` always exists and preserves unqualified-call behavior.
 - Session names are harness-local, nonsecret semantic aliases, canonical
   lowercase, and match `[a-z0-9][a-z0-9._-]{0,63}`.
-- `open` is idempotent for the same live name/template digest.
+- The first successful `open` freezes an alias binding for the harness:
+  dynamic-versus-template source, template name/digest, bootstrap digest,
+  declared labels, and effective cold-background policy. Reopening a live or
+  closed alias with the identical binding is idempotent or starts its next
+  generation as appropriate. Any different template/digest, a dynamic versus
+  template switch, or any attempt to bind `default` refuses before worker
+  creation and cannot mutate the old binding. Choose a new alias or restart
+  the harness to change meaning.
 - Every non-default operation names its session. There is no `select`.
 - An unknown or closed **non-default** session never falls back to `default`
   and never auto-creates after a typo. The reserved default slot is the one
@@ -335,6 +342,8 @@ serializes scripts within the admitted generation.
   `default` leaves its reserved slot cold, and the next unqualified effectful
   call lazily starts a new generation. `restart`/`ptk_reset` on `default`
   replace it immediately rather than leaving it unavailable.
+- Close, fault, loss, reset, and restart never discard or rewrite the frozen
+  alias binding; they change only worker generation/lifecycle state.
 - `ptk_reset` becomes session-local process replacement. Authorization/checks
   occur before job or process termination.
 - Busy reset/restart/close with `force=false` returns the same no-side-effect
@@ -1072,6 +1081,10 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   before the busy check; work never starts in a dying generation, duplicate
   workers never appear, and late replies cannot populate the replacement.
 - Bootstrap runs once, faults visibly, and becomes the drift baseline.
+- An alias opened from template digest A refuses a later open using digest B,
+  both while live and after close; its original binding/target labels remain
+  unchanged and no worker starts. Reopen with digest A starts only the expected
+  next generation.
 - Reset/restart increments generation and affects only the named session.
 - Stale generation and non-force busy close/reset/restart have zero side
   effects and share one observable busy contract.
