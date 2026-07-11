@@ -182,10 +182,15 @@ not have.
    future cold agent could "correct" the code back to the narrow
    check. On approval, a final slice records the superseding owner
    decision in `.agents/decisions.md`, amends the greenfield plan's
-   routing paragraph with a pointer here, and updates the InvokeTool
-   `route` description, `README.md`, and `server/README.md` in the
-   same slice, with the handshake/schema assertions updated to the new
-   wording. (The decisions.md entry itself waits for the owner's
+   routing paragraph with a pointer here, and updates every surface
+   that advertises the old contract in the same slice: BOTH InvokeTool
+   descriptions — the top-level tool `[Description]` (which
+   independently advertises single-command routing) AND the `route`
+   parameter text — `README.md`, `server/README.md`, and the frozen
+   single-bare-native-command decision inside
+   `.agents/plans/unified-shell-routing.md` (marked superseded with a
+   pointer here, not silently left standing). Handshake/schema
+   assertions updated to the new wording. (The decisions.md entry itself waits for the owner's
    explicit go, per the standing in-session instruction.)
 
 ## Risks / notes
