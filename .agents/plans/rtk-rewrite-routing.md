@@ -43,7 +43,17 @@ work rides which rtk filter.
    `PTK_RTK_PATH`) instead of the single-command shape check, executes
    the returned line, and falls back to the unchanged script on any
    rewrite failure (routing must never fail a call — existing
-   invariant). Order unchanged: dialect refusal FIRST (a bash-only
+   invariant). **Rebinding requirement (rrp-1):** rtk emits literal
+   `rtk ...` tokens (probed live: `head -20 README.md` → `rtk read
+   README.md --max-lines 20`; prefixed: `sudo find ... | wc -l` →
+   `sudo rtk find ...`), while the current resolver invokes the
+   resolved executable path directly. Every emitted `rtk` token — in
+   every compound segment, including after env/`sudo` prefixes — must
+   be rebound to the `PTK_RTK_PATH`-resolved executable before
+   execution; otherwise a pinned binary outside PATH fails
+   command-not-found, or a different PATH copy runs despite the pin.
+   Tests: pinned binary off PATH; conflicting PATH copy present.
+   Order unchanged: dialect refusal FIRST (a bash-only
    script is refused or bash-wrapped before routing; the bash-wrapped
    path may hand the inner script to rtk rewrite too — decided by the
    slice-1 matrix). `route=pwsh`/`raw=true` consent bypasses unchanged.
