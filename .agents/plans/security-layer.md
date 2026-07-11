@@ -60,6 +60,17 @@ safe against a hostile local process.
    owner picked, stated in the model-visible tool description.
    Refusals are labeled, name the matched rule, and teach the recovery
    path (edit the policy file).
+   **Classification runs in the execution context it judges (slp-3):**
+   the server already resolves foreground commands against the mutable
+   WARM session and background commands against a pristine COLD table,
+   because warm aliases can shadow anything. The policy classifier
+   inherits that split: a foreground call is classified with warm
+   resolution (what will actually run), a background call with cold
+   resolution (jobs run `pwsh -NoProfile`). One shared evaluator that
+   uses warm state for both is a hole: repoint `ri` at `Get-Item` in
+   the warm session, get it classified read-only, then run
+   `background=true` where stock `ri` = `Remove-Item` deletes data.
+   Regression test: a repointed built-in alias classified per-path.
 3. **Read-only preset:** a shipped policy preset expressing issue #3's
    read-only/dry-run install, as a starting template rather than a
    hardcoded mode.
