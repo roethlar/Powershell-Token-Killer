@@ -296,6 +296,32 @@ Each session slot is one of:
 cold | starting | ready | resetting | closing | faulted | lost
 ```
 
+`SessionSlot` owns one asynchronous lifecycle gate and a monotonically
+changing transition version. Every invoke, job start/kill, bootstrap, output
+operation tied to a worker, reset, restart, close, or open is admitted under
+that gate:
+
+1. An ordinary worker-bound call validates state and expected generation,
+   captures boot ID/generation/transition version, and increments an operation
+   lease before the gate is released. Queued and prepared work keeps that
+   lease until its terminal/no-start result.
+2. Open/cold-start publishes `starting` and the one shared start task before
+   releasing the gate; no second caller can launch another worker.
+3. Reset/restart/close publishes its transitional state before releasing the
+   gate, which rejects every later worker-bound admission. Its `force=false`
+   busy decision atomically includes queued/prepared/foreground leases,
+   in-flight job starts, and running managed jobs. `force=true` first blocks
+   admission, then cancels leases and invokes containment.
+4. A late response is accepted only for the captured boot/generation/version.
+   It may complete its caller/audit outcome but can never install state or a
+   job into a replacement generation.
+
+`ptk_session list` and supervisor-only state snapshots do not take operation
+leases. Worker `ptk_state` uses a validated ready-generation lease but remains
+zero-wait with respect to the runspace execution gate. This lifecycle gate
+linearizes admission and replacement; the worker runtime gate separately
+serializes scripts within the admitted generation.
+
 - Concurrent opens of one cold name share one start task.
 - Bootstrap output is suppressed; any PowerShell error, timeout, prompt, or
   state loss faults startup. Successful bootstrap becomes that session's
@@ -879,7 +905,8 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 ### Slice 8 — named harness-scoped sessions
 
 - Add dynamic semantic session aliases, optional frozen templates, lifecycle
-  state machine, `ptk_session`, and explicit session arguments on all tools.
+  state machine/gate/operation leases, `ptk_session`, and explicit session
+  arguments on all tools.
 - Move public job-ID allocation to the supervisor's nonreusing 64-bit
   sequence; worker-local IDs never cross MCP.
 - Prove isolation of variables, aliases, cwd, environment, modules, auth
@@ -1038,6 +1065,10 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - A barrier test, not timing alone, proves different sessions can progress
   concurrently while one session remains serial.
 - Concurrent open starts one worker; list/state on cold does not start it.
+- Barrier-controlled invoke/job-start versus reset/restart/close races prove
+  the lifecycle transition wins before admission or the operation lease wins
+  before the busy check; work never starts in a dying generation, duplicate
+  workers never appear, and late replies cannot populate the replacement.
 - Bootstrap runs once, faults visibly, and becomes the drift baseline.
 - Reset/restart increments generation and affects only the named session.
 - Stale generation and non-force busy close/reset have zero side effects.
