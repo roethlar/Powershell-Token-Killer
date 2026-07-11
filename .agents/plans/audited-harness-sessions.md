@@ -1197,6 +1197,13 @@ Existing ownership changes:
 
 Each slice is one coherent commit. Any new guard test must be proven red by
 temporarily sabotaging/reverting the production behavior, then restored green.
+After every slice commit, and before the next slice starts, run the synchronous
+`.agents/playbooks/reviewloop.md` workflow with the Claude harness against the
+fixed pre-slice base SHA and slice head SHA. Record a clean pass or triage every
+material finding through the playbook; a reopened/contested loop blocks the
+next slice until it is closed or the owner adjudicates it. Review acceptance
+does not authorize push or history rewriting. A docs-only slice uses the
+applicable manual guard instead of inventing a code sabotage.
 
 ### Slice 0 — freeze external and platform contracts (no product code)
 
