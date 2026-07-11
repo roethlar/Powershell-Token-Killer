@@ -544,10 +544,18 @@ Background:
 ```text
 call.accepted
 job.start_requested
-job.started
-job.completed | killed | start_failed | outcome_unknown
-call.completed | failed | not_started
+job.started | job.start_failed | job.not_started
+call.completed | call.failed | call.not_started
+
+# only after job.started, asynchronously and independently of the start call
+job.completed | job.killed | job.outcome_unknown
 ```
+
+The background MCP call terminates as soon as start succeeds, fails, or is
+refused; it never waits for job completion. `job.start_failed` and
+`job.not_started` are mutually exclusive alternatives to `job.started`, so
+neither may be followed by a job terminal event. A started job receives
+exactly one later asynchronous terminal event regardless of polling.
 
 Control/lifecycle events include `job.kill_requested`, `reset.requested`,
 `session.opened`, `session.close_requested`, `worker.started`,
@@ -867,6 +875,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Background preflight failure, start, completion without polling, output
   reads, status/list, explicit kill, reset kill, shutdown kill, and hard
   worker death.
+- Background start failure/refusal emits no `job.started` or asynchronous job
+  terminal; successful start completes the MCP call before a barrier releases
+  the job, then emits exactly one later job terminal event.
 - A template with `allowColdBackground=false` starts no cwd probe, output
   artifact, or child process and records `job.not_started`. Enabling it starts
   a cold job that demonstrably cannot see the warm session's variables or
