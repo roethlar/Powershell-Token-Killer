@@ -211,10 +211,18 @@ PtkMcpServer             # MCP supervisor
 PtkMcpServer --worker    # one internal session worker
 ```
 
-Use captured redirected stdin/stdout for versioned newline-delimited JSON.
-Worker stderr is pumped to supervisor stderr with its session/boot prefix.
-User children inherit EOF/NUL through `ChildStdinGuard`, not the protocol
-pipe.
+Use two dedicated inherited anonymous-pipe handles for versioned
+newline-delimited JSON; the protocol is never worker standard input or
+standard output. The worker opens those handles before constructing any
+FullLanguage runspace, removes their bootstrap identifiers from its
+environment, disables further handle inheritance, and keeps the streams in a
+private host object not injected into PowerShell. Worker standard input is
+EOF/NUL. Standard output and stderr are bounded, untrusted diagnostics pumped
+to supervisor stderr with the session/boot prefix. Thus
+`[Console]::Out.WriteLine(...)`, native children, and JSON-looking user text
+cannot enter the protocol decoder. This is an operational isolation seam, not
+a security boundary against arbitrary same-process P/Invoke, which remains an
+explicit assurance limit.
 
 Envelope kinds are `initialize`, `request`, `cancel`, `event`, `response`,
 and `shutdown`. Every envelope contains protocol version, worker boot ID,
@@ -234,8 +242,9 @@ Protocol requirements:
 - Cancellation targets one request and is propagated to the active pipeline
   or pre-start job operation.
 - EOF cancels work, disposes `SessionRuntime`, kills managed jobs, and exits.
-- Unknown versions/methods, malformed frames, excess frame size, and protocol
-  output on stdout fail that worker closed.
+- Unknown versions/methods, malformed protocol-pipe frames, and excess frame
+  size fail that worker closed. Stray standard output is bounded/labeled as
+  diagnostics and never parsed as a frame.
 - Supervisor startup strips audit/SIEM credentials and unrelated sensitive
   variables from the worker environment.
 - Launch resolution supports both a published apphost and
@@ -758,8 +767,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 
 ### Slice 7 — worker mode and default-session supervisor
 
-- Add versioned protocol, worker launch, cancellation, deadlines, stderr pump,
-  EOF/parent-death cleanup, and process-tree ownership.
+- Add versioned dedicated-pipe protocol, worker launch, cancellation,
+  deadlines, bounded stdout/stderr pumps, EOF/parent-death cleanup, and
+  process-tree ownership.
 - Route only the reserved default session through one worker initially.
 - Move the authoritative audit writer to the supervisor and use pre-effect
   dispatch before worker commit.
@@ -923,6 +933,10 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Default tool schemas remain compatible through the declared raw transition.
 - Real MCP stdio tests cover audit IDs, RTK path, output handle, two sessions,
   independent jobs, process teardown, and malformed worker protocol.
+- A FullLanguage fixture writes plain text and forged response-shaped JSON via
+  `[Console]::Out` and a native child; neither completes a pending protocol
+  request nor creates an authoritative audit fact, and the worker remains
+  usable.
 - Windows live checks cover native `.cmd` shims, AD, Exchange implicit
   remoting, EXO certificate auth, worker/process reset, and SIEM forwarding.
 
