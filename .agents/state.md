@@ -5,18 +5,17 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **Security question OPEN; owner-led consultation in progress.** Read the
-  STOP section of `.agents/plans/security-layer.md` before any security
-  work. The declarative policy-file gate and secret redaction are rejected;
-  the former implementation slices are prior art only. The owner's
-  architecture-review language is outreach framing, not a settled verdict.
-  MCP elicitation remains an unverified candidate: fact-finding is allowed,
-  but no security shape, plan, or code is authorized.
-- **RTK rewrite routing is a reviewed DRAFT, not approved.**
-  `.agents/plans/rtk-rewrite-routing.md` has a closed converged review loop,
-  but no code was written. Approval must resolve the plan's explicit owner
-  calls and ratify or reopen rrp-15, whose name-keyed-hook divergence was
-  closed by coder disposition rather than reviewer grade.
+- **Owner-directed replacement architecture is in plan review; no code is
+  authorized.** `.agents/plans/audited-harness-sessions.md` combines
+  mandatory PTK-owned/SIEM-exportable audit, private harness-scoped
+  process-per-session workers, internal PTK→RTK routing, same-invocation
+  output recovery, and no-retry mixed-domain handling. Active review loop:
+  see `.agents/review/index.md` (requested reviewers: Claude and Grok).
+- **Prior security/routing shapes remain evidence, not implementation
+  authority.** The declarative policy gate and secret redaction are rejected;
+  `.agents/plans/security-layer.md` is prior-art context. The closed review
+  findings in `.agents/plans/rtk-rewrite-routing.md` remain regression
+  evidence, while its broad rewrite implementation is not approved.
 - **`.agents/decisions.md` is UNDER HOLD** (owner, 2026-07-10: do not
   update it until the discussion is complete). The security reframe and RTK
   routing direction still need durable entries after the owner releases the
@@ -30,16 +29,16 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Fact-find MCP elicitation only: protocol status, support in Claude Code,
-   Codex, Grok, and Antigravity, and headless failure behavior. Report the
-   evidence; do not draft a security shape or plan.
-2. Owner approval or rejection of RTK rewrite routing, including the rrp-15
-   disposition and the other approval calls recorded in the plan. No code
-   before approval.
+1. Complete synchronous Claude and Grok reviewloop on
+   `.agents/plans/audited-harness-sessions.md`, recording and resolving each
+   admitted plan finding one commit at a time.
+2. Present the converged plan and any contested decisions for explicit owner
+   approval or rejection. No implementation before that approval.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.
 4. When the owner releases the decisions hold, reconcile the rejected
-   security mechanism and RTK routing direction in `.agents/decisions.md`.
+   security mechanism, retired durable/shared staging, and PTK→RTK routing
+   direction in `.agents/decisions.md`.
 5. Owner push go for this committed docs-only drift slice; push policy is
    ask-first.
 
@@ -50,9 +49,10 @@ short and update it when important repo facts change.
   implicit remoting with first-vs-repeated `Get-Queue` latency; EXO/Graph
   unattended certificate auth. Its plan status still needs correction; see
   `## Blockers`.
-- The persistent/shared-runspace idea remains unapproved behind both its
-  measured-pain criterion and an explicit owner build go. Its security and
-  control shape must also be settled before any build.
+- Durable checkout and shared runspaces are removed from the candidate build
+  scope by the owner's 2026-07-11 direction. Their older open-decision entry
+  remains stale while `.agents/decisions.md` is under hold; the idea plan is
+  retained as history/evidence, not current implementation direction.
 - GitHub issue #3 remains open (verified 2026-07-11): item 1 landed; items
   2-4 are an unplanned follow-up candidate, while its permission-bypass
   concern belongs to the open security track.
@@ -63,9 +63,10 @@ short and update it when important repo facts change.
   `.agents/decisions.md` still describes the policy-file gate as the open
   response after its criterion fires, while the later explicit owner call in
   `.agents/plans/security-layer.md` rejects that response. Its shared-host
-  entry also still cites the already-decided product go/no-go as a gate. Do
-  not implement the policy gate; preserve both conflicts until the hold is
-  released.
+  entry stages durable GUID sessions followed by sharing, while the owner's
+  later direction removes both from the candidate build. Do not implement
+  either stale direction; preserve the decision-log conflict until the hold
+  is released.
 - **Plan-record drift, reported but not edited in this narrow state pass:**
   the warm-runspace plan still says slice 7 is paused behind the already
   decided GO; the release plan retains stale CI/push/policy references; and
