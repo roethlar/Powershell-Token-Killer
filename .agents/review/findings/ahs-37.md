@@ -5,7 +5,7 @@ unsupported closure claim in the canonical current-state entry point and skip
 required re-verification.
 **Status**: In progress
 **Branch**: `fix/ahs-37-record-slice0-review`
-**Commit**: pending (fix not yet committed)
+**Commit**: `62d32eb` (fix; intake record `46563c2`)
 
 ## Evidence
 
