@@ -279,7 +279,10 @@ protocol version, worker boot ID, request ID where applicable, and a bounded
 payload. Requests carry an
 absolute UTC deadline computed at the MCP boundary; worker startup,
 bootstrap, queue wait, routing, execution, and shaping consume the same
-budget.
+budget. A fixed startup-configured `timeoutContainmentGrace` is separate: it
+permits no user work and may extend a post-start timeout response only long
+enough to confirm process-tree death. Tool descriptions disclose the maximum
+deadline-plus-grace wall clock.
 
 Protocol requirements:
 
@@ -400,13 +403,32 @@ serializes scripts within the admitted generation.
 - Timeout/recycle, reset, close, and worker loss never affect another
   session.
 - Queue expiry or cancellation before a prepared commit leaves the worker
-  unchanged. Any execution timeout after commit replaces the entire target
-  worker, for `default`, template-backed, and dynamically opened sessions
-  alike; PTK never tries to infer whether that process acquired a connection.
-  The generation increments, all of that worker's managed jobs are terminated,
-  and the result labels session-state loss. This deliberately replaces the
-  current in-process runspace rebuild on timeout so process-scoped auth/module
-  state cannot survive in an ambiguously connected dynamic session.
+  unchanged. Any execution timeout after commit uses this ordered transition,
+  for `default`, template-backed, and dynamically opened sessions alike:
+
+  1. Under the lifecycle gate, verify the timed-out boot/generation, publish
+     `resetting(reason=timeout)`, block new admission, and convert the timed-out
+     call's own lease into the transition owner so it cannot deadlock waiting
+     on itself.
+  2. Cancel every other queued/prepared/foreground lease and in-flight job
+     start for that generation. The original durable dispatch already records
+     timeout tree-kill as a permitted containment action, so safety cleanup
+     does not depend on a new audit append succeeding after the deadline.
+  3. Close protocol and invoke OS/reaper containment. No shaping or other user
+     work runs after the original deadline. Wait at most
+     `timeoutContainmentGrace` for confirmed worker/group death.
+  4. On confirmation, terminate its managed jobs, increment generation, and
+     leave a named alias `lost(reason=timeout)` pending explicit restart; leave
+     reserved `default` cold for its documented lazy next generation. On
+     grace expiry, return `timed_out, containment_unconfirmed`, quarantine the
+     slot with no new admission/generation, and keep observing containment;
+     only confirmed death can unblock explicit recovery.
+
+  The timeout response is returned after confirmation or grace expiry and
+  labels session/job state loss plus containment certainty. PTK never tries to
+  infer whether the old process acquired a connection, never overlaps old/new
+  workers, and never lets the expired caller's lease block recovery. This
+  deliberately replaces the current in-process runspace rebuild.
 - Supervisor idle exit is forbidden while a worker is starting/resetting, a
   foreground call is active, or a managed job is running.
 
@@ -787,8 +809,9 @@ session's jobs.
 The supervisor must use the armed Windows Job Object / Unix process-group
 reaper contract above, or an equivalently proven hard-parent-death mechanism.
 Containment setup failure prevents worker initialization. Whole-worker
-replacement is the unconditional post-start timeout containment primitive for
-every session; it is never gated on a claimed connection-bearing profile.
+termination followed only by a confirmed-death new generation is the
+unconditional post-start timeout containment primitive for every session; it
+is never gated on a claimed connection-bearing profile.
 Detached processes, scheduled tasks, services, WMI, SSH, and remote
 effects require OS/provider audit and are reported with partial/unknown
 coverage rather than false certainty.
@@ -1155,8 +1178,15 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   timeout/reset effects.
 - A template-less dynamic session establishes a process-scoped auth/module
   sentinel, then times out after execution starts. Its whole worker exits, its
-  generation changes, its managed jobs stop, and the sentinel is absent from
-  the replacement; the other session remains untouched.
+  generation changes, its managed jobs stop, and the alias requires explicit
+  restart before a new empty worker can exist; the sentinel is absent there
+  and the other session remains untouched.
+- Barrier tests expire a call while it owns the only operation lease and while
+  other calls/jobs are queued. The slot enters timeout-resetting without
+  self-deadlock, admits no new work, cancels the other generation leases, and
+  never starts a replacement before confirmed old-group death. A stuck kill
+  returns by deadline plus the fixed containment grace with the slot
+  quarantined and `containment_unconfirmed`.
 - A barrier test, not timing alone, proves different sessions can progress
   concurrently while one session remains serial.
 - Concurrent open starts one worker; list/state on cold does not start it.
