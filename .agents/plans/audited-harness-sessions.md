@@ -1055,8 +1055,11 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Add versioned dedicated-pipe protocol, worker launch, cancellation,
   deadlines, bounded stdout/stderr pumps, EOF/parent-death cleanup, and
   process-tree ownership.
-- Make every post-launch startup timeout/cancel await confirmed containment
-  before returning or permitting another worker generation.
+- Bound every post-launch startup timeout/cancel by the request deadline plus
+  `timeoutContainmentGrace`: confirmed death publishes `faulted`; grace expiry
+  returns startup `containment_unconfirmed`, publishes `quarantined`, and
+  forbids open/restart/next generation while observation continues. Only later
+  confirmed death may transition to `faulted` and permit explicit restart.
 - Route only the reserved default session through one worker initially.
 - Move the authoritative audit writer to the supervisor and use pre-effect
   dispatch before worker commit.
