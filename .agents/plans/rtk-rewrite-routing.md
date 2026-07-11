@@ -49,14 +49,27 @@ anything else → run the ORIGINAL segment verbatim. Preflight AST
 screening survives only as a cheap first gate (obviously mixed
 submissions skip the rewrite call entirely, saving the subprocess);
 correctness never rests on it. Regression cases: `Set-Alias` before a
-native segment; `Import-Module` before a native segment; all three
-probed counterexamples verbatim, including the breakpoint one
+native segment; `Import-Module` before a native segment; the probed
+counterexamples verbatim, including the breakpoint one
 (`true; git status` with the ambient breakpoint must run the alias
-semantics, unrouted). Accepted contrived residual, recorded: defeating
-the guard now requires an ambient hook on the guard's own resolution
-primitive in the instant before the routed form runs — self-sabotage
-of one's own session, the same accepted-residual class as the sd1
-close.
+semantics, unrouted).
+**Inherent, disclosed residual — substitution is visible to
+name-keyed session hooks (review rounds 4-7):** executing `<rtk> git
+...` in place of `git ...` means any session feature keyed on the
+ORIGINAL command name — `Set-PSBreakpoint -Command git`, debugger
+hooks, name-keyed proxies — does not fire on the routed segment, and
+side effects its action would have had (including resolution
+mutations later segments would observe — probed live in review round
+7) do not happen. No guard or wording closes this: it is inherent to
+routing-by-substitution and is ALREADY TRUE of the shipped
+single-command routing today (a `git` breakpoint does not fire on
+`& rtk git status` either). Accepted as the routing trade and
+DISCLOSED: slice 4's doc updates must state that name-keyed session
+hooks do not fire on routed segments, with `route=pwsh` /
+`RTK_DISABLED` as the escape. The execution-time guard above stands
+for the mutation-before-routing class; the name-keyed-hook divergence
+class is this recorded residual, closed CONVERGED per the repo's sd1
+precedent (the owner may reopen).
 
 ## Scope (rrp-5)
 
