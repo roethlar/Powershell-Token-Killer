@@ -896,20 +896,20 @@ table is a valid review result.
 | ahs-15 | MEDIUM  | Reused worker-local job IDs can target a new generation from a stale call | `[x]` | master (direct, 9527390) |
 | ahs-16 | MEDIUM  | Retention may delete audit segments that SIEM never acknowledged | `[x]` | master (direct, a65d6f2) |
 | ahs-17 | MEDIUM  | Export-checkpoint audit events can recursively generate forever | `[x]` | master (direct, 3f783b1) |
-| ahs-18 | HIGH    | Hard supervisor death can leave a blocked worker or job orphaned | `[~]` | master (direct, 23043b5) |
+| ahs-18 | HIGH    | Hard supervisor death can leave a blocked worker or job orphaned | `[~]` | master (direct, 23043b5 + b7677da) |
 | ahs-19 | HIGH    | Timeout containment is undefined for dynamically connected sessions | `[x]` | master (direct, f2f4255) |
 | ahs-20 | HIGH    | Same-session lifecycle and invocation admissions are not linearized | `[x]` | master (direct, dc3d626) |
 | ahs-21 | MEDIUM  | Busy `restart(force=false)` has no defined no-side-effect behavior | `[x]` | master (direct, ab31227) |
-| ahs-22 | MEDIUM  | A session alias can be ambiguously rebound to another template/digest | `[~]` | master (direct, 757b994) |
+| ahs-22 | MEDIUM  | A session alias can be ambiguously rebound to another template/digest | `[~]` | master (direct, 757b994 + c9a14ba) |
 | ahs-23 | MEDIUM  | Malformed catalogs and bootstrap path failures have no fail-closed contract | `[x]` | master (direct, 18aebca) |
 | ahs-24 | HIGH    | Timed-out bootstrap can later yield an untracked authenticated worker | `[x]` | master (direct, 6fce3af) |
-| ahs-25 | LOW     | `ptk_session list` conflicts with a schema that requires `name` | `[~]` | master (direct, c342747) |
-| ahs-26 | MEDIUM  | Two .NET raw/path guards are omitted from the intentional migration inventory | `[~]` | master (direct) |
-| ahs-27 | MEDIUM  | Running-job busy semantics contradict the shipped reset-kills-job contract | `[~]` | master (direct) |
-| ahs-28 | MEDIUM  | Output-handle ownership and lifetime across worker generations are undefined | `[~]` | master (direct) |
-| ahs-29 | HIGH    | Timeout replacement has no deadlock-free transition or post-deadline grace | `[~]` | master (direct) |
-| ahs-30 | MEDIUM  | New audited reads can consume the reserve needed for terminal events | `[~]` | master (direct) |
-| ahs-31 | MEDIUM  | Side-effect-free prepare forbids the required external `bash -n` validator | `[~]` | master (direct) |
+| ahs-25 | LOW     | `ptk_session list` conflicts with a schema that requires `name` | `[~]` | master (direct, c342747 + 4dd8074) |
+| ahs-26 | MEDIUM  | Two .NET raw/path guards are omitted from the intentional migration inventory | `[~]` | master (direct, 1f2c9c2) |
+| ahs-27 | MEDIUM  | Running-job busy semantics contradict the shipped reset-kills-job contract | `[~]` | master (direct, e36b40b) |
+| ahs-28 | MEDIUM  | Output-handle ownership and lifetime across worker generations are undefined | `[~]` | master (direct, af73889) |
+| ahs-29 | HIGH    | Timeout replacement has no deadlock-free transition or post-deadline grace | `[~]` | master (direct, 6294340) |
+| ahs-30 | MEDIUM  | New audited reads can consume the reserve needed for terminal events | `[~]` | master (direct, 23586fb) |
+| ahs-31 | MEDIUM  | Side-effect-free prepare forbids the required external `bash -n` validator | `[~]` | master (direct, e4e261d) |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -1023,3 +1023,16 @@ preserve the shipped reset-kills-running-jobs contract by removing running
 jobs from the non-force busy predicate, rather than rewriting that guard to
 bless an accidental compatibility regression. All nine pending rows require
 one-finding-per-commit fixes and reviewer re-grade.
+
+**Fix round 3 LANDED:** nine pending findings, exactly one plan fix per
+commit: `b7677da` (ahs-18, creation-time Windows Job Object membership and
+broker-gated Unix launch), `c9a14ba` (ahs-22, alias binding frozen at validated
+admission before bootstrap), `4dd8074` (ahs-25, explicit conditional schema
+plus raw field-presence validation), `1f2c9c2` (ahs-26, two .NET raw/path guard
+migrations), `e36b40b` (ahs-27, running cold jobs remain reset-owned rather
+than lifecycle-busy), `af73889` (ahs-28, supervisor-owned harness-lifetime
+output artifacts), `6294340` (ahs-29, atomic timeout transition and bounded
+post-deadline containment grace), `23586fb` (ahs-30, physically separate
+terminal reserve and all-call admission stop), and `e4e261d` (ahs-31,
+post-audit scrubbed `bash -n` validation). Rows remain `[~]` pending fixed-SHA
+review; no product code is authorized.
