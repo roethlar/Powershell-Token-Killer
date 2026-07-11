@@ -85,13 +85,23 @@ Neutral prompt, no escape hatch, no bypass list. All three produced
 ranked app-layer measures. Convergent items worth keeping regardless of
 what the gate question resolves to:
 
-- **Secret redaction on every output path** (all three, independently —
-  and NEW to this repo's thinking): tokens, PATs, JWTs, connection
-  strings, credential dumps currently flow through the compressor into
-  model context, harness transcripts, and job logs. codex's framing:
-  *"raw should mean uncompressed, not unredacted."* This is a live leak
-  in a tool whose job is to shape output, and it is independent of the
-  policy debate.
+- ~~**Secret redaction on every output path**~~ — **RAISED BY ALL THREE,
+  REJECTED 2026-07-11 (owner test, verified in code).** The panel said
+  tokens/PATs/connection strings flow through the compressor into model
+  context and job logs, and proposed redaction ("raw should mean
+  uncompressed, not unredacted"). It does not survive the delta test:
+  `bash -c 'cat secret.txt'` discloses the same secret today without
+  ptk. The agent's REQUEST is the discloser, not the tool; redaction
+  buys nothing an agent cannot route around (base64, chunking) while
+  masking GUIDs and blobs legitimate work needs. The one vector that
+  WOULD have been ptk-specific — surfacing a secret nobody asked for —
+  was checked and does not exist: `ptk_state` env drift emits variable
+  NAMES only, never values (`RunspaceHost.cs:151-177`; PATH emits
+  directory entries). Recorded so it is not re-proposed: three models
+  converging on a control is not evidence the control is needed —
+  pattern-matching ("secrets + output = redact") reproduces across
+  models. Ask what delta the TOOL adds over the alternative that already
+  exists.
 - **ConstrainedLanguage mode** (agy) — a real PowerShell primitive, not
   a hand-rolled filter: blocks arbitrary .NET/`Add-Type`. Cost is high
   (breaks admin modules and dev work), so it is a profile, not a

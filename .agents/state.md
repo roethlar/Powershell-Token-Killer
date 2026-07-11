@@ -19,15 +19,18 @@ short and update it when important repo facts change.
   settled call. **Live candidate, UNVERIFIED: MCP elicitation**
   (server-initiated user confirmation mid-call) — verify spec support,
   per-harness client support, headless behavior (a prompt no client
-  renders fails OPEN — worse than none). Also banked from the neutral
-  cross-harness consultation and independent of the gate question:
-  **secret redaction on output paths** (tokens/creds currently flow
-  through the compressor into model context — a real leak, new to this
-  repo's thinking), ConstrainedLanguage profile, authenticated-session
-  TTL/process-teardown, and control-action gating placement above
-  `ptk_reset`/`ptk_job kill`. Process lesson recorded in the plan: shape
-  review BEFORE plan review — a review loop cannot question its own
-  premise.
+  renders fails OPEN — worse than none). From the neutral cross-harness
+  consultation, still open as candidates: ConstrainedLanguage profile,
+  authenticated-session TTL/process-teardown, control-action gating
+  placement above `ptk_reset`/`ptk_job kill` (reset kills jobs before
+  any check could fire). **Secret redaction was raised by all three and
+  REJECTED** (owner's delta test: `bash -c 'cat secret.txt'` leaks the
+  same secret today; verified ptk_state emits env NAMES only, never
+  values). Process lessons recorded in the plan: (a) shape review BEFORE
+  plan review — a review loop cannot question its own premise; (b) apply
+  the DELTA TEST to every proposed control — what does routing through
+  ptk make worse than the path that already exists? Three models
+  agreeing is not evidence; they pattern-match the same way.
 - **Two DRAFT plans, codex-reviewed, NEITHER APPROVED — no code written
   for either.** (a) `.agents/plans/rtk-rewrite-routing.md` — route all
   native work through `rtk rewrite` (owner direction 2026-07-10:
