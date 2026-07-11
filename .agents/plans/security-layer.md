@@ -38,9 +38,24 @@ safe against a hostile local process.
    default: it is the cheapest artifact with immediate value to an
    owner managing many agents, and it makes every later enforcement
    decision reviewable. No execution behavior changes.
-2. **Policy gate:** a declarative policy file OUTSIDE any workspace
-   (`~/.ptk/policy.*` — format decided at implementation from the
-   archived design), evaluated server-side before execution. Two tiers,
+2. **Policy gate:** a declarative policy file OUTSIDE any workspace,
+   evaluated server-side before execution. The file is
+   `~/.ptk/policy.psd1` — not open: the release-distribution plan
+   already reserves that name and location as user-owned config
+   (slp-4). **A cold agent cannot implement "decided at
+   implementation", so slice 2 begins with a design-freeze step whose
+   output amends THIS plan before any code:** a versioned psd1 schema
+   (schema version, deny/allow lists, tool/action rules, preset
+   identity); the complete evaluation algorithm — whole-script AST
+   walk, not a top-level glance (every command element in every nested
+   block), explicit verdicts for dynamic invocation (`&`/`.`
+   with expressions, `Invoke-Expression`, `Invoke-Command`,
+   `Start-Process` — fail-closed while active), native vs unknown
+   handling, deny-beats-allow ordering; malformed-or-unreadable file =
+   fail-closed with a labeled diagnostic, never silently unrestricted;
+   reload semantics (per-call stat or explicit reload — pick one);
+   and the exact preset contents slice 3 ships. The freeze is reviewed
+   in the loop like any slice before implementation continues. Two tiers,
    reconciling the two prior designs: regex deny/allow for native
    command lines (deny wins), cmdlet classification
    (`SupportsShouldProcess`/`ConfirmImpact` + alias resolution) for
