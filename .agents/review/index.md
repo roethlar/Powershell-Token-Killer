@@ -748,7 +748,7 @@ direct to `master`, one per commit.
 | rrp-3  | HIGH     | Producer-side pipe rewrites feed filtered data to consumers (silent corruption) | `[x]`  | master (direct, 4460808) |
 | rrp-4  | HIGH     | A hung rewrite eats the call budget; fail-open promise impossible as written | `[x]`  | master (direct, 96243a5) |
 | rrp-5  | MEDIUM   | Background jobs silently out of scope while the plan claims all native work | `[x]`  | master (direct, 3d1dafb) |
-| rrp-6  | MEDIUM   | route=rtk undefined under rewrite-based routing                           | `[~]`  | master (direct, 01aa10e) |
+| rrp-6  | MEDIUM   | route=rtk undefined under rewrite-based routing                           | `[x]`  | master (direct, 01aa10e) |
 | rrp-7  | MEDIUM   | Recorded exit-code observation wrong (passthrough=1, not 3); CI has no rtk | `[x]`  | master (direct, 7e63a52) |
 | rrp-8  | MEDIUM   | Env/sudo-prefixed find defeats the find-before-pipe guard                 | `[x]`  | master (direct, 3358936) |
 | rrp-9  | MEDIUM   | Savings measurement not reproducible by a cold agent                      | `[x]`  | master (direct, fe9e2cf) |
@@ -805,7 +805,7 @@ ALL ADMITTED (rrp-13 reviewer-probed live; rrp-14/15 verified against
 |--------|----------|---------------------------------------------------------------------------|--------|--------|
 | rrp-13 | MEDIUM   | Rewrite child inherits server cwd; rtk reads the WRONG project's rules   | `[x]`  | master (direct, 9f06e5d) |
 | rrp-14 | HIGH     | Fixed rewrite bound can exceed remaining budget; outer deadline recycles warm state | `[x]`  | master (direct, b30a1af) |
-| rrp-15 | HIGH     | `Set-Alias git ...; git status` — preflight resolution lies for later segments | `[~]`  | master (direct, 0ad0769) |
+| rrp-15 | HIGH     | `Set-Alias git ...; git status` — preflight resolution lies for later segments | `[x]`  | master (direct, 0ad0769 + 6e3ef9b + 5320c13 + 38168c9; closed CONVERGED, residual disclosed) |
 
 **Re-grade round 4 (codex, codex-cli 0.144.1, read-only) at head
 `20e4084`:** rrp-9, rrp-13, rrp-14, slp-11 **RESOLVED**; NO NEW
@@ -820,7 +820,44 @@ mutation; completed `6e3ef9b`: preceding natives must carry
 constant-literal arguments only, counterexample added verbatim as a
 regression case).
 
-**Re-grade round 5 pending** over rrp-6 and rrp-15 only. Round sizes
-strictly diminishing: 20 → 7 → 6 → 2. Both plans remain DRAFTs awaiting
-owner approval. Commits unpushed pending the owner's master push go.
+**Re-grade round 5 (codex, codex-cli 0.144.1, read-only) at head
+`577aa8d`:** rrp-6 **RESOLVED** (flipped `[x]`). rrp-15 held on a
+redirection-target subexpression (`true > $(Set-Alias ...); git
+status`, probed live) — the literal-args enumeration lost again, so
+the completion (`955f1d7`) replaced enumeration with a whole-statement
+AST WHITELIST, fail-closed on unrecognized node types.
+
+**Re-grade round 6** at head `955f1d7`: rrp-15 held again — ambient
+`Set-PSBreakpoint -Command true -Action { Set-Alias git ... }` mutates
+resolution from WARM STATE, outside any submission AST (probed live).
+The escalation proved static preflight analysis unsound in principle;
+completion `5320c13` adopted the reviewer's own round-3 mechanism:
+EXECUTION-TIME re-resolution — each routed segment re-resolves its
+head immediately before running and falls back to the original
+verbatim; the static screen demoted to a cost optimization.
+
+**Re-grade round 7** at head `5320c13`: rrp-15 held once more on a
+different-in-kind leg (probed live): substitution SUPPRESSES
+name-keyed hooks — a `git` breakpoint never fires when `rtk git` runs
+instead, so hook side effects (including mutations later segments
+would observe) diverge between routed and unrouted execution. This is
+inherent to routing-by-substitution and is already true of the
+SHIPPED single-command routing today; no guard or wording can make
+`rtk git` fire a `git` breakpoint. Disposition: recorded in the plan
+as an inherent, disclosed residual with a slice-4 doc duty (name-keyed
+session hooks do not fire on routed segments; `route=pwsh` /
+`RTK_DISABLED` is the escape) — commit `38168c9`.
+
+**Loop CLOSED 2026-07-11 (CONVERGED):** per the recorded sd1
+convergence precedent — round sizes 20 → 7 → 6 → 2 → 1 → 1 → 1, every
+named repro guarded as a regression case, the mechanism genuinely
+improved three times (static enumeration → AST whitelist →
+execution-time guard), and the terminal tail class (name-keyed hook
+divergence) is provably unfixable by any routing-by-substitution
+design, including the one already shipped. All 12 slp findings and
+rrp-1..14 RESOLVED by reviewer grade; rrp-15 closed by coder
+disposition as inherent-disclosed-residual — **flagged for owner
+ratification** (reopen or order round 8 to overrule). Both plans
+remain DRAFTs awaiting owner approval; nothing in this loop authorizes
+implementation. Commits unpushed pending the owner's master push go.
 
