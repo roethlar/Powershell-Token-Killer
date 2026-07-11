@@ -66,6 +66,12 @@ The implementation must preserve these owner-settled rules:
 - `raw=true` must cease being a lower-friction execution bypass. Output
   recovery reads bytes captured from the same invocation; it never reruns the
   script.
+- Approval of this plan explicitly supersedes only the `raw=true` half of the
+  active shell-dialect D1 consent rule: raw no longer changes interpreter or
+  routing. `route=pwsh` remains explicit consent to execute the original text
+  as PowerShell and bypass automatic dialect/RTK routing. The deferred
+  decisions-log reconciliation must record that split; the hold is not
+  permission for an implementer to guess.
 - A failed optimization/style check is not a legitimate reason to return a
   failed tool call. Failure is reserved for an actual execution/lifecycle
   problem or for mandatory audit being unavailable.
@@ -282,6 +288,16 @@ before the worker receives permission to execute.
 
 ### Automatic routing
 
+- `route=auto` applies the planner rules below.
+- `route=pwsh` selects `PowerShellDirect` for the exact original text in the
+  warm foreground or cold job context. It suppresses dialect refusal/Bash
+  delegation and RTK execution routing, but retains ordinary output capture
+  and shaping.
+- `route=rtk` is a routing assertion only for a semantically eligible terminal
+  native command. If safe RTK execution cannot be prepared before any process
+  starts, execute the original once through the exact-semantics fallback with
+  a concise effective-route label. It must never silently look routed and must
+  never retry after execution begins.
 - A single terminal native Application whose output is returned to the model
   is offered to RTK. RTK chooses a specialized filter or passthrough.
 - A cmdlet, alias, function, script, variable-dependent invocation, or
@@ -637,6 +653,15 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Replace raw rerun markers with opaque handle instructions.
 - Make legacy `raw=true` non-routing and non-bypass behavior; keep it only for
   the announced compatibility interval.
+- Replace the shipped
+  `Raw_true_bypasses_detection_as_consent` and
+  `Background_raw_bypasses_detection_and_starts_the_job` guards with the new
+  same-route/captured-output contract in this same slice.
+  `Route_pwsh_bypasses_detection_as_consent` and
+  `Background_route_pwsh_bypasses_detection_and_starts_the_job` remain and
+  gain assertions that the execution plan is `PowerShellDirect`. This is an
+  intentional guard amendment, not a requirement that the obsolete assertions
+  remain green.
 - Prove recovery never changes state or re-executes.
 
 ### Slice 5 — foreground/background routing and recovery parity
@@ -772,7 +797,8 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 ### Compatibility and live verification
 
 - Existing Pester suite, .NET suite, and MCP handshake remain green after
-  every code slice.
+  every code slice, with only the two named obsolete raw-consent guards
+  replaced in slice 4 and the route-pwsh consent guard retained/strengthened.
 - New tests receive red-leg guard proof per repo guidance.
 - Default tool schemas remain compatible through the declared raw transition.
 - Real MCP stdio tests cover audit IDs, RTK path, output handle, two sessions,
