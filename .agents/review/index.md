@@ -1216,10 +1216,16 @@ branch was fast-forwarded into `master` at `008dfa0`, its content arrival was
 verified with an empty branch-to-master diff, and the local branch was deleted.
 This authority does not include push; push remains ask-first.
 
-**AUDIT V1 COMPLETENESS CORRECTION — CLAUDE REVIEW ACTIVE.** Before the first
-audit writer was implemented, Slice 1 mapping proved the strict v1 field list
-could not represent three already-required facts: prepared plan ID, bounded
-permitted fallback set, and the emergency-probe recovery summary. The narrow
-docs correction adds explicit typed fields without weakening any behavior or
-changing an emitted format; fixed base/head and the docs guard are recorded by
-the synchronous Claude reviewloop before product code resumes.
+**AUDIT V1 COMPLETENESS CORRECTION — CLAUDE ACCEPTED** (Claude Code 2.1.207,
+model reported as `claude-fable-5`, read-only), reviewed head
+`e308da9bbffc8812937246bc1cfd6a3ae6e46e5b` against base
+`d70b62c528586516ec4196ffd0f55d3136dc5010`, `guard_confirmed=true`,
+2026-07-11T17:55:15Z. Claude independently confirmed that the base required but
+could not represent prepared plan ID, bounded permitted fallback set, and the
+emergency-probe recovery summary; the corrected strict v1 envelope represents
+all three without weakening behavior or changing an emitted format. It found
+no material issue. Its sole LOW, explicitly non-blocking comment was to surface
+the pre-release correction to the owner; that correction and rationale were
+presented directly in the active owner conversation. The structured envelope
+exited zero and matched both SHAs exactly. Product implementation may resume;
+push remains ask-first.

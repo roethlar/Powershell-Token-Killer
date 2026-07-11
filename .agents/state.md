@@ -5,10 +5,6 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **Active review loop:** the never-shipped `ptk.audit/1` completeness
-  correction is awaiting fixed-SHA Claude review; see
-  `.agents/review/index.md`. Slice 1 product code resumes immediately after the
-  correction is accepted and merged.
 - **Local branch management is delegated for the remaining audited-harness
   implementation** (owner, 2026-07-11): create, switch, merge, and delete local
   implementation/review branches without per-merge confirmation. Push remains
