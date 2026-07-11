@@ -1,37 +1,49 @@
-# Plan: second security layer (PREMISE REJECTED 2026-07-11 — reframing in progress)
+# Plan: second security layer (policy-gate approach REJECTED 2026-07-11; problem OPEN)
 
 ## STOP — read this before the rest of the file
 
-**Owner verdict, 2026-07-11 (in-session, decisive):** ptk as it stands
-"gets ZERO consideration" — it is an ARB-fail. The owner's grounds (30
-years IT, security event response, ARB interviews), recorded in his
-terms:
+**Status of the security question: OPEN, under active owner-led
+consultation. Nothing here is settled.**
 
-- ptk is **a low-friction bypass gated on one careless, persistent
-  "yes."** The install-time question is "allow ptk?" and the honest
-  human answer is always "of course, I installed it, I need you to use
-  it." That single grant then covers every subsequent command forever.
-- **The missing control is the per-ACTION sanity check**, not a config
-  file: there is no `Allow Remove-Mailbox CEO@company.com  Y/n?`
-  moment. The harness would impose one per destructive command; routing
-  through an MCP tool erases it.
-- **"The agent could do it anyway with direct tools" is not a defense.**
-  The objection is precisely that ptk *removes friction the harness
-  would otherwise apply*. Equivalent worst-case reachability is not
-  equivalent risk when one path asks and the other never does.
+### The problem statement (owner's framing for an outreach consultation, 2026-07-11)
 
-**What this kills:** the declarative policy-file gate as the answer.
-Owner: "brittle nonsense — no allow/deny list survives an even
-half-competent agent's attempt to work around a friction point. Can't
-call `rm -rf`? Make an alias. Use python to delete. Edit the rules
-file." The slices below are retained as PRIOR ART ONLY — the reviewed
-design work is sound on its own terms, and its premise is rejected. Do
-not implement them.
+The owner drafted this as the FRAMING he is taking to outside help — it
+is the argument to be tested, **NOT a delivered verdict and NOT a
+recorded decision**. Recorded here because the next agent must not
+re-derive it, and must not mistake it for a settled call:
 
-**What survives as the live question:** how to restore a per-destructive-
-action human check to a tool whose whole value is unattended,
-low-friction execution — without the per-call prompts that are already
-dead in practice at ~10 agents.
+- ptk would get "zero consideration" in an architecture review: it is
+  **a low-friction bypass gated on one careless, persistent "yes."**
+  The install question is "allow ptk?" and the honest human answer is
+  always "of course, I installed it, I need you to use it." That single
+  grant then covers every subsequent command forever.
+- **The missing control is a per-ACTION sanity check:** there is no
+  `Allow Remove-Mailbox CEO@company.com  Y/n?` moment. A harness would
+  impose one per destructive command; routing through an MCP tool
+  erases it.
+- **"The agent could do it anyway with direct tools" is not a defense** —
+  the objection is precisely that ptk removes friction the harness would
+  otherwise apply. Equivalent worst-case reachability is not equivalent
+  risk when one path asks and the other never does.
+
+Its author's standing (30 years IT, security event response, ARB
+interviews) is why the framing deserves weight — it is not why it is
+true. Treat it as the strongest available statement of the problem, and
+the thing any proposed shape must answer.
+
+### What the owner HAS decided (his own words, in-session 2026-07-10/11)
+
+The declarative policy-file gate is rejected as the answer: "brittle
+nonsense — no allow/deny list survives an even half-competent agent's
+attempt to work around a friction point. Can't call `rm -rf`? Make an
+alias. Use python to delete. Edit the rules file." The slices below are
+retained as PRIOR ART ONLY. **Do not implement them.**
+
+That rejection is a real owner call. The problem framing above is not.
+
+**The live question:** how to restore a per-destructive-action human
+check to a tool whose whole value is unattended, low-friction execution —
+without the per-call prompts already dead in practice at ~10 agents.
 
 **Candidate shape, UNVERIFIED — next session's first job:** MCP
 **elicitation** (server-initiated request for user input mid-call). If

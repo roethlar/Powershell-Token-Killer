@@ -5,18 +5,21 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **SECURITY: policy-gate premise REJECTED by the owner 2026-07-11 —
-  read `.agents/plans/security-layer.md` top section BEFORE any security
-  work.** Owner's verdict (ARB grounds): ptk is a low-friction bypass
-  gated on one careless persistent "yes"; the missing control is the
-  per-ACTION check (`Allow Remove-Mailbox CEO@company.com Y/n?`), not a
-  config file; "the agent could do it with direct tools anyway" is not a
-  defense, because ptk removes friction the harness would apply. The
-  declarative policy file is dead ("brittle nonsense — alias it, use
-  python, edit the rules file"). **Live candidate, UNVERIFIED, next
-  session's first job: MCP elicitation** (server-initiated user
-  confirmation mid-call) — verify spec support, per-harness client
-  support, and headless behavior. Also banked from the neutral
+- **SECURITY: question OPEN, owner-led consultation in progress — read
+  `.agents/plans/security-layer.md` top section BEFORE any security
+  work.** Two distinct things, do not conflate: (1) **DECIDED** — the
+  declarative policy-file gate is rejected as the answer (owner: "brittle
+  nonsense — alias it, use python, edit the rules file"); its slices are
+  prior art, do not implement. (2) **NOT a decision** — the "ptk gets
+  zero consideration / low-friction bypass gated on one careless yes /
+  missing the `Remove-Mailbox CEO@company.com Y/n?` check" statement is
+  the owner's FRAMING for an outreach consultation he is running
+  himself, recorded verbatim in the plan. It is the problem any shape
+  must answer, not a verdict already delivered. Do not cite it as a
+  settled call. **Live candidate, UNVERIFIED: MCP elicitation**
+  (server-initiated user confirmation mid-call) — verify spec support,
+  per-harness client support, headless behavior (a prompt no client
+  renders fails OPEN — worse than none). Also banked from the neutral
   cross-harness consultation and independent of the gate question:
   **secret redaction on output paths** (tokens/creds currently flow
   through the compressor into model context — a real leak, new to this
@@ -118,12 +121,14 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. **Security (highest, owner-driven):** verify the MCP-elicitation
-   candidate (spec support; which harnesses render server-initiated
-   prompts; headless failure mode — a prompt nobody renders fails OPEN
-   and is worse than none). Then present the shape to the owner in ≤50
-   plain-English words BEFORE any plan document. Do NOT re-derive the
-   policy file.
+1. **Security (highest, owner-driven — but the owner is running his own
+   outreach on the framing; do not pre-empt his consultation with a
+   plan).** Useful agent work while that runs: verify the
+   MCP-elicitation candidate as FACT-FINDING only (spec support; which
+   harnesses render server-initiated prompts; headless failure mode — a
+   prompt nobody renders fails OPEN and is worse than none). Report
+   findings; do not draft a plan or a shape until the owner's
+   consultation returns. Do NOT re-derive the policy file.
 2. **rtk-routing plan:** owner approval + ratification of the rrp-15
    disposition (see `## Now`). No code until then.
 3. Owner push go for the local-ahead tail (~30 commits).
