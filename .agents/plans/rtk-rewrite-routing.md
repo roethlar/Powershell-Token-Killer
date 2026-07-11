@@ -18,8 +18,18 @@ a call into rtk's own dispatch.
 ## Division of labor (the design in one sentence)
 
 ptk stays the PowerShell expert — dialect refusal, object compression,
-warm session; `rtk rewrite` becomes the sole authority on what native
-work rides which rtk filter.
+warm session, and **deciding what is native in this session**; `rtk
+rewrite` becomes the sole authority on which rtk filter confirmed-native
+work rides. **Boundary requirement (rrp-2):** rtk maps names lexically —
+probed live, bare `ls` rewrites to `rtk ls` — but in PS7 `ls` can be the
+`Get-ChildItem` alias (Windows always), and warm or script-local
+functions can shadow `git`. The current resolver's session-aware
+classification (only commands resolving to `Application`; `.cmd`/`.bat`
+shims excluded for argument-quoting fidelity) must survive per segment:
+only segments whose head command resolves to a real native application
+in the live runspace are handed to rtk; alias/function/cmdlet/shim
+segments stay untouched. Tests: Windows `ls` alias; warm-shadowed and
+script-local-shadowed `git`; `.cmd`/`.bat` shim.
 
 ## Slices
 
