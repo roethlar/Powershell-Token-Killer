@@ -890,6 +890,20 @@ table is a valid review result.
 | ahs-9 | MEDIUM   | New Bash execution contract breaks an unnamed load-bearing heredoc refusal guard | `[~]` | master (direct) |
 | ahs-10 | MEDIUM  | Output-handle wording breaks four unnamed load-bearing Pester marker guards | `[~]` | master (direct) |
 | ahs-11 | MEDIUM  | Template-less sessions have no defined cold-background policy | `[~]` | master (direct) |
+| ahs-12 | HIGH    | Worker protocol on stdout is corruptible by FullLanguage user code | `[~]` | master (direct) |
+| ahs-13 | HIGH    | Pre-effect audit has no immutable prepare/commit reservation protocol | `[~]` | master (direct) |
+| ahs-14 | MEDIUM  | Background call and job terminal events have an impossible ordering | `[~]` | master (direct) |
+| ahs-15 | MEDIUM  | Reused worker-local job IDs can target a new generation from a stale call | `[~]` | master (direct) |
+| ahs-16 | MEDIUM  | Retention may delete audit segments that SIEM never acknowledged | `[~]` | master (direct) |
+| ahs-17 | MEDIUM  | Export-checkpoint audit events can recursively generate forever | `[~]` | master (direct) |
+| ahs-18 | HIGH    | Hard supervisor death can leave a blocked worker or job orphaned | `[~]` | master (direct) |
+| ahs-19 | HIGH    | Timeout containment is undefined for dynamically connected sessions | `[~]` | master (direct) |
+| ahs-20 | HIGH    | Same-session lifecycle and invocation admissions are not linearized | `[~]` | master (direct) |
+| ahs-21 | MEDIUM  | Busy `restart(force=false)` has no defined no-side-effect behavior | `[~]` | master (direct) |
+| ahs-22 | MEDIUM  | A session alias can be ambiguously rebound to another template/digest | `[~]` | master (direct) |
+| ahs-23 | MEDIUM  | Malformed catalogs and bootstrap path failures have no fail-closed contract | `[~]` | master (direct) |
+| ahs-24 | HIGH    | Timed-out bootstrap can later yield an untracked authenticated worker | `[~]` | master (direct) |
+| ahs-25 | LOW     | `ptk_session list` conflicts with a schema that requires `name` | `[~]` | master (direct) |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -932,3 +946,20 @@ Pester marker guards intentionally changed by same-invocation recovery; and
 ahs-11 defines `allowColdBackground` for reserved-default and template-less
 dynamic sessions. The reviewer independently live-probed both Bash legs and
 verified every cited guard in the current tree.
+
+**Coder consistency audit after Claude round 2 — 14 NEW FINDINGS, ALL
+ADMITTED.** Three parallel read-only passes checked the frozen head by domain:
+audit/security, worker/session lifecycle, and routing/output. The
+routing/output pass found no non-duplicate issue. The other two passes cited
+concrete plan sections and predicted implementer-visible failures; the coder
+then independently checked those sections before admitting ahs-12..ahs-25.
+The findings cover protocol-stream injection, the missing prepared-plan
+reservation between warm resolution and supervisor audit commit, impossible
+background lifecycle order, stale job-ID reuse, unacknowledged-segment
+retention, recursive checkpoint events, hard-parent-death containment,
+timeout containment for dynamic connections, lifecycle admission races,
+restart parity, immutable alias/template binding, catalog/path failure
+behavior, timed-out startup disposal, and the list-action schema. The
+template-less background finding was already ahs-11 and was not duplicated.
+These are coder-admitted plan findings, not attributed to Claude; all remain
+pending reviewer grade after one-finding-per-commit fixes.
