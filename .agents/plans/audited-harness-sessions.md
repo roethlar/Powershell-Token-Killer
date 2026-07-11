@@ -129,15 +129,24 @@ store partition, one module cache, and one authentication/environment
 context. The supervisor owns MCP, session lifecycle, worker process trees,
 audit persistence/export, and correlation IDs.
 
-All workers are children of the supervisor and enter containment before any
-runspace/bootstrap can start. On Windows, the supervisor owns the sole
-noninherited handle to a Job Object configured `KILL_ON_JOB_CLOSE` and assigns
-the worker before releasing initialization. On Unix, the worker and its
-managed descendants enter a dedicated process group while a tiny reaper
-outside that group watches a supervisor-only liveness pipe; EOF sends the
-group bounded TERM then KILL and the reaper exits. The supervisor waits for a
-containment-armed acknowledgment before sending `initialize`. The ordinary
-protocol EOF watcher remains a graceful fast path, not the hard-death proof.
+All workers are children of the supervisor and enter containment atomically at
+creation, before any worker instruction or runspace/bootstrap can run. On
+supported Windows, the supervisor first creates/configures the Job Object,
+then uses `CreateProcessW`/`STARTUPINFOEX` with
+`PROC_THREAD_ATTRIBUTE_JOB_LIST` so the worker belongs to the
+`KILL_ON_JOB_CLOSE` object from its first runnable instruction; the sole Job
+Object handle is noninherited and supervisor-owned. A platform without that
+creation-time primitive fails worker startup rather than falling back to the
+spawn-then-assign race.
+
+On Unix, a tiny containment broker/reaper is started first with the
+supervisor-only liveness pipe. It, not the supervisor, forks the worker behind
+a closed start gate, places it in a dedicated process group, and releases the
+gate only after liveness and group ownership are armed. EOF before release
+kills/abandons the gated child; EOF later sends the group bounded TERM then
+KILL and the broker exits. The supervisor waits for a containment-armed
+acknowledgment before sending `initialize`. The ordinary protocol EOF watcher
+remains a graceful fast path, not the hard-death proof.
 Graceful shutdown asks workers to stop, waits a bounded grace, then invokes
 the same containment kill. A hard-killed supervisor therefore cannot silently
 turn a managed worker into a durable session. Deliberate `setsid`, scheduled
@@ -829,7 +838,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Freeze OTLP collector test endpoint/auth behavior and the JSONL schema
   version.
 - Probe Windows Job Object and Unix process-group teardown strategy in small
-  disposable children.
+  disposable children. The Windows probe must prove creation-time Job Object
+  membership; the Unix probe must prove broker-first, gated worker creation.
+  A spawn-then-assign/arm fallback is forbidden.
 - Freeze session/profile JSON schema and supervisor/worker frame limits.
   Include all-or-nothing validation, catalog-relative bootstrap resolution,
   frozen bytes/digests, and the explicit unknown-template refusal.
@@ -1140,6 +1151,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   death in starting, bootstrapping, ready, foreground-busy, and job-running
   phases exercises the platform containment path and leaves none after its
   bounded grace.
+- Launch tests stop at every barrier (before worker creation, during atomic
+  creation, before Unix gate release, and immediately after release), kill the
+  supervisor, and prove no runnable or suspended worker escapes containment.
 
 ### Compatibility and live verification
 
