@@ -879,14 +879,17 @@ table is a valid review result.
 
 | ID    | Severity | Impact (one line) | Status | Branch |
 |-------|----------|-------------------|--------|--------|
-| ahs-1 | HIGH     | Missing RTK capture leaves compression and raw recovery mutually contradictory | `[~]` | master (direct, 5288b7b) |
-| ahs-2 | HIGH     | Raw transition silently contradicts active D1 consent and shipped guards | `[~]` | master (direct, 12eddd8) |
-| ahs-3 | HIGH     | Auto-Bash turns detector false positives into wrong-interpreter execution | `[~]` | master (direct, e0710eb) |
-| ahs-4 | MEDIUM   | Exact-script evidence is not part of the durable pre-effect commit | `[~]` | master (direct, 098dcd3) |
-| ahs-5 | MEDIUM   | Closing reserved `default` can permanently brick unqualified tools | `[~]` | master (direct, 5c458f8) |
+| ahs-1 | HIGH     | Missing RTK capture leaves compression and raw recovery mutually contradictory | `[x]` | master (direct, 5288b7b) |
+| ahs-2 | HIGH     | Raw transition silently contradicts active D1 consent and shipped guards | `[x]` | master (direct, 12eddd8) |
+| ahs-3 | HIGH     | Auto-Bash turns detector false positives into wrong-interpreter execution | `[x]` | master (direct, e0710eb) |
+| ahs-4 | MEDIUM   | Exact-script evidence is not part of the durable pre-effect commit | `[x]` | master (direct, 098dcd3) |
+| ahs-5 | MEDIUM   | Closing reserved `default` can permanently brick unqualified tools | `[x]` | master (direct, 5c458f8) |
 | ahs-6 | MEDIUM   | Reconciliation omits approved routing/dialect contracts this plan replaces | `[~]` | master (direct, 61f6d53) |
-| ahs-7 | MEDIUM   | Warm background-session concurrency and kill semantics are undefined | `[~]` | master (direct, 2f8e419) |
-| ahs-8 | LOW      | Fail-closed audit prevents `ptk_state` from reporting the audit failure | `[~]` | master (direct, 5ee1aa3) |
+| ahs-7 | MEDIUM   | Warm background-session concurrency and kill semantics are undefined | `[x]` | master (direct, 2f8e419) |
+| ahs-8 | LOW      | Fail-closed audit prevents `ptk_state` from reporting the audit failure | `[x]` | master (direct, 5ee1aa3) |
+| ahs-9 | MEDIUM   | New Bash execution contract breaks an unnamed load-bearing heredoc refusal guard | `[~]` | master (direct) |
+| ahs-10 | MEDIUM  | Output-handle wording breaks four unnamed load-bearing Pester marker guards | `[~]` | master (direct) |
+| ahs-11 | MEDIUM  | Template-less sessions have no defined cold-background policy | `[~]` | master (direct) |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -912,3 +915,20 @@ explicitly superseded while route-pwsh consent remains),
 `2f8e419` (ahs-7, warm session jobs deferred), and
 `5ee1aa3` (ahs-8, minimal unrecorded audit-health diagnostic).
 All rows remain pending until Claude re-grades the revised fixed SHA.
+
+**Claude re-grade round 2 — REOPENED** (Claude Code 2.1.207, default
+claude-opus-4-8, read-only), reviewed head
+`242de89d9485e4f2955d26cd1c9bb01d3cb7a3e3` against base
+`875efa05b7ef6c01354466f3f93211316d30c901`,
+`guard_confirmed=true`, 2026-07-11T10:09:07Z. Structured verdict and both
+SHAs matched the dispatch. Claude marked ahs-1..5, ahs-7, and ahs-8
+RESOLVED; those rows are now `[x]`. ahs-6 remains NOT_RESOLVED because its
+reconciliation names D1 changes but still omits the D2 raw-marker/counter
+clauses and the greenfield `raw=true`-unbounded clause. Three new findings
+were **ALL ADMITTED** after coder verification against the cited plan and
+shipped guards: ahs-9 names the heredoc guard intentionally changed by the
+new parse-fatal + detector + `bash -n` execution gate; ahs-10 names the four
+Pester marker guards intentionally changed by same-invocation recovery; and
+ahs-11 defines `allowColdBackground` for reserved-default and template-less
+dynamic sessions. The reviewer independently live-probed both Bash legs and
+verified every cited guard in the current tree.
