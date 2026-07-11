@@ -743,14 +743,14 @@ direct to `master`, one per commit.
 
 | ID     | Severity | Impact (one line)                                                        | Status | Branch |
 |--------|----------|---------------------------------------------------------------------------|--------|--------|
-| rrp-1  | HIGH     | Emitted literal `rtk` tokens break the PTK_RTK_PATH pin                  | `[~]`  | master (direct, 7975152) |
-| rrp-2  | HIGH     | Lexical rewrite tramples PS7 aliases/functions/shims (`ls` → `rtk ls`)   | `[~]`  | master (direct, 818181e) |
-| rrp-3  | HIGH     | Producer-side pipe rewrites feed filtered data to consumers (silent corruption) | `[~]`  | master (direct, 4460808) |
-| rrp-4  | HIGH     | A hung rewrite eats the call budget; fail-open promise impossible as written | `[~]`  | master (direct, 96243a5) |
-| rrp-5  | MEDIUM   | Background jobs silently out of scope while the plan claims all native work | `[~]`  | master (direct, 3d1dafb) |
+| rrp-1  | HIGH     | Emitted literal `rtk` tokens break the PTK_RTK_PATH pin                  | `[x]`  | master (direct, 7975152) |
+| rrp-2  | HIGH     | Lexical rewrite tramples PS7 aliases/functions/shims (`ls` → `rtk ls`)   | `[x]`  | master (direct, 818181e) |
+| rrp-3  | HIGH     | Producer-side pipe rewrites feed filtered data to consumers (silent corruption) | `[x]`  | master (direct, 4460808) |
+| rrp-4  | HIGH     | A hung rewrite eats the call budget; fail-open promise impossible as written | `[x]`  | master (direct, 96243a5) |
+| rrp-5  | MEDIUM   | Background jobs silently out of scope while the plan claims all native work | `[x]`  | master (direct, 3d1dafb) |
 | rrp-6  | MEDIUM   | route=rtk undefined under rewrite-based routing                           | `[~]`  | master (direct, 01aa10e) |
-| rrp-7  | MEDIUM   | Recorded exit-code observation wrong (passthrough=1, not 3); CI has no rtk | `[~]`  | master (direct, 7e63a52) |
-| rrp-8  | MEDIUM   | Env/sudo-prefixed find defeats the find-before-pipe guard                 | `[~]`  | master (direct, 3358936) |
+| rrp-7  | MEDIUM   | Recorded exit-code observation wrong (passthrough=1, not 3); CI has no rtk | `[x]`  | master (direct, 7e63a52) |
+| rrp-8  | MEDIUM   | Env/sudo-prefixed find defeats the find-before-pipe guard                 | `[x]`  | master (direct, 3358936) |
 | rrp-9  | MEDIUM   | Savings measurement not reproducible by a cold agent                      | `[~]`  | master (direct, fe9e2cf) |
 | rrp-10 | MEDIUM   | No slice reconciles the still-active single-command-routing contracts     | `[~]`  | master (direct, 0f22e24) |
 
@@ -758,18 +758,37 @@ direct to `master`, one per commit.
 
 | ID     | Severity | Impact (one line)                                                        | Status | Branch |
 |--------|----------|---------------------------------------------------------------------------|--------|--------|
-| slp-1  | HIGH     | Opt-in gate silently replaces the recorded default-read-only baseline    | `[~]`  | master (direct, 72108c2) |
-| slp-2  | HIGH     | Optional background coverage = one-flag bypass of every deny rule        | `[~]`  | master (direct, d635787) |
-| slp-3  | HIGH     | Warm-alias classification can bless a cold-context destructive command   | `[~]`  | master (direct, d3da99e) |
-| slp-4  | HIGH     | Policy language/evaluator not implementable by a cold agent; psd1 already reserved | `[~]`  | master (direct, d2b247e) |
-| slp-5  | HIGH     | "Human-only" policy edit claim contradicts the same-user threat model    | `[~]`  | master (direct, 475af37) |
-| slp-6  | MEDIUM   | Reset/job-kill have no policy vocabulary; in-Reset check fires after KillAll | `[~]`  | master (direct, 3964c56) |
-| slp-7  | MEDIUM   | One-line-per-call audit cannot represent background execution            | `[~]`  | master (direct, 3bbb007) |
-| slp-8  | MEDIUM   | Audit fields omit cwd, control args, policy identity, session fields     | `[~]`  | master (direct, f08e7d0) |
-| slp-9  | MEDIUM   | Multi-process rotation and write-failure semantics undefined             | `[~]`  | master (direct, b22d0b5) |
-| slp-10 | HIGH     | Verification could pass while the gate's core properties fail            | `[~]`  | master (direct, 0f4d875) |
+| slp-1  | HIGH     | Opt-in gate silently replaces the recorded default-read-only baseline    | `[x]`  | master (direct, 72108c2) |
+| slp-2  | HIGH     | Optional background coverage = one-flag bypass of every deny rule        | `[x]`  | master (direct, d635787) |
+| slp-3  | HIGH     | Warm-alias classification can bless a cold-context destructive command   | `[x]`  | master (direct, d3da99e) |
+| slp-4  | HIGH     | Policy language/evaluator not implementable by a cold agent; psd1 already reserved | `[x]`  | master (direct, d2b247e) |
+| slp-5  | HIGH     | "Human-only" policy edit claim contradicts the same-user threat model    | `[x]`  | master (direct, 475af37) |
+| slp-6  | MEDIUM   | Reset/job-kill have no policy vocabulary; in-Reset check fires after KillAll | `[x]`  | master (direct, 3964c56) |
+| slp-7  | MEDIUM   | One-line-per-call audit cannot represent background execution            | `[x]`  | master (direct, 3bbb007) |
+| slp-8  | MEDIUM   | Audit fields omit cwd, control args, policy identity, session fields     | `[x]`  | master (direct, f08e7d0) |
+| slp-9  | MEDIUM   | Multi-process rotation and write-failure semantics undefined             | `[x]`  | master (direct, b22d0b5) |
+| slp-10 | HIGH     | Verification could pass while the gate's core properties fail            | `[x]`  | master (direct, 0f4d875) |
 
-**Re-grade round 2 pending** (dispatched over the amended plans; both
-plans remain DRAFTs awaiting owner approval — nothing here authorizes
-implementation). Commits unpushed pending the owner's master push go.
+**Re-grade round 2 (codex, codex-cli 0.144.1, read-only) at head
+`f4d5dce`:** security plan — ALL TEN slp findings **RESOLVED**. rtk plan
+— seven RESOLVED; rrp-6/rrp-9/rrp-10 NOT RESOLVED on completion tails
+(no route=rtk contract actually selected; measurement cases still
+categories, not frozen commands; top-level tool description and the
+frozen unified-shell-routing rule unnamed) — all three completed one
+commit each (`9ef4f8c`, `2617212`, `afced6d`). Four new findings, ALL
+ADMITTED (the rrp-11 preference-throw was reviewer-probed live on PS
+7.6; rrp-12's transparent-prefix re-prepend is in rtk's own tests):
+
+| ID     | Severity | Impact (one line)                                                        | Status | Branch |
+|--------|----------|---------------------------------------------------------------------------|--------|--------|
+| rrp-11 | MEDIUM   | Session native-error preferences make a successful rewrite throw; routing silently dies | `[~]`  | master (direct, 1ec00e4) |
+| rrp-12 | MEDIUM   | Rebinding host path into `docker exec ... rtk ...` breaks a valid command | `[~]`  | master (direct, 0e3e34e) |
+| slp-11 | MEDIUM   | Rotated audit files accumulate unbounded until disk exhaustion            | `[~]`  | master (direct, f4cdc7d) |
+| slp-12 | MEDIUM   | Hard-killed server leaves job-start events reading as running forever     | `[~]`  | master (direct, df13998) |
+
+Round-1 statuses: all ten slp rows and rrp-1..5/7/8 flipped `[x]`;
+rrp-6/9/10 remain `[~]` pending the round-3 grade of their completions.
+**Re-grade round 3 pending** over rrp-6/9/10 completions + the four new
+findings. Both plans remain DRAFTs awaiting owner approval. Commits
+unpushed pending the owner's master push go.
 
