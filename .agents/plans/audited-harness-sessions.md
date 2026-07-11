@@ -218,8 +218,9 @@ Rules:
 - The flat signature above is notation, not the generated schema.
   `SessionTool` is registered with an explicit `oneOf` JSON schema: a `list`
   branch permits only `action`; an `open` branch requires `name` and permits
-  only open-time binding fields; `close` and `restart` branches require `name`
-  and permit only their generation/force/deadline fields. The adapter
+  only open-time binding fields plus `timeoutSeconds`; `close` and `restart`
+  branches require `name` and permit only their generation/force/deadline
+  fields. The adapter
   validates the original JSON property-presence set before binding defaults,
   so omitted is
   distinguishable from explicitly supplied `null`, `false`, or `0`.
@@ -1324,6 +1325,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Schema and runtime tests also reject `{action:"list",force:false}` and
   explicit-null lifecycle fields, proving absence is preserved rather than
   collapsed into CLR defaults.
+- The schema accepts `timeoutSeconds` on `open`, `close`, and `restart` and
+  rejects it on `list`; an open override reaches the shared cap/template
+  ceiling rather than failing additional-property validation.
 - Barrier-controlled invoke/job-start versus reset/restart/close races prove
   the lifecycle transition wins before admission or the operation lease wins
   before the busy check; work never starts in a dying generation, duplicate
