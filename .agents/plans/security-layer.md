@@ -72,6 +72,17 @@ default.
    NULLABLE session-key/client fields reserved for the
    shared-runspace admin CLI so that consumer extends rather than
    breaks the format.
+   **Many writers, and writes can fail (slp-9):** the motivating
+   deployment is ~10 agents = ~10 concurrent server processes under
+   one `~/.ptk/logs/`. Layout: one file PER PROCESS
+   (`audit-<pid>-<startstamp>.jsonl`) — no cross-process locking, no
+   torn lines, rotation is process-local by size; readers merge on
+   timestamp (the admin-CLI consumer already needs a merge step).
+   Write failure (disk full, permissions): the call still executes —
+   slice 1 promises no execution behavior change — but the failure is
+   NOT silent: a labeled warning line in the server's stderr log and a
+   degraded-audit flag in `ptk_state`. Verification covers concurrent
+   writers, rotation under load, and a forced write failure.
 2. **Policy gate:** a declarative policy file OUTSIDE any workspace,
    evaluated server-side before execution. The file is
    `~/.ptk/policy.psd1` — not open: the release-distribution plan
