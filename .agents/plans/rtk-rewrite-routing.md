@@ -215,6 +215,17 @@ not have.
   budget left to actually run it. Seams to test: rewrite timeout →
   fallback executes; rewrite failure → fallback executes; warm state
   preserved in both.
+- **Preference-independent capture (rrp-11):** reviewer-probed live on
+  PS 7.6 — with `$PSNativeCommandUseErrorActionPreference = $true` and
+  `$ErrorActionPreference = 'Stop'` in the warm session, a SUCCESSFUL
+  exit-3 rewrite throws `NativeCommandExitException` in-pipeline,
+  discarding the captured stdout and polluting `$Error`. The rewrite
+  invocation must therefore capture stdout/stderr/exit through a
+  subprocess API that session preference variables cannot touch
+  (ProcessStartInfo-class capture, not `& rtk` in the pipeline), must
+  leave `$Error` untouched, and carries a regression test with both
+  preferences set proving routing still applies and the session stays
+  clean.
 - Windows behavior must be probed on the real Windows box (slice-1
   matrix includes it; the dev-install refresh is a prerequisite there).
 
