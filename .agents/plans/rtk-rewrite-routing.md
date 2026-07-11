@@ -36,21 +36,27 @@ Write-Output; git status` mutates what `git` means BETWEEN the check
 and the second statement — rtk still rewrites the second segment, and
 routing would then run the real binary where unrouted PowerShell would
 have run the alias. Rule: a segment is routable only when every
-PRECEDING statement in the submission is a confirmed-native
-application call **whose arguments are constant literal tokens only —
-no parenthesized expressions, no subexpressions, no script blocks**:
-a native HEAD does not make a statement inert, because PowerShell
-evaluates expression arguments in-session (`true (Set-Alias git
-Write-Output); git status` executes the alias mutation while
-rewritten output would run real git). Literal-args native statements
-run out-of-process and cannot mutate session command resolution; ANY
-preceding PowerShell statement (cmdlet, alias, function, assignment)
-or expression-bearing argument disqualifies all later segments from
-routing. All-native literal compounds (`git status && git log`) keep
-routing; mixed submissions fail conservative. Regression cases:
-`Set-Alias` before a native segment; `Import-Module` before a native
-segment; the `true (Set-Alias git Write-Output); git status`
-counterexample verbatim.
+PRECEDING statement in the submission is **provably inert, judged by
+an AST WHITELIST over the entire statement — not an enumeration of
+dangerous shapes**: every node in the preceding statement's full AST
+(arguments, parameters, redirection targets, everything) must be one
+of {pipeline of a single command, command whose head resolves to a
+native application, constant string element, command parameter,
+redirection whose target is a constant string}. Any other node type
+anywhere in the statement — subexpression, parenthesized expression,
+script block, variable, expandable string, or anything not on the
+list — disqualifies all later segments from routing, fail-closed on
+node types the check does not recognize. Enumerating evaluation sites
+lost twice already: PowerShell evaluates expressions in argument
+position (`true (Set-Alias git Write-Output); git status`) AND in
+redirection targets (`true > $(Set-Alias git Write-Output;
+'/dev/null'); git status`) — both probed live to flip `git` from
+Application to Alias between preflight and execution. Constant-only
+native statements run out-of-process and cannot mutate session
+command resolution. All-native literal compounds (`git status && git
+log`) keep routing; mixed submissions fail conservative. Regression
+cases: `Set-Alias` before a native segment; `Import-Module` before a
+native segment; both probed counterexamples verbatim.
 
 ## Scope (rrp-5)
 
