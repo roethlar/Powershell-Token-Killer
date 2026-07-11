@@ -433,8 +433,13 @@ serializes scripts within the admitted generation.
   infer whether the old process acquired a connection, never overlaps old/new
   workers, and never lets the expired caller's lease block recovery. This
   deliberately replaces the current in-process runspace rebuild.
-- Supervisor idle exit is forbidden while a worker is starting/resetting, a
-  foreground call is active, or a managed job is running.
+- `SessionManager.HasLiveWork` forbids supervisor idle exit while a worker is
+  starting/resetting/closing, a foreground call is active, a managed job is
+  running, or any slot is `quarantined` with a live containment observer.
+  Quarantine remains live work after its caller returns and until confirmed
+  death drives the documented faulted/lost/cold transition; idle shutdown may
+  be reconsidered only after that observer and its reserved audit obligation
+  are released.
 
 No worker, alias, boot ID, generation, job ID, or output handle is valid in a
 new harness.
@@ -1085,6 +1090,8 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   pre-effect audited.
 - Add bounded graceful shutdown plus proven tree kill.
 - Aggregate idle activity/live-work semantics in the supervisor.
+- Count quarantined/unconfirmed-containment observers as live work so idle
+  shutdown cannot discard the recovery gate or its terminal audit obligation.
 - Prove ordinary MCP EOF removes every worker and managed job; classify hard
   death/outcome uncertainty honestly. Hard-kill the supervisor during worker
   launch, blocked bootstrap, ready idle, foreground native execution, and a
@@ -1309,6 +1316,10 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Launch tests stop at every barrier (before worker creation, during atomic
   creation, before Unix gate release, and immediately after release), kill the
   supervisor, and prove no runnable or suspended worker escapes containment.
+- With idle timeout shorter than a delayed containment confirmation, a
+  quarantined slot keeps the supervisor/observer alive and rejects new
+  generations. Only after confirmed death and the resulting terminal audit
+  fact may the ordinary idle countdown resume.
 
 ### Compatibility and live verification
 
