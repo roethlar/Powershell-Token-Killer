@@ -337,7 +337,9 @@ serializes scripts within the admitted generation.
   replace it immediately rather than leaving it unavailable.
 - `ptk_reset` becomes session-local process replacement. Authorization/checks
   occur before job or process termination.
-- Busy reset/close with `force=false` returns a no-side-effect busy result.
+- Busy reset/restart/close with `force=false` returns the same no-side-effect
+  busy result. `ptk_session restart` and `ptk_reset` are equivalent for this
+  rule; neither queues behind or kills active work without force.
   `force=true` cancels and terminates the session worker tree.
 - Timeout/recycle, reset, close, and worker loss never affect another
   session.
@@ -1071,7 +1073,8 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   workers never appear, and late replies cannot populate the replacement.
 - Bootstrap runs once, faults visibly, and becomes the drift baseline.
 - Reset/restart increments generation and affects only the named session.
-- Stale generation and non-force busy close/reset have zero side effects.
+- Stale generation and non-force busy close/reset/restart have zero side
+  effects and share one observable busy contract.
 - Worker loss fails pending calls once and requires explicit restart.
 - Start a job, replace its worker, then start another job. The public IDs
   differ, and status/output/kill using the old ID cannot observe or affect the
