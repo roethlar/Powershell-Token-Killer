@@ -910,8 +910,8 @@ table is a valid review result.
 | ahs-29 | HIGH    | Timeout replacement has no deadlock-free transition or post-deadline grace | `[x]` | master (direct, 6294340) |
 | ahs-30 | MEDIUM  | New audited reads can consume the reserve needed for terminal events | `[x]` | master (direct, 23586fb) |
 | ahs-31 | MEDIUM  | Side-effect-free prepare forbids the required external `bash -n` validator | `[x]` | master (direct, e4e261d) |
-| ahs-32 | MEDIUM  | Post-launch startup containment can wait forever after its deadline | `[~]` | master (direct) |
-| ahs-33 | HIGH    | Accepted calls/jobs can overbook the terminal-event reserve | `[~]` | master (direct) |
+| ahs-32 | MEDIUM  | Post-launch startup containment can wait forever after its deadline | `[~]` | master (direct, 70e1d39) |
+| ahs-33 | HIGH    | Accepted calls/jobs can overbook the terminal-event reserve | `[~]` | master (direct, 69caf6c) |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -1064,3 +1064,12 @@ terminal reservation, and live workers reserve loss/exit capacity. Admission
 fails before acceptance when the appropriate reservation cannot be made.
 This finding was independently checked against the bounded-record and
 all-session concurrency contracts; it is not a duplicate of ahs-30.
+
+**Fix round 4 LANDED:** `70e1d39` (ahs-32) applies the same fixed
+deadline-plus-containment-grace bound to post-launch startup, returns explicit
+`containment_unconfirmed`, quarantines without new admission, and permits
+recovery only after later confirmed death. `69caf6c` (ahs-33) atomically
+reserves each call's worst-case terminal set before `call.accepted`, retains
+job/worker lifecycle reservations, and derives admission capacity from
+physical free bytes minus outstanding obligations. Both rows remain `[~]`
+pending fixed-SHA review; no product code is authorized.
