@@ -879,3 +879,24 @@ table is a valid review result.
 
 | ID    | Severity | Impact (one line) | Status | Branch |
 |-------|----------|-------------------|--------|--------|
+| ahs-1 | HIGH     | Missing RTK capture leaves compression and raw recovery mutually contradictory | `[~]` | master (direct) |
+| ahs-2 | HIGH     | Raw transition silently contradicts active D1 consent and shipped guards | `[~]` | master (direct) |
+| ahs-3 | HIGH     | Auto-Bash turns detector false positives into wrong-interpreter execution | `[~]` | master (direct) |
+| ahs-4 | MEDIUM   | Exact-script evidence is not part of the durable pre-effect commit | `[~]` | master (direct) |
+| ahs-5 | MEDIUM   | Closing reserved `default` can permanently brick unqualified tools | `[~]` | master (direct) |
+| ahs-6 | MEDIUM   | Reconciliation omits approved routing/dialect contracts this plan replaces | `[~]` | master (direct) |
+| ahs-7 | MEDIUM   | Warm background-session concurrency and kill semantics are undefined | `[~]` | master (direct) |
+| ahs-8 | LOW      | Fail-closed audit prevents `ptk_state` from reporting the audit failure | `[~]` | master (direct) |
+
+**Claude round 1 — REOPENED** (Claude Code 2.1.207, default
+claude-opus-4-8, read-only), reviewed head
+`90b5773086182febb6b90d678ecfc3b72c6f7cb8` against base
+`875efa05b7ef6c01354466f3f93211316d30c901`,
+`guard_confirmed=true`, 2026-07-11T09:50:13Z. Structured verdict and both
+SHAs matched the dispatch. Eight findings returned and **ALL ADMITTED** after
+independent coder verification against the cited plan, active D1 decision,
+shipped dialect guards, current worker/job/reset code, prior rrp/sd1 review
+evidence, and adjacent RTK tee implementation. The reviewer separately
+confirmed the current-implementation inventory, owner-settled scope,
+assurance limits, and slp-11/slp-12 retention/terminal-unknown handling; it
+filed no finding on the deliberate busy-reset contract revision.
