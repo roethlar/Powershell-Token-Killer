@@ -68,8 +68,18 @@ safe against a hostile local process.
 
 - Slice-1 default (recommended ON) and whether script text or hash+head
   lands in the log (privacy vs debuggability).
-- Whether an ACTIVE policy also gates `background` jobs and `ptk_reset`
-  (recommended: yes, same gate, one enforcement point).
+- Gate default while a policy is active vs. absent (slp-1 above):
+  opt-in as drafted, or the archived default-read-only.
+- Whether an ACTIVE policy also gates `ptk_reset` and `ptk_job kill`
+  (recommended: yes — see the control-actions requirement below).
+
+**Background jobs are NOT an owner decision (slp-2):** an active policy
+MUST gate `background=true` identically to foreground, evaluated before
+any job preflight or process start. The background flag hands the same
+arbitrary script to a child process; leaving it optionally ungated
+makes every deny rule and the read-only preset defeatable by adding one
+parameter to the refused call. Verification must run the identical
+denied script down both paths and see two refusals.
 
 ## Verification
 
