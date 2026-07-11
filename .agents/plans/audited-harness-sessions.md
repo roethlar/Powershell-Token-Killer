@@ -37,6 +37,10 @@ Build one PTK shell surface with three properties:
 - No automatic selection of Exchange/AD target from cmdlet spelling.
 - No mutable current-session/`select` state.
 - No live PowerShell object transfer between sessions.
+- No asynchronous job that borrows a connection-bearing warm runspace.
+  Session-mode jobs require a separate concurrency/cancellation design and are
+  deferred; the first implementation supports only explicit cold stateless
+  jobs.
 - No hook audit. The Claude hook only blocks a harness shell call and nudges
   the model to PTK.
 - No complete-host audit claim. PTK covers operations PTK accepts; OS and
@@ -182,7 +186,7 @@ making templates an authorization boundary.
 Load templates once at supervisor start from `~/.ptk/profiles.json`, with
 `PTK_PROFILES_PATH` only as a test/operator override. A template contains a
 description, a bootstrap script path, startup timeout, declared target and
-identity labels, and background mode. Bootstrap bytes and normalized
+identity labels, and `allowColdBackground`. Bootstrap bytes and normalized
 definition are frozen and SHA-256-digested at catalog load. No inline secret
 belongs in this file. Missing configuration means no templates, not a startup
 failure.
@@ -359,10 +363,15 @@ The same planner runs against the actual resolution context:
 - Complex/mixed jobs execute the original once in cold PowerShell.
 - Route/provenance metadata is stored with the job and controls later output
   shaping.
-- A connection-bearing template may select `backgroundMode=session`, which
-  runs asynchronously on and occupies the warm worker, or
-  `backgroundMode=cold`, which preserves current stateless behavior. It must
-  never silently run cold when the declared mode requires warm state.
+- Every first-version background job is explicitly cold and stateless.
+  Templates default `allowColdBackground=false` because such a job does not
+  inherit the session's warm modules, variables, or authenticated connection.
+  If false, record the audited `call.accepted`/`job.not_started` refusal but
+  stop before cwd probing, output allocation, job dispatch, or process start,
+  with a truthful capability message. If true, run the cold job under that
+  session's cwd/environment contract. Never silently turn a warm
+  connection-dependent request into a cold job. Warm session-mode jobs are a
+  deferred feature, not a mode a cold implementer may invent here.
 
 ## Same-invocation output recovery
 
@@ -699,8 +708,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Persist route/provenance/output handles with job metadata.
 - Add RTK capture for safe terminal native jobs and exact cold PowerShell for
   mixed jobs.
-- Add warm asynchronous session-task mode for connection-bearing templates;
-  never silently substitute a cold job.
+- Enforce `allowColdBackground` before every pre-start side effect. Keep warm
+  asynchronous session tasks out of this plan; never silently substitute a
+  cold job for a connection-dependent request.
 - Make output polling provenance-aware and stop exposing filesystem paths as
   the model recovery interface.
 
@@ -772,6 +782,10 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Background preflight failure, start, completion without polling, output
   reads, status/list, explicit kill, reset kill, shutdown kill, and hard
   worker death.
+- A template with `allowColdBackground=false` starts no cwd probe, output
+  artifact, or child process and records `job.not_started`. Enabling it starts
+  a cold job that demonstrably cannot see the warm session's variables or
+  connection. No session-mode job can occupy/starve the serialized runspace.
 - Required-journal failure before foreground, job start, reset, close, and
   kill proves zero side effects.
 - Hard-kill after a dispatch commit but before its terminal event; the exact
