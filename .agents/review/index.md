@@ -915,7 +915,7 @@ table is a valid review result.
 | ahs-34 | MEDIUM  | Idle exit can discard an unconfirmed containment quarantine | `[x]` | master (direct, 00bb110) |
 | ahs-35 | HIGH    | Unix broker death after arming can remove the hard-parent-death proof | `[x]` | master (direct, f6a20f3) |
 | ahs-36 | MEDIUM  | Worker-starting lifecycle tools have no defined startup deadline function | `[x]` | master (direct, da32d9c + 1c23e1b) |
-| ahs-37 | MEDIUM  | Canonical state claims Slice 0 reviews closed without durable evidence | `[x]` | `fix/ahs-37-record-slice0-review` |
+| ahs-37 | MEDIUM  | Canonical state claims Slice 0 reviews closed without durable evidence | `[x]` | master (fast-forward, 008dfa0) |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -1208,3 +1208,10 @@ merge-base, and clean-worktree checks. The structured envelope exited zero and
 matched both SHAs exactly. ahs-37 is `[x]`; the branch is ready for an
 owner-gated merge. Acceptance authorizes neither merge nor push, and Slice 1
 must not start until the accepted correction lands.
+
+**ahs-37 MERGED / LOCAL BRANCH AUTHORITY DELEGATED — 2026-07-11.** The owner
+explicitly authorized autonomous local branch creation, switching, merging,
+and cleanup for the remainder of the audited-harness coding work. The accepted
+branch was fast-forwarded into `master` at `008dfa0`, its content arrival was
+verified with an empty branch-to-master diff, and the local branch was deleted.
+This authority does not include push; push remains ask-first.

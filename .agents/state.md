@@ -5,6 +5,10 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **Local branch management is delegated for the remaining audited-harness
+  implementation** (owner, 2026-07-11): create, switch, merge, and delete local
+  implementation/review branches without per-merge confirmation. Push remains
+  separately ask-first.
 - **Implementation started on the owner’s explicit 2026-07-11 go; slice 0 is
   complete with no product-code changes.**
   `.agents/plans/audited-harness-sessions.md` combines
@@ -34,11 +38,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Await explicit owner go to merge the accepted
-   `fix/ahs-37-record-slice0-review` branch. After it lands, implement only
-   audited-harness slice 1: mandatory current-server audit foundation,
-   exact-script evidence, capacity reservation, and fail-closed pre-effect
-   guards.
+1. Implement only audited-harness slice 1: mandatory current-server audit
+   foundation, exact-script evidence, capacity reservation, and fail-closed
+   pre-effect guards; run the required Claude reviewloop before Slice 2.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.
