@@ -117,6 +117,17 @@ not have.
    execution; otherwise a pinned binary outside PATH fails
    command-not-found, or a different PATH copy runs despite the pin.
    Tests: pinned binary off PATH; conflicting PATH copy present.
+   **Context-changing wrappers (rrp-12):** rtk re-prepends configured
+   transparent prefixes — `docker exec app git status` rewrites to
+   `docker exec app rtk git status`, where `rtk` must exist INSIDE the
+   container; rebinding that token to the host's absolute path breaks
+   a command that was valid before rewriting, and fallback never fires
+   because the rewrite "succeeded". Rule: rebind only segment-HEAD
+   `rtk` tokens; an emitted `rtk` token in non-head position sits in a
+   wrapper's target context, is neither rebindable nor verifiable from
+   the host, so that rewrite is discarded and the original segment
+   runs unchanged. Slice 0 probes transparent-prefix emissions; tests
+   cover a docker-exec-shaped line falling back to the original.
    Order unchanged: dialect refusal FIRST (a bash-only
    script is refused or bash-wrapped before routing; the bash-wrapped
    path may hand the inner script to rtk rewrite too — decided by the
