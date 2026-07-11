@@ -914,7 +914,7 @@ table is a valid review result.
 | ahs-33 | HIGH    | Accepted calls/jobs can overbook the terminal-event reserve | `[x]` | master (direct, 69caf6c) |
 | ahs-34 | MEDIUM  | Idle exit can discard an unconfirmed containment quarantine | `[x]` | master (direct, 00bb110) |
 | ahs-35 | HIGH    | Unix broker death after arming can remove the hard-parent-death proof | `[x]` | master (direct, f6a20f3) |
-| ahs-36 | MEDIUM  | Worker-starting lifecycle tools have no defined startup deadline function | `[~]` | master (direct, da32d9c + 1c23e1b) |
+| ahs-36 | MEDIUM  | Worker-starting lifecycle tools have no defined startup deadline function | `[x]` | master (direct, da32d9c + 1c23e1b) |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -1166,3 +1166,15 @@ new ID is needed.
 `timeoutSeconds` in the `open` branch of the action-conditional schema and
 adding schema acceptance for open/close/restart versus list. The row remains
 `[~]` until both Claude and Grok confirm the final plan content.
+
+**DUAL REVIEWLOOP CLOSED — ACCEPTED BY CLAUDE AND GROK ON THE SAME FINAL
+HEAD/PLAN.** Final reviewed head
+`0b9d43d43289666f02b9d0af99d629af231dcbca`, base
+`875efa05b7ef6c01354466f3f93211316d30c901`, plan blob
+`bc47579b7f73231d524ff64fc5b5a9c75b332435`. Claude Code 2.1.207
+(claude-opus-4-8, read-only) and grok 0.2.93 (read-only sandbox) each returned
+`verdict=accepted`, `guard_confirmed=true`, exact matching SHAs, an explicit
+`ahs-36 RESOLVED` comment, and an empty findings array on 2026-07-11. ahs-36
+is `[x]`; all 36 admitted findings are closed. The plan remains DRAFT pending
+explicit owner approval; review convergence authorizes neither product code,
+decisions-log edits, nor push.
