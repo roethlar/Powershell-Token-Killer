@@ -688,6 +688,12 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Add the three-part parse-fatal + detector + bounded-`bash -n` gate, then run
   only proven Bash syntax through Bash. Retain D1 refusal for every other
   finding.
+- Intentionally replace
+  `Parse_fatal_bash_shape_is_refused_with_its_construct_named`: its heredoc
+  fixture now asserts exact-byte `bash -lc` execution when Bash is present and
+  `bash -n` accepts it, and the labeled not-started refusal when Bash is absent
+  or validation fails. This is a load-bearing guard amendment required by the
+  newly approved gate, not a test to leave red.
 - Preserve current cwd, pinned RTK path, remaining deadline, live resolution,
   exit code, streams, and preference state.
 - Remove double `rtk log` shaping.
@@ -888,8 +894,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 ### Compatibility and live verification
 
 - Existing Pester suite, .NET suite, and MCP handshake remain green after
-  every code slice, with only the two named obsolete raw-consent guards
-  replaced in slice 4 and the route-pwsh consent guard retained/strengthened.
+  every code slice, with the named heredoc refusal guard replaced in slice 3,
+  only the two named obsolete raw-consent guards replaced in slice 4, and the
+  route-pwsh consent guard retained/strengthened.
 - New tests receive red-leg guard proof per repo guidance.
 - Default tool schemas remain compatible through the declared raw transition.
 - Real MCP stdio tests cover audit IDs, RTK path, output handle, two sessions,
