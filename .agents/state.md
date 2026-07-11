@@ -5,9 +5,6 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **Active review loop:** audited-harness Slice 0 is reopened on `ahs-37`;
-  see `.agents/review/index.md`. Slice 1 is blocked until Claude accepts the
-  fixed finding or the owner adjudicates it.
 - **Implementation started on the owner’s explicit 2026-07-11 go; slice 0 is
   complete with no product-code changes.**
   `.agents/plans/audited-harness-sessions.md` combines
@@ -37,9 +34,11 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Implement only audited-harness slice 1: mandatory current-server audit
-   foundation, exact-script evidence, capacity reservation, and fail-closed
-   pre-effect guards.
+1. Await explicit owner go to merge the accepted
+   `fix/ahs-37-record-slice0-review` branch. After it lands, implement only
+   audited-harness slice 1: mandatory current-server audit foundation,
+   exact-script evidence, capacity reservation, and fail-closed pre-effect
+   guards.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.

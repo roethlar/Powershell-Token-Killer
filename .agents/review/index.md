@@ -915,7 +915,7 @@ table is a valid review result.
 | ahs-34 | MEDIUM  | Idle exit can discard an unconfirmed containment quarantine | `[x]` | master (direct, 00bb110) |
 | ahs-35 | HIGH    | Unix broker death after arming can remove the hard-parent-death proof | `[x]` | master (direct, f6a20f3) |
 | ahs-36 | MEDIUM  | Worker-starting lifecycle tools have no defined startup deadline function | `[x]` | master (direct, da32d9c + 1c23e1b) |
-| ahs-37 | MEDIUM  | Canonical state claims Slice 0 reviews closed without durable evidence | `[~]` | `fix/ahs-37-record-slice0-review` |
+| ahs-37 | MEDIUM  | Canonical state claims Slice 0 reviews closed without durable evidence | `[x]` | `fix/ahs-37-record-slice0-review` |
 
 **Claude round 1 — REOPENED** (Claude Code 2.1.207, default
 claude-opus-4-8, read-only), reviewed head
@@ -1196,3 +1196,15 @@ any committed review record supporting that claim. The coder independently
 confirmed the claim is present at the reviewed head and the cited evidence is
 absent, so the MEDIUM finding is admitted as ahs-37. Slice 1 remains blocked;
 review acceptance would authorize neither merge nor push.
+
+**ahs-37 CLAUDE RE-GRADE — ACCEPTED / SLICE 0 LOOP CLOSED** (Claude Code
+2.1.207, model reported as `claude-fable-5`, read-only), reviewed head
+`a6b484d269e0d046b1c1621aa8705046c4bb1c6d` against base
+`2ecc417db494fbe4c077723144e5d30289f20f7b`, `guard_confirmed=true`,
+2026-07-11T16:59:45Z. Claude independently reproduced the original evidence
+gap, confirmed the unsupported claim is absent and both durable verdict
+records are present, and passed `git diff --check`, declared-file scope,
+merge-base, and clean-worktree checks. The structured envelope exited zero and
+matched both SHAs exactly. ahs-37 is `[x]`; the branch is ready for an
+owner-gated merge. Acceptance authorizes neither merge nor push, and Slice 1
+must not start until the accepted correction lands.

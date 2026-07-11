@@ -3,7 +3,7 @@
 **Severity**: MEDIUM — a cold implementation or drift pass can trust an
 unsupported closure claim in the canonical current-state entry point and skip
 required re-verification.
-**Status**: In progress
+**Status**: Verified
 **Branch**: `fix/ahs-37-record-slice0-review`
 **Commit**: `62d32eb` (fix; intake record `46563c2`)
 
@@ -77,3 +77,19 @@ head `a9fe9ecae75b712f5ab48fd7636613a3e0ffb35a` against base
 > re-verification, while a drift pass cannot verify it. Record the focused
 > review evidence durably or drop/scope the claim as unrecorded pending the
 > synchronous review of `a9fe9ec`.
+
+Claude re-grade: Claude Code 2.1.207 (model reported as `claude-fable-5`,
+read-only), reviewed head
+`a6b484d269e0d046b1c1621aa8705046c4bb1c6d` against base
+`2ecc417db494fbe4c077723144e5d30289f20f7b`, `guard_confirmed=true`,
+`verdict=accepted`, 2026-07-11T16:59:45Z.
+
+- Independently reproduced the unsupported claim and missing evidence at
+  `a9fe9ecae75b712f5ab48fd7636613a3e0ffb35a`.
+- Confirmed the reviewed head removes the claim, preserves the evidence-backed
+  pre-implementation statement and index pointer, and records the original
+  fixed-SHA verdict in both durable review records.
+- Confirmed `git diff --check`, the declared three-file scope, the exact
+  merge-base, and a clean disposable worktree. One attempted RTK-wrapped
+  compound status command was permission-denied; Claude completed the same
+  guard through permitted commands and returned a valid exit-zero verdict.
