@@ -30,6 +30,19 @@ only segments whose head command resolves to a real native application
 in the live runspace are handed to rtk; alias/function/cmdlet/shim
 segments stay untouched. Tests: Windows `ls` alias; warm-shadowed and
 script-local-shadowed `git`; `.cmd`/`.bat` shim.
+**Resolution is judged before execution, so earlier statements can lie
+(rrp-15):** classification runs in preflight, but `Set-Alias git
+Write-Output; git status` mutates what `git` means BETWEEN the check
+and the second statement — rtk still rewrites the second segment, and
+routing would then run the real binary where unrouted PowerShell would
+have run the alias. Rule: a segment is routable only when every
+PRECEDING statement in the submission is itself a confirmed-native
+application call — natives cannot mutate PowerShell command
+resolution, while ANY preceding PowerShell statement (cmdlet, alias,
+function, assignment) disqualifies all later segments from routing.
+All-native compounds (`git status && git log`) keep routing; mixed
+submissions fail conservative. Regression cases: `Set-Alias` before a
+native segment; `Import-Module` before a native segment.
 
 ## Scope (rrp-5)
 
