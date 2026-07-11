@@ -1,8 +1,9 @@
 # Plan: mandatory audit, harness-scoped sessions, and internal RTK routing
 
 **Status:** IMPLEMENTING — owner-approved 2026-07-11 after Claude and Grok
-reviewloop convergence. Slice 0's external/platform contract freeze completed
-2026-07-11 after the owner's explicit implementation go; slice 1 is next.
+reviewloop convergence. Slices 0-1 are complete: Slice 1's mandatory audit
+foundation landed at `460c106` and passed the required Claude reviewloop on
+2026-07-11; Slice 2 is next.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the

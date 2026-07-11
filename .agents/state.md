@@ -9,8 +9,12 @@ short and update it when important repo facts change.
   implementation** (owner, 2026-07-11): create, switch, merge, and delete local
   implementation/review branches without per-merge confirmation. Push remains
   separately ask-first.
-- **Implementation started on the owner’s explicit 2026-07-11 go; slice 0 is
-  complete with no product-code changes.**
+- **Audited-harness slices 0-1 are complete locally.** Slice 1 commit
+  `460c106` adds the mandatory current-server audit foundation, exact-script
+  evidence, capacity reservation, protected local storage, and fail-closed
+  pre-effect guards. Claude accepted the fixed-SHA implementation after an
+  independent red→green guard proof; canonical review evidence is in
+  `.agents/review/index.md` and platform evidence is in `.agents/machines.md`.
   `.agents/plans/audited-harness-sessions.md` combines
   mandatory PTK-owned/SIEM-exportable audit, private harness-scoped
   process-per-session workers, internal PTK→RTK routing, same-invocation
@@ -38,9 +42,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Implement only audited-harness slice 1: mandatory current-server audit
-   foundation, exact-script evidence, capacity reservation, and fail-closed
-   pre-effect guards; run the required Claude reviewloop before Slice 2.
+1. Implement only audited-harness slice 2: complete jobs/control audit and add
+   at-least-once SIEM/OTLP export, evidence-read/export audit, and coordinated
+   retention; run the required Claude reviewloop before Slice 3.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.
@@ -86,9 +90,9 @@ short and update it when important repo facts change.
 - Automated verification entry point: `.agents/repo-guidance.md`
   (Verification). Review-loop evidence lives in `.agents/review/index.md`;
   do not duplicate volatile counts here.
-- Audited-session slice 0 is docs/contracts only. `git diff --check` passed;
-  product tests were not run because no runtime/setup/generated behavior
-  changed. Machine-specific probe evidence lives in `.agents/machines.md`.
+- Audited-session slices 0-1 are complete. Slice 1's fixed-SHA Claude verdict
+  lives in `.agents/review/index.md`; its macOS, Windows, and ARM64 verification
+  evidence lives in `.agents/machines.md`.
 
 ## Active Sources
 

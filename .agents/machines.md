@@ -22,6 +22,20 @@ _Last verified 2026-07-11 against repo base `78779b0`._
   left no survivor. This proves the Darwin primitives/topology, not the later
   .NET implementation.
 
+### Audited-harness Slice 1 checkout validation
+
+_Verified 2026-07-11 at `460c106`; this was checkout validation, not an
+installed-payload update._
+
+- The full .NET suite passed 371/371; the PowerShell module suite passed
+  134/136 with two Windows-only skips; the stdio handshake passed, including
+  boundary attribution, exact evidence references, core-event secrecy, and
+  the fail-closed audit-outage path. The handshake build had zero warnings.
+- Real Darwin extended-ACL sabotage proved the owner-mode check alone was
+  insufficient. The final storage implementation strips an existing extended
+  ACL and rejects post-creation ACL reintroduction; both guards were proved
+  red before the fix and green after it.
+
 ## `NETWATCH-01` — Michael's Windows machine
 
 _Verified 2026-07-11 for audited-session slice 0 at repo base `2a83723`._
@@ -46,6 +60,35 @@ _Verified 2026-07-11 for audited-session slice 0 at repo base `2a83723`._
 - No `PtkWindowsJobProbe` process existed before or after the final run. Its
   temporary directory was removed, and no persistent host configuration was
   changed.
+
+### Audited-harness Slice 1 checkout validation
+
+_Verified 2026-07-11 at `460c106` in a disposable copy under `F:\dev`; the
+installed Windows payload was not changed._
+
+- The full .NET suite passed 371/371; the PowerShell module suite passed
+  136/136; the stdio handshake passed with the same audit/evidence/outage
+  checks as the Mac run and a zero-warning build.
+- Windows-specific journal tests verified that protected directories and
+  files are owned by the current SID, have inheritance disabled, and expose a
+  single current-user FullControl allow rule. Alternate-owner sabotage failed
+  closed.
+- Live command-resolution probes exposed extensionless PATHEXT misses and a
+  `.ps1`/`.exe` precedence error in the first correction. The final C# and
+  PowerShell guards each failed under an Application-only sabotage and passed
+  after restoring joint ExternalScript/Application enumeration. The updated
+  source hashes matched the Mac checkout and the validation tree contained no
+  AppleDouble files.
+
+## Disposable Ubuntu 26.04 ARM64 validation
+
+_Focused verification 2026-07-11 for the Slice 1 secure-storage implementation
+that landed in `460c106`._
+
+- Raw open calls confirmed Linux ARM64 uses the architecture-specific
+  `O_DIRECTORY=0x4000` and `O_NOFOLLOW=0x8000` values. The focused audit
+  storage/evidence suite passed 48/48 after replacing the x86-only constants;
+  the pre-fix run failed with `EINVAL`.
 
 ## Windows payload/install status
 

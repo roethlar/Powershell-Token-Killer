@@ -1229,3 +1229,33 @@ the pre-release correction to the owner; that correction and rationale were
 presented directly in the active owner conversation. The structured envelope
 exited zero and matched both SHAs exactly. Product implementation may resume;
 push remains ask-first.
+
+---
+
+Loop run 2026-07-11 (audited-harness Slice 1) — reviewer: Claude Code
+2.1.207, fixed scope `f4dbf5a55e012984769a41dcd1f44a92dca82739..460c1061f4b4913241c536adeb52403b86a067a2`.
+
+**SLICE 1 CLAUDE REVIEW — ACCEPTED / LOOP CLOSED** (Claude Code 2.1.207,
+model reported as `claude-fable-5`, isolated disposable worktree),
+`guard_confirmed=true`, verdict recorded 2026-07-11T22:48:46Z. The structured
+envelope exited zero, its result and structured payloads matched, and both
+fixed SHAs matched exactly.
+
+Claude independently ran
+`AuditPreEffectGuardTests.Foreground_authorization_failure_never_executes_user_script`
+green for all four cases, changed only production
+`AuditCallContext.AuthorizeInvocationAsync` to authorize after
+`AuditUnavailableException`, and reproduced four assertion failures proving
+the forbidden user marker was written. It restored the file with
+`git checkout --`, reran the same guard 4/4 green, then passed the full .NET
+suite, Pester suite, and audit handshake; the reviewed worktree ended clean at
+the exact head.
+
+No material finding was returned. Claude also traced each operation profile's
+reservation count against its append paths, verified evidence and dispatch
+flush ordering before foreground/background effects, checked protected
+cross-platform storage and startup hash-chain validation, confirmed the narrow
+credential-free `ptk_state` outage exception, and confirmed trusted preflight
+does not re-enter user hooks before dispatch. Slice 2 SIEM export was correctly
+treated as out of scope. Acceptance authorizes local landing under the owner's
+delegated branch authority, not push or history rewriting.
