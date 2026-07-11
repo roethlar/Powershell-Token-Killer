@@ -83,6 +83,15 @@ default.
    NOT silent: a labeled warning line in the server's stderr log and a
    degraded-audit flag in `ptk_state`. Verification covers concurrent
    writers, rotation under load, and a forced write failure.
+   **Retention (slp-11):** rotation without retention just shards the
+   growth — ~10 writers accumulate rotated files until the disk fills
+   and audit itself enters the degraded path (`JobManager` already
+   sweeps aged job logs for exactly this reason). The slp-4 design
+   freeze sets an age AND total-size cap for `~/.ptk/logs/` (defaults
+   to propose: 30 days / 200 MB, owner-tunable), swept on server
+   start; a sweep never touches another LIVE process's active file
+   (liveness checked via the pid in the filename). Acceptance case:
+   aged rotations provably bounded.
 2. **Policy gate:** a declarative policy file OUTSIDE any workspace,
    evaluated server-side before execution. The file is
    `~/.ptk/policy.psd1` — not open: the release-distribution plan
