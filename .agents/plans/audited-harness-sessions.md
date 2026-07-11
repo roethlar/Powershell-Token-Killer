@@ -345,6 +345,14 @@ serializes scripts within the admitted generation.
 - Bootstrap output is suppressed; any PowerShell error, timeout, prompt, or
   state loss faults startup. Successful bootstrap becomes that session's
   drift baseline.
+- Cancellation/deadline before process launch leaves the slot cold. After a
+  worker is launched, startup failure, cancellation, or deadline keeps the
+  slot in `starting` while the supervisor aborts protocol, waits a bounded
+  grace, invokes OS/reaper containment, and confirms that worker/process group
+  exited. Only then publish `faulted` and return. A synchronous runspace or
+  bootstrap that ignores cancellation is killed; a late ready frame for that
+  boot/transition is discarded. No open/restart may launch the next generation
+  until prior containment is confirmed.
 - Unexpected process exit marks `lost`. Ordinary invocation never silently
   starts a fresh context under the same generation.
 - `restart` replaces the whole worker process, reruns bootstrap, and
@@ -922,6 +930,8 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Add versioned dedicated-pipe protocol, worker launch, cancellation,
   deadlines, bounded stdout/stderr pumps, EOF/parent-death cleanup, and
   process-tree ownership.
+- Make every post-launch startup timeout/cancel await confirmed containment
+  before returning or permitting another worker generation.
 - Route only the reserved default session through one worker initially.
 - Move the authoritative audit writer to the supervisor and use pre-effect
   dispatch before worker commit.
@@ -1095,6 +1105,10 @@ temporarily sabotaging/reverting the production behavior, then restored green.
   before the busy check; work never starts in a dying generation, duplicate
   workers never appear, and late replies cannot populate the replacement.
 - Bootstrap runs once, faults visibly, and becomes the drift baseline.
+- A bootstrap fixture that ignores cancellation is timed out; the open call
+  does not return until its PID/group is gone, its late-ready frame cannot
+  change slot state, and a subsequent explicit restart creates exactly one
+  different worker.
 - Missing catalog yields no templates. Malformed/unsupported/duplicate
   catalog data and missing/unreadable bootstrap paths disable every template
   as one visible catalog fault while default and explicit dynamic sessions
