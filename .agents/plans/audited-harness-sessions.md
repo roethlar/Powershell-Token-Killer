@@ -148,6 +148,20 @@ kills/abandons the gated child; EOF later sends the group bounded TERM then
 KILL and the broker exits. The supervisor waits for a containment-armed
 acknowledgment before sending `initialize`. The ordinary protocol EOF watcher
 remains a graceful fast path, not the hard-death proof.
+
+The supervisor retains the broker PID/start identity plus the worker
+PGID/leader start identity and continuously waits the broker process. An
+unexpected broker exit is a generation-fatal containment loss: under the
+session lifecycle gate, stop all admission, publish
+`resetting(reason=broker_lost)`, cancel generation leases, and perform the same
+bounded TERM/KILL directly against the identity-validated group. The original
+worker-start dispatch preauthorizes this safety cleanup, so it cannot be
+blocked by a fresh audit failure. Confirmed group death publishes
+`worker.lost`/`faulted`; unconfirmed death publishes `quarantined` and remains
+live work. Never attach a replacement broker to a live generation; recovery
+creates a new broker, group, worker, and generation only after old death is
+confirmed. Once broker loss is observed, no later tool work is served until
+that outcome is settled.
 Graceful shutdown asks workers to stop, waits a bounded grace, then invokes
 the same containment kill. A hard-killed supervisor therefore cannot silently
 turn a managed worker into a durable session. Deliberate `setsid`, scheduled
@@ -314,6 +328,10 @@ Protocol requirements:
   does not depend on the runspace thread, protocol loop, or bootstrap honoring
   cancellation. The Unix liveness-pipe write end and Windows Job Object handle
   exist only in the supervisor and are not inherited by workers or children.
+- On Unix, broker exit monitoring is part of the containment lease. A broker
+  exit before ready fails startup; after ready it triggers the generation-fatal
+  direct-group-kill transition above. PGID/PID reuse is rejected by stored
+  leader/broker start identity.
 - Unknown versions/methods, malformed protocol-pipe frames, and excess frame
   size fail that worker closed. Stray standard output is bounded/labeled as
   diagnostics and never parsed as a frame.
@@ -1060,6 +1078,9 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Add versioned dedicated-pipe protocol, worker launch, cancellation,
   deadlines, bounded stdout/stderr pumps, EOF/parent-death cleanup, and
   process-tree ownership.
+- Monitor the Unix broker as a required containment lease; broker loss blocks
+  admission and tears down the target generation rather than silently
+  degrading the later parent-death guarantee.
 - Bound every post-launch startup timeout/cancel by the request deadline plus
   `timeoutContainmentGrace`: confirmed death publishes `faulted`; grace expiry
   returns startup `containment_unconfirmed`, publishes `quarantined`, and
@@ -1089,6 +1110,8 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Make reset/restart whole-worker, target-local, generation-checked, and
   pre-effect audited.
 - Add bounded graceful shutdown plus proven tree kill.
+- Prove broker-loss teardown and quarantine separately from ordinary worker
+  loss; no live generation may continue without its armed broker.
 - Aggregate idle activity/live-work semantics in the supervisor.
 - Count quarantined/unconfirmed-containment observers as live work so idle
   shutdown cannot discard the recovery gate or its terminal audit obligation.
@@ -1316,6 +1339,11 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Launch tests stop at every barrier (before worker creation, during atomic
   creation, before Unix gate release, and immediately after release), kill the
   supervisor, and prove no runnable or suspended worker escapes containment.
+- On Unix, kill the broker during blocked bootstrap and after ready while the
+  supervisor remains alive. New work stops, the identity-validated group is
+  killed or quarantined within the bound, and no replacement generation
+  starts. After confirmed group death, hard-kill the supervisor with the
+  broker still absent and prove no orphan exists.
 - With idle timeout shorter than a delayed containment confirmation, a
   quarantined slot keeps the supervisor/observer alive and rejects new
   generations. Only after confirmed death and the resulting terminal audit
