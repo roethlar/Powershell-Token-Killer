@@ -613,6 +613,26 @@ Windows Event Log/WEF and RFC 5424 syslog/TLS adapters; PTK does not carry a
 vendor SDK per SIEM. A collector running under a different OS principal and a
 remote append-controlled index are the recommended protected deployment.
 
+Freeze one operator-controlled protection mode at supervisor startup; there
+is no per-call/model override:
+
+- `local-only`: no remote acknowledgment exists. Document this as bounded
+  same-user telemetry, expose it in `ptk_state`, and allow age/aggregate-byte
+  retention to sweep closed segments.
+- `anchored`: every closed segment and referenced script-evidence object is
+  retention-ineligible until the configured collector acknowledges its final
+  event IDs. A network outage pins that backlog. At the audit high-water mark,
+  refuse new effectful calls before the spool is full; keep a fixed emergency
+  reserve for already-started terminal events, exporter health transitions,
+  and recovery facts. Exhausting the reserve is a loud degraded/unknown
+  interval, never permission to delete unacknowledged data.
+
+Changing protection mode requires supervisor restart and produces a startup
+configuration event. In anchored mode, quota pressure caused by unacknowledged
+segments remains fail-closed until acknowledgment or an explicit out-of-band
+operator retention action that is itself recorded; ordinary retention never
+turns a SIEM outage into silent evidence loss.
+
 Audit/export credentials remain in the supervisor and are removed from worker
 environment and protocol messages. Direct in-process export is acceptable for
 personal telemetry but must not be described as resistant to a hostile
@@ -915,6 +935,11 @@ temporarily sabotaging/reverting the production behavior, then restored green.
 - Rotation/retention bound a long-lived supervisor; a live file is not swept.
 - Export retry/checkpoint and duplicate delivery; network loss proceeds only
   while spool remains healthy.
+- In anchored mode, an offline collector pins unacknowledged segments through
+  age and byte sweeps; reaching the high-water mark refuses a new side-effect
+  sentinel while a started job can still append its terminal event from the
+  reserve. In local-only mode, bounded retention is allowed and is visibly
+  labeled as unanchored telemetry.
 - Exact script evidence is retrievable only from the protected evidence
   stream; fixture tokens/output never enter core events.
 
