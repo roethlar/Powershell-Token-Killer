@@ -31,6 +31,19 @@ in the live runspace are handed to rtk; alias/function/cmdlet/shim
 segments stay untouched. Tests: Windows `ls` alias; warm-shadowed and
 script-local-shadowed `git`; `.cmd`/`.bat` shim.
 
+## Scope (rrp-5)
+
+This plan routes the FOREGROUND leg only: `Resolve-PtcInvokeScript`
+runs in the warm runspace, and that is the only place slice 2 touches.
+`background=true` jobs hand the original script to the job manager
+before any module routing and are NOT rewritten by this plan — even
+though builds/watchers are a major native workload. Whether background
+jobs also route through `rtk rewrite` (in the cold child, with its own
+fallback story) is a recorded follow-up decision for the owner, not an
+implied part of "all native work"; the slice-3 measurement is labeled
+foreground-only so the savings number does not claim coverage it does
+not have.
+
 ## Slices
 
 0. **Probe and freeze `rtk rewrite` semantics** (no code): exit codes
