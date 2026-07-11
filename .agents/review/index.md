@@ -861,3 +861,21 @@ ratification** (reopen or order round 8 to overrule). Both plans
 remain DRAFTs awaiting owner approval; nothing in this loop authorizes
 implementation. Commits unpushed pending the owner's master push go.
 
+---
+
+Loop run 2026-07-11 (mandatory audit + harness-scoped sessions +
+internal RTK routing plan) — requested reviewers: Claude
+(Claude Code 2.1.207) and Grok (grok 0.2.93). Docs-only scope:
+`.agents/plans/audited-harness-sessions.md`, introduced at
+`0652d93` against base `875efa0`. Reviewers are dispatched read-only,
+headless, and one-shot with pinned base/head SHAs. Plan fixes follow the
+established docs-loop precedent: direct to `master`, exactly one admitted
+finding per commit; nothing in this loop authorizes implementation or push.
+
+**Loop ACTIVE.** Live reviewer probes passed on 2026-07-11. An empty findings
+table is a valid review result.
+
+## Findings (audited harness sessions plan)
+
+| ID    | Severity | Impact (one line) | Status | Branch |
+|-------|----------|-------------------|--------|--------|
