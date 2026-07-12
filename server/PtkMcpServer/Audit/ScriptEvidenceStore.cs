@@ -814,7 +814,8 @@ public sealed class ScriptEvidenceStore
                              out state,
                              out anchorPosition))
                 {
-                    throw new IOException("The evidence root contains an invalid artifact.");
+                    throw new ScriptEvidenceControlException(
+                        "The evidence root contains an invalid artifact.");
                 }
                 if (file.Length > _maximumBytes)
                 {

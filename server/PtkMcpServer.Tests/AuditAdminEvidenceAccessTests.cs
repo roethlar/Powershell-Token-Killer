@@ -120,6 +120,26 @@ public sealed class AuditAdminEvidenceAccessTests : IDisposable
     }
 
     [Fact]
+    public void Invalid_evidence_artifact_name_records_control_failure_not_storage_failure()
+    {
+        var options = Options();
+        var stored = new ScriptEvidenceStore(options).Store("Get-NamedSecret");
+        var invalidPath = Path.Combine(options.EvidenceDirectory, "invalid.script");
+        File.WriteAllText(invalidPath, "not a valid evidence artifact");
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(invalidPath, SecureAuditStorage.OwnerFileMode);
+        using var fixture = Journal(options);
+        var operations = new AuditAdminOperations(options, fixture.Journal);
+        using var output = new MemoryStream();
+
+        Assert.Throws<AuditAdminOperationException>(() =>
+            operations.ReadEvidence(stored.EvidenceId, output));
+
+        Assert.Equal("evidence.control_invalid", DetailCode(fixture.Sink.Lines[1]));
+        Assert.Empty(output.ToArray());
+    }
+
+    [Fact]
     public void Evidence_storage_failure_records_specific_failure_without_disclosure()
     {
         var options = Options();
