@@ -73,19 +73,21 @@ public sealed class AuditExportTransitionRecorderTests
         Assert.Equal(
             [
                 "export.started",
-                "export.retrying",
-                "export.recovered",
+                "audit.export_stalled",
+                "audit.export_recovered",
                 "export.warning",
                 "export.warning",
-                "export.blocked",
-                "export.blocked",
-                "export.recovered",
+                "audit.export_stalled",
+                "audit.export_stalled",
+                "audit.export_recovered",
             ],
             events.Select(EventType));
         Assert.Equal(8, fixture.Sink.AppendCallCount);
 
         var blocks = events
-            .Where(value => EventType(value) == "export.blocked")
+            .Where(value =>
+                EventType(value) == "audit.export_stalled" &&
+                value.RootElement.GetProperty("outcome").GetProperty("state").GetString() == "blocked")
             .ToArray();
         Assert.Equal(eventB.ToString("D"), ParentEventId(blocks[0]));
         Assert.Equal("orphan:12345678-1234-4abc-8def-0123456789ab", Target(blocks[0]));
@@ -138,7 +140,7 @@ public sealed class AuditExportTransitionRecorderTests
         await Assert.ThrowsAsync<IOException>(() => completion);
 
         Assert.Equal(
-            ["export.started", "export.faulted"],
+            ["export.started", "audit.export_stalled"],
             fixture.Events().Select(EventType));
         Assert.Equal(AuditExporterState.Faulted, fixture.Health.Snapshot().Exporter.State);
         Assert.DoesNotContain(

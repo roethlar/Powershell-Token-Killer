@@ -147,7 +147,7 @@ internal sealed class AuditExportTransitionRecorder : IAuditExportHealthObserver
                 if (_started)
                 {
                     Record(
-                        "export.faulted",
+                        "audit.export_stalled",
                         "failed",
                         "loop.fault",
                         target: null);
@@ -209,7 +209,7 @@ internal sealed class AuditExportTransitionRecorder : IAuditExportHealthObserver
         {
             case AuditExportCoordinatorStepKind.Retry when !_impeded:
                 Record(
-                    "export.retrying",
+                    "audit.export_stalled",
                     "retrying",
                     "retry.pending",
                     step);
@@ -222,7 +222,7 @@ internal sealed class AuditExportTransitionRecorder : IAuditExportHealthObserver
                 if (_recordedBlocks.Add(identity))
                 {
                     Record(
-                        "export.blocked",
+                        "audit.export_stalled",
                         "blocked",
                         BlockDetail(step.FailureClass),
                         step);
@@ -237,7 +237,7 @@ internal sealed class AuditExportTransitionRecorder : IAuditExportHealthObserver
                 if (_impeded)
                 {
                     Record(
-                        "export.recovered",
+                        "audit.export_recovered",
                         "recovered",
                         "progress.observed",
                         step);
