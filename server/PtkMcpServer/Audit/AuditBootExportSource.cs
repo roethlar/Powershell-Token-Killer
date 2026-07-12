@@ -34,6 +34,7 @@ internal enum AuditBootExportPhase
 internal sealed class AuditBootExportSource : IDisposable
 {
     private readonly AuditOptions _options;
+    private readonly Guid _supervisorBootId;
     private readonly AuditExportCheckpointStore _checkpointStore;
     private readonly IAuditOtlpExportTransport _transport;
     private readonly string _configurationIdentity;
@@ -58,6 +59,7 @@ internal sealed class AuditBootExportSource : IDisposable
         ArgumentNullException.ThrowIfNull(checkpointStore);
         ArgumentNullException.ThrowIfNull(transport);
         _options = journal.Options;
+        _supervisorBootId = journal.SupervisorBootId;
         _checkpointStore = checkpointStore;
         _transport = transport;
         _configurationIdentity = transport.ConfigurationIdentity;
@@ -75,6 +77,14 @@ internal sealed class AuditBootExportSource : IDisposable
     }
 
     internal AuditBootExportPhase Phase => _phase;
+
+    internal Guid SupervisorBootId => _supervisorBootId;
+
+    internal bool UsesTransport(IAuditOtlpExportTransport transport) =>
+        ReferenceEquals(_transport, transport);
+
+    internal bool UsesOptions(AuditOptions options) =>
+        ReferenceEquals(_options, options);
 
     internal async Task<AuditBootExportStep> ExportNextAsync(
         CancellationToken cancellationToken)
