@@ -278,7 +278,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         var store = AuditExportCheckpointStore.Acquire(options, BootId);
         using var transitionReached = new ManualResetEventSlim();
         using var releaseTransition = new ManualResetEventSlim();
-        var save = Task.Run(() => store.Save(
+        var save = Task.Run(() => store.SaveForTests(
             Checkpoint(BootId, sequence: 1, byteOffset: 128),
             beforeAtomicReplaceForTests: () =>
             {
@@ -331,7 +331,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
 
         using var successor = AuditExportCheckpointStore.Acquire(options, BootId);
         Assert.Equal(1, successor.Current.Sequence);
-        successor.Save(Checkpoint(BootId, sequence: 2, byteOffset: 256));
+        successor.SaveForTests(Checkpoint(BootId, sequence: 2, byteOffset: 256));
         Assert.Equal(2, successor.Current.Sequence);
     }
 
@@ -385,7 +385,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             Checkpoint(BootId, sequence: 2, byteOffset: 256));
         File.WriteAllBytes(store.CheckpointPath, tampered);
 
-        Assert.Throws<IOException>(() => store.Save(
+        Assert.Throws<IOException>(() => store.SaveForTests(
             Checkpoint(BootId, sequence: 1, byteOffset: 128)));
 
         Assert.Equal(tampered, File.ReadAllBytes(store.CheckpointPath));
@@ -405,7 +405,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         else
             File.WriteAllBytes(store.CheckpointPath, malformed);
 
-        Assert.Throws<IOException>(() => store.Save(
+        Assert.Throws<IOException>(() => store.SaveForTests(
             Checkpoint(BootId, sequence: 1, byteOffset: 128)));
 
         Assert.Throws<IOException>(() => _ = store.Current);
@@ -423,7 +423,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         using var store = AuditExportCheckpointStore.Acquire(options, BootId);
         File.Delete(store.LockPath);
 
-        Assert.Throws<IOException>(() => store.Save(
+        Assert.Throws<IOException>(() => store.SaveForTests(
             Checkpoint(BootId, sequence: 1, byteOffset: 128)));
 
         Assert.Throws<IOException>(() => _ = store.Current);
@@ -437,7 +437,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         using var store = AuditExportCheckpointStore.Acquire(options, BootId);
         var malformed = "{\"not\":\"a checkpoint\"}\n"u8.ToArray();
 
-        Assert.Throws<IOException>(() => store.Save(
+        Assert.Throws<IOException>(() => store.SaveForTests(
             Checkpoint(BootId, sequence: 1, byteOffset: 128),
             afterAtomicReplaceForTests: () =>
                 File.WriteAllBytes(store.CheckpointPath, malformed)));
@@ -497,15 +497,15 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
         using var store = AuditExportCheckpointStore.Acquire(options, BootId);
         var acknowledged = Checkpoint(BootId, sequence: 1, byteOffset: 128);
-        store.Save(acknowledged);
+        store.SaveForTests(acknowledged);
         var exactBytes = File.ReadAllBytes(store.CheckpointPath);
 
         Assert.Throws<ArgumentException>(() =>
-            store.Save(AuditExportCheckpoint.Initial(BootId)));
+            store.SaveForTests(AuditExportCheckpoint.Initial(BootId)));
         Assert.Throws<ArgumentException>(() =>
-            store.Save(AuditExportCheckpoint.Initial(OtherBootId)));
+            store.SaveForTests(AuditExportCheckpoint.Initial(OtherBootId)));
         Assert.Throws<ArgumentException>(() =>
-            store.Save(Checkpoint(BootId, sequence: 1, byteOffset: 256)));
+            store.SaveForTests(Checkpoint(BootId, sequence: 1, byteOffset: 256)));
 
         Assert.Equal(exactBytes, File.ReadAllBytes(store.CheckpointPath));
         AssertCheckpoint(store.Current, sequence: 1, chainComplete: false);
@@ -516,8 +516,8 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             byteOffset: 128,
             acknowledgedEventId: acknowledged.AcknowledgedEventId,
             chainComplete: true);
-        store.Save(complete);
-        Assert.Throws<ArgumentException>(() => store.Save(acknowledged));
+        store.SaveForTests(complete);
+        Assert.Throws<ArgumentException>(() => store.SaveForTests(acknowledged));
         AssertCheckpoint(store.Current, sequence: 1, chainComplete: true);
     }
 
@@ -527,14 +527,14 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
         using var store = AuditExportCheckpointStore.Acquire(options, BootId);
         Assert.Throws<ArgumentException>(() =>
-            store.Save(Checkpoint(BootId, sequence: 2, byteOffset: 256)));
+            store.SaveForTests(Checkpoint(BootId, sequence: 2, byteOffset: 256)));
 
         var first = Checkpoint(BootId, sequence: 1, byteOffset: 128);
-        store.Save(first);
+        store.SaveForTests(first);
         Assert.Throws<ArgumentException>(() =>
-            store.Save(Checkpoint(BootId, sequence: 3, byteOffset: 384)));
+            store.SaveForTests(Checkpoint(BootId, sequence: 3, byteOffset: 384)));
         Assert.Throws<ArgumentException>(() =>
-            store.Save(new AuditExportCheckpoint(
+            store.SaveForTests(new AuditExportCheckpoint(
                 BootId,
                 false,
                 AuditSpoolSegmentIdentity.Create(BootId, 2),
@@ -551,7 +551,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             2,
             Guid.CreateVersion7(),
             null);
-        store.Save(secondSegment);
+        store.SaveForTests(secondSegment);
 
         Assert.Equal(2, store.Current.Sequence);
         Assert.Equal(1, store.Current.Spool?.Index);
@@ -563,7 +563,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
         using var store = AuditExportCheckpointStore.Acquire(options, BootId);
         var acknowledged = Checkpoint(BootId, sequence: 1, byteOffset: 128);
-        store.Save(acknowledged);
+        store.SaveForTests(acknowledged);
         var blockedEventId = Guid.CreateVersion7();
         var blocked = new AuditExportBlockedRecord(
             AuditSpoolSegmentIdentity.Create(BootId, 0),
@@ -583,10 +583,10 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             acknowledged.Sequence,
             acknowledged.AcknowledgedEventId,
             blocked);
-        store.Save(blockedCheckpoint);
+        store.SaveForTests(blockedCheckpoint);
 
-        Assert.Throws<ArgumentException>(() => store.Save(acknowledged));
-        Assert.Throws<ArgumentException>(() => store.Save(new AuditExportCheckpoint(
+        Assert.Throws<ArgumentException>(() => store.SaveForTests(acknowledged));
+        Assert.Throws<ArgumentException>(() => store.SaveForTests(new AuditExportCheckpoint(
             BootId,
             false,
             blocked.Spool,
@@ -603,7 +603,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             2,
             blocked.EventId,
             null);
-        store.Save(disposition);
+        store.SaveForTests(disposition);
 
         Assert.Equal(2, store.Current.Sequence);
         Assert.Equal(blocked.EventId, store.Current.AcknowledgedEventId);
@@ -626,7 +626,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             responseDigest: null,
             new DateTimeOffset(2026, 7, 11, 12, 34, 56, TimeSpan.Zero),
             ConfigurationIdentity);
-        store.Save(new AuditExportCheckpoint(BootId, false, null, 0, 0, null, first));
+        store.SaveForTests(new AuditExportCheckpoint(BootId, false, null, 0, 0, null, first));
 
         var changedIdentity = new string('b', 64);
         var retried = new AuditExportBlockedRecord(
@@ -639,7 +639,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             responseDigest: null,
             first.FirstFailureUtc.AddMinutes(1),
             changedIdentity);
-        store.Save(new AuditExportCheckpoint(BootId, false, null, 0, 0, null, retried));
+        store.SaveForTests(new AuditExportCheckpoint(BootId, false, null, 0, 0, null, retried));
 
         Assert.Equal(changedIdentity, store.Current.BlockedRecord?.ExportConfigurationIdentity);
         var sameIdentityPermanent = new AuditExportBlockedRecord(
@@ -652,7 +652,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             responseDigest: null,
             retried.FirstFailureUtc,
             changedIdentity);
-        Assert.Throws<ArgumentException>(() => store.Save(
+        Assert.Throws<ArgumentException>(() => store.SaveForTests(
             new AuditExportCheckpoint(
                 BootId,
                 false,
@@ -673,7 +673,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             responseDigest: null,
             retried.FirstFailureUtc,
             finalIdentity);
-        store.Save(new AuditExportCheckpoint(
+        store.SaveForTests(new AuditExportCheckpoint(
             BootId,
             false,
             null,
@@ -694,7 +694,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             responseDigest: null,
             permanent.FirstFailureUtc,
             new string('d', 64));
-        Assert.Throws<ArgumentException>(() => store.Save(new AuditExportCheckpoint(
+        Assert.Throws<ArgumentException>(() => store.SaveForTests(new AuditExportCheckpoint(
             BootId,
             false,
             null,
@@ -713,7 +713,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         var injected = new InjectedCheckpointException("before replace");
 
         var caught = Assert.Throws<InjectedCheckpointException>(() =>
-            store.Save(
+            store.SaveForTests(
                 Checkpoint(BootId, sequence: 1, byteOffset: 128),
                 beforeAtomicReplaceForTests: () => throw injected));
 
@@ -729,7 +729,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         using var store = AuditExportCheckpointStore.Acquire(options, BootId);
         var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
 
-        store.Save(
+        store.SaveForTests(
             intended,
             destinationReplacedForTests: () =>
                 throw new InjectedCheckpointException("after replace"));
@@ -749,7 +749,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         var intendedBytes = AuditExportCheckpointCodec.Serialize(intended);
         var injected = new InjectedCheckpointException("before replace");
 
-        var exception = Assert.Throws<IOException>(() => store.Save(
+        var exception = Assert.Throws<IOException>(() => store.SaveForTests(
             intended,
             beforeAtomicReplaceForTests: () =>
             {
@@ -771,7 +771,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
         var injected = new InjectedCheckpointException("after replace");
 
-        var exception = Assert.Throws<IOException>(() => store.Save(
+        var exception = Assert.Throws<IOException>(() => store.SaveForTests(
             intended,
             destinationReplacedForTests: () =>
             {
@@ -791,7 +791,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         using var store = AuditExportCheckpointStore.Acquire(options, BootId);
         var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
 
-        var exception = Assert.Throws<IOException>(() => store.Save(
+        var exception = Assert.Throws<IOException>(() => store.SaveForTests(
             intended,
             destinationReplacedForTests: () =>
                 throw new InjectedCheckpointException("after replace"),
@@ -812,7 +812,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
         var intendedBytes = AuditExportCheckpointCodec.Serialize(intended);
 
-        var exception = Assert.Throws<IOException>(() => store.Save(
+        var exception = Assert.Throws<IOException>(() => store.SaveForTests(
             intended,
             directoryFlushStartingForTests: () =>
                 throw new InjectedCheckpointException("directory fsync")));
@@ -829,7 +829,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         using var store = AuditExportCheckpointStore.Acquire(options, BootId);
         var unexpected = Checkpoint(BootId, sequence: 2, byteOffset: 256);
 
-        Assert.Throws<IOException>(() => store.Save(
+        Assert.Throws<IOException>(() => store.SaveForTests(
             Checkpoint(BootId, sequence: 1, byteOffset: 128),
             destinationReplacedForTests: () =>
             {
@@ -878,7 +878,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             await firstObservation.Task.WaitAsync(TimeSpan.FromSeconds(10));
             for (var sequence = 1; sequence <= 24; sequence++)
             {
-                store.Save(Checkpoint(
+                store.SaveForTests(Checkpoint(
                     BootId,
                     sequence,
                     checked(sequence * 128L)));

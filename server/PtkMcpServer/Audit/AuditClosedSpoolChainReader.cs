@@ -233,15 +233,9 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (position is not RecordPosition ownedPosition ||
-                !ReferenceEquals(ownedPosition.Owner, this) ||
-                _snapshotToken is null ||
-                !ReferenceEquals(ownedPosition.SnapshotToken, _snapshotToken))
-            {
-                throw new ArgumentException(
-                    "The audit spool position does not belong to this reader snapshot.",
-                    nameof(position));
-            }
+            _ = RequireRecordPositionLocked(position, nameof(position));
+            var snapshotToken = _snapshotToken
+                ?? throw new IOException("The audit spool reader snapshot is unavailable.");
 
             var segmentNumber = position.Spool.Index;
             if (segmentNumber < 0 || segmentNumber >= _segments.Length ||
@@ -269,18 +263,68 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
             return ReadRecord(
                 segment,
                 offset,
-                _snapshotToken,
+                snapshotToken,
                 CheckedNext(position.Sequence),
                 position.EventHash);
         }
     }
 
     /// <summary>
-    /// Converts only this reader's live opaque end proof into the exact
-    /// chain-complete checkpoint the store may persist.
+    /// Persists remote acknowledgment only from an exact record position in
+    /// this reader's current retained snapshot.
     /// </summary>
-    internal AuditExportCheckpoint CreateChainCompleteCheckpoint(
-        IAuditClosedSpoolEndPosition endPosition)
+    internal void Acknowledge(
+        IAuditClosedSpoolRecordPosition position,
+        string exportConfigurationIdentity)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var owned = RequireRecordPositionLocked(position, nameof(position));
+            _checkpointLease.Acknowledge(
+                owned.Spool,
+                owned.NextOffset,
+                owned.Sequence,
+                owned.EventId,
+                exportConfigurationIdentity);
+        }
+    }
+
+    /// <summary>
+    /// Persists a non-retryable transport outcome against only the exact next
+    /// record represented by this reader's current snapshot.
+    /// </summary>
+    internal void PersistBlock(
+        IAuditClosedSpoolRecordPosition position,
+        AuditExportFailureClass failureClass,
+        string detailCode,
+        string? responseDigest,
+        DateTimeOffset firstFailureUtc,
+        string exportConfigurationIdentity)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var owned = RequireRecordPositionLocked(position, nameof(position));
+            _checkpointLease.PersistBlock(
+                owned.Spool,
+                owned.StartOffset,
+                owned.Sequence,
+                owned.EventId,
+                failureClass,
+                detailCode,
+                responseDigest,
+                firstFailureUtc,
+                exportConfigurationIdentity);
+        }
+    }
+
+    /// <summary>
+    /// Persists completion only from this reader's live opaque end proof.
+    /// </summary>
+    internal void MarkChainComplete(IAuditClosedSpoolEndPosition endPosition)
     {
         ArgumentNullException.ThrowIfNull(endPosition);
         lock (_gate)
@@ -296,18 +340,24 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                     nameof(endPosition));
             }
 
-            var checkpoint = ownedEnd.Checkpoint;
-            return checkpoint.ChainComplete
-                ? checkpoint
-                : new AuditExportCheckpoint(
-                    checkpoint.SupervisorBootId,
-                    chainComplete: true,
-                    checkpoint.Spool,
-                    checkpoint.ByteOffset,
-                    checkpoint.Sequence,
-                    checkpoint.AcknowledgedEventId,
-                    blockedRecord: null);
+            _checkpointLease.MarkChainComplete(ownedEnd.Checkpoint);
         }
+    }
+
+    private RecordPosition RequireRecordPositionLocked(
+        IAuditClosedSpoolRecordPosition position,
+        string parameterName)
+    {
+        if (position is not RecordPosition ownedPosition ||
+            !ReferenceEquals(ownedPosition.Owner, this) ||
+            _snapshotToken is null ||
+            !ReferenceEquals(ownedPosition.SnapshotToken, _snapshotToken))
+        {
+            throw new ArgumentException(
+                "The audit spool position does not belong to this reader snapshot.",
+                parameterName);
+        }
+        return ownedPosition;
     }
 
     public void Dispose()

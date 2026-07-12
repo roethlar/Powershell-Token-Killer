@@ -13,6 +13,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
         DateTimeOffset.Parse("2026-07-11T12:34:56.1234567Z");
     private const string ConfigurationIdentity =
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
+    private const string ChangedConfigurationIdentity =
+        "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
     private readonly List<string> _roots = [];
 
     public void Dispose()
@@ -64,14 +66,15 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             AssertPosition(third, segment: 1, startOffset: 0, records[2]);
             Assert.Null(reader.ReadNext(third));
 
-            store.Save(CheckpointAfter(first));
-            store.Save(CheckpointAfter(second));
-            store.Save(CheckpointAfter(third));
+            store.SaveForTests(CheckpointAfter(first));
+            store.SaveForTests(CheckpointAfter(second));
+            store.SaveForTests(CheckpointAfter(third));
             var endRecovery = reader.ResolveCheckpoint();
             Assert.Null(endRecovery.NextRecord);
             var end = Assert.IsAssignableFrom<IAuditClosedSpoolEndPosition>(
                 endRecovery.EndPosition);
-            var complete = reader.CreateChainCompleteCheckpoint(end);
+            reader.MarkChainComplete(end);
+            var complete = store.Current;
             Assert.True(complete.ChainComplete);
             Assert.Equal(third.Spool, complete.Spool);
             Assert.Equal(third.NextOffset, complete.ByteOffset);
@@ -90,7 +93,7 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             WriteSegment(options, 0, records);
             var firstEnd = records[0].Utf8Line.Length;
             var next = AuditSpoolSegmentIdentity.Create(BootId, 0);
-            store.Save(new AuditExportCheckpoint(
+            store.SaveForTests(new AuditExportCheckpoint(
                 BootId,
                 false,
                 next,
@@ -104,6 +107,125 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
                 reader.ResolveCheckpoint().NextRecord);
 
             AssertPosition(resolved, 0, firstEnd, records[1]);
+        }
+    }
+
+    [Fact]
+    public void Opaque_record_acknowledgment_advances_only_the_exact_next_record()
+    {
+        var (options, store) = OwnedFixture();
+        using (store)
+        {
+            var records = Records(2);
+            WriteSegment(options, 0, records);
+            using var reader = new AuditClosedSpoolChainReader(options, store);
+            var first = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
+                reader.ResolveCheckpoint().NextRecord);
+            var second = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
+                reader.ReadNext(first));
+
+            Assert.Throws<ArgumentException>(() =>
+                reader.Acknowledge(second, ConfigurationIdentity));
+            Assert.Equal(0, store.Current.Sequence);
+
+            reader.Acknowledge(first, ConfigurationIdentity);
+            Assert.Equal(first.Spool, store.Current.Spool);
+            Assert.Equal(first.NextOffset, store.Current.ByteOffset);
+            Assert.Equal(first.Sequence, store.Current.Sequence);
+            Assert.Equal(first.EventId, store.Current.AcknowledgedEventId);
+
+            reader.Acknowledge(second, ConfigurationIdentity);
+            Assert.Equal(second.Spool, store.Current.Spool);
+            Assert.Equal(second.NextOffset, store.Current.ByteOffset);
+            Assert.Equal(second.Sequence, store.Current.Sequence);
+            Assert.Equal(second.EventId, store.Current.AcknowledgedEventId);
+        }
+    }
+
+    [Fact]
+    public void Opaque_record_block_persists_and_clears_only_that_record()
+    {
+        var (options, store) = OwnedFixture();
+        using (store)
+        {
+            var record = Records(1)[0];
+            WriteSegment(options, 0, record);
+            using var reader = new AuditClosedSpoolChainReader(options, store);
+            var position = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
+                reader.ResolveCheckpoint().NextRecord);
+            var responseDigest = new string('b', 64);
+
+            reader.PersistBlock(
+                position,
+                AuditExportFailureClass.Data,
+                "http.400",
+                responseDigest,
+                BaseTime,
+                ConfigurationIdentity);
+
+            var blocked = Assert.IsType<AuditExportBlockedRecord>(store.Current.BlockedRecord);
+            Assert.Equal(position.Spool, blocked.Spool);
+            Assert.Equal(position.StartOffset, blocked.ByteOffset);
+            Assert.Equal(position.Sequence, blocked.Sequence);
+            Assert.Equal(position.EventId, blocked.EventId);
+            Assert.Equal(AuditExportFailureClass.Data, blocked.FailureClass);
+            Assert.Equal("http.400", blocked.DetailCode);
+            Assert.Equal(responseDigest, blocked.ResponseDigest);
+            Assert.Equal(BaseTime, blocked.FirstFailureUtc);
+            Assert.Equal(ConfigurationIdentity, blocked.ExportConfigurationIdentity);
+
+            Assert.Throws<InvalidOperationException>(() =>
+                reader.Acknowledge(position, ConfigurationIdentity));
+            Assert.Same(blocked, store.Current.BlockedRecord);
+            Assert.Equal(0, store.Current.Sequence);
+        }
+    }
+
+    [Fact]
+    public void Configuration_block_acknowledges_only_after_configuration_identity_changes()
+    {
+        var (options, store) = OwnedFixture();
+        using (store)
+        {
+            var record = Records(1)[0];
+            WriteSegment(options, 0, record);
+            using var reader = new AuditClosedSpoolChainReader(options, store);
+            var position = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
+                reader.ResolveCheckpoint().NextRecord);
+            reader.PersistBlock(
+                position,
+                AuditExportFailureClass.Configuration,
+                "http.401",
+                responseDigest: null,
+                BaseTime,
+                ConfigurationIdentity);
+
+            Assert.Throws<InvalidOperationException>(() =>
+                reader.Acknowledge(position, ConfigurationIdentity));
+
+            reader.Acknowledge(position, ChangedConfigurationIdentity);
+            Assert.Null(store.Current.BlockedRecord);
+            Assert.Equal(position.Sequence, store.Current.Sequence);
+            Assert.Equal(position.EventId, store.Current.AcknowledgedEventId);
+        }
+    }
+
+    [Fact]
+    public void Opaque_end_proof_is_the_only_reader_path_to_persist_completion()
+    {
+        var (options, store) = OwnedFixture();
+        using (store)
+        {
+            WriteSegment(options, 0);
+            using var reader = new AuditClosedSpoolChainReader(options, store);
+            var end = Assert.IsAssignableFrom<IAuditClosedSpoolEndPosition>(
+                reader.ResolveCheckpoint().EndPosition);
+
+            reader.MarkChainComplete(end);
+
+            Assert.True(store.Current.ChainComplete);
+            Assert.Throws<ArgumentException>(() =>
+                reader.MarkChainComplete(new FakeEndPosition()));
         }
     }
 
@@ -122,7 +244,7 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
                 firstEnd,
                 records[1],
                 Guid.CreateVersion7());
-            store.Save(new AuditExportCheckpoint(
+            store.SaveForTests(new AuditExportCheckpoint(
                 BootId,
                 false,
                 spool,
@@ -177,7 +299,7 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
                     null),
                 _ => throw new ArgumentOutOfRangeException(nameof(mismatch)),
             };
-            store.Save(checkpoint);
+            store.SaveForTests(checkpoint);
 
             using var reader = new AuditClosedSpoolChainReader(options, store);
             Assert.Throws<IOException>(() => reader.ResolveCheckpoint());
@@ -444,11 +566,11 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             var firstEnd = Assert.IsAssignableFrom<IAuditClosedSpoolEndPosition>(
                 reader.ResolveCheckpoint().EndPosition);
             Assert.Throws<ArgumentException>(() =>
-                reader.CreateChainCompleteCheckpoint(new FakeEndPosition()));
+                reader.MarkChainComplete(new FakeEndPosition()));
 
             _ = reader.ResolveCheckpoint();
             Assert.Throws<ArgumentException>(() =>
-                reader.CreateChainCompleteCheckpoint(firstEnd));
+                reader.MarkChainComplete(firstEnd));
         }
     }
 
@@ -464,7 +586,7 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             using var reader = new AuditClosedSpoolChainReader(
                 options,
                 store,
-                () => store.Save(new AuditExportCheckpoint(
+                () => store.SaveForTests(new AuditExportCheckpoint(
                     BootId,
                     false,
                     spool,
@@ -496,7 +618,7 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
                 store,
                 () =>
                 {
-                    store.Save(new AuditExportCheckpoint(
+                    store.SaveForTests(new AuditExportCheckpoint(
                         BootId,
                         false,
                         spool,

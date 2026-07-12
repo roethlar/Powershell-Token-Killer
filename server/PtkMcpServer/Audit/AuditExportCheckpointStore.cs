@@ -305,7 +305,12 @@ internal sealed class AuditExportCheckpointStore : IDisposable
             supervisorBootId).Checkpoint;
     }
 
-    internal void Save(
+    /// <summary>
+    /// Storage fault seam for checkpoint-store tests. Product export code must
+    /// persist through reader/live-source opaque acknowledgment, block, and
+    /// completion proofs instead of constructing cursor offsets directly.
+    /// </summary>
+    internal void SaveForTests(
         AuditExportCheckpoint next,
         Action? beforeAtomicReplaceForTests = null,
         Action? destinationReplacedForTests = null,
@@ -487,6 +492,153 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                 }
                 throw;
             }
+        }
+    }
+
+    private void AcknowledgeClosedRecord(
+        ClosedChainReaderLease reader,
+        AuditSpoolSegmentIdentity spool,
+        long nextOffset,
+        long sequence,
+        Guid eventId,
+        string exportConfigurationIdentity)
+    {
+        lock (_lifetimeGate)
+        {
+            EnsureClosedReaderLease(reader);
+            RequireExportConfigurationIdentity(exportConfigurationIdentity);
+            if (_current.BlockedRecord is { } blocked &&
+                (blocked.FailureClass != AuditExportFailureClass.Configuration ||
+                 string.Equals(
+                     blocked.ExportConfigurationIdentity,
+                     exportConfigurationIdentity,
+                     StringComparison.Ordinal)))
+            {
+                throw new InvalidOperationException(
+                    "The persisted audit export block does not permit an automatic acknowledgment attempt.");
+            }
+            SaveLocked(
+                new AuditExportCheckpoint(
+                    _supervisorBootId,
+                    chainComplete: false,
+                    spool,
+                    nextOffset,
+                    sequence,
+                    eventId,
+                    blockedRecord: null),
+                null,
+                null,
+                null,
+                null,
+                null);
+        }
+    }
+
+    private void BlockClosedRecord(
+        ClosedChainReaderLease reader,
+        AuditSpoolSegmentIdentity spool,
+        long startOffset,
+        long sequence,
+        Guid eventId,
+        AuditExportFailureClass failureClass,
+        string detailCode,
+        string? responseDigest,
+        DateTimeOffset firstFailureUtc,
+        string exportConfigurationIdentity)
+    {
+        lock (_lifetimeGate)
+        {
+            EnsureClosedReaderLease(reader);
+            if (_current.BlockedRecord is { } currentBlock &&
+                currentBlock.Spool == spool &&
+                currentBlock.ByteOffset == startOffset &&
+                currentBlock.Sequence == sequence &&
+                currentBlock.EventId == eventId)
+            {
+                firstFailureUtc = currentBlock.FirstFailureUtc;
+            }
+
+            var blocked = new AuditExportBlockedRecord(
+                spool,
+                startOffset,
+                sequence,
+                eventId,
+                failureClass,
+                detailCode,
+                responseDigest,
+                firstFailureUtc,
+                exportConfigurationIdentity);
+            SaveLocked(
+                new AuditExportCheckpoint(
+                    _supervisorBootId,
+                    _current.ChainComplete,
+                    _current.Spool,
+                    _current.ByteOffset,
+                    _current.Sequence,
+                    _current.AcknowledgedEventId,
+                    blocked),
+                null,
+                null,
+                null,
+                null,
+                null);
+        }
+    }
+
+    private void CompleteClosedChain(
+        ClosedChainReaderLease reader,
+        AuditExportCheckpoint expectedOpenCheckpoint)
+    {
+        lock (_lifetimeGate)
+        {
+            EnsureClosedReaderLease(reader);
+            var expectedBytes = AuditExportCheckpointCodec.Serialize(expectedOpenCheckpoint);
+            if (!expectedBytes.AsSpan().SequenceEqual(_currentBytes))
+            {
+                throw new ArgumentException(
+                    "The closed-chain end proof does not match the current checkpoint.",
+                    nameof(expectedOpenCheckpoint));
+            }
+
+            SaveLocked(
+                expectedOpenCheckpoint.ChainComplete
+                    ? expectedOpenCheckpoint
+                    : new AuditExportCheckpoint(
+                        expectedOpenCheckpoint.SupervisorBootId,
+                        chainComplete: true,
+                        expectedOpenCheckpoint.Spool,
+                        expectedOpenCheckpoint.ByteOffset,
+                        expectedOpenCheckpoint.Sequence,
+                        expectedOpenCheckpoint.AcknowledgedEventId,
+                        blockedRecord: null),
+                null,
+                null,
+                null,
+                null,
+                null);
+        }
+    }
+
+    private void EnsureClosedReaderLease(ClosedChainReaderLease reader)
+    {
+        ThrowIfUnavailable();
+        if (!reader.IsOwnedBy(this) || _closedReaderLeases < 1)
+            throw new ObjectDisposedException(nameof(ClosedChainReaderLease));
+        VerifyLeasePath();
+        VerifyCurrentPersistedState();
+    }
+
+    private static void RequireExportConfigurationIdentity(string value)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(value);
+        if (value.Length != 64 ||
+            value.Any(character =>
+                character is not (>= '0' and <= '9') and
+                not (>= 'a' and <= 'f')))
+        {
+            throw new ArgumentException(
+                "The audit export configuration identity is invalid.",
+                nameof(value));
         }
     }
 
@@ -1109,6 +1261,57 @@ internal sealed class AuditExportCheckpointStore : IDisposable
 
         internal bool IsOwnedBy(AuditExportCheckpointStore owner) =>
             ReferenceEquals(Volatile.Read(ref _owner), owner);
+
+        internal void Acknowledge(
+            AuditSpoolSegmentIdentity spool,
+            long nextOffset,
+            long sequence,
+            Guid eventId,
+            string exportConfigurationIdentity)
+        {
+            var currentOwner = Volatile.Read(ref _owner)
+                ?? throw new ObjectDisposedException(nameof(ClosedChainReaderLease));
+            currentOwner.AcknowledgeClosedRecord(
+                this,
+                spool,
+                nextOffset,
+                sequence,
+                eventId,
+                exportConfigurationIdentity);
+        }
+
+        internal void PersistBlock(
+            AuditSpoolSegmentIdentity spool,
+            long startOffset,
+            long sequence,
+            Guid eventId,
+            AuditExportFailureClass failureClass,
+            string detailCode,
+            string? responseDigest,
+            DateTimeOffset firstFailureUtc,
+            string exportConfigurationIdentity)
+        {
+            var currentOwner = Volatile.Read(ref _owner)
+                ?? throw new ObjectDisposedException(nameof(ClosedChainReaderLease));
+            currentOwner.BlockClosedRecord(
+                this,
+                spool,
+                startOffset,
+                sequence,
+                eventId,
+                failureClass,
+                detailCode,
+                responseDigest,
+                firstFailureUtc,
+                exportConfigurationIdentity);
+        }
+
+        internal void MarkChainComplete(AuditExportCheckpoint expectedOpenCheckpoint)
+        {
+            var currentOwner = Volatile.Read(ref _owner)
+                ?? throw new ObjectDisposedException(nameof(ClosedChainReaderLease));
+            currentOwner.CompleteClosedChain(this, expectedOpenCheckpoint);
+        }
 
         public void Dispose()
         {
