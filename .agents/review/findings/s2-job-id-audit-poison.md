@@ -2,9 +2,9 @@
 
 **Severity**: HIGH — one model-facing call can permanently disable every audited
 operation until the server restarts.
-**Status**: Open
+**Status**: In progress
 **Branch**: `fix/s2-job-id-audit-poison`
-**Commit**: pending
+**Commit**: `a73d09c07bfe2cfe01d9e16b71fa09993b8ea596`
 
 ## Evidence
 
@@ -32,18 +32,30 @@ state after any audit-persistence refusal has replaced the response.
 
 ## Approach
 
-Pending implementation. Keep `list` as the only action that does not require an
-identifier. Add an end-to-end omitted-ID guard that proves the malformed call
-cannot poison health and a later valid audited call still succeeds.
+`AuditCallMetadataCapture` now rejects a missing identifier for status, output,
+and kill before request services, reservation, or tool dispatch; list remains
+identifier-free. The filter resolves an authorization-persistence refusal to a
+failed zero-byte terminal before replacing the result with its client-visible
+refusal. End-to-end coverage injects the exact former `id=0` append and proves
+a later valid audited call remains healthy.
 
 ## Files changed
 
-- Pending implementation.
+- `server/PtkMcpServer/Audit/AuditCallMetadata.cs` — required job-specific ID.
+- `server/PtkMcpServer/Audit/AuditCallFilter.cs` — truthful fallback terminal.
+- `server/PtkMcpServer.Tests/AuditCallMetadataTests.cs` — all three ID guards.
+- `server/PtkMcpServer.Tests/AuditCallFilterTests.cs` — poison and terminal
+  classification guards.
 
 ## Guard proof
 
-- Pending red-to-green proof for omitted `ptk_job` identifiers and fallback
-  terminal truthfulness.
+- Removing the required-ID boundary made the three metadata cases red and let
+  the end-to-end omitted-ID case reach `id=0`, throw required-persistence
+  failure, and poison audit health; restoration passed.
+- Removing the authorization-refusal branch made the pure terminal guard return
+  `completed` with response bytes instead of `failed` with zero bytes;
+  restoration passed.
+- Focused metadata/filter tests passed 22/22 and the full suite passed 924/924.
 
 ## Coder dispute (if any)
 

@@ -59,6 +59,62 @@ public sealed class AuditCallFilterTests : IDisposable
     }
 
     [Fact]
+    public async Task Missing_job_id_is_refused_without_poisoning_later_audited_calls()
+    {
+        using var fixture = CreateFixture(slots: 8);
+        var malformedHandlerCalled = false;
+
+        var malformed = await Invoke(
+            fixture,
+            Call("ptk_job", ("action", "status")),
+            _ =>
+            {
+                malformedHandlerCalled = true;
+                fixture.Accessor.Current!.CommitReadOutcome(
+                    "job.status_accessed",
+                    "not_found",
+                    "[no such job: 0]",
+                    jobId: 0);
+                return ValueTask.FromResult(Text("[no such job: 0]"));
+            });
+
+        Assert.False(malformedHandlerCalled);
+        Assert.True(malformed.IsError);
+        Assert.Empty(fixture.Sink.Lines);
+        Assert.Equal(AuditHealthState.Healthy, fixture.Health.Snapshot().State);
+
+        var validHandlerCalled = false;
+        var valid = await Invoke(
+            fixture,
+            Call("ptk_job", ("action", "status"), ("id", 17L)),
+            _ =>
+            {
+                validHandlerCalled = true;
+                return ValueTask.FromResult(Text("healthy"));
+            });
+
+        Assert.True(validHandlerCalled);
+        Assert.False(valid.IsError);
+        Assert.Equal("healthy", ResultText(valid));
+        Assert.Equal(AuditHealthState.Healthy, fixture.Health.Snapshot().State);
+        Assert.Equal(2, fixture.Sink.Lines.Count);
+        Assert.Equal(
+            "call.completed",
+            Parse(fixture.Sink.Lines[1]).RootElement.GetProperty("event_type").GetString());
+    }
+
+    [Fact]
+    public void Authorization_persistence_refusal_resolves_failed_zero_byte_terminal()
+    {
+        var terminal = AuditCallFilter.ResolveFallbackTerminal(
+            Text(AuditCallContext.NotStartedMessage),
+            authorizationRefused: true);
+
+        Assert.Equal("failed", terminal.State);
+        Assert.Equal(0, terminal.BytesReturned);
+    }
+
+    [Fact]
     public async Task Admission_append_failure_refuses_before_handler_and_does_not_echo_script()
     {
         const string submittedScript = "$password = 'do-not-echo'; Remove-Item important";
