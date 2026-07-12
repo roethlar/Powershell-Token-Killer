@@ -1331,3 +1331,11 @@ previously reopened guards, confirmed those two fixes closed, then passed
 handshake in a clean disposable worktree. The structured result and payload
 matched exactly. Two distinct HIGH findings reopened the integrated slice;
 canonical review detail is in `.agents/review/slice2-integrated-claude.md`.
+
+---
+
+**SLICE 2 INTEGRATED REVIEW FINDING — TLS HANDSHAKE MISCLASSIFICATION OPEN.**
+A transient TLS peer abort is durably classified as certificate configuration
+failure, stopping same-identity export retries and eventually audited admission
+at spool high water. Canonical detail is in
+`.agents/review/findings/s2-tls-handshake-misclassification.md`.
