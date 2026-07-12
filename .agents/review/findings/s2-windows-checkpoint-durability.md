@@ -5,7 +5,7 @@ to authorize retention, causing duplicate export or permanent chain-adoption
 failure after acknowledged data was deleted.
 **Status**: In progress
 **Branch**: `fix/s2-windows-checkpoint-durability`
-**Commit**: `e56d9f2d1b5efc7366be5809d4355b6c3ba6c47f`
+**Commit**: `e4e5a697d3f65731bdf5356c814525e50214e181`
 
 ## Evidence
 
@@ -41,11 +41,18 @@ required by `FlushFileBuffers`. After `SetFileInformationByHandle` publishes
 that exact file, flush through the same retained handle before returning to the
 existing destination-replaced commit callback. A post-flush test seam proves
 the ordering without reopening the published path or adding a TOCTOU gap.
+Checkpoint snapshots keep their strict `FileShare.Read | FileShare.Delete`
+boundary and retry only Windows `ERROR_SHARING_VIOLATION` for a bounded
+one-second window with capped backoff. Every attempt repeats the protected
+root/file checks; all other storage, protection, and parse failures remain
+immediate and fail closed.
 
 ## Files changed
 
 - `server/PtkMcpServer/Audit/SecureAuditStorage.cs`
 - `server/PtkMcpServer.Tests/SecureAuditStorageTests.cs`
+- `server/PtkMcpServer/Audit/AuditExportCheckpointStore.cs`
+- `server/PtkMcpServer.Tests/AuditExportCheckpointStoreTests.cs`
 
 ## Guard proof
 
@@ -57,9 +64,16 @@ the ordering without reopening the published path or adding a TOCTOU gap.
 - The Windows ordering/held-reader guard and concurrent no-gap reader guard
   passed together 2/2. They exercise the real `FlushFileBuffers` P/Invoke and
   `GENERIC_WRITE` access combination.
-- The full macOS .NET suite passed 926/926; the Windows-only guard compiles but
-  returns early there, so the exact Windows proof is authoritative for the new
-  behavior.
+- Final integrated validation exposed the retained write-handle sharing race.
+  The deterministic correction guard holds that exact post-flush handle open,
+  observes the strict reader's retry, releases it, and requires the complete
+  intended checkpoint. Disabling only the error-32 classifier made the guard
+  fail immediately with the reader task faulted instead of a retry.
+- At `e4e5a697d3f65731bdf5356c814525e50214e181`, the Windows focused durability,
+  held-reader, concurrent no-gap, and snapshot-retry suite passed 4/4, and the
+  full Windows .NET suite passed 927/927. The full macOS suite also passed
+  927/927; one unrelated anchored-runtime timing failure passed in isolation
+  and on the complete rerun.
 
 ## Coder dispute (if any)
 
@@ -72,7 +86,9 @@ correction removes the missing durability barrier or rollback risk.
 
 The test cannot simulate power loss directly. It proves the documented
 durability primitive and its pre-commit ordering while retaining the separate
-open-reader and concurrent no-gap replacement guards.
+open-reader and concurrent no-gap replacement guards. A foreign same-identity
+writer can delay a checkpoint read for at most the one-second retry window;
+expiry rethrows the exact sharing violation and remains fail closed.
 
 ## Reviewer comments
 
