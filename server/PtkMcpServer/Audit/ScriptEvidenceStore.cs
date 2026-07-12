@@ -80,6 +80,7 @@ public sealed class ScriptEvidenceStore
     private readonly AuditOptions? _checkpointOptions;
     private readonly object _gate = new();
     private readonly Action<SecureAuditStorageFaultStage>? _faultInjector;
+    private readonly Action<AuditEvidenceRetentionFaultPoint>? _retentionFaultInjector;
 
     private enum ArtifactState
     {
@@ -88,6 +89,7 @@ public sealed class ScriptEvidenceStore
         Anchored,
         LocalCommitted,
         Unreferenced,
+        Temporary,
     }
 
     public ScriptEvidenceStore(
@@ -100,13 +102,15 @@ public sealed class ScriptEvidenceStore
             AuditOptions.DefaultEvidenceRetentionAge,
             AuditProtectionMode.LocalOnly,
             faultInjector,
+            retentionFaultInjector: null,
             checkpointOptions: null)
     {
     }
 
     internal ScriptEvidenceStore(
         AuditOptions options,
-        Action<SecureAuditStorageFaultStage>? faultInjector = null)
+        Action<SecureAuditStorageFaultStage>? faultInjector = null,
+        Action<AuditEvidenceRetentionFaultPoint>? retentionFaultInjector = null)
         : this(
             options.EvidenceDirectory,
             options.MaxEvidenceBytes,
@@ -114,6 +118,7 @@ public sealed class ScriptEvidenceStore
             options.EvidenceRetentionAge,
             options.ProtectionMode,
             faultInjector,
+            retentionFaultInjector,
             options)
     {
     }
@@ -125,9 +130,11 @@ public sealed class ScriptEvidenceStore
         TimeSpan retentionAge,
         AuditProtectionMode protectionMode,
         Action<SecureAuditStorageFaultStage>? faultInjector,
+        Action<AuditEvidenceRetentionFaultPoint>? retentionFaultInjector,
         AuditOptions? checkpointOptions)
     {
         _faultInjector = faultInjector;
+        _retentionFaultInjector = retentionFaultInjector;
         _maximumBytes = maximumBytes;
         _aggregateBytes = aggregateBytes;
         _retentionAge = retentionAge;
@@ -140,7 +147,7 @@ public sealed class ScriptEvidenceStore
             EnsureQuotaLockFile();
             lock (_gate)
             using (AcquireQuotaLock())
-                _ = SweepAndMeasure(requiredPayloadBytes: null);
+                _ = MeasureWithoutRetention(requiredPayloadBytes: null);
         }
         catch (ArgumentException)
         {
@@ -159,7 +166,25 @@ public sealed class ScriptEvidenceStore
         return publication.Reference;
     }
 
-    internal IScriptEvidencePublication Publish(string script)
+    internal ScriptEvidenceReference Store(string script, AuditJournal retentionJournal)
+    {
+        using var publication = Publish(script, retentionJournal);
+        publication.CompleteAfterAuditAppend();
+        return publication.Reference;
+    }
+
+    internal IScriptEvidencePublication Publish(string script) =>
+        PublishCore(script, retentionJournal: null);
+
+    internal IScriptEvidencePublication Publish(string script, AuditJournal retentionJournal)
+    {
+        ArgumentNullException.ThrowIfNull(retentionJournal);
+        return PublishCore(script, retentionJournal);
+    }
+
+    private IScriptEvidencePublication PublishCore(
+        string script,
+        AuditJournal? retentionJournal)
     {
         ArgumentNullException.ThrowIfNull(script);
 
@@ -190,7 +215,9 @@ public sealed class ScriptEvidenceStore
             lock (_gate)
             {
                 quota = AcquireQuotaLock();
-                _ = SweepAndMeasure(bytes.Length);
+                _ = retentionJournal is null
+                    ? MeasureWithoutRetention(bytes.Length)
+                    : RetainAndMeasure(bytes.Length, retentionJournal);
                 var evidenceId = Guid.NewGuid().ToString("D");
                 var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
                 var reference = new ScriptEvidenceReference(evidenceId, digest, bytes.Length);
@@ -216,6 +243,10 @@ public sealed class ScriptEvidenceStore
                 return publication;
             }
         }
+        catch (AuditUnavailableException)
+        {
+            throw;
+        }
         catch (Exception exception) when (!IsFatal(exception))
         {
             if (temporaryPath is not null)
@@ -237,8 +268,27 @@ public sealed class ScriptEvidenceStore
         lock (_gate)
         {
             using var quota = AcquireQuotaLock();
-            _ = SweepAndMeasure(requiredPayloadBytes: null);
+            _ = MeasureWithoutRetention(requiredPayloadBytes: null);
             SecureAuditStorage.ProbeWritableDirectory(_root);
+        }
+    }
+
+    internal void RetainEligible(AuditJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        try
+        {
+            lock (_gate)
+            using (AcquireQuotaLock())
+                _ = RetainAndMeasure(requiredPayloadBytes: null, journal);
+        }
+        catch (AuditUnavailableException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            throw new ScriptEvidenceStorageException();
         }
     }
 
@@ -322,7 +372,9 @@ public sealed class ScriptEvidenceStore
     internal bool ReconcileAwaiting(AuditJournal journal)
     {
         ArgumentNullException.ThrowIfNull(journal);
-        return ReconcileAwaitingCore(journal.ScanRetainedEvidenceReferences);
+        return ReconcileAwaitingCore(
+            journal.ScanRetainedEvidenceReferences,
+            journal);
     }
 
     internal bool ReconcileAwaitingBeforeWriter(AuditOptions options)
@@ -331,11 +383,13 @@ public sealed class ScriptEvidenceStore
         return ReconcileAwaitingCore(
             candidates => AuditEvidenceSpoolScanner.CaptureBeforeWriter(
                 options,
-                candidates));
+                candidates),
+            retentionJournal: null);
     }
 
     private bool ReconcileAwaitingCore(
-        Func<IReadOnlySet<AuditEvidenceIdentity>, AuditEvidenceReferenceScan> scanReferences)
+        Func<IReadOnlySet<AuditEvidenceIdentity>, AuditEvidenceReferenceScan> scanReferences,
+        AuditJournal? retentionJournal)
     {
         ArgumentNullException.ThrowIfNull(scanReferences);
         try
@@ -343,9 +397,12 @@ public sealed class ScriptEvidenceStore
             lock (_gate)
             using (AcquireQuotaLock())
             {
-                // Periodic reconciliation also drives ordinary retention for
-                // artifacts proved eligible by an earlier pass.
-                _ = SweepAndMeasure(requiredPayloadBytes: null);
+                // Only a journal-bound periodic pass may delete. Pre-writer
+                // reconciliation establishes eligibility but leaves every
+                // byte intact until a writer can audit retention.
+                _ = retentionJournal is null
+                    ? MeasureWithoutRetention(requiredPayloadBytes: null)
+                    : RetainAndMeasure(requiredPayloadBytes: null, retentionJournal);
                 var changed = false;
                 using (var inventory = InventoryArtifacts())
                 {
@@ -402,9 +459,17 @@ public sealed class ScriptEvidenceStore
                 }
 
                 if (changed)
-                    _ = SweepAndMeasure(requiredPayloadBytes: null);
+                {
+                    _ = retentionJournal is null
+                        ? MeasureWithoutRetention(requiredPayloadBytes: null)
+                        : RetainAndMeasure(requiredPayloadBytes: null, retentionJournal);
+                }
                 return true;
             }
+        }
+        catch (AuditUnavailableException)
+        {
+            throw;
         }
         catch (Exception exception) when (!IsFatal(exception))
         {
@@ -492,7 +557,20 @@ public sealed class ScriptEvidenceStore
 
     internal IDisposable AcquireQuotaLockForTests() => AcquireQuotaLock();
 
-    private long SweepAndMeasure(int? requiredPayloadBytes)
+    private long MeasureWithoutRetention(int? requiredPayloadBytes) =>
+        ProcessRetention(requiredPayloadBytes, retentionJournal: null);
+
+    private long RetainAndMeasure(
+        int? requiredPayloadBytes,
+        AuditJournal retentionJournal)
+    {
+        ArgumentNullException.ThrowIfNull(retentionJournal);
+        return ProcessRetention(requiredPayloadBytes, retentionJournal);
+    }
+
+    private long ProcessRetention(
+        int? requiredPayloadBytes,
+        AuditJournal? retentionJournal)
     {
         if (requiredPayloadBytes is < 0 || requiredPayloadBytes > _maximumBytes)
             throw new IOException("Evidence reservation exceeds its configured bound.");
@@ -511,35 +589,81 @@ public sealed class ScriptEvidenceStore
                 inventory = InventoryArtifacts();
             }
             var retained = inventory.Artifacts.ToList();
-            var expirationCutoff = DateTime.UtcNow - _retentionAge;
-            foreach (var artifact in retained
-                         .Where(IsRetentionEligible)
-                         .Where(artifact => artifact.LastWriteTimeUtc <= expirationCutoff)
-                         .OrderBy(artifact => artifact.LastWriteTimeUtc)
-                         .ThenBy(artifact => artifact.FileName, StringComparer.Ordinal)
-                         .ToArray())
+            var retentionAuditBlocked = false;
+            if (retentionJournal is not null)
             {
-                DeleteArtifact(artifact);
-                retained.Remove(artifact);
-            }
-
-            var maximumRetained = (_aggregateBytes - requiredCharge) / _maximumBytes;
-            if (retained.Count > maximumRetained)
-            {
-                foreach (var artifact in retained
-                             .Where(IsRetentionEligible)
+                foreach (var temporary in retained
+                             .Where(artifact => artifact.State == ArtifactState.Temporary)
                              .OrderBy(artifact => artifact.LastWriteTimeUtc)
                              .ThenBy(artifact => artifact.FileName, StringComparer.Ordinal)
                              .ToArray())
                 {
-                    DeleteArtifact(artifact);
+                    if (!DeleteArtifactAudited(
+                            temporary,
+                            AuditEvidenceRetentionReason.CrashTemporary,
+                            retentionJournal))
+                    {
+                        retentionAuditBlocked = true;
+                        break;
+                    }
+                    retained.Remove(temporary);
+                }
+
+                if (!retentionAuditBlocked)
+                {
+                    var expirationCutoff = DateTime.UtcNow - _retentionAge;
+                    foreach (var artifact in retained
+                                 .Where(IsOrdinaryRetentionEligible)
+                                 .Where(artifact => artifact.LastWriteTimeUtc <= expirationCutoff)
+                                 .OrderBy(artifact => artifact.LastWriteTimeUtc)
+                                 .ThenBy(artifact => artifact.FileName, StringComparer.Ordinal)
+                                 .ToArray())
+                    {
+                        if (!DeleteArtifactAudited(
+                                artifact,
+                                AuditEvidenceRetentionReason.AgeExpired,
+                                retentionJournal))
+                        {
+                            retentionAuditBlocked = true;
+                            break;
+                        }
+                        retained.Remove(artifact);
+                    }
+                }
+            }
+
+            var maximumRetained = (_aggregateBytes - requiredCharge) / _maximumBytes;
+            if (retentionJournal is not null &&
+                !retentionAuditBlocked &&
+                retained.Count > maximumRetained)
+            {
+                foreach (var artifact in retained
+                             .Where(IsOrdinaryRetentionEligible)
+                             .OrderBy(artifact => artifact.LastWriteTimeUtc)
+                             .ThenBy(artifact => artifact.FileName, StringComparer.Ordinal)
+                             .ToArray())
+                {
+                    if (!DeleteArtifactAudited(
+                            artifact,
+                            AuditEvidenceRetentionReason.CapacityPressure,
+                            retentionJournal))
+                    {
+                        retentionAuditBlocked = true;
+                        break;
+                    }
                     retained.Remove(artifact);
                     if (retained.Count <= maximumRetained) break;
                 }
             }
 
             if (retained.Count > maximumRetained)
+            {
+                if (!requiredPayloadBytes.HasValue)
+                    return checked((long)retained.Count * _maximumBytes);
+                if (retentionAuditBlocked)
+                    throw new AuditUnavailableException();
                 throw new IOException("Evidence capacity is exhausted.");
+            }
             return checked((long)retained.Count * _maximumBytes);
         }
         finally
@@ -571,18 +695,26 @@ public sealed class ScriptEvidenceStore
                 var file = new FileInfo(path);
                 if (string.Equals(file.Name, QuotaLockFileName, StringComparison.Ordinal))
                     continue;
-                if (IsTemporaryName(file.Name))
+                string evidenceId;
+                string expectedDigest;
+                ArtifactState state;
+                AuditEvidenceAcknowledgmentPosition? anchorPosition;
+                if (TryParseTemporaryName(file.Name, out evidenceId))
                 {
-                    DeleteTemporary(file.FullName);
-                    continue;
+                    expectedDigest = string.Empty;
+                    state = ArtifactState.Temporary;
+                    anchorPosition = null;
                 }
-                if (!TryParseEvidenceName(
-                        file.Name,
-                        out var evidenceId,
-                        out var expectedDigest,
-                        out var state,
-                        out var anchorPosition) ||
-                    file.Length > _maximumBytes)
+                else if (!TryParseEvidenceName(
+                             file.Name,
+                             out evidenceId,
+                             out expectedDigest,
+                             out state,
+                             out anchorPosition))
+                {
+                    throw new IOException("The evidence root contains an invalid artifact.");
+                }
+                if (file.Length > _maximumBytes)
                 {
                     throw new IOException("The evidence root contains an invalid artifact.");
                 }
@@ -604,7 +736,11 @@ public sealed class ScriptEvidenceStore
                     if (stream.Length > _maximumBytes)
                         throw new IOException("An evidence artifact exceeds its configured bound.");
                     var actualDigest = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
-                    if (!string.Equals(actualDigest, expectedDigest, StringComparison.Ordinal))
+                    if (state == ArtifactState.Temporary)
+                    {
+                        expectedDigest = actualDigest;
+                    }
+                    else if (!string.Equals(actualDigest, expectedDigest, StringComparison.Ordinal))
                     {
                         throw new IOException(
                             "The evidence artifact digest does not match its protected name.");
@@ -749,9 +885,56 @@ public sealed class ScriptEvidenceStore
         return promoted;
     }
 
-    private static bool IsRetentionEligible(EvidenceArtifact artifact) =>
+    private static bool IsOrdinaryRetentionEligible(EvidenceArtifact artifact) =>
         artifact.State is ArtifactState.Anchored or ArtifactState.LocalCommitted or
             ArtifactState.Unreferenced;
+
+    private bool DeleteArtifactAudited(
+        EvidenceArtifact artifact,
+        AuditEvidenceRetentionReason reason,
+        AuditJournal journal)
+    {
+        var subject = new AuditEvidenceRetentionSubject(
+            Guid.ParseExact(artifact.EvidenceId, "D"),
+            artifact.Digest,
+            artifact.ByteLength,
+            ArtifactStateText(artifact.State),
+            reason);
+        return AuditEvidenceRetentionAudit.TryDelete(
+            journal,
+            subject,
+            () =>
+            {
+                _retentionFaultInjector?.Invoke(AuditEvidenceRetentionFaultPoint.BeforeDelete);
+                DeleteArtifact(artifact);
+                _retentionFaultInjector?.Invoke(AuditEvidenceRetentionFaultPoint.AfterDelete);
+            },
+            () => ExactArtifactStillNamed(artifact));
+    }
+
+    private static string ArtifactStateText(ArtifactState state) => state switch
+    {
+        ArtifactState.Anchored => "anchored",
+        ArtifactState.LocalCommitted => "local_committed",
+        ArtifactState.Unreferenced => "unreferenced",
+        ArtifactState.Temporary => "temporary",
+        _ => throw new IOException("The evidence artifact is not retention-eligible."),
+    };
+
+    private static bool ExactArtifactStillNamed(EvidenceArtifact artifact)
+    {
+        try
+        {
+            var handle = artifact.RequireHandle();
+            return SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+                       artifact.Path,
+                       handle.SafeFileHandle) == artifact.Identity;
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            return false;
+        }
+    }
 
     private void DeleteArtifact(EvidenceArtifact artifact)
     {
@@ -786,24 +969,6 @@ public sealed class ScriptEvidenceStore
         if (after != artifact.Identity)
             throw new IOException("An evidence artifact changed identity during rename.");
         artifact.ReleaseHandle();
-    }
-
-    private void DeleteTemporary(string path)
-    {
-        using var stream = new FileStream(
-            path,
-            FileMode.Open,
-            FileAccess.Read,
-            FileShare.Read | FileShare.Delete,
-            bufferSize: 1,
-            FileOptions.RandomAccess);
-        _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
-            path,
-            stream.SafeFileHandle);
-        SecureAuditStorage.DeleteRetainedProtectedFile(
-            _root,
-            path,
-            stream.SafeFileHandle);
     }
 
     private void MarkUnreferencedWhileQuotaHeld(ScriptEvidenceReference reference)
@@ -992,6 +1157,7 @@ public sealed class ScriptEvidenceStore
         internal string FileName { get; } = file.Name;
         internal string Path { get; } = file.FullName;
         internal DateTime LastWriteTimeUtc { get; } = file.LastWriteTimeUtc;
+        internal long ByteLength { get; } = file.Length;
         internal string EvidenceId { get; } = evidenceId;
         internal string Digest { get; } = digest;
         internal ArtifactState State { get; } = state;
@@ -1130,14 +1296,20 @@ public sealed class ScriptEvidenceStore
         }
     }
 
-    private static bool IsTemporaryName(string name)
+    private static bool TryParseTemporaryName(string name, out string evidenceId)
     {
+        evidenceId = string.Empty;
         const string probePrefix = ".ptk-audit-probe-";
         if (name.StartsWith(probePrefix, StringComparison.Ordinal) &&
             name.EndsWith(".tmp", StringComparison.Ordinal))
         {
             var probeId = name[probePrefix.Length..^4];
-            if (Guid.TryParseExact(probeId, "N", out _)) return true;
+            if (Guid.TryParseExact(probeId, "N", out var parsedProbe) &&
+                AuditSpoolSegmentIdentity.IsUuidV4(parsedProbe))
+            {
+                evidenceId = parsedProbe.ToString("D");
+                return true;
+            }
         }
         if (!name.StartsWith(".", StringComparison.Ordinal) ||
             !name.EndsWith(".tmp", StringComparison.Ordinal))
@@ -1145,7 +1317,14 @@ public sealed class ScriptEvidenceStore
             return false;
         }
         var id = name[1..^4];
-        return Guid.TryParseExact(id, "D", out var value) && value.ToString("D") == id;
+        if (!Guid.TryParseExact(id, "D", out var value) ||
+            value.ToString("D") != id ||
+            !AuditSpoolSegmentIdentity.IsUuidV4(value))
+        {
+            return false;
+        }
+        evidenceId = id;
+        return true;
     }
 
     private IDisposable AcquireQuotaLock()

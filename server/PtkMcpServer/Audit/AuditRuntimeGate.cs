@@ -416,6 +416,15 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
 
             candidateLifecycle = new AuditServerLifecycle(candidateJournal, _options);
             candidateLifecycle.EnsureStarted();
+            try
+            {
+                _evidence.RetainEligible(candidateJournal);
+            }
+            catch (ScriptEvidenceStorageException)
+            {
+                candidateJournal.EnterExternalUnavailable("evidence.storage");
+                throw;
+            }
             candidateResources.StartExporter();
 
             lock (_gate)

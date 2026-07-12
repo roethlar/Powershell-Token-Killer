@@ -36,13 +36,23 @@ internal sealed class AuditAdminJournalSession : IDisposable
         var evidence = new ScriptEvidenceStoreProvider(options);
         if (options.ProtectionMode == AuditProtectionMode.LocalOnly)
         {
-            return new AuditAdminJournalSession(
-                AuditJournalFactory.OpenReconciledLocal(
-                    options,
-                    health,
-                    producerVersion,
-                    evidence),
-                checkpointStore: null);
+            var localJournal = AuditJournalFactory.OpenReconciledLocal(
+                options,
+                health,
+                producerVersion,
+                evidence);
+            try
+            {
+                RetainEvidence(localJournal, evidence);
+                return new AuditAdminJournalSession(
+                    localJournal,
+                    checkpointStore: null);
+            }
+            catch
+            {
+                localJournal.Dispose();
+                throw;
+            }
         }
 
         AuditEvidenceOrphanReconciler.RequireCompleteBeforeWriter(
@@ -63,6 +73,7 @@ internal sealed class AuditAdminJournalSession : IDisposable
                 health,
                 producerVersion,
                 sink);
+            RetainEvidence(journal, evidence);
             var result = new AuditAdminJournalSession(journal, checkpointStore);
             journal = null;
             checkpointStore = null;
@@ -73,6 +84,21 @@ internal sealed class AuditAdminJournalSession : IDisposable
             preparation?.Dispose();
             journal?.Dispose();
             checkpointStore?.Dispose();
+        }
+    }
+
+    private static void RetainEvidence(
+        AuditJournal journal,
+        ScriptEvidenceStoreProvider evidence)
+    {
+        try
+        {
+            evidence.RetainEligible(journal);
+        }
+        catch (ScriptEvidenceStorageException)
+        {
+            journal.EnterExternalUnavailable("evidence.storage");
+            throw;
         }
     }
 

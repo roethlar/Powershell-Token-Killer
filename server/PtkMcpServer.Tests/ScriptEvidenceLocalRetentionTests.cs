@@ -13,6 +13,7 @@ public sealed class ScriptEvidenceLocalRetentionTests : IDisposable
     {
         var options = Options();
         var store = new ScriptEvidenceStore(options);
+        using var journal = CreateJournal(options);
 
         var first = store.Store("Get-SecretValue");
         var firstPath = Assert.Single(ArtifactPaths(options));
@@ -23,7 +24,7 @@ public sealed class ScriptEvidenceLocalRetentionTests : IDisposable
         Assert.DoesNotContain(".anchored.script", firstPath, StringComparison.Ordinal);
 
         File.SetLastWriteTimeUtc(firstPath, DateTime.UtcNow - TimeSpan.FromMinutes(2));
-        var second = store.Store("Get-OtherValue");
+        var second = store.Store("Get-OtherValue", journal);
 
         var retained = Assert.Single(ArtifactPaths(options));
         Assert.DoesNotContain(first.EvidenceId, retained, StringComparison.Ordinal);
@@ -67,6 +68,20 @@ public sealed class ScriptEvidenceLocalRetentionTests : IDisposable
         Directory.EnumerateFiles(options.EvidenceDirectory, "*.script")
             .Order(StringComparer.Ordinal)
             .ToArray();
+
+    private static AuditJournal CreateJournal(AuditOptions options) =>
+        new(
+            options,
+            new AuditHealth(options),
+            new InMemoryAuditJournalSink(
+                options.SegmentBytes,
+                options.AggregateBytes,
+                options.ProtectionMode,
+                options.RetentionAge),
+            "script-evidence-local-retention-test",
+            binaryDigest: null,
+            Guid.NewGuid(),
+            Guid.NewGuid());
 
     public void Dispose()
     {

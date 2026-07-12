@@ -208,12 +208,13 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             AuditProtectionMode.LocalOnly,
             aggregateBytes: 512);
         var store = new ScriptEvidenceStore(options);
+        using var journal = CreateJournal(options);
         var first = store.Store(new string('a', 256));
         File.SetLastWriteTimeUtc(
             EvidencePath(options.EvidenceDirectory, first),
             DateTime.UtcNow.AddSeconds(-5));
         var second = store.Store(new string('b', 256));
-        var third = store.Store(new string('c', 256));
+        var third = store.Store(new string('c', 256), journal);
 
         Assert.False(File.Exists(EvidencePath(options.EvidenceDirectory, first)));
         Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, second)));
@@ -279,11 +280,12 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             AuditProtectionMode.LocalOnly,
             aggregateBytes: 1024);
         var store = new ScriptEvidenceStore(options);
+        using var journal = CreateJournal(options);
         var expired = store.Store("old");
         var expiredPath = EvidencePath(options.EvidenceDirectory, expired);
         File.SetLastWriteTimeUtc(expiredPath, DateTime.UtcNow.AddMinutes(-2));
 
-        var current = store.Store("new");
+        var current = store.Store("new", journal);
 
         Assert.False(File.Exists(expiredPath));
         Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, current)));
@@ -339,6 +341,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             AuditProtectionMode.LocalOnly,
             aggregateBytes: 256);
         var abandonedStore = new ScriptEvidenceStore(abandonedOptions);
+        using var abandonedJournal = CreateJournal(abandonedOptions);
         using var abandoned = abandonedStore.Publish("unreferenced");
         var abandonedReference = abandoned.Reference;
         abandoned.AbandonBeforeAuditAppend();
@@ -347,7 +350,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             "*.unreferenced.script"));
         File.SetLastWriteTimeUtc(unreferencedPath, DateTime.UtcNow.AddMinutes(-2));
 
-        var replacement = abandonedStore.Store("replacement");
+        var replacement = abandonedStore.Store("replacement", abandonedJournal);
 
         Assert.False(File.Exists(unreferencedPath));
         Assert.True(File.Exists(EvidencePath(
@@ -369,6 +372,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             aggregateBytes: 256);
         using var checkpoint = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var store = new ScriptEvidenceStore(options);
+        using var journal = CreateJournal(options);
         var reference = store.Store("anchored");
         var position = Acknowledgment(reference, sequence: 1);
         using var anchor = store.MarkAnchored(position);
@@ -376,7 +380,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             options.EvidenceDirectory,
             "*.anchoring.*.script"));
         File.SetLastWriteTimeUtc(anchoringPath, DateTime.UtcNow.AddMinutes(-2));
-        var contender = Task.Run(() => store.Store("replacement"));
+        var contender = Task.Run(() => store.Store("replacement", journal));
 
         await Task.Delay(150);
         Assert.False(contender.IsCompleted, "anchoring released quota before checkpoint");
@@ -433,6 +437,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             aggregateBytes: 256);
         using var checkpoint = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var store = new ScriptEvidenceStore(options);
+        using var journal = CreateJournal(options);
         var reference = store.Store("young anchor");
         var position = Acknowledgment(reference, sequence: 1);
         using (var anchor = store.MarkAnchored(position))
@@ -441,7 +446,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             anchor.CompleteAfterCheckpoint();
         }
 
-        var replacement = store.Store("quota replacement");
+        var replacement = store.Store("quota replacement", journal);
 
         Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, replacement)));
         Assert.DoesNotContain(
@@ -493,7 +498,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
         AuditProtectionMode protectionMode,
         long aggregateBytes)
     {
-        const int recordBytes = 512;
+        const int recordBytes = 4096;
         return AuditOptions.Create(
             root,
             protectionMode,
@@ -520,6 +525,23 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             root,
             reference.EvidenceId + "." + reference.ScriptDigest + ".local-committed.script");
         return File.Exists(localCommitted) ? localCommitted : awaiting;
+    }
+
+    private static AuditJournal CreateJournal(AuditOptions options)
+    {
+        var sink = new InMemoryAuditJournalSink(
+            options.SegmentBytes,
+            options.AggregateBytes,
+            options.ProtectionMode,
+            options.RetentionAge);
+        return new AuditJournal(
+            options,
+            new AuditHealth(options),
+            sink,
+            "script-evidence-retention-test",
+            binaryDigest: null,
+            Guid.NewGuid(),
+            Guid.NewGuid());
     }
 
     private static AuditEvidenceAcknowledgmentPosition Acknowledgment(

@@ -835,6 +835,37 @@ full, unflushable, or permission-invalid spool fails PTK calls closed. The
 error must state that the original operation was not started; no routing/style
 retry text is emitted.
 
+### Evidence-retention audit
+
+Automatic evidence deletion is journal-bound. Constructors, storage probes,
+and pre-writer reconciliation may measure and promote state but never delete;
+a direct store/publication path with no live journal fails capacity admission
+instead of sweeping. After a writer exists, publication, periodic
+reconciliation, runtime startup, and admin startup may retain eligible
+artifacts. Local-committed, checkpoint-proved anchored, and proved
+unreferenced artifacts are ordinary retention candidates; a crash-left
+canonical temporary artifact is a separate `crash_temporary` candidate.
+
+Each exact artifact deletion reserves two core-event slots before any unlink.
+It appends and flushes `evidence.retention_intent` with the subject UUID,
+SHA-256 digest, exact byte count, retained state, and reason before deleting
+through the still-verified protected handle. It then appends either
+`evidence.retention_completed` or `evidence.retention_failed`; a failure is
+`failed` only when the exact protected name is proved still present and is
+otherwise `outcome_unknown`. A hard death may leave an intent-only attempt,
+never an automatic deletion with no durable intent. Failure to acquire the
+two-slot reservation deletes nothing; a capacity-triggering request then
+fails admission rather than taking an unaudited shortcut. A multi-artifact
+sweep records each completed prefix independently and stops on the first
+failed or unreservable artifact.
+
+Retention subject fields are not script-reference fields: export
+acknowledgment must not try to anchor an artifact intentionally removed by
+retention. Request-triggered capacity retention carries the triggering call's
+already allocated call ID and bounded actor/session facts. Startup, periodic,
+and admin sweeps remain explicitly system-triggered with unknown actor
+attribution.
+
 ### Event lifecycle
 
 Foreground:

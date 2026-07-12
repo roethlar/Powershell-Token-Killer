@@ -55,12 +55,29 @@ internal sealed class ScriptEvidenceStoreProvider
     }
 
     internal IScriptEvidencePublication Publish(string script)
+        => PublishCore(script, retentionJournal: null);
+
+    internal IScriptEvidencePublication Publish(string script, AuditJournal retentionJournal)
+    {
+        ArgumentNullException.ThrowIfNull(retentionJournal);
+        return PublishCore(script, retentionJournal);
+    }
+
+    private IScriptEvidencePublication PublishCore(
+        string script,
+        AuditJournal? retentionJournal)
     {
         lock (_gate)
         {
             try
             {
-                return GetOrCreateLocked().Publish(script);
+                return retentionJournal is null
+                    ? GetOrCreateLocked().Publish(script)
+                    : GetOrCreateLocked().Publish(script, retentionJournal);
+            }
+            catch (AuditUnavailableException)
+            {
+                throw;
             }
             catch (ScriptEvidenceStorageException)
             {
@@ -133,6 +150,10 @@ internal sealed class ScriptEvidenceStoreProvider
                     return true;
                 return GetOrCreateLocked().ReconcileAwaiting(journal);
             }
+            catch (AuditUnavailableException)
+            {
+                throw;
+            }
             catch (ScriptEvidenceStorageException)
             {
                 _store = null;
@@ -155,6 +176,34 @@ internal sealed class ScriptEvidenceStoreProvider
                 if (_store is null && !EntryExists(_options.EvidenceDirectory))
                     return true;
                 return GetOrCreateLocked().ReconcileAwaitingBeforeWriter(_options);
+            }
+            catch (ScriptEvidenceStorageException)
+            {
+                _store = null;
+                throw;
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                _store = null;
+                throw new ScriptEvidenceStorageException();
+            }
+        }
+    }
+
+    internal void RetainEligible(AuditJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        lock (_gate)
+        {
+            try
+            {
+                if (_store is null && !EntryExists(_options.EvidenceDirectory))
+                    return;
+                GetOrCreateLocked().RetainEligible(journal);
+            }
+            catch (AuditUnavailableException)
+            {
+                throw;
             }
             catch (ScriptEvidenceStorageException)
             {

@@ -104,7 +104,7 @@ internal sealed class AuditCallContext
 
                 try
                 {
-                    evidencePublication = _evidence.Publish(exactSubmittedScript);
+                    evidencePublication = _evidence.Publish(exactSubmittedScript, _journal);
                 }
                 catch (ArgumentOutOfRangeException)
                 {
