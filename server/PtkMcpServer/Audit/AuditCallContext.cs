@@ -7,7 +7,7 @@ namespace PtkMcpServer.Audit;
 /// tool is resolved; tools may obtain effect authorization only through the
 /// durable event methods below. No submitted script text enters core events.
 /// </summary>
-internal sealed class AuditCallContext
+internal sealed class AuditCallContext : IInvocationAuthorizer
 {
     private static readonly UTF8Encoding Utf8 = new(false);
 
@@ -23,6 +23,8 @@ internal sealed class AuditCallContext
     private Guid _callId;
     private Guid? _parentEventId;
     private Guid? _planId;
+    private ExecutionPlan? _authorizedPlan;
+    private ExecutionDispatch? _authorizedDispatch;
     private bool _accepted;
     private bool _validationStarted;
     private bool _validationCompleted;
@@ -245,11 +247,14 @@ internal sealed class AuditCallContext
         }
     }
 
-    internal ValueTask<bool> AuthorizeInvocationAsync(
+    public ValueTask<bool> AuthorizePlanAsync(
         ExecutionPlan plan,
         CancellationToken _)
     {
+        ArgumentNullException.ThrowIfNull(plan);
         EnsureActive();
+        if (_authorizedPlan is not null || _effectAuthorized)
+            throw new InvalidOperationException("An execution plan was already authorized.");
         if (_planId is null && !BeginValidation())
         {
             _authorizationPersistenceFailed = true;
@@ -275,7 +280,60 @@ internal sealed class AuditCallContext
             Append("execution.validation_completed", outcomeState: "completed");
             _validationCompleted = true;
             Append("execution.planned", outcomeState: "planned");
-            Append("execution.dispatched", outcomeState: "dispatched");
+            _authorizedPlan = plan;
+            return ValueTask.FromResult(true);
+        }
+        catch (AuditUnavailableException)
+        {
+            _authorizationPersistenceFailed = true;
+            return ValueTask.FromResult(false);
+        }
+    }
+
+    public ValueTask<bool> AuthorizeDispatchAsync(
+        ExecutionDispatch dispatch,
+        CancellationToken _)
+    {
+        ArgumentNullException.ThrowIfNull(dispatch);
+        EnsureActive();
+        if (_authorizedPlan is null || !ReferenceEquals(_authorizedPlan, dispatch.Plan))
+            throw new InvalidOperationException("The dispatch does not belong to the authorized plan.");
+        if (_authorizedDispatch is not null &&
+            (_authorizedDispatch.ExecutionPath != ExecutionPath.Rtk ||
+             !dispatch.IsFallback))
+        {
+            throw new InvalidOperationException(
+                "Only an authorized RTK dispatch may be superseded by its exact fallback.");
+        }
+
+        // A second ordered dispatch does not mean a second execution. It may
+        // only supersede an RTK pre-effect authorization with the exact
+        // fallback already bounded by the same plan; terminal routing below
+        // then inherits this actual dispatch.
+
+        _routing = _routing with
+        {
+            Domain = dispatch.Domain?.ToMachineCode(),
+            RequestedRoute = dispatch.RequestedRoute.ToMachineCode(),
+            EffectiveRoute = dispatch.EffectiveRoute,
+            PermittedFallbacks = dispatch.PermittedFallbacks
+                .Select(path => path.ToMachineCode())
+                .ToArray(),
+            RtkVersion = dispatch.RtkExecutableIdentity?.Verified?.Version,
+            RtkBinaryDigest = dispatch.RtkExecutableIdentity?.Verified?.BinaryDigest,
+            Provenance = dispatch.OutputProvenance.ToMachineCode(),
+            FallbackReason = dispatch.FallbackReason?.ToMachineCode(),
+        };
+
+        try
+        {
+            Append(
+                "execution.dispatched",
+                outcomeState: "dispatched",
+                detailCode: dispatch.IsFallback
+                    ? dispatch.FallbackReason?.ToMachineCode()
+                    : null);
+            _authorizedDispatch = dispatch;
             _effectAuthorized = true;
             return ValueTask.FromResult(true);
         }
@@ -510,9 +568,13 @@ internal sealed class AuditCallContext
         if (!_effectAuthorized && !result.UserExecutionStarted && _planId is not null)
         {
             TryAppend(
-                "execution.validation_completed",
+                _validationCompleted
+                    ? "execution.not_started"
+                    : "execution.validation_completed",
                 "not_started",
-                result.Disposition == InvokeDisposition.Canceled ? "canceled" : "preflight_refused",
+                result.Disposition == InvokeDisposition.Canceled
+                    ? "canceled"
+                    : _validationCompleted ? "dispatch_not_authorized" : "preflight_refused",
                 terminationCertainty: "not_applicable",
                 rootCoverage: "none");
         }

@@ -153,17 +153,40 @@ public sealed class RunspaceHostTests : IDisposable
         var authorizationCalls = 0;
         var refused = await _host.InvokeAsync(
             "export X=1",
-            (preparation, cancellationToken) =>
+            new TestInvocationAuthorizer((preparation, cancellationToken) =>
             {
                 authorizationCalls++;
                 return ValueTask.FromResult(true);
-            });
+            }));
 
         Assert.False(refused.Success);
         Assert.Contains("[ptk:dialect]", refused.Output);
         Assert.Equal(InvokeDisposition.NotStarted, refused.Disposition);
         Assert.False(refused.UserExecutionStarted);
         Assert.Equal(0, authorizationCalls);
+    }
+
+    [Fact]
+    public void Nonpublic_audited_invocation_requires_the_two_barrier_authorizer()
+    {
+        var auditedOverloads = typeof(RunspaceHost)
+            .GetMethods(
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic)
+            .Where(method => method.Name == nameof(RunspaceHost.InvokeAsync))
+            .Where(method =>
+            {
+                var parameters = method.GetParameters();
+                return parameters.Length >= 2 && !parameters[1].IsOptional;
+            })
+            .ToArray();
+
+        Assert.NotEmpty(auditedOverloads);
+        Assert.All(
+            auditedOverloads,
+            method => Assert.Equal(
+                typeof(IInvocationAuthorizer),
+                method.GetParameters()[1].ParameterType));
     }
 
     [Fact]
@@ -219,7 +242,7 @@ public sealed class RunspaceHostTests : IDisposable
             var mutation = await host.InvokeAsync(
                 $"[IO.File]::WriteAllBytes('{PowerShellLiteral(module)}', " +
                 $"[Convert]::FromBase64String('{encodedSource}'))",
-                (_, _) => ValueTask.FromResult(true),
+                new TestInvocationAuthorizer((_, _) => ValueTask.FromResult(true)),
                 raw: true,
                 route: "pwsh");
             Assert.True(mutation.Success, string.Join(Environment.NewLine, mutation.Errors));
@@ -235,7 +258,7 @@ public sealed class RunspaceHostTests : IDisposable
                 case "timeout-rebuild":
                     var timedOut = await host.InvokeAsync(
                         "Start-Sleep -Seconds 10",
-                        (_, _) => ValueTask.FromResult(true),
+                        new TestInvocationAuthorizer((_, _) => ValueTask.FromResult(true)),
                         route: "pwsh");
                     Assert.True(timedOut.TimedOut);
                     break;
@@ -245,7 +268,7 @@ public sealed class RunspaceHostTests : IDisposable
 
             var refused = await host.InvokeAsync(
                 "'must-not-run'",
-                (_, _) => ValueTask.FromResult(false),
+                new TestInvocationAuthorizer((_, _) => ValueTask.FromResult(false)),
                 route: "pwsh");
             Assert.Equal(InvokeDisposition.NotStarted, refused.Disposition);
             Assert.False(refused.UserExecutionStarted);

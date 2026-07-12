@@ -42,7 +42,9 @@ public static class InvokeTool
         [Description(
             "Routing override: 'auto' (default) runs a single native command " +
             "through rtk's filters; 'pwsh' forces plain execution in the warm " +
-            "runspace; 'rtk' forces the rtk rewrite when the script shape allows it.")]
+            "runspace; 'rtk' asserts RTK only for an eligible terminal native " +
+            "application. An ineligible assertion executes the exact original " +
+            "once and returns a labeled effective route without asking for a retry.")]
         string route = "auto",
         [Description(
             "Run the script as a background job in a separate cold pwsh process and " +
@@ -215,7 +217,7 @@ public static class InvokeTool
             ? await host.InvokeAsync(script, raw, cancellationToken, route, timeoutSeconds)
             : await host.InvokeAsync(
                 script,
-                audit.AuthorizeInvocationAsync,
+                audit,
                 raw,
                 cancellationToken,
                 route,
@@ -225,6 +227,21 @@ public static class InvokeTool
         var sb = new StringBuilder();
         var output = result.Output.TrimEnd();
         sb.Append(output.Length > 0 ? output : "(no output)");
+
+        if (result.UserExecutionStarted &&
+            result.Routing is
+            {
+                FallbackReason: { } fallbackReason,
+                OriginalScriptDispatched: true,
+            } routing)
+        {
+            sb.AppendLine();
+            sb.Append(
+                $"[route] requested={routing.RequestedRoute.ToMachineCode()} " +
+                $"effective={routing.EffectivePath.ToMachineCode()} " +
+                $"fallback={fallbackReason.ToMachineCode()}; " +
+                "the original script was dispatched once and PTK did not retry it.");
+        }
 
         if (result.ExitCode is int exitCode)
         {

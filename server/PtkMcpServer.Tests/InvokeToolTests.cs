@@ -153,6 +153,67 @@ public sealed class InvokeToolTests : IDisposable
     }
 
     [Fact]
+    public async Task Rtk_routed_output_is_not_shaped_by_rtk_a_second_time()
+    {
+        var body = OperatingSystem.IsWindows()
+            ? ">>\"%PTK_RTK_TEST_LOG%\" echo %*\n" +
+              "if /I \"%~1\"==\"log\" (\n" +
+              "  echo SECOND_RTK_LOG_PASS\n" +
+              "  exit /b 0\n" +
+              ")\n" +
+              "echo 2026-07-12 12:00:01 ERROR worker: first\n" +
+              "echo 2026-07-12 12:00:02 ERROR worker: second\n" +
+              "echo 2026-07-12 12:00:03 ERROR worker: third\n" +
+              "echo 2026-07-12 12:00:04 ERROR worker: fourth\n" +
+              "echo 2026-07-12 12:00:05 ERROR worker: fifth\n" +
+              "exit /b 0"
+            : "printf '%s\\n' \"$*\" >> \"$PTK_RTK_TEST_LOG\"\n" +
+              "if [ \"$1\" = \"log\" ]; then\n" +
+              "  echo SECOND_RTK_LOG_PASS\n" +
+              "  exit 0\n" +
+              "fi\n" +
+              "echo '2026-07-12 12:00:01 ERROR worker: first'\n" +
+              "echo '2026-07-12 12:00:02 ERROR worker: second'\n" +
+              "echo '2026-07-12 12:00:03 ERROR worker: third'\n" +
+              "echo '2026-07-12 12:00:04 ERROR worker: fourth'\n" +
+              "echo '2026-07-12 12:00:05 ERROR worker: fifth'\n" +
+              "exit 0";
+        var (dir, stub) = CreateRtkStub(body);
+        var invocationLog = Path.Combine(dir.FullName, "invocations.log");
+        var savedRtk = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        var savedLog = Environment.GetEnvironmentVariable("PTK_RTK_TEST_LOG");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            Environment.SetEnvironmentVariable("PTK_RTK_TEST_LOG", invocationLog);
+            ExecutionPlan? observed = null;
+
+            var result = await _host.InvokeAsync(
+                "git status",
+                new TestInvocationAuthorizer((plan, _) =>
+                {
+                    observed = plan;
+                    return ValueTask.FromResult(true);
+                }),
+                route: "auto");
+
+            Assert.True(result.Success, string.Join(Environment.NewLine, result.Errors));
+            Assert.NotNull(observed);
+            Assert.Equal(ExecutionPath.Rtk, observed.ExecutionPath);
+            Assert.Equal(OutputProvenance.RtkUnknown, observed.OutputProvenance);
+            Assert.DoesNotContain("SECOND_RTK_LOG_PASS", result.Output);
+            Assert.DoesNotContain("[ptk:log via rtk]", result.Output);
+            Assert.Equal(["git status"], File.ReadAllLines(invocationLog));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", savedRtk);
+            Environment.SetEnvironmentVariable("PTK_RTK_TEST_LOG", savedLog);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Relative_rtk_override_is_bound_before_the_warm_cwd_changes()
     {
         var processCwd = Directory.GetCurrentDirectory();
@@ -176,11 +237,11 @@ public sealed class InvokeToolTests : IDisposable
 
             var result = await _host.InvokeAsync(
                 "git status",
-                (plan, _) =>
+                new TestInvocationAuthorizer((plan, _) =>
                 {
                     observed = plan;
                     return ValueTask.FromResult(true);
-                },
+                }),
                 route: "auto");
 
             Assert.True(result.Success, string.Join(Environment.NewLine, result.Errors));
@@ -210,13 +271,13 @@ public sealed class InvokeToolTests : IDisposable
 
             var result = await _host.InvokeAsync(
                 "git status",
-                (preparation, cancellationToken) =>
+                new TestInvocationAuthorizer((preparation, cancellationToken) =>
                 {
                     authorizationCalls++;
                     observed = preparation;
                     order.Add("authorize");
                     return ValueTask.FromResult(true);
-                },
+                }),
                 route: "auto");
 
             Assert.True(result.Success);
@@ -233,7 +294,9 @@ public sealed class InvokeToolTests : IDisposable
             Assert.Equal(ResolutionContext.Warm, observed.ResolutionContext);
             Assert.Equal(RequestedExecutionRoute.Auto, observed.RequestedRoute);
             Assert.Equal(OutputProvenance.RtkUnknown, observed.OutputProvenance);
-            Assert.Empty(observed.PermittedFallbacks);
+            Assert.Collection(
+                observed.PermittedFallbacks,
+                path => Assert.Equal(ExecutionPath.PowerShellDirect, path));
             Assert.Null(observed.FallbackReason);
             Assert.Equal(stub, observed.RtkExecutableIdentity?.ExecutablePath);
             Assert.Equal(["authorize", "reset"], order);
@@ -242,6 +305,168 @@ public sealed class InvokeToolTests : IDisposable
         {
             Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
             dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Rtk_disappearing_after_plan_authorization_falls_back_to_the_exact_original_once()
+    {
+        var (dir, stub) = CreateRtkStub("echo RTK_MUST_NOT_RUN %*\nexit /b 0");
+        var originalCount = Path.Combine(dir.FullName, "original-count.txt");
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            var escapedCount = originalCount.Replace("'", "''");
+            var original =
+                "pwsh -NoProfile -NonInteractive -Command \"" +
+                $"[IO.File]::AppendAllText('{escapedCount}', '1'); 'EXACT_ORIGINAL_ONCE'\"";
+            var authorizer = new DeleteRtkAfterPlanAuthorizer(stub);
+
+            var result = await _host.InvokeAsync(
+                original,
+                authorizer,
+                route: "auto");
+
+            Assert.True(result.Success, string.Join(Environment.NewLine, result.Errors));
+            Assert.Contains("EXACT_ORIGINAL_ONCE", result.Output);
+            Assert.DoesNotContain("RTK_MUST_NOT_RUN", result.Output);
+            Assert.Equal("1", File.ReadAllText(originalCount));
+            Assert.Equal(1, authorizer.PlanAuthorizationCalls);
+            Assert.Equal(1, authorizer.DispatchAuthorizationCalls);
+            Assert.NotNull(authorizer.Plan);
+            Assert.Equal(ExecutionPath.Rtk, authorizer.Plan.ExecutionPath);
+            Assert.Collection(
+                authorizer.Plan.PermittedFallbacks,
+                path => Assert.Equal(ExecutionPath.PowerShellDirect, path));
+            Assert.NotNull(authorizer.Dispatch);
+            Assert.Same(authorizer.Plan, authorizer.Dispatch.Plan);
+            Assert.Equal(original, authorizer.Dispatch.ExecutionScript);
+            Assert.Equal(ExecutionPath.PowerShellDirect, authorizer.Dispatch.ExecutionPath);
+            Assert.Equal(OutputProvenance.PowerShellObjects, authorizer.Dispatch.OutputProvenance);
+            Assert.Equal(
+                ExecutionFallbackReason.RtkExecutableBecameUnavailable,
+                authorizer.Dispatch.FallbackReason);
+            Assert.Null(authorizer.Dispatch.RtkExecutableIdentity);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Rtk_disappearing_during_dispatch_authorization_reauthorizes_the_exact_original_once()
+    {
+        var stubBody = OperatingSystem.IsWindows()
+            ? "echo ran>>\"%PTK_RTK_TEST_LOG%\"\necho RTK_MUST_NOT_RUN %*\nexit /b 0"
+            : "printf 'ran\\n' >> \"$PTK_RTK_TEST_LOG\"\n" +
+              "echo RTK_MUST_NOT_RUN %*\nexit 0";
+        var (dir, stub) = CreateRtkStub(stubBody);
+        var stubLog = Path.Combine(dir.FullName, "stub-ran.txt");
+        var originalCount = Path.Combine(dir.FullName, "dispatch-original-count.txt");
+        var savedRtk = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        var savedLog = Environment.GetEnvironmentVariable("PTK_RTK_TEST_LOG");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            Environment.SetEnvironmentVariable("PTK_RTK_TEST_LOG", stubLog);
+            var escapedCount = originalCount.Replace("'", "''");
+            var original =
+                "pwsh -NoProfile -NonInteractive -Command \"" +
+                $"[IO.File]::AppendAllText('{escapedCount}', '1'); 'EXACT_DISPATCH_ORIGINAL_ONCE'\"";
+            ExecutionPlan? observedPlan = null;
+            var dispatches = new List<ExecutionDispatch>();
+            var stubExistedAtFirstDispatch = false;
+            var authorizer = new TestInvocationAuthorizer(
+                (plan, _) =>
+                {
+                    observedPlan = plan;
+                    return ValueTask.FromResult(true);
+                },
+                (dispatch, _) =>
+                {
+                    dispatches.Add(dispatch);
+                    if (dispatches.Count == 1)
+                    {
+                        stubExistedAtFirstDispatch = File.Exists(stub);
+                        File.Delete(stub);
+                    }
+                    return ValueTask.FromResult(true);
+                });
+
+            var result = await _host.InvokeAsync(
+                original,
+                authorizer,
+                route: "auto");
+
+            Assert.True(result.Success, string.Join(Environment.NewLine, result.Errors));
+            Assert.Equal(InvokeDisposition.Completed, result.Disposition);
+            Assert.True(result.UserExecutionStarted);
+            Assert.Contains("EXACT_DISPATCH_ORIGINAL_ONCE", result.Output);
+            Assert.DoesNotContain("RTK_MUST_NOT_RUN", result.Output);
+            Assert.True(stubExistedAtFirstDispatch);
+            Assert.False(File.Exists(stubLog));
+            Assert.Equal("1", File.ReadAllText(originalCount));
+            Assert.NotNull(observedPlan);
+            Assert.Equal(ExecutionPath.Rtk, observedPlan.ExecutionPath);
+            Assert.Collection(
+                dispatches,
+                first =>
+                {
+                    Assert.Same(observedPlan, first.Plan);
+                    Assert.Equal(ExecutionPath.Rtk, first.ExecutionPath);
+                    Assert.Null(first.FallbackReason);
+                },
+                second =>
+                {
+                    Assert.Same(observedPlan, second.Plan);
+                    Assert.Equal(original, second.ExecutionScript);
+                    Assert.Equal(ExecutionPath.PowerShellDirect, second.ExecutionPath);
+                    Assert.Equal(OutputProvenance.PowerShellObjects, second.OutputProvenance);
+                    Assert.Equal(
+                        ExecutionFallbackReason.RtkExecutableBecameUnavailable,
+                        second.FallbackReason);
+                    Assert.Null(second.RtkExecutableIdentity);
+                });
+            Assert.Equal(ExecutionPath.PowerShellDirect, result.Routing?.EffectivePath);
+            Assert.Equal(
+                ExecutionFallbackReason.RtkExecutableBecameUnavailable,
+                result.Routing?.FallbackReason);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", savedRtk);
+            Environment.SetEnvironmentVariable("PTK_RTK_TEST_LOG", savedLog);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    private sealed class DeleteRtkAfterPlanAuthorizer(string rtkPath) : IInvocationAuthorizer
+    {
+        internal int PlanAuthorizationCalls { get; private set; }
+        internal int DispatchAuthorizationCalls { get; private set; }
+        internal ExecutionPlan? Plan { get; private set; }
+        internal ExecutionDispatch? Dispatch { get; private set; }
+
+        public ValueTask<bool> AuthorizePlanAsync(
+            ExecutionPlan plan,
+            CancellationToken cancellationToken)
+        {
+            PlanAuthorizationCalls++;
+            Plan = plan;
+            File.Delete(rtkPath);
+            return ValueTask.FromResult(true);
+        }
+
+        public ValueTask<bool> AuthorizeDispatchAsync(
+            ExecutionDispatch dispatch,
+            CancellationToken cancellationToken)
+        {
+            DispatchAuthorizationCalls++;
+            Dispatch = dispatch;
+            return ValueTask.FromResult(true);
         }
     }
 
@@ -261,11 +486,11 @@ public sealed class InvokeToolTests : IDisposable
 
             var result = await _host.InvokeAsync(
                 "git status",
-                (preparation, _) =>
+                new TestInvocationAuthorizer((preparation, _) =>
                 {
                     observed = preparation;
                     return ValueTask.FromResult(false);
-                },
+                }),
                 route: "auto");
 
             Assert.Equal(InvokeDisposition.NotStarted, result.Disposition);
@@ -298,11 +523,11 @@ public sealed class InvokeToolTests : IDisposable
 
             var result = await _host.InvokeAsync(
                 "ptkForcedFunction",
-                (plan, _) =>
+                new TestInvocationAuthorizer((plan, _) =>
                 {
                     observed = plan;
                     return ValueTask.FromResult(true);
-                },
+                }),
                 route: "rtk");
 
             Assert.True(result.Success, string.Join(Environment.NewLine, result.Errors));
@@ -319,6 +544,45 @@ public sealed class InvokeToolTests : IDisposable
                 raw: true,
                 route: "pwsh");
             Assert.Equal("1", count.Output.Trim());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Forced_rtk_direct_fallback_labels_the_single_execution_without_requesting_retry()
+    {
+        var (dir, stub) = CreateRtkStub("echo must-not-run\nexit /b 0");
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            var defined = await _host.InvokeAsync(
+                "function global:ptkRouteLabelFunction { 'ROUTE_LABEL_ORIGINAL' }",
+                raw: true,
+                route: "pwsh");
+            Assert.True(defined.Success, string.Join(Environment.NewLine, defined.Errors));
+
+            var text = await InvokeTool.Invoke(
+                _host,
+                _jobs,
+                _rawUsage,
+                "ptkRouteLabelFunction",
+                CancellationToken.None,
+                route: "rtk");
+
+            Assert.Contains("ROUTE_LABEL_ORIGINAL", text);
+            Assert.DoesNotContain("must-not-run", text);
+            Assert.Contains(
+                "[route] requested=rtk effective=powershell_direct " +
+                "fallback=rtk_resolution_not_application;",
+                text);
+            Assert.Contains(
+                "the original script was dispatched once and PTK did not retry it.",
+                text);
         }
         finally
         {
@@ -349,11 +613,11 @@ public sealed class InvokeToolTests : IDisposable
 
             var result = await _host.InvokeAsync(
                 commandName,
-                (preparation, _) =>
+                new TestInvocationAuthorizer((preparation, _) =>
                 {
                     observed = preparation;
                     return ValueTask.FromResult(false);
-                },
+                }),
                 route: "auto");
 
             Assert.Equal(InvokeDisposition.NotStarted, result.Disposition);
@@ -381,11 +645,11 @@ public sealed class InvokeToolTests : IDisposable
 
             var result = await _host.InvokeAsync(
                 "$global:forcedFallbackRan = 1",
-                (plan, cancellationToken) =>
+                new TestInvocationAuthorizer((plan, cancellationToken) =>
                 {
                     observed = plan;
                     return ValueTask.FromResult(true);
-                },
+                }),
                 route: "rtk");
 
             Assert.True(result.Success);
@@ -412,11 +676,11 @@ public sealed class InvokeToolTests : IDisposable
 
         var result = await _host.InvokeAsync(
             "'direct execution'",
-            (preparation, cancellationToken) =>
+            new TestInvocationAuthorizer((preparation, cancellationToken) =>
             {
                 observed = preparation;
                 return ValueTask.FromResult(true);
-            },
+            }),
             raw: raw,
             route: route);
 
@@ -441,11 +705,11 @@ public sealed class InvokeToolTests : IDisposable
 
         var refused = await _host.InvokeAsync(
             "$global:authorizationRefusalSentinel = 'RAN'",
-            (preparation, cancellationToken) =>
+            new TestInvocationAuthorizer((preparation, cancellationToken) =>
             {
                 authorizationCalls++;
                 return ValueTask.FromResult(false);
-            },
+            }),
             route: "pwsh");
 
         Assert.False(refused.Success);
@@ -472,11 +736,11 @@ public sealed class InvokeToolTests : IDisposable
 
         var refused = await _host.InvokeAsync(
             "$global:authorizationExceptionSentinel = 'RAN'",
-            (preparation, cancellationToken) =>
+            new TestInvocationAuthorizer((preparation, cancellationToken) =>
             {
                 authorizationCalls++;
                 throw new InvalidOperationException(secret);
-            },
+            }),
             route: "pwsh");
 
         Assert.False(refused.Success);
@@ -506,12 +770,12 @@ public sealed class InvokeToolTests : IDisposable
 
         var invocation = _host.InvokeAsync(
             "$global:barrierCancellationSentinel = 'RAN'",
-            (preparation, barrierToken) =>
+            new TestInvocationAuthorizer((preparation, barrierToken) =>
             {
                 barrierTokenCanBeCanceled = barrierToken.CanBeCanceled;
                 entered.SetResult();
                 return new ValueTask<bool>(release.Task);
-            },
+            }),
             cancellationToken: cts.Token,
             route: "pwsh");
 

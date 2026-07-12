@@ -23,10 +23,7 @@ internal static class ExecutionPlanner
         ArgumentNullException.ThrowIfNull(commands);
 
         var requestedRoute = NormalizeRoute(route);
-        // The current in-process dispatch has no post-plan resolution barrier,
-        // so it cannot truthfully promise a fallback yet. The dedicated RTK
-        // runner adds only the paths it can enforce before execution starts.
-        var fallbacks = ImmutableArray<ExecutionPath>.Empty;
+        var noFallbacks = ImmutableArray<ExecutionPath>.Empty;
         if (raw || requestedRoute == RequestedExecutionRoute.PowerShell)
         {
             return Direct(
@@ -36,7 +33,7 @@ internal static class ExecutionPlanner
                 resolutionContext,
                 requestedRoute,
                 domain: null,
-                fallbacks,
+                noFallbacks,
                 fallbackReason: null);
         }
 
@@ -50,7 +47,7 @@ internal static class ExecutionPlanner
                 resolutionContext,
                 requestedRoute,
                 domain,
-                fallbacks,
+                noFallbacks,
                 requestedRoute == RequestedExecutionRoute.Rtk
                     ? ExecutionFallbackReason.RtkExecutableUnavailable
                     : null);
@@ -66,7 +63,7 @@ internal static class ExecutionPlanner
                 resolutionContext,
                 requestedRoute,
                 domain,
-                fallbacks,
+                noFallbacks,
                 requestedRoute == RequestedExecutionRoute.Rtk
                     ? ExecutionFallbackReason.RtkIneligibleShape
                     : null);
@@ -83,7 +80,7 @@ internal static class ExecutionPlanner
                 resolutionContext,
                 requestedRoute,
                 domain,
-                fallbacks,
+                noFallbacks,
                 requestedRoute == RequestedExecutionRoute.Rtk
                     ? ExecutionFallbackReason.RtkSelfInvocation
                     : null);
@@ -99,7 +96,7 @@ internal static class ExecutionPlanner
                 resolutionContext,
                 requestedRoute,
                 domain,
-                fallbacks,
+                noFallbacks,
                 requestedRoute == RequestedExecutionRoute.Rtk
                     ? ExecutionFallbackReason.RtkResolutionNotApplication
                     : null);
@@ -115,7 +112,7 @@ internal static class ExecutionPlanner
                 resolutionContext,
                 requestedRoute,
                 domain,
-                fallbacks,
+                noFallbacks,
                 requestedRoute == RequestedExecutionRoute.Rtk
                     ? ExecutionFallbackReason.RtkFidelityExclusion
                     : null);
@@ -131,7 +128,7 @@ internal static class ExecutionPlanner
             resolutionContext,
             requestedRoute,
             OutputProvenance.RtkUnknown,
-            fallbacks,
+            ImmutableArray.Create(ExecutionPath.PowerShellDirect),
             fallbackReason: null,
             new RtkExecutableIdentity(effectiveRtkPath));
     }

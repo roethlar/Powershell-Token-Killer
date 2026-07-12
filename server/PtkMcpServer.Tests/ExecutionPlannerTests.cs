@@ -26,7 +26,9 @@ public sealed class ExecutionPlannerTests
         Assert.Equal(ResolutionContext.Warm, plan.ResolutionContext);
         Assert.Equal(RequestedExecutionRoute.Auto, plan.RequestedRoute);
         Assert.Equal(OutputProvenance.RtkUnknown, plan.OutputProvenance);
-        Assert.Empty(plan.PermittedFallbacks);
+        Assert.Collection(
+            plan.PermittedFallbacks,
+            path => Assert.Equal(ExecutionPath.PowerShellDirect, path));
         Assert.Null(plan.FallbackReason);
         Assert.Equal(RtkPath, plan.RtkExecutableIdentity?.ExecutablePath);
         Assert.Null(plan.RtkExecutableIdentity?.Verified);
@@ -186,6 +188,7 @@ public sealed class ExecutionPlannerTests
         Assert.Equal(
             [
                 "rtk_executable_unavailable",
+                "rtk_executable_became_unavailable",
                 "rtk_ineligible_shape",
                 "rtk_self_invocation",
                 "rtk_resolution_not_application",

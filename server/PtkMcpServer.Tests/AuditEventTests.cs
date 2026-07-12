@@ -460,6 +460,13 @@ public sealed class AuditEventTests
             {
                 Correlation = CompleteInput().Correlation with { PlanId = null }
             }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, CompleteInput() with
+            {
+                EventType = "execution.not_started",
+                Correlation = CompleteInput().Correlation with { PlanId = null },
+                Routing = CompleteInput().Routing with { PermittedFallbacks = [] }
+            }));
 
         var callInput = CompleteInput() with
         {

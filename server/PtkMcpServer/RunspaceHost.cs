@@ -17,9 +17,19 @@ public enum InvokeDisposition
     OutcomeUnknown,
 }
 
-internal delegate ValueTask<bool> InvocationAuthorizationCallback(
-    ExecutionPlan plan,
-    CancellationToken cancellationToken);
+/// <summary>Durable pre-effect barriers around dispatch selection. The plan
+/// barrier authorizes bounded choices; each dispatch barrier records the exact
+/// initial or fallback choice before it may execute.</summary>
+internal interface IInvocationAuthorizer
+{
+    ValueTask<bool> AuthorizePlanAsync(
+        ExecutionPlan plan,
+        CancellationToken cancellationToken);
+
+    ValueTask<bool> AuthorizeDispatchAsync(
+        ExecutionDispatch dispatch,
+        CancellationToken cancellationToken);
+}
 
 /// <summary>Result of one script invocation in the warm runspace.</summary>
 /// <param name="Success">False on a terminating error or timeout; non-terminating
@@ -55,7 +65,16 @@ public sealed record InvokeResult(
     int? ExitCode = null,
     string[]? Stderr = null,
     bool WarmStateLost = false,
-    bool Recovering = false);
+    bool Recovering = false)
+{
+    internal ExecutionRouteSummary? Routing { get; init; }
+}
+
+internal sealed record ExecutionRouteSummary(
+    RequestedExecutionRoute RequestedRoute,
+    ExecutionPath EffectivePath,
+    ExecutionFallbackReason? FallbackReason,
+    bool OriginalScriptDispatched);
 
 /// <summary>What the session has changed in the process environment since the
 /// post-priming baseline. PATH is additionally reported as an entry-level diff
@@ -1155,19 +1174,26 @@ public sealed class RunspaceHost : IDisposable
         WarmStateLost: true);
 
     public Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default, string route = "auto", int timeoutSeconds = 0, DateTimeOffset? deadline = null) =>
-        InvokeCoreAsync(script, raw, cancellationToken, route, timeoutSeconds, deadline, authorizationCallback: null);
+        InvokeCoreAsync(script, raw, cancellationToken, route, timeoutSeconds, deadline, authorizer: null);
 
-    /// <summary>Audited invocation path. The callback is the fail-closed
-    /// pre-effect commit barrier and is never called for a dialect refusal.</summary>
+    /// <summary>Production audited invocation path with distinct durable plan
+    /// and dispatch barriers.</summary>
     internal Task<InvokeResult> InvokeAsync(
         string script,
-        InvocationAuthorizationCallback authorizationCallback,
+        IInvocationAuthorizer authorizer,
         bool raw = false,
         CancellationToken cancellationToken = default,
         string route = "auto",
         int timeoutSeconds = 0,
         DateTimeOffset? deadline = null) =>
-        InvokeCoreAsync(script, raw, cancellationToken, route, timeoutSeconds, deadline, authorizationCallback);
+        InvokeCoreAsync(
+            script,
+            raw,
+            cancellationToken,
+            route,
+            timeoutSeconds,
+            deadline,
+            authorizer ?? throw new ArgumentNullException(nameof(authorizer)));
 
     private async Task<InvokeResult> InvokeCoreAsync(
         string script,
@@ -1176,7 +1202,7 @@ public sealed class RunspaceHost : IDisposable
         string route,
         int timeoutSeconds,
         DateTimeOffset? deadline,
-        InvocationAuthorizationCallback? authorizationCallback)
+        IInvocationAuthorizer? authorizer)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var budget = EffectiveBudget(timeoutSeconds);
@@ -1189,7 +1215,7 @@ public sealed class RunspaceHost : IDisposable
             return QueueExpiryResult(budget);
         }
         return await InvokeGateHeldAsync(
-            script, raw, route, callDeadline, budget, cancellationToken, authorizationCallback);
+            script, raw, route, callDeadline, budget, cancellationToken, authorizer);
     }
 
     /// <summary>Runs the script only if the runspace is idle RIGHT NOW; null
@@ -1222,7 +1248,7 @@ public sealed class RunspaceHost : IDisposable
         var budget = _callTimeout;
         return await InvokeGateHeldAsync(
             script, raw, "auto", DateTimeOffset.UtcNow + budget, budget, cancellationToken,
-            authorizationCallback: null);
+            authorizer: null);
     }
 
     internal enum ReadyOutcome { Ready, TimedOut, Canceled, Faulted }
@@ -1294,6 +1320,61 @@ public sealed class RunspaceHost : IDisposable
         Disposition: InvokeDisposition.NotStarted,
         UserExecutionStarted: false);
 
+    private static async Task<bool> InvokeAuthorizationBarrierAsync(
+        Func<ValueTask<bool>> authorize)
+    {
+        ValueTask<bool> authorization;
+        try
+        {
+            // Invoke exactly once. Observing the returned ValueTask never
+            // retries a failed audit commit.
+            authorization = authorize();
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+
+        try
+        {
+            return await authorization;
+        }
+        catch (Exception)
+        {
+            return false;
+        }
+    }
+
+    private static ExecutionDispatch SelectDispatch(ExecutionPlan plan)
+    {
+        if (plan.ExecutionPath == ExecutionPath.Rtk &&
+            plan.RtkExecutableIdentity is { } identity &&
+            plan.PermittedFallbacks.Contains(ExecutionPath.PowerShellDirect) &&
+            !File.Exists(identity.ExecutablePath))
+        {
+            // File.Exists=false is a pre-start availability proof. Nothing in
+            // this method starts the RTK or user process.
+            return ExecutionDispatch.RtkUnavailableFallback(plan);
+        }
+
+        return ExecutionDispatch.FromPlan(plan);
+    }
+
+    private static InvokeResult WithDispatchRouting(
+        InvokeResult result,
+        ExecutionDispatch dispatch) =>
+        result with
+        {
+            Routing = new ExecutionRouteSummary(
+                dispatch.RequestedRoute,
+                dispatch.ExecutionPath,
+                dispatch.FallbackReason,
+                string.Equals(
+                    dispatch.ExecutionScript,
+                    dispatch.Plan.OriginalScript,
+                    StringComparison.Ordinal)),
+        };
+
     private sealed class TrustedPreflightIsolationException(
         string message,
         Exception? innerException = null) : Exception(message, innerException);
@@ -1305,7 +1386,7 @@ public sealed class RunspaceHost : IDisposable
         DateTimeOffset callDeadline,
         TimeSpan budget,
         CancellationToken cancellationToken,
-        InvocationAuthorizationCallback? authorizationCallback)
+        IInvocationAuthorizer? authorizer)
     {
         var ps = PowerShell.Create();
         var handedOff = false;
@@ -1456,35 +1537,13 @@ public sealed class RunspaceHost : IDisposable
                     UserExecutionStarted: false);
             }
 
-            if (authorizationCallback is not null)
+            if (authorizer is not null)
             {
-                Task<bool> authorization;
-                try
-                {
-                    // Invoke exactly once. AsTask only observes that one
-                    // ValueTask; it never retries a failed audit commit. The
-                    // persistence barrier is server-owned: client cancellation
-                    // must not abandon it and let a terminal record overtake a
-                    // late dispatch append.
-                    authorization = authorizationCallback(
-                        plan, CancellationToken.None).AsTask();
-                }
-                catch (Exception)
-                {
-                    return AuthorizationFailureResult(timedOut: false);
-                }
-
-                bool authorized;
-                try
-                {
-                    authorized = await authorization;
-                }
-                catch (Exception)
-                {
-                    return AuthorizationFailureResult(timedOut: false);
-                }
-
-                if (!authorized)
+                // The persistence barrier is server-owned: client
+                // cancellation must not abandon it and let a terminal record
+                // overtake a late plan append.
+                if (!await InvokeAuthorizationBarrierAsync(() =>
+                        authorizer.AuthorizePlanAsync(plan, CancellationToken.None)))
                 {
                     return AuthorizationFailureResult(timedOut: false);
                 }
@@ -1506,6 +1565,76 @@ public sealed class RunspaceHost : IDisposable
                 }
             }
 
+            ExecutionDispatch dispatch;
+            try
+            {
+                // Selection occurs only after the exact prepared plan is
+                // durable. It either preserves that plan or consumes one of
+                // its bounded exact-semantics fallbacks before anything starts.
+                dispatch = SelectDispatch(plan);
+            }
+            catch (Exception)
+            {
+                return AuthorizationFailureResult(timedOut: false);
+            }
+
+            if (authorizer is not null)
+            {
+                if (!await InvokeAuthorizationBarrierAsync(() =>
+                        authorizer.AuthorizeDispatchAsync(dispatch, CancellationToken.None)))
+                {
+                    return AuthorizationFailureResult(timedOut: false);
+                }
+
+                // Dispatch persistence is another noncancelable barrier. Only
+                // after it settles may request cancellation or the deadline
+                // stop progress, and neither case has started user execution.
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return AuthorizationFailureResult(timedOut: false);
+                }
+
+                if (DateTimeOffset.UtcNow >= callDeadline)
+                {
+                    return AuthorizationFailureResult(timedOut: true);
+                }
+            }
+
+            if (dispatch.ExecutionPath == ExecutionPath.Rtk &&
+                dispatch.RtkExecutableIdentity is { } dispatchedIdentity &&
+                !File.Exists(dispatchedIdentity.ExecutablePath))
+            {
+                // The durable dispatch barrier itself can outlive the RTK
+                // path snapshot. Recheck after it, while still gate-held and
+                // before resetting session state or starting a user pipeline.
+                // The plan already bounded this exact fallback; authorize its
+                // actual dispatch as a second pre-effect record rather than
+                // asking the caller to reconstruct or retry the script.
+                var fallbackDispatch = ExecutionDispatch.RtkUnavailableFallback(plan);
+                if (authorizer is not null)
+                {
+                    if (!await InvokeAuthorizationBarrierAsync(() =>
+                            authorizer.AuthorizeDispatchAsync(
+                                fallbackDispatch,
+                                CancellationToken.None)))
+                    {
+                        return AuthorizationFailureResult(timedOut: false);
+                    }
+
+                    if (cancellationToken.IsCancellationRequested)
+                    {
+                        return AuthorizationFailureResult(timedOut: false);
+                    }
+
+                    if (DateTimeOffset.UtcNow >= callDeadline)
+                    {
+                        return AuthorizationFailureResult(timedOut: true);
+                    }
+                }
+
+                dispatch = fallbackDispatch;
+            }
+
             // Reset only after the audited barrier authorizes this exact
             // preparation. A refusal/exception therefore performs no later
             // session mutation (the stale-LASTEXITCODE guard still precedes
@@ -1515,8 +1644,10 @@ public sealed class RunspaceHost : IDisposable
             ps.Runspace = runspace;
             // useLocalScope: false — assignments land in the runspace's session
             // state and survive into the next call; that persistence is the point.
-            ps.AddScript(plan.ExecutionScript, useLocalScope: false);
-            if (!raw && primed.CompressCommand is not null)
+            ps.AddScript(dispatch.ExecutionScript, useLocalScope: false);
+            if (!raw &&
+                dispatch.OutputProvenance == OutputProvenance.PowerShellObjects &&
+                primed.CompressCommand is not null)
                 ps.AddScript(
                         "$input | & $args[0]",
                         useLocalScope: true)
@@ -1534,19 +1665,19 @@ public sealed class RunspaceHost : IDisposable
                 // if the pipeline refuses to stop within the grace period.
                 if (await TryStopPipelineAsync(ps, invokeTask))
                 {
-                    return new InvokeResult(
+                    return WithDispatchRouting(new InvokeResult(
                         Success: false,
                         Output: string.Empty,
                         Errors: ["Call canceled by the caller; the pipeline was stopped and warm state was preserved."],
                         Warnings: [],
                         TimedOut: false,
                         Disposition: InvokeDisposition.Canceled,
-                        UserExecutionStarted: true);
+                        UserExecutionStarted: true), dispatch);
                 }
 
                 handedOff = true;
                 AbandonAndRecycle(ps, invokeTask, runspace);
-                return new InvokeResult(
+                return WithDispatchRouting(new InvokeResult(
                     Success: false,
                     Output: string.Empty,
                     Errors: [$"Call canceled by the caller, but the pipeline did not stop within {StopGrace.TotalSeconds:0}s; the runspace was recycled and all warm state was lost."],
@@ -1554,7 +1685,7 @@ public sealed class RunspaceHost : IDisposable
                     TimedOut: false,
                     Disposition: InvokeDisposition.OutcomeUnknown,
                     UserExecutionStarted: true,
-                    WarmStateLost: true);
+                    WarmStateLost: true), dispatch);
             }
 
             if (outcome == WaitOutcome.TimedOut)
@@ -1563,7 +1694,9 @@ public sealed class RunspaceHost : IDisposable
                 AbandonAndRecycle(ps, invokeTask, runspace);
                 // Teach the recovery paths at the moment of failure — the one
                 // place a model reliably reads documentation (design P4).
-                return ExecutionTimeoutResult(budget, userExecutionStarted: true);
+                return WithDispatchRouting(
+                    ExecutionTimeoutResult(budget, userExecutionStarted: true),
+                    dispatch);
             }
 
             try
@@ -1573,7 +1706,7 @@ public sealed class RunspaceHost : IDisposable
                 var (exitCode, wedged) = await ReadExitCodeBoundedAsync(runspace, callDeadline, cancellationToken);
                 var (stderr, errors) = PartitionErrorStream(ps.Streams.Error);
                 if (wedged) errors = [.. errors, BookkeepingWedgeNote];
-                return new InvokeResult(
+                return WithDispatchRouting(new InvokeResult(
                     Success: true,
                     Output: output,
                     Errors: errors,
@@ -1583,7 +1716,7 @@ public sealed class RunspaceHost : IDisposable
                     UserExecutionStarted: true,
                     ExitCode: exitCode == 0 ? null : exitCode,
                     Stderr: stderr,
-                    WarmStateLost: wedged);
+                    WarmStateLost: wedged), dispatch);
             }
             catch (RuntimeException ex)
             {
@@ -1595,7 +1728,7 @@ public sealed class RunspaceHost : IDisposable
                 // dropped beside the preserved stderr (plan finding i56p-6).
                 var (exitCode, wedged) = await ReadExitCodeBoundedAsync(runspace, callDeadline, cancellationToken);
                 if (wedged) errors = [.. errors, BookkeepingWedgeNote];
-                return new InvokeResult(
+                return WithDispatchRouting(new InvokeResult(
                     Success: false,
                     Output: string.Empty,
                     Errors: errors,
@@ -1605,7 +1738,7 @@ public sealed class RunspaceHost : IDisposable
                     UserExecutionStarted: true,
                     ExitCode: exitCode == 0 ? null : exitCode,
                     Stderr: stderr,
-                    WarmStateLost: wedged);
+                    WarmStateLost: wedged), dispatch);
             }
         }
         finally

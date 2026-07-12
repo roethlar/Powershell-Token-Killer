@@ -219,6 +219,7 @@ internal static class AuditEventSerializer
             "execution.dispatched",
             "execution.validation_started",
             "execution.validation_completed",
+            "execution.not_started",
             "execution.completed",
             "execution.failed",
             "execution.canceled",

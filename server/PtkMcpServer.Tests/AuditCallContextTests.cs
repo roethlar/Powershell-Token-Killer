@@ -43,7 +43,8 @@ public sealed class AuditCallContextTests : IDisposable
             Call("ptk_invoke", ("script", "'terminal-matrix'")),
             exactScript: "'terminal-matrix'");
         Assert.True(fixture.Context.BeginValidation());
-        Assert.True(await fixture.Context.AuthorizeInvocationAsync(
+        Assert.True(await AuthorizePlanAndDispatchAsync(
+            fixture.Context,
             ExecutionPlanner.CreateDirect(
                 "'terminal-matrix'",
                 "auto",
@@ -105,7 +106,8 @@ public sealed class AuditCallContextTests : IDisposable
             fallbackReason: null,
             rtkExecutableIdentity: null);
 
-        Assert.True(await fixture.Context.AuthorizeInvocationAsync(
+        Assert.True(await AuthorizePlanAndDispatchAsync(
+            fixture.Context,
             plan,
             CancellationToken.None));
         fixture.Context.RecordInvokeResult(
@@ -127,6 +129,214 @@ public sealed class AuditCallContextTests : IDisposable
         Assert.Equal("powershell_direct", routing.GetProperty("effective_route").GetString());
         Assert.Equal("powershell_objects", routing.GetProperty("provenance").GetString());
         Assert.Empty(routing.GetProperty("permitted_fallbacks").EnumerateArray());
+    }
+
+    [Fact]
+    public async Task Rtk_fallback_audits_the_planned_route_then_the_actual_dispatch_and_terminals()
+    {
+        const string script = "git status";
+        using var fixture = CreateFixture(
+            Call("ptk_invoke", ("script", script)),
+            exactScript: script);
+        Assert.True(fixture.Context.BeginValidation());
+        var rtkPath = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "audit-rtk"));
+        var plan = new ExecutionPlan(
+            script,
+            "rtk git status",
+            ExecutionDomain.NativeTerminal,
+            ExecutionPath.Rtk,
+            PreExecutionValidation.None,
+            ResolutionContext.Warm,
+            RequestedExecutionRoute.Auto,
+            OutputProvenance.RtkUnknown,
+            ImmutableArray.Create(ExecutionPath.PowerShellDirect),
+            fallbackReason: null,
+            new RtkExecutableIdentity(rtkPath));
+
+        Assert.True(await fixture.Context.AuthorizePlanAsync(
+            plan,
+            CancellationToken.None));
+        var dispatch = ExecutionDispatch.RtkUnavailableFallback(plan);
+        Assert.True(await fixture.Context.AuthorizeDispatchAsync(
+            dispatch,
+            CancellationToken.None));
+        fixture.Context.RecordInvokeResult(
+            new InvokeResult(
+                Success: true,
+                Output: "ok",
+                Errors: [],
+                Warnings: [],
+                TimedOut: false,
+                Disposition: InvokeDisposition.Completed,
+                UserExecutionStarted: true),
+            "ok");
+
+        var events = fixture.Events();
+        Assert.Equal(
+            [
+                "call.accepted",
+                "execution.validation_started",
+                "execution.prepare_authorized",
+                "execution.validation_completed",
+                "execution.planned",
+                "execution.dispatched",
+                "execution.completed",
+                "call.completed",
+            ],
+            events.Select(EventType));
+
+        var planned = events.Single(value => EventType(value) == "execution.planned");
+        var planId = planned.GetProperty("correlation").GetProperty("plan_id").GetGuid();
+        AssertRouting(
+            planned,
+            requestedRoute: "auto",
+            effectiveRoute: "rtk",
+            provenance: "rtk_unknown",
+            fallbackReason: null);
+
+        foreach (var actual in events.Where(value => EventType(value) is
+                     "execution.dispatched" or "execution.completed" or "call.completed"))
+        {
+            Assert.Equal(
+                planId,
+                actual.GetProperty("correlation").GetProperty("plan_id").GetGuid());
+            AssertRouting(
+                actual,
+                requestedRoute: "auto",
+                effectiveRoute: "powershell_direct",
+                provenance: "powershell_objects",
+                fallbackReason: "rtk_executable_became_unavailable");
+        }
+    }
+
+    [Fact]
+    public async Task Rtk_dispatch_may_be_superseded_once_by_its_audited_exact_fallback()
+    {
+        const string script = "git status";
+        using var fixture = CreateFixture(
+            Call("ptk_invoke", ("script", script)),
+            exactScript: script);
+        Assert.True(fixture.Context.BeginValidation());
+        var plan = new ExecutionPlan(
+            script,
+            "rtk git status",
+            ExecutionDomain.NativeTerminal,
+            ExecutionPath.Rtk,
+            PreExecutionValidation.None,
+            ResolutionContext.Warm,
+            RequestedExecutionRoute.Auto,
+            OutputProvenance.RtkUnknown,
+            ImmutableArray.Create(ExecutionPath.PowerShellDirect),
+            fallbackReason: null,
+            new RtkExecutableIdentity(
+                Path.GetFullPath(Path.Combine(Path.GetTempPath(), "audit-rtk"))));
+
+        Assert.True(await fixture.Context.AuthorizePlanAsync(plan, CancellationToken.None));
+        Assert.True(await fixture.Context.AuthorizeDispatchAsync(
+            ExecutionDispatch.FromPlan(plan),
+            CancellationToken.None));
+        var fallbackDispatch = ExecutionDispatch.RtkUnavailableFallback(plan);
+        Assert.True(await fixture.Context.AuthorizeDispatchAsync(
+            fallbackDispatch,
+            CancellationToken.None));
+        await Assert.ThrowsAsync<InvalidOperationException>(async () =>
+            await fixture.Context.AuthorizeDispatchAsync(
+                fallbackDispatch,
+                CancellationToken.None));
+        fixture.Context.RecordInvokeResult(
+            new InvokeResult(
+                Success: true,
+                Output: "ok",
+                Errors: [],
+                Warnings: [],
+                TimedOut: false,
+                Disposition: InvokeDisposition.Completed,
+                UserExecutionStarted: true),
+            "ok");
+
+        var events = fixture.Events();
+        Assert.Equal(9, events.Count);
+        var dispatched = events
+            .Where(value => EventType(value) == "execution.dispatched")
+            .ToArray();
+        Assert.Equal(2, dispatched.Length);
+        AssertRouting(
+            dispatched[0],
+            requestedRoute: "auto",
+            effectiveRoute: "rtk",
+            provenance: "rtk_unknown",
+            fallbackReason: null);
+        AssertRouting(
+            dispatched[1],
+            requestedRoute: "auto",
+            effectiveRoute: "powershell_direct",
+            provenance: "powershell_objects",
+            fallbackReason: "rtk_executable_became_unavailable");
+        Assert.Equal(
+            "rtk_executable_became_unavailable",
+            dispatched[1].GetProperty("outcome").GetProperty("detail_code").GetString());
+        var planIds = events
+            .Where(value => value.GetProperty("correlation").GetProperty("plan_id").ValueKind != JsonValueKind.Null)
+            .Select(value => value.GetProperty("correlation").GetProperty("plan_id").GetGuid())
+            .Distinct()
+            .ToArray();
+        Assert.Single(planIds);
+    }
+
+    [Fact]
+    public async Task Planned_but_undispatched_execution_records_a_no_start_terminal()
+    {
+        const string script = "git status";
+        using var fixture = CreateFixture(
+            Call("ptk_invoke", ("script", script)),
+            exactScript: script);
+        Assert.True(fixture.Context.BeginValidation());
+        var rtkPath = Path.GetFullPath(Path.Combine(Path.GetTempPath(), "audit-rtk"));
+        var plan = new ExecutionPlan(
+            script,
+            "rtk git status",
+            ExecutionDomain.NativeTerminal,
+            ExecutionPath.Rtk,
+            PreExecutionValidation.None,
+            ResolutionContext.Warm,
+            RequestedExecutionRoute.Auto,
+            OutputProvenance.RtkUnknown,
+            ImmutableArray.Create(ExecutionPath.PowerShellDirect),
+            fallbackReason: null,
+            new RtkExecutableIdentity(rtkPath));
+
+        Assert.True(await fixture.Context.AuthorizePlanAsync(
+            plan,
+            CancellationToken.None));
+        fixture.Context.RecordInvokeResult(
+            new InvokeResult(
+                Success: false,
+                Output: string.Empty,
+                Errors: ["dispatch refused"],
+                Warnings: [],
+                TimedOut: false,
+                Disposition: InvokeDisposition.NotStarted,
+                UserExecutionStarted: false),
+            "dispatch refused");
+
+        var events = fixture.Events();
+        Assert.Equal(
+            [
+                "call.accepted",
+                "execution.validation_started",
+                "execution.prepare_authorized",
+                "execution.validation_completed",
+                "execution.planned",
+                "execution.not_started",
+                "call.not_started",
+            ],
+            events.Select(EventType));
+        Assert.DoesNotContain("execution.dispatched", events.Select(EventType));
+        var notStarted = events.Single(value => EventType(value) == "execution.not_started");
+        Assert.Equal(
+            "dispatch_not_authorized",
+            notStarted.GetProperty("outcome").GetProperty("detail_code").GetString());
+        AssertOutcome(notStarted, "not_started", "not_applicable", "none");
     }
 
     [Fact]
@@ -331,6 +541,40 @@ public sealed class AuditCallContextTests : IDisposable
 
     private static string EventType(JsonElement value) =>
         value.GetProperty("event_type").GetString()!;
+
+    private static async ValueTask<bool> AuthorizePlanAndDispatchAsync(
+        AuditCallContext context,
+        ExecutionPlan plan,
+        CancellationToken cancellationToken)
+    {
+        if (!await context.AuthorizePlanAsync(plan, cancellationToken)) return false;
+        return await context.AuthorizeDispatchAsync(
+            ExecutionDispatch.FromPlan(plan),
+            cancellationToken);
+    }
+
+    private static void AssertRouting(
+        JsonElement value,
+        string requestedRoute,
+        string effectiveRoute,
+        string provenance,
+        string? fallbackReason)
+    {
+        var routing = value.GetProperty("routing");
+        Assert.Equal("native_terminal", routing.GetProperty("domain").GetString());
+        Assert.Equal(requestedRoute, routing.GetProperty("requested_route").GetString());
+        Assert.Equal(effectiveRoute, routing.GetProperty("effective_route").GetString());
+        Assert.Equal(
+            ["powershell_direct"],
+            routing.GetProperty("permitted_fallbacks")
+                .EnumerateArray()
+                .Select(item => item.GetString()));
+        Assert.Equal(provenance, routing.GetProperty("provenance").GetString());
+        if (fallbackReason is null)
+            Assert.Equal(JsonValueKind.Null, routing.GetProperty("fallback_reason").ValueKind);
+        else
+            Assert.Equal(fallbackReason, routing.GetProperty("fallback_reason").GetString());
+    }
 
     private static void AssertOutcome(
         JsonElement value,

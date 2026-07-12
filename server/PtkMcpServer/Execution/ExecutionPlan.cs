@@ -40,6 +40,7 @@ internal enum RequestedExecutionRoute
 internal enum ExecutionFallbackReason
 {
     RtkExecutableUnavailable,
+    RtkExecutableBecameUnavailable,
     RtkIneligibleShape,
     RtkSelfInvocation,
     RtkResolutionNotApplication,
@@ -180,6 +181,108 @@ internal sealed record ExecutionPlan
     internal string EffectiveRoute => ExecutionPath.ToMachineCode();
 }
 
+/// <summary>
+/// Immutable execution selected after the prepared plan has crossed its audit
+/// barrier. A dispatch may either preserve that plan exactly or consume one of
+/// its explicitly permitted, exact-semantics fallbacks. It never invents a
+/// route by comparing script text.
+/// </summary>
+internal sealed record ExecutionDispatch
+{
+    private ExecutionDispatch(
+        ExecutionPlan plan,
+        string executionScript,
+        ExecutionPath executionPath,
+        OutputProvenance outputProvenance,
+        ExecutionFallbackReason? fallbackReason,
+        RtkExecutableIdentity? rtkExecutableIdentity)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        ArgumentNullException.ThrowIfNull(executionScript);
+
+        var followsPlan = executionPath == plan.ExecutionPath;
+        if (!followsPlan && !plan.PermittedFallbacks.Contains(executionPath))
+            throw new InvalidOperationException("The dispatch path was not authorized by the plan.");
+
+        if (followsPlan)
+        {
+            if (!string.Equals(executionScript, plan.ExecutionScript, StringComparison.Ordinal) ||
+                outputProvenance != plan.OutputProvenance ||
+                fallbackReason != plan.FallbackReason ||
+                rtkExecutableIdentity != plan.RtkExecutableIdentity)
+            {
+                throw new InvalidOperationException(
+                    "A same-path dispatch must preserve every planned execution fact.");
+            }
+        }
+        else
+        {
+            if (!string.Equals(executionScript, plan.OriginalScript, StringComparison.Ordinal))
+                throw new InvalidOperationException("A direct fallback must execute the exact original script.");
+            if (executionPath != ExecutionPath.PowerShellDirect ||
+                outputProvenance != OutputProvenance.PowerShellObjects ||
+                fallbackReason is null ||
+                rtkExecutableIdentity is not null)
+            {
+                throw new InvalidOperationException(
+                    "A fallback must carry exact direct-path provenance and a truthful reason.");
+            }
+        }
+
+        Plan = plan;
+        ExecutionScript = executionScript;
+        ExecutionPath = executionPath;
+        OutputProvenance = outputProvenance;
+        FallbackReason = fallbackReason;
+        RtkExecutableIdentity = rtkExecutableIdentity;
+    }
+
+    internal ExecutionPlan Plan { get; }
+    internal string ExecutionScript { get; }
+    internal ExecutionPath ExecutionPath { get; }
+    internal OutputProvenance OutputProvenance { get; }
+    internal ExecutionFallbackReason? FallbackReason { get; }
+    internal RtkExecutableIdentity? RtkExecutableIdentity { get; }
+    internal ExecutionDomain? Domain => Plan.Domain;
+    internal PreExecutionValidation PreExecutionValidation => Plan.PreExecutionValidation;
+    internal ResolutionContext ResolutionContext => Plan.ResolutionContext;
+    internal RequestedExecutionRoute RequestedRoute => Plan.RequestedRoute;
+    internal ImmutableArray<ExecutionPath> PermittedFallbacks => Plan.PermittedFallbacks;
+    internal string EffectiveRoute => ExecutionPath.ToMachineCode();
+    internal bool IsFallback => ExecutionPath != Plan.ExecutionPath;
+
+    internal static ExecutionDispatch FromPlan(ExecutionPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        return new ExecutionDispatch(
+            plan,
+            plan.ExecutionScript,
+            plan.ExecutionPath,
+            plan.OutputProvenance,
+            plan.FallbackReason,
+            plan.RtkExecutableIdentity);
+    }
+
+    internal static ExecutionDispatch RtkUnavailableFallback(ExecutionPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (plan.ExecutionPath != ExecutionPath.Rtk ||
+            !plan.PermittedFallbacks.Contains(ExecutionPath.PowerShellDirect))
+        {
+            throw new InvalidOperationException(
+                "Only an RTK plan with an authorized direct fallback may fall back.");
+        }
+
+        return new ExecutionDispatch(
+            plan,
+            plan.OriginalScript,
+            ExecutionPath.PowerShellDirect,
+            OutputProvenance.PowerShellObjects,
+            ExecutionFallbackReason.RtkExecutableBecameUnavailable,
+            rtkExecutableIdentity: null);
+    }
+}
+
 internal static class ExecutionPlanMachineCodes
 {
     internal static string ToMachineCode(this ExecutionDomain value) => value switch
@@ -221,6 +324,7 @@ internal static class ExecutionPlanMachineCodes
     internal static string ToMachineCode(this ExecutionFallbackReason value) => value switch
     {
         ExecutionFallbackReason.RtkExecutableUnavailable => "rtk_executable_unavailable",
+        ExecutionFallbackReason.RtkExecutableBecameUnavailable => "rtk_executable_became_unavailable",
         ExecutionFallbackReason.RtkIneligibleShape => "rtk_ineligible_shape",
         ExecutionFallbackReason.RtkSelfInvocation => "rtk_self_invocation",
         ExecutionFallbackReason.RtkResolutionNotApplication => "rtk_resolution_not_application",
