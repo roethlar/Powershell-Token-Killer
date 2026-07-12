@@ -1319,3 +1319,15 @@ and `ptk-audit-admin` reject the spool forever. Canonical detail is in
 The complete structured integrated-review record, independent mutations,
 verification, Windows static review, and non-material observations are in
 `.agents/review/slice2-integrated-claude.md`.
+
+---
+
+**SLICE 2 INTEGRATED CLAUDE RE-REVIEW — REOPENED** (Claude Code 2.1.207,
+fixed head `49971d6ce5cb246d2283eab052163ae85a5b5c87` against
+`78e256ca0f3b1253aa97dd984f1d913429ea452a`, `guard_confirmed=true`,
+2026-07-12T15:35:30Z). The reviewer independently broke and restored both
+previously reopened guards, confirmed those two fixes closed, then passed
+.NET 926/926, Pester 134 with two platform skips, and the zero-warning
+handshake in a clean disposable worktree. The structured result and payload
+matched exactly. Two distinct HIGH findings reopened the integrated slice;
+canonical review detail is in `.agents/review/slice2-integrated-claude.md`.

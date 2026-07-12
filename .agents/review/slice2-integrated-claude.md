@@ -1,5 +1,9 @@
 # Audited-harness Slice 2 integrated Claude review
 
+**Current status**: Reopened again at fixed head
+`49971d6ce5cb246d2283eab052163ae85a5b5c87`; the original review below is
+retained as history.
+
 **Reviewer**: Claude Code 2.1.207 (`claude-fable-5`)
 **Base**: `78e256ca0f3b1253aa97dd984f1d913429ea452a`
 **Reviewed head**: `6cbd1d3061985f06bb0a5da8bcf2faa84a5bb826`
@@ -60,3 +64,45 @@ These were returned as fail-closed follow-ups, not Slice 2 acceptance blockers:
 The reviewer also found no material checkpoint-advance bypass, secret/plaintext
 leak, anchored-retention proof gap, disposition-stage misclassification, model
 access to the admin surface, or duplicate job terminal.
+
+## Fixed-head re-review — reopened
+
+**Reviewer**: Claude Code 2.1.207
+**Base**: `78e256ca0f3b1253aa97dd984f1d913429ea452a`
+**Reviewed head**: `49971d6ce5cb246d2283eab052163ae85a5b5c87`
+**Verdict**: `reopened`
+**Guard confirmed**: `true`
+**Recorded**: 2026-07-12T15:35:30Z
+
+The one-shot JSON envelope exited zero. Its result and structured payload
+matched, both fixed SHAs matched the dispatched values, and the payload
+conformed to the reviewloop schema. The reviewer created and removed its own
+detached worktree; the coder tree remained clean.
+
+### Resolved findings independently confirmed
+
+- Removing the job-specific required-ID boundary made all three metadata cases
+  and the end-to-end audit-poison guard fail; byte-exact restoration passed
+  focused 5/5. The reviewer also confirmed authorization-persistence refusal is
+  now recorded as failed with zero returned bytes.
+- Removing only anchored crash-temporary recovery made both canonical restart
+  guards fail with the former unknown-entry refusal; byte-exact restoration
+  passed 2/2. The bounded retained-identity recovery was independently judged
+  safe.
+- After restoration, the reviewer passed .NET 926/926, Pester 134 passed with
+  two Windows-only skips, and the zero-warning stdio handshake. The final tree
+  was clean at the exact head and removed.
+
+### New material findings
+
+- `.agents/review/findings/s2-tls-handshake-misclassification.md`
+- `.agents/review/findings/s2-windows-checkpoint-durability.md`
+
+### Non-material re-review observations
+
+- A compound crash can leave an anchoring evidence artifact after its boot's
+  retirement controls are removed, making later evidence operations fail
+  closed until manual repair.
+- Evidence publication performs a protected identity check and SHA-256 hash of
+  every retained artifact on the serialized admission path, so long-lived
+  installations can accumulate linear per-call latency.
