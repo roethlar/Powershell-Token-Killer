@@ -264,6 +264,44 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     }
 
     [Fact]
+    public void Failed_sink_quota_acquisition_closes_writer_before_checkpoint_adoption()
+    {
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
+        var sink = new FileAuditJournalSink(
+            options,
+            BootId,
+            checkpointStore: store);
+        var segmentPath = sink.CurrentSegmentPath;
+        store.Dispose();
+
+        var quotaPath = Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolQuotaLease.ControlFileName);
+        using (var quota = new FileStream(
+                   quotaPath,
+                   FileMode.Open,
+                   FileAccess.ReadWrite,
+                   FileShare.None))
+        {
+            quota.Position = 0;
+            quota.WriteByte(0x51);
+            quota.Flush(flushToDisk: true);
+        }
+
+        var failure = Assert.Throws<IOException>(sink.Dispose);
+        Assert.Equal("The audit spool quota control is invalid.", failure.Message);
+
+        using var adopted = ReopenExisting(options);
+        using var reopened = new FileStream(
+            segmentPath,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+        Assert.Equal(0, reopened.Length);
+    }
+
+    [Fact]
     public void Disposed_checkpoint_owner_cannot_authorize_an_anchored_writer()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);

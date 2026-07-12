@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.ComponentModel;
+using System.Runtime.ExceptionServices;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 
@@ -294,16 +295,40 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         if (_disposed)
             return;
 
+        ExceptionDispatchInfo? failure = null;
         try
         {
             using (AcquireQuotaLock())
                 CloseAndTrimCurrent();
         }
-        finally
+        catch (Exception exception)
         {
-            _disposed = true;
+            failure = ExceptionDispatchInfo.Capture(exception);
+        }
+
+        try
+        {
+            // Quota acquisition can fail before CloseAndTrimCurrent owns the
+            // stream. The authoritative live handle must still be gone before
+            // checkpoint ownership becomes adoptable.
+            _stream.Dispose();
+        }
+        catch (Exception exception)
+        {
+            failure ??= ExceptionDispatchInfo.Capture(exception);
+        }
+
+        _disposed = true;
+        try
+        {
             Interlocked.Exchange(ref _exportWriterLease, null)?.Dispose();
         }
+        catch (Exception exception)
+        {
+            failure ??= ExceptionDispatchInfo.Capture(exception);
+        }
+
+        failure?.Throw();
     }
 
     private void Rotate()
