@@ -305,6 +305,45 @@ public sealed class FileAuditJournalSinkTests : IDisposable
     }
 
     [Fact]
+    public void Startup_rejects_an_empty_intermediate_retained_segment()
+    {
+        var options = Options(NewRoot(), segmentSlots: 2, aggregateSegments: 4);
+        var health = new AuditHealth(options, () => BaseTime);
+        var sink = new FileAuditJournalSink(options, BootId, () => BaseTime);
+        using (var journal = Journal(options, health, sink, BootId))
+        {
+            for (var index = 0; index < 2; index++)
+            {
+                Assert.True(journal.TryReserve(1, out var reservation, out _));
+                journal.Append(reservation!, Input("call.accepted"));
+                reservation!.Release();
+            }
+        }
+
+        var segments = Directory.GetFiles(options.SpoolDirectory, "*.jsonl")
+            .OrderBy(path => path, StringComparer.Ordinal)
+            .ToArray();
+        Assert.Equal(2, segments.Length);
+        using (var first = new FileStream(
+                   segments[0],
+                   FileMode.Open,
+                   FileAccess.Write,
+                   FileShare.None))
+        {
+            first.SetLength(0);
+            first.Flush(flushToDisk: true);
+        }
+
+        Assert.Throws<IOException>(() =>
+        {
+            using var _ = new FileAuditJournalSink(
+                options,
+                Guid.Parse("32345678-1234-4abc-8def-0123456789ab"),
+                () => BaseTime);
+        });
+    }
+
+    [Fact]
     public void Shared_spool_codec_returns_writer_metadata_and_rejects_rehashed_invalid_event_ids()
     {
         var options = Options(NewRoot(), segmentSlots: 2, aggregateSegments: 4);

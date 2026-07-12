@@ -946,10 +946,11 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 
         foreach (var group in named)
         {
+            var ordered = group.OrderBy(item => item.Index).ToArray();
             long? priorSequence = null;
             string? priorHash = null;
             int? priorIndex = null;
-            foreach (var item in group.OrderBy(item => item.Index))
+            foreach (var item in ordered)
             {
                 if (priorIndex is int previousIndex && item.Index != previousIndex + 1)
                     throw new IOException("A retained audit segment sequence has an internal gap.");
@@ -962,14 +963,19 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
                     // A live segment must be the writer's newest segment for
                     // that boot. Older locked data beside a newer segment is
                     // not a valid rotation state.
-                    if (item.Index != group.Max(candidate => candidate.Index))
+                    if (item.Index != ordered[^1].Index)
                         throw new IOException("A nonterminal audit segment is unexpectedly locked.");
                     break;
                 }
 
                 using (stream)
                 {
-                    if (stream.Length == 0) continue;
+                    if (stream.Length == 0)
+                    {
+                        if (item.Index != ordered[^1].Index)
+                            throw new IOException("An intermediate audit segment is empty.");
+                        continue;
+                    }
                     if (stream.Length > SegmentCapacityBytes)
                         throw new IOException("A retained audit segment has an oversized tail.");
                     stream.Position = stream.Length - 1;
