@@ -1237,75 +1237,126 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         return segments.ToArray();
     }
 
-    private void RecoverCrashAllocationsAndValidateSpool()
+    internal static void RecoverCrashTemporaryArtifactsUnderQuota(
+        AuditOptions options,
+        AuditSpoolQuotaLease retainedQuota)
     {
-        SecureAuditStorage.VerifyProtectedDirectory(_spoolRoot);
-        var directory = new DirectoryInfo(_spoolRoot);
-        foreach (var entry in directory
-                     .EnumerateFileSystemInfos("*", SearchOption.TopDirectoryOnly)
-                     .ToArray())
-        {
-            if (entry is not FileInfo file)
-                throw new IOException("The audit spool contains an unknown entry.");
-            if (string.Equals(
-                    file.Name,
-                    AuditSpoolQuotaLease.ControlFileName,
-                    StringComparison.Ordinal))
-                continue;
-            if (AuditSpoolSegmentIdentity.TryParse(file.Name, out _))
-                continue;
-            if (TryParseCanonicalCompactionName(file.Name, out var sourceName))
-            {
-                RecoverCrashCompaction(file, sourceName);
-                continue;
-            }
-            if (!IsCanonicalAllocationName(file.Name))
-            {
-                throw new IOException("The audit spool contains an unknown entry.");
-            }
-
-            RefuseLinkOrReparsePoint(file);
-            SecureAuditStorage.VerifyProtectedFile(file.FullName);
-            using (var exclusive = new FileStream(
-                       file.FullName,
-                       FileMode.Open,
-                       FileAccess.ReadWrite,
-                       FileShare.None,
-                       bufferSize: 1,
-                       FileOptions.WriteThrough))
-            {
-                RefuseLinkOrReparsePoint(new FileInfo(file.FullName));
-                if (exclusive.Length != 0)
-                    throw new IOException("A crash-left audit allocation has an invalid logical length.");
-            }
-
-            File.Delete(file.FullName);
-            if (File.Exists(file.FullName))
-                throw new IOException("A crash-left audit allocation could not be removed.");
-        }
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(retainedQuota);
+        retainedQuota.VerifyOwnership();
+        RecoverCrashTemporaryArtifactsAndValidateSpool(
+            Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.SpoolDirectory)),
+            retainedQuota.VerifyOwnership);
+        retainedQuota.VerifyOwnership();
     }
 
-    private void RecoverCrashCompaction(FileInfo temporary, string sourceName)
+    private void RecoverCrashAllocationsAndValidateSpool() =>
+        RecoverCrashTemporaryArtifactsAndValidateSpool(
+            _spoolRoot,
+            verifyQuotaOwnership: null);
+
+    private static void RecoverCrashTemporaryArtifactsAndValidateSpool(
+        string spoolRoot,
+        Action? verifyQuotaOwnership)
     {
-        RefuseLinkOrReparsePoint(temporary);
-        SecureAuditStorage.VerifyProtectedFile(temporary.FullName);
-        var sourcePath = Path.Combine(_spoolRoot, sourceName);
-        if (!File.Exists(sourcePath))
-            throw new IOException("A crash-left audit compaction lost its source segment.");
-        SecureAuditStorage.VerifyProtectedFile(sourcePath);
-        using (var exclusive = new FileStream(
-                   temporary.FullName,
-                   FileMode.Open,
-                   FileAccess.ReadWrite,
-                   FileShare.None,
-                   bufferSize: 1,
-                   FileOptions.WriteThrough))
+        SecureAuditStorage.VerifyProtectedDirectory(spoolRoot);
+        var directory = new DirectoryInfo(spoolRoot);
+        var entries = directory
+            .EnumerateFileSystemInfos("*", SearchOption.TopDirectoryOnly)
+            .Take(AuditClosedSpoolChainReader.MaximumSpoolInventoryEntries + 1)
+            .ToArray();
+        if (entries.Length > AuditClosedSpoolChainReader.MaximumSpoolInventoryEntries)
         {
-            RefuseLinkOrReparsePoint(new FileInfo(temporary.FullName));
+            throw new IOException(
+                "The audit spool exceeds the bounded recovery inventory.");
         }
-        File.Delete(temporary.FullName);
-        if (File.Exists(temporary.FullName))
-            throw new IOException("A crash-left audit compaction could not be removed.");
+
+        var retained = new List<(string Path, FileStream Stream)>();
+        try
+        {
+            foreach (var entry in entries)
+            {
+                if (entry is not FileInfo file)
+                    throw new IOException("The audit spool contains an unknown entry.");
+                if (string.Equals(
+                        file.Name,
+                        AuditSpoolQuotaLease.ControlFileName,
+                        StringComparison.Ordinal) ||
+                    AuditSpoolSegmentIdentity.TryParse(file.Name, out _))
+                {
+                    RefuseLinkOrReparsePoint(file);
+                    SecureAuditStorage.VerifyProtectedFile(file.FullName);
+                    continue;
+                }
+
+                var isCompaction = TryParseCanonicalCompactionName(
+                    file.Name,
+                    out var sourceName);
+                if (!isCompaction && !IsCanonicalAllocationName(file.Name))
+                    throw new IOException("The audit spool contains an unknown entry.");
+
+                RefuseLinkOrReparsePoint(file);
+                SecureAuditStorage.VerifyProtectedFile(file.FullName);
+                if (isCompaction)
+                {
+                    var sourcePath = Path.Combine(spoolRoot, sourceName);
+                    if (!File.Exists(sourcePath))
+                    {
+                        throw new IOException(
+                            "A crash-left audit compaction lost its source segment.");
+                    }
+                    SecureAuditStorage.VerifyProtectedFile(sourcePath);
+                }
+
+                FileStream? stream = null;
+                try
+                {
+                    stream = new FileStream(
+                        file.FullName,
+                        FileMode.Open,
+                        FileAccess.ReadWrite,
+                        FileShare.Delete,
+                        bufferSize: 1,
+                        FileOptions.WriteThrough);
+                    _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+                        file.FullName,
+                        stream.SafeFileHandle);
+                    if (!isCompaction && stream.Length != 0)
+                    {
+                        throw new IOException(
+                            "A crash-left audit allocation has an invalid logical length.");
+                    }
+                    retained.Add((file.FullName, stream));
+                    stream = null;
+                }
+                catch (IOException exception)
+                {
+                    throw new IOException(
+                        "A crash-left audit temporary is still live or invalid.",
+                        exception);
+                }
+                finally
+                {
+                    stream?.Dispose();
+                }
+            }
+
+            verifyQuotaOwnership?.Invoke();
+            SecureAuditStorage.VerifyProtectedDirectory(spoolRoot);
+            foreach (var temporary in retained)
+            {
+                SecureAuditStorage.DeleteRetainedProtectedFile(
+                    spoolRoot,
+                    temporary.Path,
+                    temporary.Stream.SafeFileHandle);
+            }
+            SecureAuditStorage.VerifyProtectedDirectory(spoolRoot);
+        }
+        finally
+        {
+            foreach (var temporary in retained)
+                temporary.Stream.Dispose();
+        }
     }
 
     private long TotalBytesUnderQuotaLock() =>

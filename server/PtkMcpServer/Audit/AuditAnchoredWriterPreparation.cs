@@ -157,6 +157,9 @@ internal static class AuditAnchoredWriterStartupPreflight
         }
 
         retainedQuota.VerifyOwnership();
+        FileAuditJournalSink.RecoverCrashTemporaryArtifactsUnderQuota(
+            options,
+            retainedQuota);
         _ = AuditCompletedChainRetirement.RecoverUnderQuota(
             options,
             retainedQuota);

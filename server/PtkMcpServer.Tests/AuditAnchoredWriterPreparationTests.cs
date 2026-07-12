@@ -114,6 +114,47 @@ public sealed class AuditAnchoredWriterPreparationTests : IDisposable
     }
 
     [Fact]
+    public void Startup_recovers_canonical_crash_left_allocation_before_topology()
+    {
+        var options = Options(NewRoot());
+        InitializeStorage(options);
+        var target = AuditSpoolSegmentIdentity.Create(NewBoot(), 0).FileName;
+        var temporary = Path.Combine(
+            options.SpoolDirectory,
+            $".{target}.{NewBoot():N}.allocating");
+        WriteProtected(temporary, []);
+
+        using var successor = FileAuditJournalSink.PrepareAnchored(options, NewBoot());
+
+        Assert.False(File.Exists(temporary));
+        Assert.True(File.Exists(successor.SegmentPath));
+    }
+
+    [Fact]
+    public void Startup_recovers_canonical_crash_left_compaction_with_source()
+    {
+        var options = Options(NewRoot());
+        InitializeStorage(options);
+        var controlledBoot = NewBoot();
+        var source = CreateSegment(options, controlledBoot, 0, []);
+        WriteProtected(
+            CheckpointPath(options, controlledBoot),
+            AuditExportCheckpointCodec.Serialize(
+                AuditExportCheckpoint.Initial(controlledBoot)));
+        WriteProtected(LockPath(options, controlledBoot), []);
+        var temporary = Path.Combine(
+            options.SpoolDirectory,
+            $".{Path.GetFileName(source)}.{NewBoot():N}.compacting");
+        WriteProtected(temporary, "partial compact copy"u8.ToArray());
+
+        using var successor = FileAuditJournalSink.PrepareAnchored(options, NewBoot());
+
+        Assert.False(File.Exists(temporary));
+        Assert.True(File.Exists(source));
+        Assert.True(File.Exists(successor.SegmentPath));
+    }
+
+    [Fact]
     public void Published_checkpoint_before_activation_remains_an_adoptable_chain()
     {
         var options = Options(NewRoot());
