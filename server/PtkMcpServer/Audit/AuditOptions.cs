@@ -142,6 +142,14 @@ public sealed class AuditOptions
         ValidateRange(maxRecordBytes, 256, DefaultMaxRecordBytes, nameof(maxRecordBytes));
         ValidateRange(segmentBytes, maxRecordBytes, 4L * 1024 * 1024 * 1024, nameof(segmentBytes));
         ValidateRange(aggregateBytes, segmentBytes, 1024L * 1024 * 1024 * 1024, nameof(aggregateBytes));
+        if (protectionMode == AuditProtectionMode.Anchored &&
+            aggregateBytes < checked(2 * segmentBytes))
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(aggregateBytes),
+                aggregateBytes,
+                "Anchored audit requires one writer segment plus one full restart segment.");
+        }
         ValidateRange(
             emergencyReserveBytes,
             checked(2L * maxRecordBytes),

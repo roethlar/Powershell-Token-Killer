@@ -300,7 +300,9 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             protectionMode == AuditProtectionMode.Anchored ? new string('a', 64) : null,
             maxRecordBytes: recordBytes,
             segmentBytes: recordBytes * 32L,
-            aggregateBytes: recordBytes * 32L,
+            aggregateBytes: protectionMode == AuditProtectionMode.Anchored
+                ? recordBytes * 64L
+                : recordBytes * 32L,
             emergencyReserveBytes: recordBytes * 2L,
             retentionAge: TimeSpan.FromMinutes(10),
             maxEvidenceBytes: 256,

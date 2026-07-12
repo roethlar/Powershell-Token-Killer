@@ -94,16 +94,19 @@ internal static class SecureAuditStorage
     internal static FileStream CreateExclusiveFile(
         string path,
         long preallocationSize = 0,
-        FileShare share = FileShare.None)
+        FileShare share = FileShare.None,
+        FileAccess access = FileAccess.Write)
     {
         RefuseExistingPath(path);
         if (preallocationSize < 0)
             throw new ArgumentOutOfRangeException(nameof(preallocationSize));
+        if (access is not (FileAccess.Write or FileAccess.ReadWrite))
+            throw new ArgumentOutOfRangeException(nameof(access));
 
         var options = new FileStreamOptions
         {
             Mode = FileMode.CreateNew,
-            Access = FileAccess.Write,
+            Access = access,
             Share = share,
             BufferSize = 16 * 1024,
             Options = FileOptions.WriteThrough,
@@ -128,6 +131,47 @@ internal static class SecureAuditStorage
             TryDelete(path);
             throw;
         }
+    }
+
+    /// <summary>
+    /// Confirms that a newly created direct child is still the exact protected
+    /// file retained by the caller, then makes its directory entry durable.
+    /// </summary>
+    internal static void ConfirmRetainedCreatedFileDurability(
+        string root,
+        string path,
+        SafeFileHandle retainedHandle)
+    {
+        var protectedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        VerifyExternalProtectedDirectory(protectedRoot);
+        path = RequireDirectChild(protectedRoot, path);
+        _ = VerifyRetainedProtectedFileIdentity(path, retainedHandle);
+        if (!OperatingSystem.IsWindows())
+            FlushUnixDirectory(protectedRoot);
+        VerifyExternalProtectedDirectory(protectedRoot);
+        _ = VerifyRetainedProtectedFileIdentity(path, retainedHandle);
+    }
+
+    /// <summary>
+    /// Deletes only the exact protected direct child retained by the caller
+    /// and durably publishes the removal. The handle remains open so a path
+    /// replacement cannot be mistaken for the file that was inspected.
+    /// </summary>
+    internal static void DeleteRetainedProtectedFile(
+        string root,
+        string path,
+        SafeFileHandle retainedHandle)
+    {
+        var protectedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        VerifyExternalProtectedDirectory(protectedRoot);
+        path = RequireDirectChild(protectedRoot, path);
+        _ = VerifyRetainedProtectedFileIdentity(path, retainedHandle);
+        File.Delete(path);
+        if (PathExistsWithoutFollowing(path))
+            throw new IOException("The retained protected file could not be removed.");
+        if (!OperatingSystem.IsWindows())
+            FlushUnixDirectory(protectedRoot);
+        VerifyExternalProtectedDirectory(protectedRoot);
     }
 
     internal static void PublishAtomically(

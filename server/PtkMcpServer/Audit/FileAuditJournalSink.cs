@@ -65,8 +65,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
     private readonly Func<SafeFileHandle, string, int> _macCloneFile;
     private readonly string _spoolRoot;
     private IDisposable? _exportWriterLease;
-    private FileStream _stream;
-    private string _currentSegmentPath;
+    private FileStream _stream = null!;
+    private string _currentSegmentPath = null!;
     private AuditSpoolSegmentIdentity _currentSegmentIdentity;
     private long _committedSegmentBytes;
     private int _segmentIndex;
@@ -83,6 +83,25 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         Func<FileAuditSinkFaultPoint, int, bool>? faultInjector = null,
         AuditExportCheckpointStore? checkpointStore = null,
         Func<SafeFileHandle, string, int>? macCloneFile = null)
+        : this(
+            options,
+            supervisorBootId,
+            utcNow,
+            faultInjector,
+            checkpointStore,
+            retainedPreparationQuota: null,
+            macCloneFile)
+    {
+    }
+
+    private FileAuditJournalSink(
+        AuditOptions options,
+        Guid supervisorBootId,
+        Func<DateTimeOffset>? utcNow,
+        Func<FileAuditSinkFaultPoint, int, bool>? faultInjector,
+        AuditExportCheckpointStore? checkpointStore,
+        AuditSpoolQuotaLease? retainedPreparationQuota,
+        Func<SafeFileHandle, string, int>? macCloneFile)
     {
         ArgumentNullException.ThrowIfNull(options);
         AuditSpoolSegmentIdentity.RequireUuidV4(supervisorBootId, nameof(supervisorBootId));
@@ -93,7 +112,17 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         _macCloneFile = macCloneFile ?? MacNative.CloneFile;
         _spoolRoot = SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
         IDisposable? exportWriterLease = null;
-        if (options.ProtectionMode == AuditProtectionMode.Anchored)
+        if (retainedPreparationQuota is not null)
+        {
+            if (options.ProtectionMode != AuditProtectionMode.Anchored || checkpointStore is not null)
+            {
+                throw new ArgumentException(
+                    "A staged audit writer requires anchored mode without prior checkpoint state.",
+                    nameof(options));
+            }
+            retainedPreparationQuota.VerifyOwnership();
+        }
+        else if (options.ProtectionMode == AuditProtectionMode.Anchored)
         {
             exportWriterLease = checkpointStore?.RetainInitialJournalWriter(
                 options,
@@ -109,18 +138,20 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 
         try
         {
-            using (AuditSpoolQuotaLease.CreateControlAndAcquire(_spoolRoot))
+            if (retainedPreparationQuota is not null)
             {
-                RecoverCrashAllocationsAndValidateSpool();
-                ValidateRetainedSegments();
-                // A hard-killed prior supervisor could not trim the keep-EOF
-                // allocation on its last segment. Reclaim that invisible physical
-                // slack before charging the new supervisor's full live segment.
-                ReclaimClosedAllocations();
-                EnsurePhysicalAllocationAvailable();
-                EnsureRecoveryAdmissionAvailable(segmentIndex: 0);
-                (_stream, _currentSegmentPath, _currentSegmentIdentity) = CreateSegment(0);
-                SweepClosedSegments(GetUtcNow(), options.EmergencyReserveBytes);
+                InitializeNewWriterUnderQuota(
+                    recoverTemporaryArtifacts: false,
+                    directPreparedSegment: true);
+            }
+            else
+            {
+                using (AuditSpoolQuotaLease.CreateControlAndAcquire(_spoolRoot))
+                {
+                    InitializeNewWriterUnderQuota(
+                        recoverTemporaryArtifacts: true,
+                        directPreparedSegment: false);
+                }
             }
             _exportWriterLease = exportWriterLease;
             exportWriterLease = null;
@@ -134,6 +165,76 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         {
             exportWriterLease?.Dispose();
         }
+    }
+
+    /// <summary>
+    /// Begins the production anchored-writer construction protocol. The
+    /// returned capability is not an audit sink and must create checkpoint
+    /// state and activate before any record can be appended.
+    /// </summary>
+    internal static AuditAnchoredWriterPreparation PrepareAnchored(
+        AuditOptions options,
+        Guid supervisorBootId,
+        Func<DateTimeOffset>? utcNow = null,
+        Func<FileAuditSinkFaultPoint, int, bool>? faultInjector = null,
+        Func<SafeFileHandle, string, int>? macCloneFile = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        AuditSpoolSegmentIdentity.RequireUuidV4(
+            supervisorBootId,
+            nameof(supervisorBootId));
+        if (options.ProtectionMode != AuditProtectionMode.Anchored)
+        {
+            throw new ArgumentException(
+                "Anchored writer preparation requires anchored protection mode.",
+                nameof(options));
+        }
+
+        _ = SecureAuditStorage.PrepareRoot(options.RootDirectory);
+        var spoolRoot = SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
+        AuditSpoolQuotaLease? quota = null;
+        try
+        {
+            quota = AuditSpoolQuotaLease.CreateControlAndAcquire(spoolRoot);
+            AuditAnchoredWriterStartupPreflight.RunUnderQuota(options, quota);
+            var sink = new FileAuditJournalSink(
+                options,
+                supervisorBootId,
+                utcNow,
+                faultInjector,
+                checkpointStore: null,
+                quota,
+                macCloneFile);
+            var preparation = new AuditAnchoredWriterPreparation(
+                options,
+                supervisorBootId,
+                quota,
+                sink);
+            quota = null;
+            return preparation;
+        }
+        finally
+        {
+            quota?.Dispose();
+        }
+    }
+
+    private void InitializeNewWriterUnderQuota(
+        bool recoverTemporaryArtifacts,
+        bool directPreparedSegment)
+    {
+        if (recoverTemporaryArtifacts)
+            RecoverCrashAllocationsAndValidateSpool();
+        ValidateRetainedSegments();
+        // A hard-killed prior supervisor could not trim the keep-EOF
+        // allocation on its last segment. Reclaim that invisible physical
+        // slack before charging the new supervisor's full live segment.
+        ReclaimClosedAllocations();
+        EnsurePhysicalAllocationAvailable(isFreshWriter: true);
+        EnsureRecoveryAdmissionAvailable(segmentIndex: 0);
+        (_stream, _currentSegmentPath, _currentSegmentIdentity) =
+            directPreparedSegment ? CreateDirectPreparedSegment() : CreateSegment(0);
+        SweepClosedSegments(GetUtcNow(), _options.EmergencyReserveBytes);
     }
 
     public long SegmentCapacityBytes => _options.SegmentBytes;
@@ -159,6 +260,19 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
             {
                 RecoverCrashAllocationsAndValidateSpool();
                 return TotalBytesUnderQuotaLock();
+            }
+        }
+    }
+
+    internal long PhysicalCommittedBytesForTests
+    {
+        get
+        {
+            ThrowIfDisposed();
+            using (AcquireQuotaLock())
+            {
+                RecoverCrashAllocationsAndValidateSpool();
+                return PhysicalCommittedBytes(EnumerateSegments());
             }
         }
     }
@@ -196,7 +310,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 
             var now = GetUtcNow();
             SweepClosedSegments(now, reservedBytes);
-            if (TotalBytesUnderQuotaLock() > AggregateCapacityBytes - reservedBytes)
+            var recordCapacity = RecordAggregateCapacityBytes;
+            if (TotalBytesUnderQuotaLock() > recordCapacity - reservedBytes)
                 return false;
 
             if (_stream.Length > SegmentCapacityBytes - reservedBytes)
@@ -206,7 +321,7 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
             }
 
             return _stream.Length <= SegmentCapacityBytes - reservedBytes &&
-                   TotalBytesUnderQuotaLock() <= AggregateCapacityBytes - reservedBytes;
+                   TotalBytesUnderQuotaLock() <= recordCapacity - reservedBytes;
         }
     }
 
@@ -343,7 +458,7 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         // strand terminal slots that were already accepted against this
         // handle.
         ReclaimClosedAllocations();
-        EnsurePhysicalAllocationAvailable();
+        EnsurePhysicalAllocationAvailable(isFreshWriter: false);
         var (nextStream, nextPath, nextIdentity) = CreateSegment(nextIndex);
         var previous = _stream;
         var previousPath = _currentSegmentPath;
@@ -387,11 +502,25 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
             TryTrimClosedSegment(segment);
     }
 
-    private void EnsurePhysicalAllocationAvailable()
+    private void EnsurePhysicalAllocationAvailable(bool isFreshWriter)
     {
         var segments = EnumerateSegments();
-        var committed = PhysicalCommittedBytes(segments);
-        if (committed <= AggregateCapacityBytes - SegmentCapacityBytes) return;
+        var classified = ClassifyRetainedSegments(segments);
+        var committed = PhysicalCommittedBytes(classified);
+        var availableBeforeAllocation = AggregateCapacityBytes - SegmentCapacityBytes;
+        var hasLiveWriter = classified.Any(
+            segment => segment.Access == RetainedSegmentAccess.LiveNewest);
+        if (_options.ProtectionMode == AuditProtectionMode.Anchored &&
+            (!isFreshWriter || hasLiveWriter))
+        {
+            // Rotation and a concurrent fresh writer must leave another full
+            // segment physically allocatable. Only a fresh writer with no live
+            // peer may consume that reserved segment to recover after a crash;
+            // the anchored logical-byte bound then prevents new records until
+            // export frees the older chain.
+            availableBeforeAllocation -= SegmentCapacityBytes;
+        }
+        if (committed <= availableBeforeAllocation) return;
         if (_options.ProtectionMode == AuditProtectionMode.Anchored)
             throw new IOException("Anchored audit allocation capacity is exhausted.");
 
@@ -416,8 +545,18 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 
     private long PhysicalCommittedBytes(IEnumerable<FileInfo> segments)
     {
+        return PhysicalCommittedBytes(ClassifyRetainedSegments(segments));
+    }
+
+    private long RecordAggregateCapacityBytes =>
+        _options.ProtectionMode == AuditProtectionMode.Anchored
+            ? AggregateCapacityBytes - SegmentCapacityBytes
+            : AggregateCapacityBytes;
+
+    private long PhysicalCommittedBytes(IEnumerable<ClassifiedSegment> segments)
+    {
         long committed = 0;
-        foreach (var segment in ClassifyRetainedSegments(segments))
+        foreach (var segment in segments)
         {
             // Only the live newest handle can still own the full keep-EOF
             // preallocation. Export-reader handles retain already-closed
@@ -563,6 +702,132 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
             SecureAuditStorage.TryDelete(path);
             throw;
         }
+    }
+
+    private (FileStream Stream, string Path, AuditSpoolSegmentIdentity Identity)
+        CreateDirectPreparedSegment()
+    {
+        var identity = AuditSpoolSegmentIdentity.Create(_supervisorBootId, index: 0);
+        var path = Path.Combine(_spoolRoot, identity.FileName);
+        FileStream? stream = null;
+        try
+        {
+            var attempt = checked(++_allocationAttempt);
+            if (_faultInjector?.Invoke(FileAuditSinkFaultPoint.PhysicalAllocation, attempt) == true)
+                throw new IOException("Injected physical-allocation failure.");
+
+            // The canonical name is created directly so every crash boundary
+            // leaves either no entry or the one exact segment-zero shape that
+            // anchored startup preflight is authorized to remove. The retained
+            // handle prevents another compliant startup from adopting it.
+            stream = SecureAuditStorage.CreateExclusiveFile(
+                path,
+                SegmentCapacityBytes,
+                FileShare.None,
+                FileAccess.ReadWrite);
+            if (stream.Length != 0 || stream.Position != 0)
+                throw new IOException("Physical audit allocation changed logical JSONL EOF.");
+            stream.Flush(flushToDisk: true);
+            SecureAuditStorage.ConfirmRetainedCreatedFileDurability(
+                _spoolRoot,
+                path,
+                stream.SafeFileHandle);
+            return (stream, path, identity);
+        }
+        catch
+        {
+            if (stream is not null)
+            {
+                try
+                {
+                    // A CreateNew collision leaves stream null. Never unlink
+                    // that pre-existing name; cleanup is authorized only by
+                    // the retained identity created in this call.
+                    SecureAuditStorage.DeleteRetainedProtectedFile(
+                        _spoolRoot,
+                        path,
+                        stream.SafeFileHandle);
+                }
+                catch
+                {
+                    // Preserve the construction failure. An uncertain or
+                    // replaced path remains for strict preflight to reject.
+                }
+                stream.Dispose();
+            }
+            throw;
+        }
+    }
+
+    internal void VerifyPreparedAnchoredSegment(AuditSpoolQuotaLease retainedPreparationQuota)
+    {
+        ArgumentNullException.ThrowIfNull(retainedPreparationQuota);
+        ThrowIfDisposed();
+        retainedPreparationQuota.VerifyOwnership();
+        if (_options.ProtectionMode != AuditProtectionMode.Anchored ||
+            _exportWriterLease is not null ||
+            _segmentIndex != 0 ||
+            _currentSegmentIdentity != AuditSpoolSegmentIdentity.Create(_supervisorBootId, 0) ||
+            _committedSegmentBytes != 0 ||
+            _stream.Length != 0)
+        {
+            throw new IOException("The staged anchored writer is not an exact empty segment zero.");
+        }
+
+        SecureAuditStorage.VerifyProtectedDirectory(_spoolRoot);
+        _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+            _currentSegmentPath,
+            _stream.SafeFileHandle);
+        var sameBoot = EnumerateSegments()
+            .Select(ParseNamedSegment)
+            .Where(segment => segment.BootId == _supervisorBootId)
+            .ToArray();
+        if (sameBoot.Length != 1 ||
+            sameBoot[0].Index != 0 ||
+            !PathsEqual(sameBoot[0].Segment.FullName, _currentSegmentPath) ||
+            sameBoot[0].Segment.Length != 0)
+        {
+            throw new IOException("The staged anchored writer boot has ambiguous spool state.");
+        }
+    }
+
+    internal void AttachPreparedCheckpointOwner(
+        AuditOptions options,
+        AuditExportCheckpointStore checkpointStore,
+        AuditSpoolQuotaLease retainedPreparationQuota)
+    {
+        ArgumentNullException.ThrowIfNull(checkpointStore);
+        VerifyPreparedAnchoredSegment(retainedPreparationQuota);
+        IDisposable? writerLease = checkpointStore.RetainInitialJournalWriter(
+            options,
+            _supervisorBootId);
+        try
+        {
+            VerifyPreparedAnchoredSegment(retainedPreparationQuota);
+            if (Interlocked.CompareExchange(
+                    ref _exportWriterLease,
+                    writerLease,
+                    comparand: null) is not null)
+            {
+                throw new InvalidOperationException(
+                    "The staged anchored writer already has checkpoint ownership.");
+            }
+            writerLease = null;
+        }
+        finally
+        {
+            writerLease?.Dispose();
+        }
+    }
+
+    internal void ClosePreparedUnderRetainedQuota(
+        AuditSpoolQuotaLease retainedPreparationQuota)
+    {
+        if (_disposed)
+            return;
+        VerifyPreparedAnchoredSegment(retainedPreparationQuota);
+        _stream.Dispose();
+        _disposed = true;
     }
 
     private void CloseAndTrimCurrent() => CloseAndTrim(

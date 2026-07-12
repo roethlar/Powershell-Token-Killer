@@ -71,6 +71,40 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         AuditOptions options,
         Guid supervisorBootId)
     {
+        return CreateForWriterCore(options, supervisorBootId, preparation: null);
+    }
+
+    /// <summary>
+    /// Creates control state only after the opaque production preparation has
+    /// durably published and retained its exact empty segment zero.
+    /// </summary>
+    internal static AuditExportCheckpointStore CreateForPreparedWriter(
+        AuditOptions options,
+        AuditAnchoredWriterPreparation preparation)
+    {
+        ArgumentNullException.ThrowIfNull(preparation);
+        preparation.VerifyForCheckpointCreation(options);
+        var store = CreateForWriterCore(
+            options,
+            preparation.SupervisorBootId,
+            preparation);
+        try
+        {
+            preparation.BindCheckpointStore(store);
+            return store;
+        }
+        catch
+        {
+            store.Dispose();
+            throw;
+        }
+    }
+
+    private static AuditExportCheckpointStore CreateForWriterCore(
+        AuditOptions options,
+        Guid supervisorBootId,
+        AuditAnchoredWriterPreparation? preparation)
+    {
         ArgumentNullException.ThrowIfNull(options);
         AuditSpoolSegmentIdentity.RequireUuidV4(
             supervisorBootId,
@@ -85,23 +119,22 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         var root = PrepareOrVerifyRoot(options.RootDirectory);
         var checkpointPath = Path.Combine(root, CheckpointFileName(supervisorBootId));
         var lockPath = Path.Combine(root, LockFileName(supervisorBootId));
-        if (EntryExists(checkpointPath) ||
-            EntryExists(lockPath) ||
-            HasSameBootSegment(options.SpoolDirectory, supervisorBootId))
+        if (EntryExists(checkpointPath) || EntryExists(lockPath))
         {
             throw new IOException("A fresh audit writer boot already has persistent state.");
         }
+        VerifyWriterSegmentState(options, supervisorBootId, preparation);
 
         FileStream? lease = null;
         try
         {
             lease = SecureAuditStorage.CreateExclusiveFile(lockPath);
             VerifyLease(lease, root, lockPath);
-            if (EntryExists(checkpointPath) ||
-                HasSameBootSegment(options.SpoolDirectory, supervisorBootId))
+            if (EntryExists(checkpointPath))
             {
                 throw new IOException("A fresh audit writer boot raced existing state.");
             }
+            VerifyWriterSegmentState(options, supervisorBootId, preparation);
 
             var initial = AuditExportCheckpoint.Initial(supervisorBootId);
             var initialBytes = AuditExportCheckpointCodec.Serialize(initial);
@@ -113,6 +146,7 @@ internal sealed class AuditExportCheckpointStore : IDisposable
             if (!published.Bytes.AsSpan().SequenceEqual(initialBytes))
                 throw new IOException("The initial audit export checkpoint was not published exactly.");
             VerifyLease(lease, root, lockPath);
+            VerifyWriterSegmentState(options, supervisorBootId, preparation);
 
             var store = new AuditExportCheckpointStore(
                 supervisorBootId,
@@ -129,6 +163,26 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         {
             lease?.Dispose();
         }
+    }
+
+    private static void VerifyWriterSegmentState(
+        AuditOptions options,
+        Guid supervisorBootId,
+        AuditAnchoredWriterPreparation? preparation)
+    {
+        if (preparation is null)
+        {
+            if (HasSameBootSegment(options.SpoolDirectory, supervisorBootId))
+            {
+                throw new IOException(
+                    "A fresh audit writer boot already has persistent state.");
+            }
+            return;
+        }
+
+        if (preparation.SupervisorBootId != supervisorBootId)
+            throw new IOException("The prepared audit writer boot identity changed.");
+        preparation.VerifyForCheckpointCreation(options);
     }
 
     /// <summary>
@@ -825,6 +879,40 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                "." + temporaryId.ToString("N") + TemporarySuffix;
     }
 
+    internal static bool TryParseControlFileName(
+        string fileName,
+        out Guid supervisorBootId,
+        out bool isCheckpoint)
+    {
+        supervisorBootId = default;
+        isCheckpoint = false;
+        if (!fileName.StartsWith(FilePrefix, StringComparison.Ordinal))
+            return false;
+
+        string suffix;
+        if (fileName.EndsWith(CheckpointSuffix, StringComparison.Ordinal))
+        {
+            suffix = CheckpointSuffix;
+            isCheckpoint = true;
+        }
+        else if (fileName.EndsWith(LockSuffix, StringComparison.Ordinal))
+        {
+            suffix = LockSuffix;
+        }
+        else
+        {
+            return false;
+        }
+
+        var id = fileName.AsSpan(
+            FilePrefix.Length,
+            fileName.Length - FilePrefix.Length - suffix.Length);
+        return id.Length == 32 &&
+               Guid.TryParseExact(id, "N", out supervisorBootId) &&
+               AuditSpoolSegmentIdentity.IsUuidV4(supervisorBootId) &&
+               supervisorBootId.ToString("N").AsSpan().SequenceEqual(id);
+    }
+
     private static string PrepareOrVerifyRoot(string rootPath)
     {
         var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(rootPath));
@@ -1118,7 +1206,7 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         SecureAuditStorage.VerifyExternalProtectedDirectory(root);
     }
 
-    private static bool IsCanonicalTemporaryName(string name, Guid supervisorBootId)
+    internal static bool IsCanonicalTemporaryName(string name, Guid supervisorBootId)
     {
         var prefix = "." + CheckpointFileName(supervisorBootId) + ".";
         if (!name.StartsWith(prefix, StringComparison.Ordinal) ||

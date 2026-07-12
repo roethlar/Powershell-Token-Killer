@@ -626,7 +626,9 @@ public sealed class FileAuditJournalSinkTests : IDisposable
     [Fact]
     public void Anchored_startup_charges_a_checkpoint_owned_locked_prefix_by_logical_length()
     {
-        var options = AnchoredOptions(NewRoot(), aggregateBytes: 40_960);
+        // Three full writer slots plus one aligned logical-prefix allowance:
+        // the final full slot remains reserved for concurrent restart.
+        var options = AnchoredOptions(NewRoot(), aggregateBytes: 57_344);
         using var firstStore = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var firstSink = new FileAuditJournalSink(
             options,
