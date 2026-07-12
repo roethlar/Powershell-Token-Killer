@@ -127,6 +127,16 @@ public sealed class AuditLiveSpoolReaderTests
         reader.AdvanceAfterClosedPrefix(rotation, prefixEnd);
         Assert.Throws<ArgumentException>(() =>
             reader.AdvanceAfterClosedPrefix(rotation, prefixEnd));
+        using (var releasedPrefix = new FileStream(
+                   Path.Combine(
+                       fixture.Options.SpoolDirectory,
+                       AuditSpoolSegmentIdentity.Create(BootId, 0).FileName),
+                   FileMode.Open,
+                   FileAccess.Read,
+                   FileShare.None))
+        {
+            Assert.True(releasedPrefix.Length > 0);
+        }
 
         var thirdExpected = fixture.Append("call.failed");
         var third = Assert.IsAssignableFrom<IAuditLiveSpoolRecordPosition>(

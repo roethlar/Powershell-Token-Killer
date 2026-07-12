@@ -553,7 +553,7 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
         return ownedPosition;
     }
 
-    internal static AuditClosedSpoolPrefixTransitionState RequireCurrentPrefixEnd(
+    internal static AuditClosedSpoolPrefixTransitionState ConsumeCurrentPrefixEnd(
         IAuditClosedSpoolPrefixEndPosition position,
         IAuditLiveSpoolRotationPosition rotation,
         Guid expectedSupervisorBootId)
@@ -569,13 +569,13 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                 "The closed audit spool prefix-end capability is not authentic.",
                 nameof(position));
         }
-        return owned.Owner.RequireCurrentPrefixEndLocked(
+        return owned.Owner.ConsumeCurrentPrefixEndLocked(
             owned,
             rotation,
             boundary);
     }
 
-    private AuditClosedSpoolPrefixTransitionState RequireCurrentPrefixEndLocked(
+    private AuditClosedSpoolPrefixTransitionState ConsumeCurrentPrefixEndLocked(
         PrefixEndPosition position,
         IAuditLiveSpoolRotationPosition rotation,
         AuditSpoolSegmentIdentity boundary)
@@ -594,7 +594,7 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                     nameof(position));
             }
 
-            return _checkpointLease.WithOwnedCheckpoint(checkpoint =>
+            var transition = _checkpointLease.WithOwnedCheckpoint(checkpoint =>
             {
                 if (!ReferenceEquals(checkpoint, position.Checkpoint))
                 {
@@ -606,6 +606,8 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                     position.TailSequence,
                     position.TailEventHash);
             });
+            ReleaseSnapshot();
+            return transition;
         }
     }
 

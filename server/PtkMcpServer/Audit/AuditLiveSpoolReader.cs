@@ -158,7 +158,7 @@ internal sealed class AuditLiveSpoolReader
         ArgumentNullException.ThrowIfNull(rotation);
         ArgumentNullException.ThrowIfNull(prefixEnd);
         _ = RequirePendingRotation(rotation, _supervisorBootId);
-        var transition = AuditClosedSpoolChainReader.RequireCurrentPrefixEnd(
+        var transition = AuditClosedSpoolChainReader.ConsumeCurrentPrefixEnd(
             prefixEnd,
             rotation,
             _supervisorBootId);
