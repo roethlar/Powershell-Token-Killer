@@ -416,6 +416,29 @@ public sealed class AuditLiveSpoolReaderTests
     }
 
     [Fact]
+    public async Task Boot_source_holds_the_evidence_observer_through_live_checkpoint()
+    {
+        using var fixture = new LiveFixture();
+        var transport = new ScriptedTransport();
+        var observer = new OrderingObserver(
+            () => transport.Requests.Count,
+            () => fixture.Store.Current.Sequence);
+        using var source = new AuditBootExportSource(
+            fixture.Journal,
+            fixture.Store,
+            transport,
+            observer);
+        var record = fixture.Append("call.accepted");
+
+        var acknowledged = await source.ExportNextAsync(CancellationToken.None);
+
+        Assert.Equal(AuditBootExportStepKind.Advanced, acknowledged.Kind);
+        Assert.Equal(1, observer.ObserveCalls);
+        Assert.Equal(1, observer.CompleteCalls);
+        Assert.Equal(record.Utf8Line, observer.ExactJsonl);
+    }
+
+    [Fact]
     public async Task Boot_source_persists_live_block_without_same_configuration_retry()
     {
         using var fixture = new LiveFixture();
@@ -623,6 +646,40 @@ public sealed class AuditLiveSpoolReaderTests
                     warning: false)
                 : _results.Dequeue();
             return Task.FromResult(result);
+        }
+    }
+
+    private sealed class OrderingObserver(
+        Func<int> transportCalls,
+        Func<long> checkpointSequence) : IAuditExportAcknowledgmentObserver
+    {
+        internal int ObserveCalls { get; private set; }
+        internal int CompleteCalls { get; private set; }
+        internal ReadOnlyMemory<byte> ExactJsonl { get; private set; }
+
+        public IAuditEvidenceAnchorLease ObserveAcknowledgment(
+            ReadOnlyMemory<byte> exactJsonlBytes)
+        {
+            Assert.Equal(1, transportCalls());
+            Assert.Equal(0, checkpointSequence());
+            ObserveCalls++;
+            ExactJsonl = exactJsonlBytes.ToArray();
+            return new Lease(this, checkpointSequence);
+        }
+
+        private sealed class Lease(
+            OrderingObserver owner,
+            Func<long> checkpointSequence) : IAuditEvidenceAnchorLease
+        {
+            public void CompleteAfterCheckpoint()
+            {
+                Assert.Equal(1, checkpointSequence());
+                owner.CompleteCalls++;
+            }
+
+            public void Dispose()
+            {
+            }
         }
     }
 }

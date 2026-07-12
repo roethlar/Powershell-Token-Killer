@@ -39,11 +39,13 @@ internal sealed class AuditRuntimeResources : IDisposable
         AuditHealth health,
         string producerVersion,
         IAuditOtlpExportTransport transport,
+        ScriptEvidenceStoreProvider evidence,
         TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(health);
         ArgumentNullException.ThrowIfNull(transport);
+        ArgumentNullException.ThrowIfNull(evidence);
         ArgumentException.ThrowIfNullOrWhiteSpace(producerVersion);
         if (options.ProtectionMode != AuditProtectionMode.Anchored)
         {
@@ -67,6 +69,8 @@ internal sealed class AuditRuntimeResources : IDisposable
         AuditBootExportSource? current = null;
         AuditExportCoordinator? coordinator = null;
         AuditExportLoop? exportLoop = null;
+        var acknowledgmentObserver =
+            new ScriptEvidenceAcknowledgmentObserver(evidence);
         try
         {
             preparation = FileAuditJournalSink.PrepareAnchored(
@@ -83,11 +87,13 @@ internal sealed class AuditRuntimeResources : IDisposable
                 journal,
                 checkpointStore,
                 transport,
+                acknowledgmentObserver,
                 timeProvider);
             coordinator = new AuditExportCoordinator(
                 options,
                 current,
                 transport,
+                acknowledgmentObserver,
                 timeProvider);
             current = null;
             exportLoop = new AuditExportLoop(

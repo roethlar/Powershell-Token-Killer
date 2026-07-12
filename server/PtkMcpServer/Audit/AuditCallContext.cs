@@ -92,6 +92,8 @@ internal sealed class AuditCallContext
         _metadata = metadata;
         _request = metadata.Request;
         _startedUtc = DateTimeOffset.UtcNow;
+        IScriptEvidencePublication? evidencePublication = null;
+        var auditAppendAttempted = false;
 
         try
         {
@@ -100,10 +102,9 @@ internal sealed class AuditCallContext
                 if (exactSubmittedScript is null)
                     throw new InvalidOperationException("Script evidence was required but absent.");
 
-                ScriptEvidenceReference evidence;
                 try
                 {
-                    evidence = _evidence.Store(exactSubmittedScript);
+                    evidencePublication = _evidence.Publish(exactSubmittedScript);
                 }
                 catch (ArgumentOutOfRangeException)
                 {
@@ -117,6 +118,7 @@ internal sealed class AuditCallContext
                     return false;
                 }
 
+                var evidence = evidencePublication.Reference;
                 _request = _request with
                 {
                     OriginalScriptDigest = evidence.ScriptDigest,
@@ -130,8 +132,21 @@ internal sealed class AuditCallContext
                 RequestedRoute = _request.Route,
                 PermittedFallbacks = [],
             };
+            auditAppendAttempted = true;
             Append("call.accepted", outcomeState: "accepted");
             _accepted = true;
+            try
+            {
+                evidencePublication?.CompleteAfterAuditAppend();
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                // call.accepted is already durable and owns the remaining
+                // terminal reservation. A publication-lock release failure
+                // degrades later evidence admission; it must never erase this
+                // accepted call or strand its terminal obligation.
+                _journal.EnterExternalUnavailable("evidence.storage");
+            }
             failureClass = null;
             return true;
         }
@@ -148,13 +163,44 @@ internal sealed class AuditCallContext
         }
         finally
         {
-            if (!_accepted)
+            try
             {
-                _reservation?.Release();
-                _reservation = null;
+                if (!_accepted &&
+                    evidencePublication is not null &&
+                    !auditAppendAttempted)
+                {
+                    try
+                    {
+                        evidencePublication.AbandonBeforeAuditAppend();
+                    }
+                    catch (ScriptEvidenceStorageException)
+                    {
+                        _journal.EnterExternalUnavailable("evidence.storage");
+                        failureClass = "evidence.storage";
+                    }
+                }
+            }
+            finally
+            {
+                try
+                {
+                    evidencePublication?.Dispose();
+                }
+                finally
+                {
+                    if (!_accepted)
+                    {
+                        _reservation?.Release();
+                        _reservation = null;
+                    }
+                }
             }
         }
     }
+
+    private static bool IsFatal(Exception exception) =>
+        exception is OutOfMemoryException or StackOverflowException or
+            AccessViolationException or AppDomainUnloadedException;
 
     internal bool BeginValidation()
     {

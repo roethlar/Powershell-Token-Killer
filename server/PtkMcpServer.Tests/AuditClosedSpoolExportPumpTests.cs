@@ -83,6 +83,51 @@ public sealed class AuditClosedSpoolExportPumpTests
     }
 
     [Fact]
+    public async Task Evidence_observer_runs_after_remote_ack_and_finalizes_after_checkpoint()
+    {
+        using var fixture = new ClosedFixture(recordCount: 1);
+        using var reader = new AuditClosedSpoolChainReader(fixture.Options, fixture.Store);
+        var transport = new ScriptedTransport(
+            AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false));
+        var observer = new OrderingObserver(
+            () => transport.Calls,
+            () => fixture.Store.Current.Sequence);
+        using var pump = new AuditClosedSpoolExportPump(
+            reader,
+            transport,
+            observer);
+
+        var completed = await pump.ExportNextAsync(CancellationToken.None);
+
+        Assert.Equal(AuditClosedSpoolExportStepKind.ChainComplete, completed.Kind);
+        Assert.Equal(1, observer.ObserveCalls);
+        Assert.Equal(1, observer.CompleteCalls);
+        Assert.Equal(fixture.Records[0].Utf8Line, observer.ExactJsonl);
+    }
+
+    [Fact]
+    public async Task Evidence_observer_failure_pins_the_acknowledged_record_and_faults_the_pump()
+    {
+        using var fixture = new ClosedFixture(recordCount: 1);
+        using var reader = new AuditClosedSpoolChainReader(fixture.Options, fixture.Store);
+        var transport = new ScriptedTransport(
+            AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false));
+        using var pump = new AuditClosedSpoolExportPump(
+            reader,
+            transport,
+            new ThrowingObserver());
+
+        await Assert.ThrowsAsync<IOException>(() =>
+            pump.ExportNextAsync(CancellationToken.None));
+        await Assert.ThrowsAsync<IOException>(() =>
+            pump.ExportNextAsync(CancellationToken.None));
+
+        Assert.Equal(1, transport.Calls);
+        Assert.Equal(0, fixture.Store.Current.Sequence);
+        Assert.False(fixture.Store.Current.ChainComplete);
+    }
+
+    [Fact]
     public async Task Real_https_receipt_is_durable_before_the_checkpoint_completes()
     {
         using var fixture = new ClosedFixture(recordCount: 1);
@@ -725,4 +770,45 @@ public sealed class AuditClosedSpoolExportPumpTests
             HealthState = "healthy",
         },
     };
+
+    private sealed class OrderingObserver(
+        Func<int> transportCalls,
+        Func<long> checkpointSequence) : IAuditExportAcknowledgmentObserver
+    {
+        internal int ObserveCalls { get; private set; }
+        internal int CompleteCalls { get; private set; }
+        internal ReadOnlyMemory<byte> ExactJsonl { get; private set; }
+
+        public IAuditEvidenceAnchorLease ObserveAcknowledgment(
+            ReadOnlyMemory<byte> exactJsonlBytes)
+        {
+            Assert.Equal(1, transportCalls());
+            Assert.Equal(0, checkpointSequence());
+            ObserveCalls++;
+            ExactJsonl = exactJsonlBytes.ToArray();
+            return new Lease(this, checkpointSequence);
+        }
+
+        private sealed class Lease(
+            OrderingObserver owner,
+            Func<long> checkpointSequence) : IAuditEvidenceAnchorLease
+        {
+            public void CompleteAfterCheckpoint()
+            {
+                Assert.Equal(1, checkpointSequence());
+                owner.CompleteCalls++;
+            }
+
+            public void Dispose()
+            {
+            }
+        }
+    }
+
+    private sealed class ThrowingObserver : IAuditExportAcknowledgmentObserver
+    {
+        public IAuditEvidenceAnchorLease ObserveAcknowledgment(
+            ReadOnlyMemory<byte> exactJsonlBytes) =>
+            throw new IOException("injected evidence anchor failure");
+    }
 }

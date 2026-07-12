@@ -32,6 +32,7 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
     private readonly AuditBootExportSource _current;
     private readonly IAuditOtlpExportTransport _transport;
     private readonly TimeProvider _timeProvider;
+    private readonly IAuditExportAcknowledgmentObserver _acknowledgmentObserver;
     private readonly HashSet<Guid> _parkedBoots = [];
     private readonly HashSet<Guid> _completedBoots = [];
 
@@ -46,10 +47,26 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
         AuditBootExportSource current,
         IAuditOtlpExportTransport transport,
         TimeProvider? timeProvider = null)
+        : this(
+            options,
+            current,
+            transport,
+            AuditExportAcknowledgmentObserver.None,
+            timeProvider)
+    {
+    }
+
+    internal AuditExportCoordinator(
+        AuditOptions options,
+        AuditBootExportSource current,
+        IAuditOtlpExportTransport transport,
+        IAuditExportAcknowledgmentObserver acknowledgmentObserver,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(current);
         ArgumentNullException.ThrowIfNull(transport);
+        ArgumentNullException.ThrowIfNull(acknowledgmentObserver);
         if (options.ProtectionMode != AuditProtectionMode.Anchored)
         {
             throw new ArgumentException(
@@ -58,6 +75,7 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
         }
         if (!current.UsesOptions(options) ||
             !current.UsesTransport(transport) ||
+            !current.UsesAcknowledgmentObserver(acknowledgmentObserver) ||
             !string.Equals(
                 options.ExportConfigurationIdentity,
                 transport.ConfigurationIdentity,
@@ -72,6 +90,7 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
         _current = current;
         _transport = transport;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _acknowledgmentObserver = acknowledgmentObserver;
     }
 
     public async Task<AuditExportCoordinatorStep> ExportNextAsync(
@@ -271,6 +290,7 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
                         reader,
                         initial,
                         _transport,
+                        _acknowledgmentObserver,
                         _timeProvider);
                     _adopted = new AdoptedChain(
                         supervisorBootId,

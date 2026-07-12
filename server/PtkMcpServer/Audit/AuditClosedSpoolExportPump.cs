@@ -37,6 +37,7 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
     private readonly IAuditOtlpExportTransport _transport;
     private readonly string _configurationIdentity;
     private readonly TimeProvider _timeProvider;
+    private readonly IAuditExportAcknowledgmentObserver _acknowledgmentObserver;
     private readonly AuditClosedSpoolExportMode _mode;
     private readonly IAuditLiveSpoolRotationPosition? _rotation;
     private readonly IAuditLiveSpoolWriterClosedPosition? _writerClosed;
@@ -60,6 +61,24 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
             rotation: null,
             writerClosed: null,
             initialRecovery: null,
+            AuditExportAcknowledgmentObserver.None,
+            timeProvider)
+    {
+    }
+
+    internal AuditClosedSpoolExportPump(
+        AuditClosedSpoolChainReader reader,
+        IAuditOtlpExportTransport transport,
+        IAuditExportAcknowledgmentObserver acknowledgmentObserver,
+        TimeProvider? timeProvider = null)
+        : this(
+            reader,
+            transport,
+            AuditClosedSpoolExportMode.CompleteChain,
+            rotation: null,
+            writerClosed: null,
+            initialRecovery: null,
+            acknowledgmentObserver,
             timeProvider)
     {
     }
@@ -71,10 +90,12 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
         IAuditLiveSpoolRotationPosition? rotation,
         IAuditLiveSpoolWriterClosedPosition? writerClosed,
         AuditClosedSpoolRecovery? initialRecovery,
+        IAuditExportAcknowledgmentObserver acknowledgmentObserver,
         TimeProvider? timeProvider)
     {
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(transport);
+        ArgumentNullException.ThrowIfNull(acknowledgmentObserver);
         var configurationIdentity = transport.ConfigurationIdentity;
         RequireConfigurationIdentity(configurationIdentity);
         if (!string.Equals(
@@ -91,6 +112,7 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
         _transport = transport;
         _configurationIdentity = configurationIdentity;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _acknowledgmentObserver = acknowledgmentObserver;
         _mode = mode;
         _rotation = rotation;
         _writerClosed = writerClosed;
@@ -111,6 +133,26 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
             rotation,
             writerClosed: null,
             initialRecovery: null,
+            AuditExportAcknowledgmentObserver.None,
+            timeProvider);
+    }
+
+    internal static AuditClosedSpoolExportPump ForClosedPrefix(
+        AuditClosedSpoolChainReader reader,
+        IAuditLiveSpoolRotationPosition rotation,
+        IAuditOtlpExportTransport transport,
+        IAuditExportAcknowledgmentObserver acknowledgmentObserver,
+        TimeProvider? timeProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(rotation);
+        return new AuditClosedSpoolExportPump(
+            reader,
+            transport,
+            AuditClosedSpoolExportMode.ClosedPrefix,
+            rotation,
+            writerClosed: null,
+            initialRecovery: null,
+            acknowledgmentObserver,
             timeProvider);
     }
 
@@ -128,6 +170,26 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
             rotation: null,
             writerClosed,
             initialRecovery: null,
+            AuditExportAcknowledgmentObserver.None,
+            timeProvider);
+    }
+
+    internal static AuditClosedSpoolExportPump AfterWriterClosed(
+        AuditClosedSpoolChainReader reader,
+        IAuditLiveSpoolWriterClosedPosition writerClosed,
+        IAuditOtlpExportTransport transport,
+        IAuditExportAcknowledgmentObserver acknowledgmentObserver,
+        TimeProvider? timeProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(writerClosed);
+        return new AuditClosedSpoolExportPump(
+            reader,
+            transport,
+            AuditClosedSpoolExportMode.WriterClosedChain,
+            rotation: null,
+            writerClosed,
+            initialRecovery: null,
+            acknowledgmentObserver,
             timeProvider);
     }
 
@@ -151,6 +213,32 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
             rotation: null,
             writerClosed: null,
             initialRecovery,
+            AuditExportAcknowledgmentObserver.None,
+            timeProvider);
+    }
+
+    internal static AuditClosedSpoolExportPump ForAdoptedClosedChain(
+        AuditClosedSpoolChainReader reader,
+        AuditClosedSpoolRecovery initialRecovery,
+        IAuditOtlpExportTransport transport,
+        IAuditExportAcknowledgmentObserver acknowledgmentObserver,
+        TimeProvider? timeProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(initialRecovery);
+        if (initialRecovery is AuditClosedSpoolRecovery.PrefixEnd)
+        {
+            throw new ArgumentException(
+                "An adopted closed chain cannot begin at a live-prefix end.",
+                nameof(initialRecovery));
+        }
+        return new AuditClosedSpoolExportPump(
+            reader,
+            transport,
+            AuditClosedSpoolExportMode.CompleteChain,
+            rotation: null,
+            writerClosed: null,
+            initialRecovery,
+            acknowledgmentObserver,
             timeProvider);
     }
 
@@ -353,10 +441,13 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
         bool hasHealthWarning,
         IAuditClosedSpoolConfigurationRetryAuthorization? configurationRetry = null)
     {
+        using var evidenceAnchor = _acknowledgmentObserver.ObserveAcknowledgment(
+            position.ExactJsonlBytes);
         if (configurationRetry is null)
             _reader.Acknowledge(position, _configurationIdentity);
         else
             _reader.AcknowledgeConfigurationRetry(configurationRetry);
+        evidenceAnchor.CompleteAfterCheckpoint();
         _initialized = false;
         _next = null;
         _blocked = null;

@@ -54,6 +54,31 @@ internal sealed class ScriptEvidenceStoreProvider
         }
     }
 
+    internal IScriptEvidencePublication Publish(string script)
+    {
+        lock (_gate)
+        {
+            try
+            {
+                return GetOrCreateLocked().Publish(script);
+            }
+            catch (ScriptEvidenceStorageException)
+            {
+                _store = null;
+                throw;
+            }
+            catch (ArgumentException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                _store = null;
+                throw new ScriptEvidenceStorageException();
+            }
+        }
+    }
+
     internal bool Probe()
     {
         lock (_gate)
@@ -67,6 +92,28 @@ internal sealed class ScriptEvidenceStoreProvider
             {
                 _store = null;
                 return false;
+            }
+        }
+    }
+
+    internal IAuditEvidenceAnchorLease MarkAnchored(
+        AuditEvidenceAcknowledgmentPosition acknowledgment)
+    {
+        lock (_gate)
+        {
+            try
+            {
+                return GetOrCreateLocked().MarkAnchored(acknowledgment);
+            }
+            catch (ScriptEvidenceStorageException)
+            {
+                _store = null;
+                throw;
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                _store = null;
+                throw new ScriptEvidenceStorageException();
             }
         }
     }

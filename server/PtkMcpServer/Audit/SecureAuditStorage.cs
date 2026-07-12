@@ -23,6 +23,7 @@ public enum SecureAuditStorageFaultStage
     Write,
     Flush,
     Publish,
+    Release,
 }
 
 /// <summary>

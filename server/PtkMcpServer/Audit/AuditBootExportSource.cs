@@ -39,6 +39,7 @@ internal sealed class AuditBootExportSource : IDisposable
     private readonly IAuditOtlpExportTransport _transport;
     private readonly string _configurationIdentity;
     private readonly TimeProvider _timeProvider;
+    private readonly IAuditExportAcknowledgmentObserver _acknowledgmentObserver;
     private readonly AuditLiveSpoolReader _live;
 
     private AuditBootExportPhase _phase = AuditBootExportPhase.Live;
@@ -54,10 +55,26 @@ internal sealed class AuditBootExportSource : IDisposable
         AuditExportCheckpointStore checkpointStore,
         IAuditOtlpExportTransport transport,
         TimeProvider? timeProvider = null)
+        : this(
+            journal,
+            checkpointStore,
+            transport,
+            AuditExportAcknowledgmentObserver.None,
+            timeProvider)
+    {
+    }
+
+    internal AuditBootExportSource(
+        AuditJournal journal,
+        AuditExportCheckpointStore checkpointStore,
+        IAuditOtlpExportTransport transport,
+        IAuditExportAcknowledgmentObserver acknowledgmentObserver,
+        TimeProvider? timeProvider = null)
     {
         ArgumentNullException.ThrowIfNull(journal);
         ArgumentNullException.ThrowIfNull(checkpointStore);
         ArgumentNullException.ThrowIfNull(transport);
+        ArgumentNullException.ThrowIfNull(acknowledgmentObserver);
         _options = journal.Options;
         _supervisorBootId = journal.SupervisorBootId;
         _checkpointStore = checkpointStore;
@@ -73,6 +90,7 @@ internal sealed class AuditBootExportSource : IDisposable
                 nameof(transport));
         }
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _acknowledgmentObserver = acknowledgmentObserver;
         _live = new AuditLiveSpoolReader(journal, checkpointStore);
     }
 
@@ -85,6 +103,10 @@ internal sealed class AuditBootExportSource : IDisposable
 
     internal bool UsesOptions(AuditOptions options) =>
         ReferenceEquals(_options, options);
+
+    internal bool UsesAcknowledgmentObserver(
+        IAuditExportAcknowledgmentObserver acknowledgmentObserver) =>
+        ReferenceEquals(_acknowledgmentObserver, acknowledgmentObserver);
 
     internal async Task<AuditBootExportStep> ExportNextAsync(
         CancellationToken cancellationToken)
@@ -230,7 +252,10 @@ internal sealed class AuditBootExportSource : IDisposable
         IAuditLiveSpoolRecordPosition position,
         AuditExportAttemptResult attempt)
     {
+        using var evidenceAnchor = _acknowledgmentObserver.ObserveAcknowledgment(
+            position.ExactJsonlBytes);
         _live.Acknowledge(position, _configurationIdentity);
+        evidenceAnchor.CompleteAfterCheckpoint();
         return new AuditBootExportStep(
             AuditBootExportStepKind.Advanced,
             position.EventId,
@@ -290,6 +315,7 @@ internal sealed class AuditBootExportSource : IDisposable
                 reader,
                 rotation,
                 _transport,
+                _acknowledgmentObserver,
                 _timeProvider);
             _rotation = rotation;
             _closedReader = reader;
@@ -317,6 +343,7 @@ internal sealed class AuditBootExportSource : IDisposable
                 reader,
                 writerClosed,
                 _transport,
+                _acknowledgmentObserver,
                 _timeProvider);
             _closedReader = reader;
             _closedPump = pump;

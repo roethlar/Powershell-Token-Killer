@@ -8,6 +8,40 @@ public sealed record ScriptEvidenceReference(
     string ScriptDigest,
     int ByteLength);
 
+internal interface IScriptEvidencePublication : IDisposable
+{
+    ScriptEvidenceReference Reference { get; }
+
+    /// <summary>
+    /// Releases the publication/quota lease only after the audit record that
+    /// references <see cref="Reference"/> has durably committed.
+    /// </summary>
+    void CompleteAfterAuditAppend();
+
+    /// <summary>
+    /// Marks a publication retention-eligible only when the caller can prove
+    /// no audit append was attempted. Ambiguous append failures must Dispose
+    /// without calling this method and remain pinned.
+    /// </summary>
+    void AbandonBeforeAuditAppend();
+}
+
+internal interface IAuditEvidenceAnchorLease : IDisposable
+{
+    /// <summary>
+    /// Finalizes retention eligibility after the exact acknowledged record's
+    /// checkpoint has durably advanced.
+    /// </summary>
+    void CompleteAfterCheckpoint();
+}
+
+internal readonly record struct AuditEvidenceAcknowledgmentPosition(
+    Guid SupervisorBootId,
+    long Sequence,
+    Guid EventId,
+    string EvidenceId,
+    string ScriptDigest);
+
 public sealed class ScriptEvidenceStorageException : IOException
 {
     internal ScriptEvidenceStorageException()
@@ -36,8 +70,17 @@ public sealed class ScriptEvidenceStore
     private readonly TimeSpan _retentionAge;
     private readonly AuditProtectionMode _protectionMode;
     private readonly string _quotaLockPath;
+    private readonly AuditOptions? _checkpointOptions;
     private readonly object _gate = new();
     private readonly Action<SecureAuditStorageFaultStage>? _faultInjector;
+
+    private enum ArtifactState
+    {
+        AwaitingAnchor,
+        Anchoring,
+        Anchored,
+        Unreferenced,
+    }
 
     public ScriptEvidenceStore(
         string absoluteRootPath,
@@ -48,7 +91,8 @@ public sealed class ScriptEvidenceStore
             AuditOptions.DefaultEvidenceAggregateBytes,
             AuditOptions.DefaultEvidenceRetentionAge,
             AuditProtectionMode.LocalOnly,
-            faultInjector)
+            faultInjector,
+            checkpointOptions: null)
     {
     }
 
@@ -61,7 +105,8 @@ public sealed class ScriptEvidenceStore
             options.EvidenceAggregateBytes,
             options.EvidenceRetentionAge,
             options.ProtectionMode,
-            faultInjector)
+            faultInjector,
+            options)
     {
     }
 
@@ -71,13 +116,15 @@ public sealed class ScriptEvidenceStore
         long aggregateBytes,
         TimeSpan retentionAge,
         AuditProtectionMode protectionMode,
-        Action<SecureAuditStorageFaultStage>? faultInjector)
+        Action<SecureAuditStorageFaultStage>? faultInjector,
+        AuditOptions? checkpointOptions)
     {
         _faultInjector = faultInjector;
         _maximumBytes = maximumBytes;
         _aggregateBytes = aggregateBytes;
         _retentionAge = retentionAge;
         _protectionMode = protectionMode;
+        _checkpointOptions = checkpointOptions;
         try
         {
             _root = SecureAuditStorage.PrepareRoot(absoluteRootPath);
@@ -98,6 +145,13 @@ public sealed class ScriptEvidenceStore
     }
 
     public ScriptEvidenceReference Store(string script)
+    {
+        using var publication = Publish(script);
+        publication.CompleteAfterAuditAppend();
+        return publication.Reference;
+    }
+
+    internal IScriptEvidencePublication Publish(string script)
     {
         ArgumentNullException.ThrowIfNull(script);
 
@@ -122,11 +176,12 @@ public sealed class ScriptEvidenceStore
         }
 
         string? temporaryPath = null;
+        IDisposable? quota = null;
         try
         {
             lock (_gate)
             {
-                using var quota = AcquireQuotaLock();
+                quota = AcquireQuotaLock();
                 _ = SweepAndMeasure(bytes.Length);
                 var evidenceId = Guid.NewGuid().ToString("D");
                 var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
@@ -147,7 +202,10 @@ public sealed class ScriptEvidenceStore
 
                 InvokeFault(SecureAuditStorageFaultStage.Publish);
                 SecureAuditStorage.PublishAtomically(temporaryPath, publishedPath, _root);
-                return reference;
+                temporaryPath = null;
+                var publication = new EvidencePublication(this, reference, quota);
+                quota = null;
+                return publication;
             }
         }
         catch (Exception exception) when (!IsFatal(exception))
@@ -161,6 +219,7 @@ public sealed class ScriptEvidenceStore
         }
         finally
         {
+            quota?.Dispose();
             CryptographicOperations.ZeroMemory(bytes);
         }
     }
@@ -172,6 +231,83 @@ public sealed class ScriptEvidenceStore
             using var quota = AcquireQuotaLock();
             _ = SweepAndMeasure(requiredPayloadBytes: null);
             SecureAuditStorage.ProbeWritableDirectory(_root);
+        }
+    }
+
+    internal IAuditEvidenceAnchorLease MarkAnchored(
+        AuditEvidenceAcknowledgmentPosition acknowledgment)
+    {
+        if (_protectionMode != AuditProtectionMode.Anchored)
+        {
+            throw new InvalidOperationException(
+                "Script evidence anchoring requires anchored protection mode.");
+        }
+        ValidateAcknowledgment(acknowledgment);
+        IDisposable? quota = null;
+        try
+        {
+            lock (_gate)
+            {
+                quota = AcquireQuotaLock();
+                using var inventory = InventoryArtifacts();
+                var matches = inventory.Artifacts
+                    .Where(artifact =>
+                        string.Equals(
+                            artifact.EvidenceId,
+                            acknowledgment.EvidenceId,
+                            StringComparison.Ordinal) &&
+                        string.Equals(
+                            artifact.Digest,
+                            acknowledgment.ScriptDigest,
+                            StringComparison.Ordinal))
+                    .ToArray();
+                if (matches.Length != 1)
+                    throw new IOException("The acknowledged evidence artifact state is ambiguous.");
+
+                var artifact = matches[0];
+                if (artifact.State is ArtifactState.Unreferenced)
+                    throw new IOException("Unreferenced evidence cannot be acknowledged.");
+                if (artifact.State is ArtifactState.Anchoring)
+                {
+                    var prior = artifact.AnchorPosition
+                        ?? throw new IOException(
+                            "Anchoring evidence has no durable acknowledgment position.");
+                    if (prior.SupervisorBootId != acknowledgment.SupervisorBootId ||
+                        acknowledgment.Sequence < prior.Sequence ||
+                        (acknowledgment.Sequence == prior.Sequence &&
+                         acknowledgment.EventId != prior.EventId))
+                    {
+                        throw new IOException(
+                            "The evidence acknowledgment does not follow its durable anchor state.");
+                    }
+                }
+
+                if (artifact.State is ArtifactState.AwaitingAnchor)
+                {
+                    var anchoringPath = EvidencePath(
+                        acknowledgment.EvidenceId,
+                        acknowledgment.ScriptDigest,
+                        ArtifactState.Anchoring,
+                        acknowledgment);
+                    RenameArtifact(artifact, anchoringPath);
+                }
+
+                var lease = new EvidenceAnchorLease(
+                    this,
+                    acknowledgment,
+                    artifact.State is ArtifactState.Anchored,
+                    quota);
+                quota = null;
+                return lease;
+            }
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            throw new ScriptEvidenceStorageException();
+        }
+        finally
+        {
+            quota?.Dispose();
         }
     }
 
@@ -187,61 +323,551 @@ public sealed class ScriptEvidenceStore
         // unbounded population of zero/tiny files and full-directory scans.
         var requiredCharge = requiredPayloadBytes.HasValue ? _maximumBytes : 0L;
 
-        SecureAuditStorage.VerifyProtectedDirectory(_root);
-        var retained = new List<FileInfo>();
-        foreach (var path in Directory.EnumerateFileSystemEntries(_root))
+        var inventory = InventoryArtifacts();
+        try
         {
-            if (Directory.Exists(path))
-                throw new IOException("The evidence root contains an unexpected directory.");
-            SecureAuditStorage.VerifyProtectedFile(path);
-            var file = new FileInfo(path);
-            if (string.Equals(file.Name, QuotaLockFileName, StringComparison.Ordinal))
-                continue;
-            if (IsTemporaryName(file.Name))
+            if (PromoteCheckpointedAnchoring(inventory))
             {
-                File.Delete(file.FullName);
-                continue;
+                inventory.Dispose();
+                inventory = InventoryArtifacts();
             }
-            if (!TryParseEvidenceName(file.Name, out var expectedDigest) || file.Length > _maximumBytes)
-                throw new IOException("The evidence root contains an invalid artifact.");
-            using (var stream = new FileStream(
-                       file.FullName,
-                       FileMode.Open,
-                       FileAccess.Read,
-                       FileShare.Read,
-                       bufferSize: 16 * 1024,
-                       FileOptions.SequentialScan))
+            var retained = inventory.Artifacts.ToList();
+            var expirationCutoff = DateTime.UtcNow - _retentionAge;
+            foreach (var artifact in retained
+                         .Where(IsRetentionEligible)
+                         .Where(artifact => artifact.LastWriteTimeUtc <= expirationCutoff)
+                         .OrderBy(artifact => artifact.LastWriteTimeUtc)
+                         .ThenBy(artifact => artifact.FileName, StringComparer.Ordinal)
+                         .ToArray())
             {
-                var actualDigest = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
-                if (!string.Equals(actualDigest, expectedDigest, StringComparison.Ordinal))
-                    throw new IOException("The evidence artifact digest does not match its protected name.");
+                DeleteArtifact(artifact);
+                retained.Remove(artifact);
             }
-            retained.Add(file);
-        }
 
-        var total = checked((long)retained.Count * _maximumBytes);
-        if (total <= _aggregateBytes - requiredCharge) return total;
-        // Published evidence is an already-accepted audit obligation. Local
-        // journal retention is segment-based, so independently deleting an
-        // evidence file by age or quota can strand a still-retained dispatch
-        // reference. Coordinated journal/evidence GC belongs to the exporter
-        // slice; until then every protection mode fails closed at capacity.
-        throw new IOException("Evidence capacity is exhausted.");
+            var maximumRetained = (_aggregateBytes - requiredCharge) / _maximumBytes;
+            if (retained.Count > maximumRetained)
+            {
+                foreach (var artifact in retained
+                             .Where(IsRetentionEligible)
+                             .OrderBy(artifact => artifact.LastWriteTimeUtc)
+                             .ThenBy(artifact => artifact.FileName, StringComparer.Ordinal)
+                             .ToArray())
+                {
+                    DeleteArtifact(artifact);
+                    retained.Remove(artifact);
+                    if (retained.Count <= maximumRetained) break;
+                }
+            }
+
+            if (retained.Count > maximumRetained)
+                throw new IOException("Evidence capacity is exhausted.");
+            return checked((long)retained.Count * _maximumBytes);
+        }
+        finally
+        {
+            inventory.Dispose();
+        }
     }
 
-    private static bool TryParseEvidenceName(string name, out string digest)
+    private EvidenceInventory InventoryArtifacts()
     {
+        SecureAuditStorage.VerifyProtectedDirectory(_root);
+        var artifacts = new List<EvidenceArtifact>();
+        var identities = new HashSet<ProtectedFileIdentity>();
+        var maximumEntries = checked(_aggregateBytes / _maximumBytes + 2L);
+        long entryCount = 0;
+        try
+        {
+            foreach (var path in Directory.EnumerateFileSystemEntries(_root))
+            {
+                entryCount = checked(entryCount + 1);
+                if (entryCount > maximumEntries)
+                {
+                    throw new IOException(
+                        "The evidence inventory exceeds its configured entry bound.");
+                }
+                if (Directory.Exists(path))
+                    throw new IOException("The evidence root contains an unexpected directory.");
+                SecureAuditStorage.VerifyProtectedFile(path);
+                var file = new FileInfo(path);
+                if (string.Equals(file.Name, QuotaLockFileName, StringComparison.Ordinal))
+                    continue;
+                if (IsTemporaryName(file.Name))
+                {
+                    DeleteTemporary(file.FullName);
+                    continue;
+                }
+                if (!TryParseEvidenceName(
+                        file.Name,
+                        out var evidenceId,
+                        out var expectedDigest,
+                        out var state,
+                        out var anchorPosition) ||
+                    file.Length > _maximumBytes)
+                {
+                    throw new IOException("The evidence root contains an invalid artifact.");
+                }
+
+                var stream = new FileStream(
+                    file.FullName,
+                    FileMode.Open,
+                    FileAccess.Read,
+                    FileShare.Read | FileShare.Delete,
+                    bufferSize: 16 * 1024,
+                    FileOptions.SequentialScan);
+                try
+                {
+                    var identity = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+                        file.FullName,
+                        stream.SafeFileHandle);
+                    if (!identities.Add(identity))
+                        throw new IOException("Two evidence names identify the same protected file.");
+                    if (stream.Length > _maximumBytes)
+                        throw new IOException("An evidence artifact exceeds its configured bound.");
+                    var actualDigest = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
+                    if (!string.Equals(actualDigest, expectedDigest, StringComparison.Ordinal))
+                    {
+                        throw new IOException(
+                            "The evidence artifact digest does not match its protected name.");
+                    }
+                    artifacts.Add(new EvidenceArtifact(
+                        file,
+                        evidenceId,
+                        expectedDigest,
+                        state,
+                        anchorPosition,
+                        stream,
+                        identity));
+                    stream = null!;
+                }
+                finally
+                {
+                    stream?.Dispose();
+                }
+            }
+            SecureAuditStorage.VerifyProtectedDirectory(_root);
+            return new EvidenceInventory(artifacts);
+        }
+        catch
+        {
+            foreach (var artifact in artifacts) artifact.Dispose();
+            throw;
+        }
+    }
+
+    private static bool TryParseEvidenceName(
+        string name,
+        out string evidenceId,
+        out string digest,
+        out ArtifactState state,
+        out AuditEvidenceAcknowledgmentPosition? anchorPosition)
+    {
+        evidenceId = string.Empty;
         digest = string.Empty;
-        if (!name.EndsWith(".script", StringComparison.Ordinal)) return false;
-        var stem = name[..^7];
+        state = default;
+        anchorPosition = null;
+        string stem;
+        if (name.EndsWith(".unreferenced.script", StringComparison.Ordinal))
+        {
+            state = ArtifactState.Unreferenced;
+            stem = name[..^20];
+        }
+        else if (name.Length > 101 &&
+                 name.AsSpan(101).StartsWith(".anchoring.", StringComparison.Ordinal) &&
+                 name.EndsWith(".script", StringComparison.Ordinal))
+        {
+            state = ArtifactState.Anchoring;
+            stem = name[..101];
+            var metadata = name[112..^7].Split('.', StringSplitOptions.None);
+            if (metadata.Length != 3 ||
+                metadata[0].Length != 32 ||
+                !Guid.TryParseExact(metadata[0], "N", out var bootId) ||
+                !string.Equals(metadata[0], bootId.ToString("N"), StringComparison.Ordinal) ||
+                !AuditSpoolSegmentIdentity.IsUuidV4(bootId) ||
+                metadata[1].Length != 20 ||
+                !metadata[1].All(char.IsAsciiDigit) ||
+                !long.TryParse(
+                    metadata[1],
+                    System.Globalization.NumberStyles.None,
+                    System.Globalization.CultureInfo.InvariantCulture,
+                    out var sequence) ||
+                sequence < 1 ||
+                !Guid.TryParseExact(metadata[2], "D", out var eventId) ||
+                !string.Equals(metadata[2], eventId.ToString("D"), StringComparison.Ordinal) ||
+                !IsUuidV7(eventId))
+            {
+                return false;
+            }
+            anchorPosition = new AuditEvidenceAcknowledgmentPosition(
+                bootId,
+                sequence,
+                eventId,
+                stem[..36],
+                stem[37..]);
+        }
+        else if (name.EndsWith(".anchored.script", StringComparison.Ordinal))
+        {
+            state = ArtifactState.Anchored;
+            stem = name[..^16];
+        }
+        else if (name.EndsWith(".script", StringComparison.Ordinal))
+        {
+            state = ArtifactState.AwaitingAnchor;
+            stem = name[..^7];
+        }
+        else
+        {
+            return false;
+        }
         if (stem.Length != 36 + 1 + 64 || stem[36] != '.') return false;
-        var id = stem[..36];
+        evidenceId = stem[..36];
         digest = stem[37..];
-        return Guid.TryParseExact(id, "D", out var value) &&
-               value.ToString("D") == id &&
-               id[14] == '4' &&
-               id[19] is '8' or '9' or 'a' or 'b' &&
-               digest.All(character => character is >= '0' and <= '9' or >= 'a' and <= 'f');
+        if (!IsCanonicalEvidenceId(evidenceId) || !IsLowerHex(digest, 64))
+            return false;
+        return anchorPosition is null ||
+               (string.Equals(
+                    anchorPosition.Value.EvidenceId,
+                    evidenceId,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    anchorPosition.Value.ScriptDigest,
+                    digest,
+                    StringComparison.Ordinal));
+    }
+
+    private bool PromoteCheckpointedAnchoring(EvidenceInventory inventory)
+    {
+        if (_checkpointOptions is null) return false;
+        var promoted = false;
+        foreach (var artifact in inventory.Artifacts
+                     .Where(value => value.State == ArtifactState.Anchoring))
+        {
+            var position = artifact.AnchorPosition
+                ?? throw new IOException("Anchoring evidence has no checkpoint position.");
+            var checkpoint = AuditExportCheckpointStore.ReadSnapshot(
+                _checkpointOptions,
+                position.SupervisorBootId);
+            if (checkpoint.Sequence < position.Sequence) continue;
+            if (checkpoint.Sequence == position.Sequence &&
+                checkpoint.AcknowledgedEventId != position.EventId)
+            {
+                throw new IOException(
+                    "The evidence anchor does not match its durable checkpoint.");
+            }
+            RenameArtifact(
+                artifact,
+                EvidencePath(
+                    position.EvidenceId,
+                    position.ScriptDigest,
+                    ArtifactState.Anchored));
+            promoted = true;
+        }
+        return promoted;
+    }
+
+    private static bool IsRetentionEligible(EvidenceArtifact artifact) =>
+        artifact.State is ArtifactState.Anchored or ArtifactState.Unreferenced;
+
+    private void DeleteArtifact(EvidenceArtifact artifact)
+    {
+        var handle = artifact.RequireHandle();
+        var observed = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+            artifact.Path,
+            handle.SafeFileHandle);
+        if (observed != artifact.Identity)
+            throw new IOException("An evidence artifact changed identity before retention.");
+        SecureAuditStorage.DeleteRetainedProtectedFile(
+            _root,
+            artifact.Path,
+            handle.SafeFileHandle);
+        artifact.ReleaseHandle();
+    }
+
+    private void RenameArtifact(EvidenceArtifact artifact, string destinationPath)
+    {
+        var handle = artifact.RequireHandle();
+        var before = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+            artifact.Path,
+            handle.SafeFileHandle);
+        if (before != artifact.Identity)
+            throw new IOException("An evidence artifact changed identity before rename.");
+        SecureAuditStorage.PublishAtomically(
+            artifact.Path,
+            destinationPath,
+            _root);
+        var after = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+            destinationPath,
+            handle.SafeFileHandle);
+        if (after != artifact.Identity)
+            throw new IOException("An evidence artifact changed identity during rename.");
+        artifact.ReleaseHandle();
+    }
+
+    private void DeleteTemporary(string path)
+    {
+        using var stream = new FileStream(
+            path,
+            FileMode.Open,
+            FileAccess.Read,
+            FileShare.Read | FileShare.Delete,
+            bufferSize: 1,
+            FileOptions.RandomAccess);
+        _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+            path,
+            stream.SafeFileHandle);
+        SecureAuditStorage.DeleteRetainedProtectedFile(
+            _root,
+            path,
+            stream.SafeFileHandle);
+    }
+
+    private void MarkUnreferencedWhileQuotaHeld(ScriptEvidenceReference reference)
+    {
+        ValidateEvidenceIdentity(reference.EvidenceId, reference.ScriptDigest);
+        using var inventory = InventoryArtifacts();
+        var matches = inventory.Artifacts
+            .Where(artifact =>
+                string.Equals(artifact.EvidenceId, reference.EvidenceId, StringComparison.Ordinal) &&
+                string.Equals(artifact.Digest, reference.ScriptDigest, StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length != 1)
+            throw new IOException("The unreferenced evidence state is ambiguous.");
+        var artifact = matches[0];
+        if (artifact.State == ArtifactState.Unreferenced) return;
+        if (artifact.State != ArtifactState.AwaitingAnchor)
+            throw new IOException("Only an unpublished audit reference can be abandoned.");
+        RenameArtifact(
+            artifact,
+            EvidencePath(
+                reference.EvidenceId,
+                reference.ScriptDigest,
+                ArtifactState.Unreferenced));
+    }
+
+    private void FinalizeAnchoredWhileQuotaHeld(
+        AuditEvidenceAcknowledgmentPosition acknowledgment,
+        bool alreadyAnchored)
+    {
+        if (alreadyAnchored) return;
+        using var inventory = InventoryArtifacts();
+        var matches = inventory.Artifacts
+            .Where(artifact =>
+                string.Equals(
+                    artifact.EvidenceId,
+                    acknowledgment.EvidenceId,
+                    StringComparison.Ordinal) &&
+                string.Equals(
+                    artifact.Digest,
+                    acknowledgment.ScriptDigest,
+                    StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length != 1)
+            throw new IOException("The acknowledged evidence finalization state is ambiguous.");
+        var artifact = matches[0];
+        if (artifact.State == ArtifactState.Anchored) return;
+        if (artifact.State != ArtifactState.Anchoring)
+            throw new IOException("The evidence artifact is not awaiting checkpoint finalization.");
+        RenameArtifact(
+            artifact,
+            EvidencePath(
+                acknowledgment.EvidenceId,
+                acknowledgment.ScriptDigest,
+                ArtifactState.Anchored));
+    }
+
+    private string EvidencePath(
+        string evidenceId,
+        string scriptDigest,
+        ArtifactState state,
+        AuditEvidenceAcknowledgmentPosition? acknowledgment = null)
+    {
+        var suffix = state switch
+        {
+            ArtifactState.AwaitingAnchor => ".script",
+            ArtifactState.Anchoring when acknowledgment is { } position =>
+                $".anchoring.{position.SupervisorBootId:N}.{position.Sequence:D20}." +
+                $"{position.EventId:D}.script",
+            ArtifactState.Anchoring => throw new IOException(
+                "Anchoring evidence requires an exact checkpoint position."),
+            ArtifactState.Anchored => ".anchored.script",
+            ArtifactState.Unreferenced => ".unreferenced.script",
+            _ => throw new IOException("The evidence artifact state is invalid."),
+        };
+        return Path.Combine(_root, evidenceId + "." + scriptDigest + suffix);
+    }
+
+    private static void ValidateEvidenceIdentity(string evidenceId, string scriptDigest)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(evidenceId);
+        ArgumentException.ThrowIfNullOrEmpty(scriptDigest);
+        if (!IsCanonicalEvidenceId(evidenceId) || !IsLowerHex(scriptDigest, 64))
+            throw new ArgumentException("The script evidence identity is invalid.");
+    }
+
+    private static void ValidateAcknowledgment(
+        AuditEvidenceAcknowledgmentPosition acknowledgment)
+    {
+        ValidateEvidenceIdentity(
+            acknowledgment.EvidenceId,
+            acknowledgment.ScriptDigest);
+        if (!AuditSpoolSegmentIdentity.IsUuidV4(acknowledgment.SupervisorBootId) ||
+            acknowledgment.Sequence < 1 ||
+            !IsUuidV7(acknowledgment.EventId))
+        {
+            throw new ArgumentException("The evidence acknowledgment position is invalid.");
+        }
+    }
+
+    private static bool IsCanonicalEvidenceId(string value) =>
+        Guid.TryParseExact(value, "D", out var parsed) &&
+        string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal) &&
+        value[14] == '4' &&
+        value[19] is '8' or '9' or 'a' or 'b';
+
+    private static bool IsLowerHex(string value, int length) =>
+        value.Length == length &&
+        value.All(character =>
+            character is (>= '0' and <= '9') or (>= 'a' and <= 'f'));
+
+    private static bool IsUuidV7(Guid value)
+    {
+        var text = value.ToString("D");
+        return text[14] == '7' && text[19] is '8' or '9' or 'a' or 'b';
+    }
+
+    private sealed class EvidenceInventory(List<EvidenceArtifact> artifacts) : IDisposable
+    {
+        internal IReadOnlyList<EvidenceArtifact> Artifacts { get; } = artifacts;
+
+        public void Dispose()
+        {
+            foreach (var artifact in artifacts) artifact.Dispose();
+        }
+    }
+
+    private sealed class EvidenceArtifact(
+        FileInfo file,
+        string evidenceId,
+        string digest,
+        ArtifactState state,
+        AuditEvidenceAcknowledgmentPosition? anchorPosition,
+        FileStream stream,
+        ProtectedFileIdentity identity) : IDisposable
+    {
+        private FileStream? _stream = stream;
+
+        internal string FileName { get; } = file.Name;
+        internal string Path { get; } = file.FullName;
+        internal DateTime LastWriteTimeUtc { get; } = file.LastWriteTimeUtc;
+        internal string EvidenceId { get; } = evidenceId;
+        internal string Digest { get; } = digest;
+        internal ArtifactState State { get; } = state;
+        internal AuditEvidenceAcknowledgmentPosition? AnchorPosition { get; } =
+            anchorPosition;
+        internal ProtectedFileIdentity Identity { get; } = identity;
+
+        internal FileStream RequireHandle() =>
+            _stream ?? throw new IOException("The retained evidence handle is unavailable.");
+
+        internal void ReleaseHandle()
+        {
+            var value = Interlocked.Exchange(ref _stream, null);
+            value?.Dispose();
+        }
+
+        public void Dispose() => ReleaseHandle();
+    }
+
+    private sealed class EvidencePublication(
+        ScriptEvidenceStore owner,
+        ScriptEvidenceReference reference,
+        IDisposable quota) : IScriptEvidencePublication
+    {
+        private readonly object _gate = new();
+        private IDisposable? _quota = quota;
+
+        public ScriptEvidenceReference Reference { get; } = reference;
+
+        public void CompleteAfterAuditAppend()
+        {
+            lock (_gate) ReleaseLocked();
+        }
+
+        public void AbandonBeforeAuditAppend()
+        {
+            lock (_gate)
+            {
+                if (_quota is null)
+                    throw new ObjectDisposedException(nameof(EvidencePublication));
+                owner.MarkUnreferencedWhileQuotaHeld(Reference);
+                ReleaseLocked();
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_gate) ReleaseLocked();
+        }
+
+        private void ReleaseLocked()
+        {
+            var value = _quota;
+            _quota = null;
+            if (value is null) return;
+            Exception? failure = null;
+            try
+            {
+                owner.InvokeFault(SecureAuditStorageFaultStage.Release);
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                failure = exception;
+            }
+            try
+            {
+                value.Dispose();
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                failure ??= exception;
+            }
+            if (failure is not null) throw new ScriptEvidenceStorageException();
+        }
+    }
+
+    private sealed class EvidenceAnchorLease(
+        ScriptEvidenceStore owner,
+        AuditEvidenceAcknowledgmentPosition acknowledgment,
+        bool alreadyAnchored,
+        IDisposable quota) : IAuditEvidenceAnchorLease
+    {
+        private readonly object _gate = new();
+        private IDisposable? _quota = quota;
+
+        public void CompleteAfterCheckpoint()
+        {
+            lock (_gate)
+            {
+                if (_quota is null)
+                    throw new ObjectDisposedException(nameof(EvidenceAnchorLease));
+                owner.FinalizeAnchoredWhileQuotaHeld(
+                    acknowledgment,
+                    alreadyAnchored);
+                ReleaseLocked();
+            }
+        }
+
+        public void Dispose()
+        {
+            lock (_gate) ReleaseLocked();
+        }
+
+        private void ReleaseLocked()
+        {
+            var value = _quota;
+            _quota = null;
+            value?.Dispose();
+        }
     }
 
     private static bool IsTemporaryName(string name)

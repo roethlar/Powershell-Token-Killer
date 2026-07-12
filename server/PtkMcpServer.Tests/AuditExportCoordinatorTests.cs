@@ -44,6 +44,32 @@ public sealed class AuditExportCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Coordinator_carries_the_current_evidence_observer_into_adopted_orphans()
+    {
+        var options = Options(NewRoot());
+        var orphan = WriteClosedBoot(options, OrphanBoot);
+        var transport = new CapturingTransport();
+        var observer = new CountingObserver();
+        using var current = new CurrentFixture(
+            options,
+            transport,
+            acknowledgmentObserver: observer);
+        using var coordinator = new AuditExportCoordinator(
+            options,
+            current.Source,
+            transport,
+            observer);
+
+        var step = await coordinator.ExportNextAsync(CancellationToken.None);
+
+        Assert.Equal(AuditExportCoordinatorStepKind.Advanced, step.Kind);
+        Assert.Equal(OrphanBoot, step.SupervisorBootId);
+        Assert.Equal(orphan.EventId, step.EventId);
+        Assert.Equal(1, observer.ObserveCalls);
+        Assert.Equal(1, observer.CompleteCalls);
+    }
+
+    [Fact]
     public async Task Coordinator_never_creates_missing_orphan_checkpoint_controls()
     {
         var options = Options(NewRoot());
@@ -283,7 +309,8 @@ public sealed class AuditExportCoordinatorTests : IDisposable
         internal CurrentFixture(
             AuditOptions options,
             IAuditOtlpExportTransport transport,
-            Guid? supervisorBootId = null)
+            Guid? supervisorBootId = null,
+            IAuditExportAcknowledgmentObserver? acknowledgmentObserver = null)
         {
             var bootId = supervisorBootId ?? CurrentBoot;
             Store = AuditExportCheckpointStore.CreateForWriter(options, bootId);
@@ -302,7 +329,8 @@ public sealed class AuditExportCoordinatorTests : IDisposable
             Source = new AuditBootExportSource(
                 _journal,
                 Store,
-                transport);
+                transport,
+                acknowledgmentObserver ?? AuditExportAcknowledgmentObserver.None);
         }
 
         internal AuditExportCheckpointStore Store { get; }
@@ -353,6 +381,28 @@ public sealed class AuditExportCoordinatorTests : IDisposable
                         new string('b', 64),
                         warning: false)
                     : _results.Dequeue());
+            }
+        }
+    }
+
+    private sealed class CountingObserver : IAuditExportAcknowledgmentObserver
+    {
+        internal int ObserveCalls { get; private set; }
+        internal int CompleteCalls { get; private set; }
+
+        public IAuditEvidenceAnchorLease ObserveAcknowledgment(
+            ReadOnlyMemory<byte> exactJsonlBytes)
+        {
+            ObserveCalls++;
+            return new Lease(this);
+        }
+
+        private sealed class Lease(CountingObserver owner) : IAuditEvidenceAnchorLease
+        {
+            public void CompleteAfterCheckpoint() => owner.CompleteCalls++;
+
+            public void Dispose()
+            {
             }
         }
     }

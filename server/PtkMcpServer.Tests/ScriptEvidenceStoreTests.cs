@@ -6,6 +6,8 @@ namespace PtkMcpServer.Tests;
 
 public sealed class ScriptEvidenceStoreTests : IDisposable
 {
+    private static readonly Guid BootId =
+        Guid.Parse("12345678-1234-4abc-8def-0123456789ab");
     private readonly string _parent = Path.Combine(
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         ".ptk-script-evidence-tests-" + Guid.NewGuid().ToString("N"));
@@ -288,6 +290,168 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
         Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, current)));
     }
 
+    [Fact]
+    public async Task Publication_holds_the_cross_process_quota_lease_until_audit_append_commits()
+    {
+        var options = EvidenceOptions(
+            Path.Combine(_parent, "publication-lease-audit"),
+            AuditProtectionMode.LocalOnly,
+            aggregateBytes: 512);
+        var store = new ScriptEvidenceStore(options);
+        var provider = new ScriptEvidenceStoreProvider(store);
+        using var first = provider.Publish("first");
+        var second = Task.Run(() =>
+        {
+            using var publication = provider.Publish("second");
+            publication.CompleteAfterAuditAppend();
+            return publication.Reference;
+        });
+
+        await Task.Delay(150);
+        Assert.False(second.IsCompleted, "publication released quota before audit append");
+
+        first.CompleteAfterAuditAppend();
+        var secondReference = await second.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, first.Reference)));
+        Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, secondReference)));
+    }
+
+    [Fact]
+    public void Ambiguous_uncommitted_publication_stays_pinned_but_proved_preappend_abandon_is_swept()
+    {
+        var pinnedOptions = EvidenceOptions(
+            Path.Combine(_parent, "ambiguous-publication-audit"),
+            AuditProtectionMode.LocalOnly,
+            aggregateBytes: 256);
+        var pinnedStore = new ScriptEvidenceStore(pinnedOptions);
+        var ambiguous = pinnedStore.Publish("ambiguous");
+        var ambiguousReference = ambiguous.Reference;
+        ambiguous.Dispose();
+        File.SetLastWriteTimeUtc(
+            EvidencePath(pinnedOptions.EvidenceDirectory, ambiguousReference),
+            DateTime.UtcNow.AddMinutes(-2));
+
+        Assert.Throws<ScriptEvidenceStorageException>(() => pinnedStore.Store("blocked"));
+        Assert.True(File.Exists(
+            EvidencePath(pinnedOptions.EvidenceDirectory, ambiguousReference)));
+
+        var abandonedOptions = EvidenceOptions(
+            Path.Combine(_parent, "proved-unreferenced-audit"),
+            AuditProtectionMode.LocalOnly,
+            aggregateBytes: 256);
+        var abandonedStore = new ScriptEvidenceStore(abandonedOptions);
+        using var abandoned = abandonedStore.Publish("unreferenced");
+        var abandonedReference = abandoned.Reference;
+        abandoned.AbandonBeforeAuditAppend();
+        var unreferencedPath = Assert.Single(Directory.GetFiles(
+            abandonedOptions.EvidenceDirectory,
+            "*.unreferenced.script"));
+        File.SetLastWriteTimeUtc(unreferencedPath, DateTime.UtcNow.AddMinutes(-2));
+
+        var replacement = abandonedStore.Store("replacement");
+
+        Assert.False(File.Exists(unreferencedPath));
+        Assert.True(File.Exists(EvidencePath(
+            abandonedOptions.EvidenceDirectory,
+            replacement)));
+        Assert.DoesNotContain(
+            Directory.GetFiles(abandonedOptions.EvidenceDirectory),
+            path => Path.GetFileName(path).Contains(
+                abandonedReference.EvidenceId,
+                StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public async Task Anchor_lease_blocks_gc_until_checkpoint_then_enables_age_and_quota_retention()
+    {
+        var options = EvidenceOptions(
+            Path.Combine(_parent, "anchor-lease-audit"),
+            AuditProtectionMode.Anchored,
+            aggregateBytes: 256);
+        using var checkpoint = AuditExportCheckpointStore.CreateForWriter(options, BootId);
+        var store = new ScriptEvidenceStore(options);
+        var reference = store.Store("anchored");
+        var position = Acknowledgment(reference, sequence: 1);
+        using var anchor = store.MarkAnchored(position);
+        var anchoringPath = Assert.Single(Directory.GetFiles(
+            options.EvidenceDirectory,
+            "*.anchoring.*.script"));
+        File.SetLastWriteTimeUtc(anchoringPath, DateTime.UtcNow.AddMinutes(-2));
+        var contender = Task.Run(() => store.Store("replacement"));
+
+        await Task.Delay(150);
+        Assert.False(contender.IsCompleted, "anchoring released quota before checkpoint");
+        checkpoint.SaveForTests(Checkpoint(position));
+        anchor.CompleteAfterCheckpoint();
+
+        var replacement = await contender.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.False(File.Exists(anchoringPath));
+        Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, replacement)));
+        Assert.DoesNotContain(
+            Directory.GetFiles(options.EvidenceDirectory),
+            path => Path.GetFileName(path).Contains(
+                reference.EvidenceId,
+                StringComparison.Ordinal));
+        Assert.Throws<ScriptEvidenceStorageException>(() => store.MarkAnchored(position));
+    }
+
+    [Fact]
+    public void Restart_promotes_only_checkpoint_proved_anchoring_state()
+    {
+        var options = EvidenceOptions(
+            Path.Combine(_parent, "anchor-recovery-audit"),
+            AuditProtectionMode.Anchored,
+            aggregateBytes: 512);
+        using var checkpoint = AuditExportCheckpointStore.CreateForWriter(options, BootId);
+        var store = new ScriptEvidenceStore(options);
+        var reference = store.Store("recoverable");
+        var position = Acknowledgment(reference, sequence: 1);
+        using (store.MarkAnchored(position))
+        {
+            // Simulate process loss after the durable anchor rename but before
+            // checkpoint persistence: disposal releases only the OS lease.
+        }
+
+        _ = new ScriptEvidenceStore(options);
+        Assert.Single(Directory.GetFiles(options.EvidenceDirectory, "*.anchoring.*.script"));
+        Assert.Empty(Directory.GetFiles(options.EvidenceDirectory, "*.anchored.script"));
+
+        checkpoint.SaveForTests(Checkpoint(position));
+        _ = new ScriptEvidenceStore(options);
+
+        Assert.Empty(Directory.GetFiles(options.EvidenceDirectory, "*.anchoring.*.script"));
+        Assert.Single(Directory.GetFiles(options.EvidenceDirectory, "*.anchored.script"));
+        using var idempotent = store.MarkAnchored(position);
+        idempotent.CompleteAfterCheckpoint();
+    }
+
+    [Fact]
+    public void Young_checkpointed_anchor_is_quota_eligible_without_age_expiry()
+    {
+        var options = EvidenceOptions(
+            Path.Combine(_parent, "anchor-quota-audit"),
+            AuditProtectionMode.Anchored,
+            aggregateBytes: 256);
+        using var checkpoint = AuditExportCheckpointStore.CreateForWriter(options, BootId);
+        var store = new ScriptEvidenceStore(options);
+        var reference = store.Store("young anchor");
+        var position = Acknowledgment(reference, sequence: 1);
+        using (var anchor = store.MarkAnchored(position))
+        {
+            checkpoint.SaveForTests(Checkpoint(position));
+            anchor.CompleteAfterCheckpoint();
+        }
+
+        var replacement = store.Store("quota replacement");
+
+        Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, replacement)));
+        Assert.DoesNotContain(
+            Directory.GetFiles(options.EvidenceDirectory),
+            path => Path.GetFileName(path).Contains(
+                reference.EvidenceId,
+                StringComparison.Ordinal));
+    }
+
     private static AuditOptions EvidenceOptions(
         string root,
         AuditProtectionMode protectionMode,
@@ -312,6 +476,25 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
 
     private static string EvidencePath(string root, ScriptEvidenceReference reference) =>
         Path.Combine(root, reference.EvidenceId + "." + reference.ScriptDigest + ".script");
+
+    private static AuditEvidenceAcknowledgmentPosition Acknowledgment(
+        ScriptEvidenceReference reference,
+        long sequence) => new(
+            BootId,
+            sequence,
+            Guid.CreateVersion7(),
+            reference.EvidenceId,
+            reference.ScriptDigest);
+
+    private static AuditExportCheckpoint Checkpoint(
+        AuditEvidenceAcknowledgmentPosition position) => new(
+            position.SupervisorBootId,
+            chainComplete: false,
+            AuditSpoolSegmentIdentity.Create(position.SupervisorBootId, 0),
+            byteOffset: 128,
+            position.Sequence,
+            position.EventId,
+            blockedRecord: null);
 
     private static string? FindCaseAlias(string path)
     {

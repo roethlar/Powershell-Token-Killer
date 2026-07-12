@@ -52,7 +52,8 @@ builder.Services.AddSingleton(sp =>
             options,
             health,
             producerVersion,
-            auditExporter);
+            auditExporter,
+            sp.GetRequiredService<ScriptEvidenceStoreProvider>());
     return new AuditRuntimeGate(
         options,
         health,

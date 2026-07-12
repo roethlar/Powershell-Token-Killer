@@ -1,4 +1,5 @@
 using System.Text.Json;
+using ModelContextProtocol.Protocol;
 using PtkMcpServer.Audit;
 
 namespace PtkMcpServer.Tests;
@@ -25,8 +26,8 @@ public sealed class AuditAnchoredRuntimeTests : IDisposable
             AuditProtectionMode.Anchored,
             ConfigurationIdentity,
             maxRecordBytes: 4096,
-            segmentBytes: 16_384,
-            aggregateBytes: 65_536,
+            segmentBytes: 65_536,
+            aggregateBytes: 131_072,
             emergencyReserveBytes: 8192,
             retentionAge: TimeSpan.FromMinutes(10),
             maxEvidenceBytes: 4096,
@@ -56,6 +57,43 @@ public sealed class AuditAnchoredRuntimeTests : IDisposable
             new[] { AuditExporterState.Running, AuditExporterState.Idle });
         Assert.Equal(1, AuditExportCheckpointStore
             .ReadSnapshot(options, firstStarted.SupervisorBootId).Sequence);
+
+        Assert.True(AuditCallMetadataCapture.TryCapture(
+            new CallToolRequestParams
+            {
+                Name = "ptk_invoke",
+                Arguments = new Dictionary<string, JsonElement>(StringComparer.Ordinal)
+                {
+                    ["script"] = JsonSerializer.SerializeToElement("'runtime evidence'"),
+                },
+            },
+            new AuditClientContext("anchored-runtime-test", "1", "session"),
+            TimeSpan.FromSeconds(10),
+            TimeSpan.FromSeconds(30),
+            DateTimeOffset.UtcNow,
+            out var metadata,
+            out var exactScript,
+            out var captureFailure),
+            captureFailure);
+        Assert.True(first.TryBeginCall(
+            metadata!,
+            exactScript,
+            out var callContext,
+            out var callLease,
+            out var beginFailure),
+            beginFailure);
+        callContext!.CompleteCall("completed", "ok");
+        callLease!.Dispose();
+        _ = await transport.WaitForAsync(
+            record => record.SupervisorBootId == firstStarted.SupervisorBootId &&
+                      record.EventType == "call.accepted",
+            TimeSpan.FromSeconds(10));
+        await WaitUntilAsync(
+            () => Directory.GetFiles(options.EvidenceDirectory, "*.anchored.script").Length == 1,
+            TimeSpan.FromSeconds(10));
+        Assert.Empty(Directory.GetFiles(
+            options.EvidenceDirectory,
+            "*.anchoring.*.script"));
 
         await first.StopAsync(CancellationToken.None);
         first.Dispose();
@@ -88,17 +126,21 @@ public sealed class AuditAnchoredRuntimeTests : IDisposable
     private static AuditRuntimeGate Runtime(
         AuditOptions options,
         AuditHealth health,
-        IAuditOtlpExportTransport transport) =>
-        new(
+        IAuditOtlpExportTransport transport)
+    {
+        var evidence = new ScriptEvidenceStoreProvider(options);
+        return new AuditRuntimeGate(
             options,
             health,
-            new ScriptEvidenceStoreProvider(options),
+            evidence,
             "anchored-runtime-test",
             openRuntime: () => AuditRuntimeResources.OpenAnchored(
                 options,
                 health,
                 "anchored-runtime-test",
-                transport));
+                transport,
+                evidence));
+    }
 
     private static async Task WaitUntilAsync(Func<bool> condition, TimeSpan timeout)
     {
