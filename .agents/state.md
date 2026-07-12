@@ -6,14 +6,18 @@ short and update it when important repo facts change.
 ## Now
 
 - **Audited-harness Slice 3 is active on
-  `feat/audited-harness-slice3`.** Commit `6fb256c` carries one immutable
-  foreground `ExecutionPlan` through trusted preparation, audit authorization,
-  and dispatch; domain is independent of route, RTK identity is absolute,
-  provenance and fallback reasons are typed, and unimplemented fallbacks are
-  no longer advertised. Three production mutations proved exact-plan dispatch,
-  plan-owned audit domain, and relative RTK-path binding. The full checkout
-  battery passed after one unrelated anchored-publication timing flake passed
-  alone and on the clean rerun.
+  `feat/audited-harness-slice3`.** Commit `6fb256c` introduced the immutable
+  foreground plan, `6e604c1` made forced RTK a strict terminal-Application
+  assertion, and `f3790ec` separates audited plan and dispatch barriers,
+  enforces exact-original pre-start fallback without model retry, labels forced
+  fallbacks, and prevents every RTK provenance from entering a second generic
+  `rtk log` shaping pass. Ordered RTK-to-direct fallback dispatches are audited
+  under one bounded plan and still execute once. Mutation guards cover both
+  availability windows, audit route truth, single shaping, and the absence of
+  a callback-only audit bypass; the full checkout battery passes. PowerShell's
+  path-based launch retains a final same-path replacement race, so the RTK
+  installation remains an OS-protected dependency until an execution-bound
+  identity/handle exists.
 - **Audited-harness Slice 2 is complete locally.** The final
   integrated code head `3d3739a` completes job/control audit, local-only and
   anchored OTLP export, evidence administration and retention, permanent
@@ -59,10 +63,8 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Continue audited-harness Slice 3: enforce terminal-native RTK eligibility,
-   add provenance-aware single shaping and truthful pre-start fallback, then
-   add the post-audit bounded Bash validator/delegation and post-success mixed
-   dataflow guidance.
+1. Continue audited-harness Slice 3 with the post-audit bounded Bash
+   validator/delegation, then add post-success mixed-dataflow guidance.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.

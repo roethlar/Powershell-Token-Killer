@@ -8,10 +8,11 @@ export with durable checkpoints and retention, audited evidence administration
 and automatic retention, complete operator-disposition facts, and the strict
 `ptk.audit/2` extension. It passed exact-head macOS and Windows verification
 and the required fixed-SHA Claude reviewloop with `guard_confirmed=true` on
-2026-07-12. Slice 2 is complete on local `master`. Slice 3 is active: commit
-`6fb256c` carries the immutable foreground execution plan through preparation,
-audit, and dispatch with truthful typed route facts; routing policy, Bash
-validation, and mixed-domain guidance remain. No push was performed or
+2026-07-12. Slice 2 is complete on local `master`. Slice 3 is active: commits
+`6fb256c`, `6e604c1`, and `f3790ec` carry the immutable foreground plan through
+separate durable plan/dispatch barriers, enforce strict RTK eligibility and
+exact-original pre-start fallback, and prevent second-pass RTK shaping. Bash
+validation and mixed-domain guidance remain. No push was performed or
 authorized.
 
 This plan is the canonical implementation contract replacing the still-open
@@ -1103,6 +1104,20 @@ attempt and changes on every audited replan. `routing.permitted_fallbacks` is
 the exact bounded set authorized by that plan and is `[]` on events without a
 prepared execution; an actual fallback still records its separate
 `fallback_reason`.
+
+If the pinned RTK path becomes unavailable during the first durable dispatch
+barrier, one later `execution.dispatched` under the same `plan_id` may supersede
+that unstarted RTK authorization with the plan's declared exact fallback. The
+ordered second record is the actual single execution route; SIEM consumers
+must not count the superseded pre-effect authorization as an execution.
+
+The current PowerShell `& '<absolute-path>'` launch cannot bind an OS executable
+identity across the final availability-check-to-process-start window. The RTK
+installation therefore remains an administrator-protected dependency. A
+same-path replacement or disappearance after the final post-barrier check is
+reported as the attempted RTK terminal and never triggers fallback after the
+user pipeline starts; eliminating that residual requires a future
+execution-bound Unix/Windows handle, not another path check.
 
 `audit.protection_mode` is the startup-frozen mode on every event so local-only
 telemetry is visibly unanchored. `export_configuration_identity` is nonnull
