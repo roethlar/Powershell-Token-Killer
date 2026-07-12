@@ -64,7 +64,9 @@ public sealed class AuditEventTests
              "destination_path", "timeout_ms", "deadline_utc", "route", "background", "raw",
              "list_available", "job_id", "offset",
              "expected_generation", "force", "template", "allow_cold_background", "max_bytes",
-             "pattern_fingerprint", "output_handle_digest", "original_script_digest", "script_evidence_id"],
+             "pattern_fingerprint", "output_handle_digest", "original_script_digest", "script_evidence_id",
+             "evidence_subject_id", "evidence_subject_digest", "evidence_subject_bytes",
+             "evidence_subject_state", "retention_reason"],
             Names(root, "request"));
         Assert.Equal(
             ["domain", "requested_route", "effective_route", "permitted_fallbacks", "rtk_version",
@@ -83,7 +85,7 @@ public sealed class AuditEventTests
              "emergency_probe_last_utc"],
             Names(root, "audit"));
 
-        Assert.Equal("ptk.audit/1", root.GetProperty("schema_version").GetString());
+        Assert.Equal("ptk.audit/2", root.GetProperty("schema_version").GetString());
         Assert.Equal(EventId.ToString("D"), root.GetProperty("event_id").GetString());
         Assert.Equal("2026-07-11T12:34:56.1230000Z", root.GetProperty("occurred_utc").GetString());
         Assert.Equal("2026-07-11T12:34:56.1234567Z", root.GetProperty("observed_utc").GetString());
@@ -341,6 +343,115 @@ public sealed class AuditEventTests
             }));
     }
 
+    [Theory]
+    [InlineData("evidence.retention_intent")]
+    [InlineData("evidence.retention_completed")]
+    [InlineData("evidence.retention_failed")]
+    public void Serialize_emits_complete_retention_subject_facts_that_the_spool_scanner_accepts(
+        string eventType)
+    {
+        var serialized = Serialize(1, null, RetentionInput(eventType));
+        using var document = Parse(serialized);
+        var request = document.RootElement.GetProperty("request");
+
+        Assert.Equal(EvidenceId.ToString("D"), request.GetProperty("evidence_subject_id").GetString());
+        Assert.Equal(HashB, request.GetProperty("evidence_subject_digest").GetString());
+        Assert.Equal(42, request.GetProperty("evidence_subject_bytes").GetInt64());
+        Assert.Equal("anchored", request.GetProperty("evidence_subject_state").GetString());
+        Assert.Equal("age_expired", request.GetProperty("retention_reason").GetString());
+        Assert.Equal(JsonValueKind.Null, request.GetProperty("script_evidence_id").ValueKind);
+        Assert.Equal(JsonValueKind.Null, request.GetProperty("original_script_digest").ValueKind);
+
+        AuditEvidenceSpoolScanner.ValidateExactEnvelopeShapeForTests(
+            serialized.Utf8Line[..^1]);
+    }
+
+    [Fact]
+    public void Serialize_strictly_couples_retention_subject_facts_to_retention_events()
+    {
+        var retention = RetentionInput("evidence.retention_intent");
+
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with { EvidenceSubjectId = null }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with { EvidenceSubjectDigest = null }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with { EvidenceSubjectBytes = null }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with { EvidenceSubjectState = null }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with { RetentionReason = null }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with { EvidenceSubjectBytes = -1 }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with { EvidenceSubjectState = "awaiting" }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with { RetentionReason = "manual" }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with
+                {
+                    EvidenceSubjectState = "temporary",
+                    RetentionReason = "age_expired",
+                }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with
+                {
+                    EvidenceSubjectState = "anchored",
+                    RetentionReason = "crash_temporary",
+                }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, retention with
+            {
+                Request = retention.Request with
+                {
+                    ScriptEvidenceId = EvidenceId,
+                    OriginalScriptDigest = HashA,
+                }
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1, null, CompleteInput() with
+            {
+                Request = CompleteInput().Request with
+                {
+                    EvidenceSubjectId = EvidenceId,
+                    EvidenceSubjectDigest = HashB,
+                    EvidenceSubjectBytes = 42,
+                    EvidenceSubjectState = "anchored",
+                    RetentionReason = "age_expired",
+                }
+            }));
+    }
+
     [Fact]
     public void Serialize_requires_plan_id_for_execution_events_and_empty_fallbacks_without_a_plan()
     {
@@ -452,6 +563,25 @@ public sealed class AuditEventTests
         4321,
         "1.2.3-test",
         HashA);
+
+    private static AuditEventInput RetentionInput(string eventType)
+    {
+        var input = CompleteInput();
+        return input with
+        {
+            EventType = eventType,
+            Request = input.Request with
+            {
+                OriginalScriptDigest = null,
+                ScriptEvidenceId = null,
+                EvidenceSubjectId = EvidenceId,
+                EvidenceSubjectDigest = HashB,
+                EvidenceSubjectBytes = 42,
+                EvidenceSubjectState = "anchored",
+                RetentionReason = "age_expired",
+            },
+        };
+    }
 
     private static AuditEventInput CompleteInput() => new()
     {

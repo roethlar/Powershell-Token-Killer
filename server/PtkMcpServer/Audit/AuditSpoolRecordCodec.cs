@@ -12,7 +12,7 @@ internal readonly record struct AuditSpoolRecord(
 
 /// <summary>
 /// Validates the integrity and chain identity fields of one authoritative
-/// ptk.audit/1 JSON object. The caller owns JSONL framing and removes the LF
+/// supported ptk.audit core JSON object. The caller owns JSONL framing and removes the LF
 /// before parsing; the exact input bytes remain authoritative for export.
 /// </summary>
 internal static class AuditSpoolRecordCodec
@@ -56,12 +56,12 @@ internal static class AuditSpoolRecordCodec
         {
             using var document = JsonDocument.Parse(utf8Json.ToArray());
             var root = document.RootElement;
+            _ = AuditEvidenceSpoolScanner.ValidateExactEnvelopeShape(root);
             var supervisorBootIdText = root
                 .GetProperty("producer")
                 .GetProperty("supervisor_boot_id")
                 .GetString();
-            if (root.GetProperty("schema_version").GetString() != "ptk.audit/1" ||
-                root.GetProperty("event_hash").GetString() != hashText ||
+            if (root.GetProperty("event_hash").GetString() != hashText ||
                 !string.Equals(
                     supervisorBootIdText,
                     expectedSupervisorBootId.ToString("D"),

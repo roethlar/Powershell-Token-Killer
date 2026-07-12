@@ -11,8 +11,11 @@ public sealed class AuditExportAcknowledgmentObserverTests : IDisposable
         Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
         ".ptk-evidence-observer-tests-" + Guid.NewGuid().ToString("N"));
 
-    [Fact]
-    public void Valid_reference_is_marked_before_checkpoint_and_finalized_only_afterward()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Valid_v1_and_v2_reference_is_marked_before_checkpoint_and_finalized_only_afterward(
+        bool legacyV1)
     {
         var options = Options();
         using var checkpoint = AuditExportCheckpointStore.CreateForWriter(options, BootId);
@@ -24,7 +27,8 @@ public sealed class AuditExportAcknowledgmentObserverTests : IDisposable
         var line = Line(
             eventId,
             reference.EvidenceId,
-            reference.ScriptDigest);
+            reference.ScriptDigest,
+            legacyV1);
 
         using var anchor = observer.ObserveAcknowledgment(line);
 
@@ -63,14 +67,30 @@ public sealed class AuditExportAcknowledgmentObserverTests : IDisposable
         Assert.Throws<IOException>(() => observer.ObserveAcknowledgment(
             Line(eventId, Guid.NewGuid().ToString("D"), null)));
 
-        var duplicate = Encoding.UTF8.GetBytes(
-            "{\"schema_version\":\"ptk.audit/1\",\"event_id\":\"" +
-            eventId.ToString("D") +
-            "\",\"sequence\":1,\"producer\":{\"supervisor_boot_id\":\"" +
-            BootId.ToString("D") +
-            "\"},\"request\":{\"original_script_digest\":null," +
-            "\"script_evidence_id\":null,\"script_evidence_id\":null}}\n");
+        var valid = Encoding.UTF8.GetString(Line(eventId, null, null));
+        var duplicate = Encoding.UTF8.GetBytes(valid.Replace(
+            "\"script_evidence_id\":null",
+            "\"script_evidence_id\":null,\"script_evidence_id\":null",
+            StringComparison.Ordinal));
         Assert.Throws<IOException>(() => observer.ObserveAcknowledgment(duplicate));
+    }
+
+    [Fact]
+    public void Version_shape_hybrids_are_rejected_before_evidence_is_anchored()
+    {
+        var options = Options();
+        var store = new ScriptEvidenceStore(options);
+        var reference = store.Store("hybrid schema evidence");
+        var observer = new ScriptEvidenceAcknowledgmentObserver(
+            new ScriptEvidenceStoreProvider(store));
+        var v2 = Line(Guid.CreateVersion7(), reference.EvidenceId, reference.ScriptDigest);
+        var v1 = AuditCoreSchemaTestRecords.ToLegacyV1(v2);
+
+        Assert.Throws<IOException>(() => observer.ObserveAcknowledgment(
+            AuditCoreSchemaTestRecords.RelabelV2AsV1WithoutShrinking(v2)));
+        Assert.Throws<IOException>(() => observer.ObserveAcknowledgment(
+            AuditCoreSchemaTestRecords.RelabelV1AsV2WithoutExpanding(v1)));
+        Assert.Single(Directory.GetFiles(options.EvidenceDirectory, "*.script"));
     }
 
     public void Dispose()
@@ -94,19 +114,54 @@ public sealed class AuditExportAcknowledgmentObserverTests : IDisposable
     private static byte[] Line(
         Guid eventId,
         string? evidenceId,
-        string? digest)
+        string? digest,
+        bool legacyV1 = false)
     {
-        static string JsonString(string? value) =>
-            value is null ? "null" : "\"" + value + "\"";
-        return Encoding.UTF8.GetBytes(
-            "{\"schema_version\":\"ptk.audit/1\",\"event_id\":\"" +
-            eventId.ToString("D") +
-            "\",\"sequence\":1,\"producer\":{\"supervisor_boot_id\":\"" +
-            BootId.ToString("D") +
-            "\"},\"request\":{\"original_script_digest\":" +
-            JsonString(digest) +
-            ",\"script_evidence_id\":" +
-            JsonString(evidenceId) +
-            "}}\n");
+        var serialized = AuditEventSerializer.Serialize(
+            1,
+            previousEventHash: null,
+            new AuditProducerContext(
+                Guid.Parse("22345678-1234-4abc-8def-0123456789ab"),
+                BootId,
+                WorkerBootId: null,
+                Environment.ProcessId,
+                "acknowledgment-observer-test",
+                BinaryDigest: null),
+            new AuditEventInput
+            {
+                EventType = "execution.planned",
+                Session = new AuditSession { DeclaredPurpose = "test" },
+                Actor = new AuditActor { AttributionStrength = "unknown" },
+                Correlation = new AuditCorrelation
+                {
+                    PlanId = Guid.Parse("32345678-1234-4abc-8def-0123456789ab"),
+                },
+                Request = new AuditRequest
+                {
+                    OriginalScriptDigest = digest,
+                    ScriptEvidenceId = evidenceId is null ? null : Guid.Parse(evidenceId),
+                },
+                Routing = new AuditRouting(),
+                Outcome = new AuditOutcome { TerminationCertainty = "not_applicable" },
+                Coverage = new AuditCoverage
+                {
+                    PtkRequest = false,
+                    RootProcessObserved = "not_applicable",
+                    DescendantsObserved = "not_applicable",
+                    RemoteEffectObserved = "not_applicable",
+                },
+                Audit = new AuditEventHealth
+                {
+                    ProtectionMode = "anchored",
+                    ExportConfigurationIdentity = new string('a', 64),
+                    HealthState = "healthy",
+                },
+            },
+            eventId,
+            DateTimeOffset.UtcNow,
+            DateTimeOffset.UtcNow);
+        return legacyV1
+            ? AuditCoreSchemaTestRecords.ToLegacyV1(serialized.Utf8Line)
+            : serialized.Utf8Line.ToArray();
     }
 }

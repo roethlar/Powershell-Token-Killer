@@ -180,7 +180,7 @@ public sealed class AuditServerLifecycleTests : IDisposable
         string outcomeState,
         string healthState = "healthy")
     {
-        Assert.Equal("ptk.audit/1", root.GetProperty("schema_version").GetString());
+        Assert.Equal("ptk.audit/2", root.GetProperty("schema_version").GetString());
         Assert.Equal(eventType, root.GetProperty("event_type").GetString());
         Assert.Equal(outcomeState, root.GetProperty("outcome").GetProperty("state").GetString());
         Assert.False(root.GetProperty("coverage").GetProperty("ptk_request").GetBoolean());

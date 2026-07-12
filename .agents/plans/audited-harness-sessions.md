@@ -878,7 +878,7 @@ stopped; if descendant or remote outcome cannot be proven, use
 `outcome_unknown`. A hard writer/worker death leaves an externally detectable
 unclosed event, never “still running forever.”
 
-### Versioned event envelope
+### Versioned event envelope — retained v1 read contract
 
 ```text
 schema_version: const "ptk.audit/1"
@@ -996,6 +996,51 @@ audit:                                         # all keys required
 
 event_hash: lowercase SHA-256 hex             # required final property
 ```
+
+The current writer emits `ptk.audit/2`. V2 preserves every v1 field,
+meaning, default, order, and bound above, changes only the
+`schema_version` literal, and adds the following always-present keys in this
+exact order:
+
+```text
+request:                                       # v2 additions
+  # immediately after cwd
+  destination_kind: "stdout" | "protected_file" | null
+  destination_path: path-text | null           # nonnull only for protected_file
+  # immediately after script_evidence_id
+  evidence_subject_id: opaque UUIDv4 | null
+  evidence_subject_digest: lowercase SHA-256 hex | null
+  evidence_subject_bytes: integer 0..Int64.MaxValue | null
+  evidence_subject_state: "local_committed" | "anchored" |
+                          "unreferenced" | "temporary" | null
+  retention_reason: "age_expired" | "capacity_pressure" |
+                    "crash_temporary" | null
+
+# immediately after request; null outside disposition events
+operator_disposition: null | object
+  disposition_id: opaque UUIDv4 | null
+  target_supervisor_boot_id: UUIDv4
+  target_spool_file: canonical spool filename | null
+  target_start_offset: integer 0..Int64.MaxValue | null
+  target_next_offset: integer 1..Int64.MaxValue | null
+  target_sequence: integer 1..Int64.MaxValue | null
+  target_event_id: lowercase UUIDv7
+  failure_class: "partial_rejection" | "data" | "protocol" | null
+  detail_code: machine-code | null
+  response_digest: lowercase SHA-256 hex | null
+  first_failure_utc: UTC timestamp | null
+  target_export_configuration_identity: lowercase SHA-256 hex | null
+  proof_kind: "verified_receipt" | "acknowledged_gap"
+  verified_receipt_digest: lowercase SHA-256 hex | null
+  acknowledged_gap_reason: machine-code | null
+```
+
+Readers accept either the exact original v1 shape or the exact v2 shape.
+They reject v1 records carrying v2 keys, v2 records missing any v2 key, and
+mixed-version object shapes. Retained v1 bytes remain authoritative and are
+exported without reserialization; a boot hash chain may therefore contain
+either supported version so long as its sequence and exact-byte hash links
+remain valid.
 
 All top-level and nested keys above are required; `null` is an explicit value,
 not omission. Request values are the effective values used by PTK, while
@@ -1308,7 +1353,7 @@ applicable manual guard instead of inventing a code sabotage.
 - Add at-least-once OTLP exporter, durable checkpoints, retry/backlog health,
   duplicate-safe IDs, and a fake collector integration suite.
 - Add auditing for evidence reads and operator-initiated exports plus evidence
-  retention integration, without changing slice 1's pre-effect ordering. V1
+  retention integration, without changing slice 1's pre-effect ordering. Slice 1
   has no automatic evidence-byte exporter; its OTLP core event anchors the
   evidence reference/digest only.
 - Document collector/SIEM deployment without claiming local hash-chain
@@ -1545,13 +1590,17 @@ This plan still authorizes no change to the adjacent RTK repository.
 
 ### Audit JSONL and OTLP/HTTP
 
-The core JSONL schema identity is the literal `ptk.audit/1`. Records are
+The supported core JSONL schema identities are the literals `ptk.audit/1` and
+`ptk.audit/2`; the current writer emits v2 and retained v1 remains readable.
+Records are
 compact UTF-8 without BOM, exactly one JSON object followed by LF, with a
 maximum of 65,536 UTF-8 bytes including LF. The envelope under **Versioned
-event envelope** is the v1 semantic field set. Every defined object key is
+event envelope** is the frozen v1 semantic field set plus the explicit v2
+extension above. Every key defined for the record's declared version is
 present; non-applicable or unknown scalar values are `null`, arrays use `[]`,
 and unrecognized properties are forbidden. A field/meaning/default/hash
-change requires `ptk.audit/2`; adding a new dotted `event_type` does not.
+change after v2 requires a new schema version; adding a new dotted
+`event_type` does not.
 Oversize variable data is represented by an existing bounded code/digest or
 the operation refuses before effects; it is never silently truncated into a
 core event.

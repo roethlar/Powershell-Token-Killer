@@ -14,6 +14,16 @@ internal sealed record AuditEvidenceReferenceScan(
         new(false, new HashSet<AuditEvidenceIdentity>());
 }
 
+internal enum AuditCoreSchemaVersion
+{
+    V1,
+    V2,
+}
+
+internal readonly record struct AuditCoreEnvelopeShape(
+    AuditCoreSchemaVersion Version,
+    JsonElement Request);
+
 /// <summary>
 /// Proves whether awaiting evidence is absent from one complete, stable view
 /// of every retained audit segment. The caller must already hold the evidence
@@ -23,7 +33,16 @@ internal sealed record AuditEvidenceReferenceScan(
 /// </summary>
 internal static class AuditEvidenceSpoolScanner
 {
-    private static readonly HashSet<string> RootProperties = new(
+    private static readonly HashSet<string> V1RootProperties = new(
+        [
+            "schema_version", "event_id", "event_type", "occurred_utc",
+            "observed_utc", "producer", "sequence", "previous_event_hash",
+            "session", "actor", "correlation", "request", "routing",
+            "outcome", "coverage", "audit", "event_hash",
+        ],
+        StringComparer.Ordinal);
+
+    private static readonly HashSet<string> V2RootProperties = new(
         [
             "schema_version", "event_id", "event_type", "occurred_utc",
             "observed_utc", "producer", "sequence", "previous_event_hash",
@@ -59,7 +78,18 @@ internal static class AuditEvidenceSpoolScanner
         ["call_id", "job_id", "parent_event_id", "trace_id", "plan_id"],
         StringComparer.Ordinal);
 
-    private static readonly HashSet<string> RequestProperties = new(
+    private static readonly HashSet<string> V1RequestProperties = new(
+        [
+            "tool", "action", "provided_fields", "session_requested", "cwd",
+            "timeout_ms", "deadline_utc", "route", "background", "raw",
+            "list_available", "job_id", "offset", "expected_generation",
+            "force", "template", "allow_cold_background", "max_bytes",
+            "pattern_fingerprint", "output_handle_digest",
+            "original_script_digest", "script_evidence_id",
+        ],
+        StringComparer.Ordinal);
+
+    private static readonly HashSet<string> V2RequestProperties = new(
         [
             "tool", "action", "provided_fields", "session_requested", "cwd",
             "destination_kind", "destination_path", "timeout_ms", "deadline_utc",
@@ -68,6 +98,8 @@ internal static class AuditEvidenceSpoolScanner
             "force", "template", "allow_cold_background", "max_bytes",
             "pattern_fingerprint", "output_handle_digest",
             "original_script_digest", "script_evidence_id",
+            "evidence_subject_id", "evidence_subject_digest", "evidence_subject_bytes",
+            "evidence_subject_state", "retention_reason",
         ],
         StringComparer.Ordinal);
 
@@ -136,7 +168,7 @@ internal static class AuditEvidenceSpoolScanner
                 CommentHandling = JsonCommentHandling.Disallow,
                 MaxDepth = 16,
             });
-        _ = RequireExactEnvelopeShape(document.RootElement);
+        _ = ValidateExactEnvelopeShape(document.RootElement);
     }
 
     /// <summary>
@@ -529,8 +561,8 @@ internal static class AuditEvidenceSpoolScanner
                 CommentHandling = JsonCommentHandling.Disallow,
                 MaxDepth = 16,
             });
-        var root = RequireExactObject(document.RootElement, RootProperties);
-        var request = RequireExactEnvelopeShape(root);
+        var shape = ValidateExactEnvelopeShape(document.RootElement);
+        var request = shape.Request;
 
         var evidenceId = NullableString(request, "script_evidence_id");
         var scriptDigest = NullableString(request, "original_script_digest");
@@ -555,22 +587,46 @@ internal static class AuditEvidenceSpoolScanner
         expectedPreviousHash = parsed.EventHash;
     }
 
-    private static JsonElement RequireExactEnvelopeShape(JsonElement root)
+    internal static AuditCoreEnvelopeShape ValidateExactEnvelopeShape(JsonElement root)
     {
-        root = RequireExactObject(root, RootProperties);
+        if (root.ValueKind != JsonValueKind.Object ||
+            !root.TryGetProperty("schema_version", out var schemaElement) ||
+            schemaElement.ValueKind != JsonValueKind.String)
+        {
+            throw new IOException("An evidence-proof audit schema is invalid.");
+        }
+        var schemaVersion = schemaElement.GetString();
+        var version = schemaVersion switch
+        {
+            AuditEventSerializer.LegacySchemaVersion => AuditCoreSchemaVersion.V1,
+            AuditEventSerializer.CurrentSchemaVersion => AuditCoreSchemaVersion.V2,
+            _ => throw new IOException("An evidence-proof audit schema is unsupported."),
+        };
+        root = RequireExactObject(
+            root,
+            version == AuditCoreSchemaVersion.V1
+                ? V1RootProperties
+                : V2RootProperties);
         _ = RequireExactObject(root.GetProperty("producer"), ProducerProperties);
         _ = RequireExactObject(root.GetProperty("session"), SessionProperties);
         _ = RequireExactObject(root.GetProperty("actor"), ActorProperties);
         _ = RequireExactObject(root.GetProperty("correlation"), CorrelationProperties);
-        var request = RequireExactObject(root.GetProperty("request"), RequestProperties);
-        var disposition = root.GetProperty("operator_disposition");
-        if (disposition.ValueKind != JsonValueKind.Null)
-            _ = RequireExactObject(disposition, OperatorDispositionProperties);
+        var request = RequireExactObject(
+            root.GetProperty("request"),
+            version == AuditCoreSchemaVersion.V1
+                ? V1RequestProperties
+                : V2RequestProperties);
+        if (version == AuditCoreSchemaVersion.V2)
+        {
+            var disposition = root.GetProperty("operator_disposition");
+            if (disposition.ValueKind != JsonValueKind.Null)
+                _ = RequireExactObject(disposition, OperatorDispositionProperties);
+        }
         _ = RequireExactObject(root.GetProperty("routing"), RoutingProperties);
         _ = RequireExactObject(root.GetProperty("outcome"), OutcomeProperties);
         _ = RequireExactObject(root.GetProperty("coverage"), CoverageProperties);
         _ = RequireExactObject(root.GetProperty("audit"), AuditProperties);
-        return request;
+        return new AuditCoreEnvelopeShape(version, request);
     }
 
     private static JsonElement RequireExactObject(

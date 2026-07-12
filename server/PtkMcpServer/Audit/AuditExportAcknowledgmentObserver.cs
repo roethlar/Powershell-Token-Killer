@@ -75,8 +75,18 @@ internal sealed class ScriptEvidenceAcknowledgmentObserver(
             var root = RequireObject(document.RootElement);
             EnsureUniqueProperties(root);
             var schemaVersion = RequiredString(root, "schema_version");
-            if (!string.Equals(schemaVersion, "ptk.audit/1", StringComparison.Ordinal))
+            if (!string.Equals(
+                    schemaVersion,
+                    AuditEventSerializer.LegacySchemaVersion,
+                    StringComparison.Ordinal) &&
+                !string.Equals(
+                    schemaVersion,
+                    AuditEventSerializer.CurrentSchemaVersion,
+                    StringComparison.Ordinal))
+            {
                 throw new IOException("The acknowledged audit schema is invalid.");
+            }
+            _ = AuditEvidenceSpoolScanner.ValidateExactEnvelopeShape(root);
             var eventIdText = RequiredString(root, "event_id");
             var eventId = RequiredCanonicalUuid(eventIdText, version: 7);
             var sequence = root.GetProperty("sequence").GetInt64();

@@ -107,6 +107,11 @@ internal sealed record AuditRequest
     public string? OutputHandleDigest { get; init; }
     public string? OriginalScriptDigest { get; init; }
     public Guid? ScriptEvidenceId { get; init; }
+    public Guid? EvidenceSubjectId { get; init; }
+    public string? EvidenceSubjectDigest { get; init; }
+    public long? EvidenceSubjectBytes { get; init; }
+    public string? EvidenceSubjectState { get; init; }
+    public string? RetentionReason { get; init; }
 }
 
 internal sealed record AuditRouting
@@ -164,14 +169,15 @@ internal readonly record struct SerializedAuditEvent(
 internal sealed class AuditEventValidationException(string message) : Exception(message);
 
 /// <summary>
-/// Validates and serializes one strict ptk.audit/1 core record. The returned
+/// Validates and serializes one strict ptk.audit/2 core record. The returned
 /// bytes are the authoritative bytes: callers must persist/export them as-is,
 /// never reserialize the event after its hash has been computed.
 /// </summary>
 internal static class AuditEventSerializer
 {
     internal const int MaximumLineBytes = 65_536;
-    private const string SchemaVersion = "ptk.audit/1";
+    internal const string LegacySchemaVersion = "ptk.audit/1";
+    internal const string CurrentSchemaVersion = "ptk.audit/2";
     private const string TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'";
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
@@ -226,6 +232,16 @@ internal static class AuditEventSerializer
             "export.disposition_completed",
             "export.disposition_failed",
         ], StringComparer.Ordinal);
+    private static readonly HashSet<string> EvidenceRetentionEvents =
+        new([
+            "evidence.retention_intent",
+            "evidence.retention_completed",
+            "evidence.retention_failed",
+        ], StringComparer.Ordinal);
+    private static readonly HashSet<string> EvidenceSubjectStates =
+        new(["local_committed", "anchored", "unreferenced", "temporary"], StringComparer.Ordinal);
+    private static readonly HashSet<string> EvidenceRetentionReasons =
+        new(["age_expired", "capacity_pressure", "crash_temporary"], StringComparer.Ordinal);
 
     internal static SerializedAuditEvent Serialize(
         long sequence,
@@ -336,7 +352,7 @@ internal static class AuditEventSerializer
         ValidateActor(input.Actor);
         ValidateCorrelation(input.Correlation);
         var providedFields = NormalizeProvidedFields(input.Request.ProvidedFields);
-        ValidateRequest(input.Request);
+        ValidateRequest(input.EventType, input.Request);
         ValidateOperatorDispositionFacts(input.EventType, input.OperatorDisposition);
         var permittedFallbacks = NormalizePermittedFallbacks(input.Routing.PermittedFallbacks);
         ValidateRouting(input.Routing);
@@ -418,7 +434,7 @@ internal static class AuditEventSerializer
         RequireNullableUuid(value.PlanId, 4, "correlation.plan_id");
     }
 
-    private static void ValidateRequest(AuditRequest value)
+    private static void ValidateRequest(string eventType, AuditRequest value)
     {
         RequireMachineName(value.Tool, "request.tool", nullable: true);
         RequireMachineName(value.Action, "request.action", nullable: true);
@@ -448,6 +464,72 @@ internal static class AuditEventSerializer
         RequireLowerHex(value.OutputHandleDigest, 64, "request.output_handle_digest", nullable: true);
         RequireLowerHex(value.OriginalScriptDigest, 64, "request.original_script_digest", nullable: true);
         RequireNullableUuid(value.ScriptEvidenceId, 4, "request.script_evidence_id");
+        ValidateEvidenceRetentionRequestFacts(eventType, value);
+    }
+
+    internal static void ValidateEvidenceRetentionRequestFacts(
+        string eventType,
+        AuditRequest value)
+    {
+        RequireNullableUuid(value.EvidenceSubjectId, 4, "request.evidence_subject_id");
+        RequireLowerHex(
+            value.EvidenceSubjectDigest,
+            64,
+            "request.evidence_subject_digest",
+            nullable: true);
+        RequireNonNegative(value.EvidenceSubjectBytes, "request.evidence_subject_bytes");
+        RequireEnum(
+            value.EvidenceSubjectState,
+            EvidenceSubjectStates,
+            "request.evidence_subject_state",
+            nullable: true);
+        RequireEnum(
+            value.RetentionReason,
+            EvidenceRetentionReasons,
+            "request.retention_reason",
+            nullable: true);
+
+        var isRetentionEvent = EvidenceRetentionEvents.Contains(eventType);
+        var hasCompleteSubject =
+            value.EvidenceSubjectId is not null &&
+            value.EvidenceSubjectDigest is not null &&
+            value.EvidenceSubjectBytes is not null &&
+            value.EvidenceSubjectState is not null &&
+            value.RetentionReason is not null;
+        var hasAnySubject =
+            value.EvidenceSubjectId is not null ||
+            value.EvidenceSubjectDigest is not null ||
+            value.EvidenceSubjectBytes is not null ||
+            value.EvidenceSubjectState is not null ||
+            value.RetentionReason is not null;
+
+        if (isRetentionEvent && !hasCompleteSubject)
+        {
+            throw Invalid(
+                "request.evidence_subject_id",
+                $"all evidence subject fields must be nonnull for {eventType}");
+        }
+        if (!isRetentionEvent && hasAnySubject)
+        {
+            throw Invalid(
+                "request.evidence_subject_id",
+                "evidence subject fields must be null outside evidence retention events");
+        }
+        if (isRetentionEvent &&
+            (value.ScriptEvidenceId is not null || value.OriginalScriptDigest is not null))
+        {
+            throw Invalid(
+                "request.script_evidence_id",
+                "script evidence reference fields must be null for evidence retention events");
+        }
+        if (isRetentionEvent && hasCompleteSubject &&
+            (string.Equals(value.EvidenceSubjectState, "temporary", StringComparison.Ordinal) !=
+             string.Equals(value.RetentionReason, "crash_temporary", StringComparison.Ordinal)))
+        {
+            throw Invalid(
+                "request.retention_reason",
+                "temporary evidence requires crash_temporary and crash_temporary requires temporary evidence");
+        }
     }
 
     private static void ValidateRouting(AuditRouting value)
@@ -734,7 +816,7 @@ internal static class AuditEventSerializer
         string[] permittedFallbacks)
     {
         writer.WriteStartObject();
-        writer.WriteString("schema_version", SchemaVersion);
+        writer.WriteString("schema_version", CurrentSchemaVersion);
         writer.WriteString("event_id", FormatUuid(eventId));
         writer.WriteString("event_type", input.EventType);
         writer.WriteString("occurred_utc", FormatTimestamp(occurredUtc));
@@ -810,6 +892,11 @@ internal static class AuditEventSerializer
         WriteString(writer, "output_handle_digest", input.Request.OutputHandleDigest);
         WriteString(writer, "original_script_digest", input.Request.OriginalScriptDigest);
         WriteUuid(writer, "script_evidence_id", input.Request.ScriptEvidenceId);
+        WriteUuid(writer, "evidence_subject_id", input.Request.EvidenceSubjectId);
+        WriteString(writer, "evidence_subject_digest", input.Request.EvidenceSubjectDigest);
+        WriteNumber(writer, "evidence_subject_bytes", input.Request.EvidenceSubjectBytes);
+        WriteString(writer, "evidence_subject_state", input.Request.EvidenceSubjectState);
+        WriteString(writer, "retention_reason", input.Request.RetentionReason);
         writer.WriteEndObject();
 
         if (input.OperatorDisposition is not { } disposition)

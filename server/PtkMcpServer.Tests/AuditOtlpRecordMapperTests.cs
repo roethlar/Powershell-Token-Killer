@@ -69,7 +69,7 @@ public sealed class AuditOtlpRecordMapperTests
 
         var attributes = record.Attributes.ToDictionary(value => value.Key, value => value.Value);
         Assert.Equal(12, attributes.Count);
-        Assert.Equal("ptk.audit/1", attributes["ptk.audit.schema_version"].StringValue);
+        Assert.Equal("ptk.audit/2", attributes["ptk.audit.schema_version"].StringValue);
         Assert.Equal(source.EventId.ToString("D"), attributes["ptk.audit.event_id"].StringValue);
         Assert.Equal("execution.planned", attributes["ptk.audit.event_type"].StringValue);
         Assert.Equal(1, attributes["ptk.audit.sequence"].IntValue);
@@ -83,6 +83,35 @@ public sealed class AuditOtlpRecordMapperTests
         Assert.Equal(7, attributes["ptk.job.id"].IntValue);
         Assert.False(attributes.ContainsKey("ptk.outcome.state"));
         Assert.Equal("not_applicable", attributes["ptk.termination.certainty"].StringValue);
+    }
+
+    [Fact]
+    public void Map_preserves_and_exports_original_v1_without_v2_only_query_attributes()
+    {
+        var source = AuditOtlpTestRecord.Create();
+        var legacy = AuditCoreSchemaTestRecords.ToLegacyV1(source.Utf8Line);
+
+        var mapped = AuditOtlpRecordMapper.Map(legacy);
+        var request = ExportLogsServiceRequest.Parser.ParseFrom(mapped.RequestBytes.Span);
+        var record = request.ResourceLogs[0].ScopeLogs[0].LogRecords[0];
+        var attributes = record.Attributes.ToDictionary(value => value.Key, value => value.Value);
+
+        Assert.Equal(legacy.AsSpan(0, legacy.Length - 1), mapped.ExactJsonBody.Span);
+        Assert.Equal("ptk.audit/1", attributes["ptk.audit.schema_version"].StringValue);
+        Assert.DoesNotContain("ptk.evidence.subject.id", attributes.Keys);
+        Assert.DoesNotContain("ptk.disposition.id", attributes.Keys);
+    }
+
+    [Fact]
+    public void Map_rejects_v1_v2_version_shape_hybrids()
+    {
+        var source = AuditOtlpTestRecord.Create();
+        var legacy = AuditCoreSchemaTestRecords.ToLegacyV1(source.Utf8Line);
+
+        Assert.Throws<AuditOtlpMappingException>(() => AuditOtlpRecordMapper.Map(
+            AuditCoreSchemaTestRecords.RelabelV2AsV1WithoutShrinking(source.Utf8Line)));
+        Assert.Throws<AuditOtlpMappingException>(() => AuditOtlpRecordMapper.Map(
+            AuditCoreSchemaTestRecords.RelabelV1AsV2WithoutExpanding(legacy)));
     }
 
     [Fact]
@@ -155,6 +184,32 @@ public sealed class AuditOtlpRecordMapperTests
     }
 
     [Fact]
+    public void Map_emits_retention_subject_query_attributes_without_creating_a_script_reference()
+    {
+        var source = AuditOtlpTestRecord.CreateRetention();
+
+        var request = ExportLogsServiceRequest.Parser.ParseFrom(
+            AuditOtlpRecordMapper.Map(source.Utf8Line).RequestBytes.Span);
+        var record = request.ResourceLogs[0].ScopeLogs[0].LogRecords[0];
+        var attributes = record.Attributes.ToDictionary(value => value.Key, value => value.Value);
+
+        Assert.Equal("ptk.audit.evidence.retention_intent", record.EventName);
+        Assert.Equal(
+            AuditOtlpTestRecord.EvidenceId.ToString("D"),
+            attributes["ptk.evidence.subject.id"].StringValue);
+        Assert.Equal(
+            AuditOtlpTestRecord.HashA,
+            attributes["ptk.evidence.subject.digest"].StringValue);
+        Assert.Equal(42, attributes["ptk.evidence.subject.bytes"].IntValue);
+        Assert.Equal("anchored", attributes["ptk.evidence.subject.state"].StringValue);
+        Assert.Equal("age_expired", attributes["ptk.evidence.retention.reason"].StringValue);
+
+        var body = Encoding.UTF8.GetString(source.Utf8Line.Span);
+        Assert.Contains("\"script_evidence_id\":null", body, StringComparison.Ordinal);
+        Assert.Contains("\"original_script_digest\":null", body, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Map_is_deterministic_for_the_same_authoritative_jsonl_bytes()
     {
         var source = AuditOtlpTestRecord.Create();
@@ -201,6 +256,21 @@ public sealed class AuditOtlpRecordMapperTests
             AuditOtlpRecordMapper.Map(missingResolvedSequence));
         Assert.Throws<AuditOtlpMappingException>(() =>
             AuditOtlpRecordMapper.Map(unknownDispositionProperty));
+
+        var retentionSource = AuditOtlpTestRecord.CreateRetention();
+        var retentionText = Encoding.UTF8.GetString(retentionSource.Utf8Line.Span);
+        var partialRetentionSubject = Encoding.UTF8.GetBytes(retentionText.Replace(
+            $"\"evidence_subject_digest\":\"{AuditOtlpTestRecord.HashA}\"",
+            "\"evidence_subject_digest\":null",
+            StringComparison.Ordinal));
+        var invalidRetentionState = Encoding.UTF8.GetBytes(retentionText.Replace(
+            "\"evidence_subject_state\":\"anchored\"",
+            "\"evidence_subject_state\":\"awaiting\"",
+            StringComparison.Ordinal));
+        Assert.Throws<AuditOtlpMappingException>(() =>
+            AuditOtlpRecordMapper.Map(partialRetentionSubject));
+        Assert.Throws<AuditOtlpMappingException>(() =>
+            AuditOtlpRecordMapper.Map(invalidRetentionState));
     }
 
     private static AuditOperatorDispositionFacts DispositionFacts(Guid dispositionId) => new()
@@ -263,6 +333,43 @@ internal static class AuditOtlpTestRecord
             EventId,
             Occurred,
             Observed);
+
+    internal static SerializedAuditEvent CreateRetention(
+        string eventType = "evidence.retention_intent")
+    {
+        var input = CompleteInput(
+            includeOptionalQueryValues: true,
+            outcomeState: null,
+            operatorDisposition: null);
+        input = input with
+        {
+            EventType = eventType,
+            Request = input.Request with
+            {
+                OriginalScriptDigest = null,
+                ScriptEvidenceId = null,
+                EvidenceSubjectId = EvidenceId,
+                EvidenceSubjectDigest = HashA,
+                EvidenceSubjectBytes = 42,
+                EvidenceSubjectState = "anchored",
+                RetentionReason = "age_expired",
+            },
+        };
+        return AuditEventSerializer.Serialize(
+            1,
+            null,
+            new AuditProducerContext(
+                HostId,
+                SupervisorBootId,
+                WorkerBootId,
+                4321,
+                "1.2.3-test",
+                HashA),
+            input,
+            EventId,
+            Occurred,
+            Observed);
+    }
 
     private static AuditEventInput CompleteInput(
         bool includeOptionalQueryValues,

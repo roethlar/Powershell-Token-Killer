@@ -6,7 +6,7 @@ namespace PtkMcpServer.Tests;
 public sealed class AuditEvidenceSpoolScannerTests
 {
     [Fact]
-    public void Exact_envelope_shape_accepts_null_and_complete_disposition_objects()
+    public void Exact_envelope_shape_accepts_v2_null_and_complete_disposition_objects()
     {
         var ordinary = AuditOtlpTestRecord.Create();
         AuditEvidenceSpoolScanner.ValidateExactEnvelopeShapeForTests(
@@ -16,6 +16,64 @@ public sealed class AuditEvidenceSpoolScannerTests
             operatorDisposition: ResolvedDisposition());
         AuditEvidenceSpoolScanner.ValidateExactEnvelopeShapeForTests(
             disposition.Utf8Line[..^1]);
+    }
+
+    [Fact]
+    public void Exact_envelope_shape_and_chain_codec_accept_original_v1()
+    {
+        var source = AuditOtlpTestRecord.Create();
+        var legacy = AuditCoreSchemaTestRecords.ToLegacyV1(source.Utf8Line);
+
+        AuditEvidenceSpoolScanner.ValidateExactEnvelopeShapeForTests(legacy[..^1]);
+        var parsed = AuditSpoolRecordCodec.Parse(
+            legacy.AsSpan(0, legacy.Length - 1),
+            AuditOtlpTestRecord.SupervisorBootId);
+
+        Assert.Equal(source.EventId, parsed.EventId);
+        Assert.Equal(source.Sequence, parsed.Sequence);
+    }
+
+    [Fact]
+    public void Chain_codec_preserves_hash_linkage_across_supported_schema_versions()
+    {
+        var firstV2 = AuditOtlpTestRecord.Create();
+        var firstV1 = AuditCoreSchemaTestRecords.ToLegacyV1(firstV2.Utf8Line);
+        var first = AuditSpoolRecordCodec.Parse(
+            firstV1.AsSpan(0, firstV1.Length - 1),
+            AuditOtlpTestRecord.SupervisorBootId);
+        var secondV2 = AuditOtlpTestRecord.Create(
+            sequence: 2,
+            previousEventHash: first.EventHash);
+
+        var second = AuditSpoolRecordCodec.Parse(
+            secondV2.Utf8Line.Span[..^1],
+            AuditOtlpTestRecord.SupervisorBootId);
+
+        Assert.Equal(1, first.Sequence);
+        Assert.Equal(2, second.Sequence);
+        Assert.Equal(first.EventHash, second.PreviousEventHash);
+    }
+
+    [Fact]
+    public void Exact_envelope_shape_and_chain_codec_reject_version_shape_hybrids()
+    {
+        var source = AuditOtlpTestRecord.Create();
+        var legacy = AuditCoreSchemaTestRecords.ToLegacyV1(source.Utf8Line);
+        var expandedV1 = AuditCoreSchemaTestRecords.RelabelV2AsV1WithoutShrinking(
+            source.Utf8Line);
+        var incompleteV2 = AuditCoreSchemaTestRecords.RelabelV1AsV2WithoutExpanding(
+            legacy);
+
+        Assert.Throws<IOException>(() =>
+            AuditEvidenceSpoolScanner.ValidateExactEnvelopeShapeForTests(expandedV1[..^1]));
+        Assert.Throws<IOException>(() =>
+            AuditEvidenceSpoolScanner.ValidateExactEnvelopeShapeForTests(incompleteV2[..^1]));
+        Assert.Throws<IOException>(() => AuditSpoolRecordCodec.Parse(
+            expandedV1.AsSpan(0, expandedV1.Length - 1),
+            AuditOtlpTestRecord.SupervisorBootId));
+        Assert.Throws<IOException>(() => AuditSpoolRecordCodec.Parse(
+            incompleteV2.AsSpan(0, incompleteV2.Length - 1),
+            AuditOtlpTestRecord.SupervisorBootId));
     }
 
     [Fact]

@@ -45,7 +45,7 @@ internal sealed class AuditOtlpRecord
 }
 
 /// <summary>
-/// Maps one already-validated authoritative ptk.audit/1 JSONL record to one
+/// Maps one already-validated authoritative ptk.audit/1 or ptk.audit/2 JSONL record to one
 /// deterministic OTLP/HTTP binary protobuf request. The JSON body is decoded
 /// only to populate the frozen query attributes; it is never reserialized.
 /// </summary>
@@ -89,8 +89,19 @@ internal static class AuditOtlpRecordMapper
             EnsureUniqueProperties(root);
 
             var schemaVersion = RequiredString(root, "schema_version");
-            if (!string.Equals(schemaVersion, "ptk.audit/1", StringComparison.Ordinal))
+            if (!string.Equals(
+                    schemaVersion,
+                    AuditEventSerializer.LegacySchemaVersion,
+                    StringComparison.Ordinal) &&
+                !string.Equals(
+                    schemaVersion,
+                    AuditEventSerializer.CurrentSchemaVersion,
+                    StringComparison.Ordinal))
+            {
                 Fail("schema_version");
+            }
+            var shape = AuditEvidenceSpoolScanner.ValidateExactEnvelopeShape(root);
+            var isV2 = shape.Version == AuditCoreSchemaVersion.V2;
             var eventIdText = RequiredString(root, "event_id");
             var eventId = RequiredCanonicalUuid(eventIdText, version: 7);
             var eventType = RequiredNonemptyString(root, "event_type");
@@ -106,10 +117,12 @@ internal static class AuditOtlpRecordMapper
             var producer = RequiredObject(root.GetProperty("producer"));
             var session = RequiredObject(root.GetProperty("session"));
             var correlation = RequiredObject(root.GetProperty("correlation"));
+            var auditRequest = RequiredObject(root.GetProperty("request"));
             var outcome = RequiredObject(root.GetProperty("outcome"));
             EnsureUniqueProperties(producer);
             EnsureUniqueProperties(session);
             EnsureUniqueProperties(correlation);
+            EnsureUniqueProperties(auditRequest);
             EnsureUniqueProperties(outcome);
 
             var hostId = RequiredString(producer, "host_id");
@@ -134,9 +147,54 @@ internal static class AuditOtlpRecordMapper
             var outcomeState = NullableString(outcome, "state");
             var terminationCertainty = NullableString(outcome, "termination_certainty");
 
+            var scriptEvidenceId = NullableCanonicalUuid(
+                auditRequest,
+                "script_evidence_id",
+                version: 4);
+            var originalScriptDigest = NullableString(
+                auditRequest,
+                "original_script_digest");
+            Guid? evidenceSubjectId = null;
+            string? evidenceSubjectDigest = null;
+            long? evidenceSubjectBytes = null;
+            string? evidenceSubjectState = null;
+            string? retentionReason = null;
+            if (isV2)
+            {
+                evidenceSubjectId = NullableCanonicalUuid(
+                    auditRequest,
+                    "evidence_subject_id",
+                    version: 4);
+                evidenceSubjectDigest = NullableString(
+                    auditRequest,
+                    "evidence_subject_digest");
+                evidenceSubjectBytes = NullableInt64(
+                    auditRequest,
+                    "evidence_subject_bytes");
+                evidenceSubjectState = NullableString(
+                    auditRequest,
+                    "evidence_subject_state");
+                retentionReason = NullableString(
+                    auditRequest,
+                    "retention_reason");
+                AuditEventSerializer.ValidateEvidenceRetentionRequestFacts(
+                    eventType,
+                    new AuditRequest
+                    {
+                        OriginalScriptDigest = originalScriptDigest,
+                        ScriptEvidenceId = scriptEvidenceId,
+                        EvidenceSubjectId = evidenceSubjectId,
+                        EvidenceSubjectDigest = evidenceSubjectDigest,
+                        EvidenceSubjectBytes = evidenceSubjectBytes,
+                        EvidenceSubjectState = evidenceSubjectState,
+                        RetentionReason = retentionReason,
+                    });
+            }
+
             AuditOperatorDispositionFacts? dispositionFacts = null;
-            var dispositionElement = root.GetProperty("operator_disposition");
-            if (dispositionElement.ValueKind != JsonValueKind.Null)
+            if (isV2 &&
+                root.GetProperty("operator_disposition") is var dispositionElement &&
+                dispositionElement.ValueKind != JsonValueKind.Null)
             {
                 var disposition = RequiredObject(dispositionElement);
                 RequireExactProperties(disposition, OperatorDispositionProperties);
@@ -172,9 +230,12 @@ internal static class AuditOtlpRecordMapper
                         "acknowledged_gap_reason"),
                 };
             }
-            AuditEventSerializer.ValidateOperatorDispositionFacts(
-                eventType,
-                dispositionFacts);
+            if (isV2)
+            {
+                AuditEventSerializer.ValidateOperatorDispositionFacts(
+                    eventType,
+                    dispositionFacts);
+            }
             var dispositionId = dispositionFacts?.DispositionId?.ToString("D");
             var dispositionTargetBootId =
                 dispositionFacts?.TargetSupervisorBootId.ToString("D");
@@ -224,6 +285,26 @@ internal static class AuditOtlpRecordMapper
             AddOptionalInt(logRecord, "ptk.job.id", jobId);
             AddOptionalString(logRecord, "ptk.outcome.state", outcomeState);
             AddOptionalString(logRecord, "ptk.termination.certainty", terminationCertainty);
+            AddOptionalString(
+                logRecord,
+                "ptk.evidence.subject.id",
+                evidenceSubjectId?.ToString("D"));
+            AddOptionalString(
+                logRecord,
+                "ptk.evidence.subject.digest",
+                evidenceSubjectDigest);
+            AddOptionalInt(
+                logRecord,
+                "ptk.evidence.subject.bytes",
+                evidenceSubjectBytes);
+            AddOptionalString(
+                logRecord,
+                "ptk.evidence.subject.state",
+                evidenceSubjectState);
+            AddOptionalString(
+                logRecord,
+                "ptk.evidence.retention.reason",
+                retentionReason);
             AddOptionalString(logRecord, "ptk.disposition.id", dispositionId);
             AddOptionalString(
                 logRecord,
