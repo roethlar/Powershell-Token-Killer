@@ -351,6 +351,30 @@ public sealed class FileAuditJournalSinkTests : IDisposable
     }
 
     [Fact]
+    public void Spool_codec_rejects_a_rehashed_non_hex_previous_event_hash()
+    {
+        var options = Options(NewRoot(), segmentSlots: 3, aggregateSegments: 4);
+        var health = new AuditHealth(options, () => BaseTime);
+        var sink = new FileAuditJournalSink(options, BootId, () => BaseTime);
+        using var journal = Journal(options, health, sink, BootId);
+        Assert.True(journal.TryReserve(1, out var firstReservation, out _));
+        var first = journal.Append(firstReservation!, Input("call.accepted"));
+        firstReservation!.Release();
+        Assert.True(journal.TryReserve(1, out var secondReservation, out _));
+        var second = journal.Append(secondReservation!, Input("call.completed"));
+        secondReservation!.Release();
+        var invalidLine = RewriteStringFieldAndRehash(
+            second,
+            "previous_event_hash",
+            first.EventHash,
+            new string('z', 64));
+
+        Assert.Throws<IOException>(() => AuditSpoolRecordCodec.Parse(
+            invalidLine.AsSpan(0, invalidLine.Length - 1),
+            BootId));
+    }
+
+    [Fact]
     public void Missing_live_segment_path_is_detected_before_more_capacity_is_admitted()
     {
         if (OperatingSystem.IsWindows()) return;
@@ -964,11 +988,21 @@ public sealed class FileAuditJournalSinkTests : IDisposable
 
     private static byte[] RewriteEventIdAndRehash(
         SerializedAuditEvent serialized,
-        string replacementEventId)
+        string replacementEventId) => RewriteStringFieldAndRehash(
+            serialized,
+            "event_id",
+            serialized.EventId.ToString("D"),
+            replacementEventId);
+
+    private static byte[] RewriteStringFieldAndRehash(
+        SerializedAuditEvent serialized,
+        string fieldName,
+        string originalValue,
+        string replacementValue)
     {
         var json = Encoding.UTF8.GetString(serialized.Utf8Line.Span[..^1]);
-        var original = $"\"event_id\":\"{serialized.EventId:D}\"";
-        var replacement = $"\"event_id\":\"{replacementEventId}\"";
+        var original = $"\"{fieldName}\":\"{originalValue}\"";
+        var replacement = $"\"{fieldName}\":\"{replacementValue}\"";
         var first = json.IndexOf(original, StringComparison.Ordinal);
         Assert.True(first >= 0);
         Assert.Equal(first, json.LastIndexOf(original, StringComparison.Ordinal));

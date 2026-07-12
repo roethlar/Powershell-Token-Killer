@@ -86,7 +86,7 @@ internal static class AuditSpoolRecordCodec
                 : previousElement.GetString();
             if (sequence == 1
                     ? previousHash is not null
-                    : previousHash?.Length != 64)
+                    : !IsLowerHex(previousHash, 64))
             {
                 throw new IOException("An audit spool previous hash is invalid.");
             }
