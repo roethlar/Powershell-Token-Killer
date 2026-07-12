@@ -1347,3 +1347,22 @@ The Windows handle-based atomic replacement path has no post-rename
 `FlushFileBuffers` barrier before a checkpoint is treated as durable and used
 to authorize retention. Canonical detail is in
 `.agents/review/findings/s2-windows-checkpoint-durability.md`.
+
+---
+
+**SLICE 2 FINAL INTEGRATED CLAUDE REVIEW — ACCEPTED / LOOP CLOSED** (Claude
+Code 2.1.207, model `claude-fable-5`, isolated disposable worktree), reviewed
+head `3d3739a2efee6c2a325ba1410413b2500658cf7c` against base
+`78e256ca0f3b1253aa97dd984f1d913429ea452a`, `guard_confirmed=true`,
+2026-07-12T17:10:19Z. The one-shot JSON envelope exited zero; its result and
+structured payload matched exactly, both fixed SHAs matched the dispatch, and
+the reviewer returned no material comments after the required independent
+mutation proof and restored full macOS battery. The detached review worktree
+was clean and removed. The same integrated code head separately passed the
+full checkout battery on macOS and Windows; canonical machine evidence is in
+`.agents/machines.md`.
+
+All four material integrated-review findings are `Verified`; their individual
+red-to-green proofs and Claude verdicts remain in the canonical finding files.
+Acceptance authorizes local landing under the owner's delegated branch
+authority, not push.

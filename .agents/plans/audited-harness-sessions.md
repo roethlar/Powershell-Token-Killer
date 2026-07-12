@@ -1,18 +1,15 @@
 # Plan: mandatory audit, harness-scoped sessions, and internal RTK routing
 
 **Status:** IMPLEMENTING — owner-approved 2026-07-11 after Claude and Grok
-reviewloop convergence. Slices 0-1 are complete: Slice 1's mandatory audit
-foundation landed at `460c106` and passed the required Claude reviewloop on
-2026-07-11. Slice 2 implementation is code-complete across the current
-integrated code head `72e42b3` and the completed disposition-administration
-classification delta that still awaits integration. The integrated work now
-includes current-server job/control/retrieval lifecycle facts, local-only and
-anchored startup, closed/live/orphan chain export with durable checkpoints and
-retention, audited evidence administration and automatic retention, complete
-operator-disposition facts, and the strict `ptk.audit/2` extension. Slice 2 is
-not accepted or landed: integrate the disposition delta, run exact-head
-cross-platform verification, and complete the required fixed-SHA Claude
-reviewloop first.
+reviewloop convergence. Slices 0-1 are complete locally. Slice 2's final
+integrated code head `3d3739a` includes current-server job/control/retrieval
+lifecycle facts, local-only and anchored startup, closed/live/orphan chain
+export with durable checkpoints and retention, audited evidence administration
+and automatic retention, complete operator-disposition facts, and the strict
+`ptk.audit/2` extension. It passed exact-head macOS and Windows verification
+and the required fixed-SHA Claude reviewloop with `guard_confirmed=true` on
+2026-07-12. Slice 2 is accepted pending its delegated local fast-forward;
+Slice 3 structured routing is next.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
@@ -1207,8 +1204,9 @@ operator disposition, or hysteresis-bounded backlog threshold crossings, not
 on each acknowledgment, so an idle fully acknowledged exporter drains and
 becomes quiescent rather than recursively creating checkpoint traffic.
 
-**Slice 2 implementation clarification (2026-07-11, pending final Slice 2
-review):** checkpoint and exclusive exporter-lease ownership are per
+**Slice 2 implementation clarification (2026-07-11, accepted by the final
+Slice 2 review on 2026-07-12):** checkpoint and exclusive exporter-lease
+ownership are per
 supervisor boot, matching the plan's one spool per supervisor. Segment order
 is total only within one boot chain; UUIDv4 boot IDs provide no safe global
 order. A later process may adopt an orphan boot only after it holds that

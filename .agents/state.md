@@ -5,30 +5,19 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **Active audited-harness Slice 2 review loop:** the fixed-SHA integrated
-  Claude review reopened two material findings; canonical status and evidence
-  are in `.agents/review/index.md`.
-- **Audited-harness Slice 2 is implementing on
-  `feat/audited-harness-slice2`.** Commit `8470b4b` completes current-server
-  job/control/retrieval lifecycle facts, truthful kill/reset attribution, and
-  fail-closed read release; commit `5238984` adds the persistent protected
-  HMAC key and literal frozen export-configuration identity; commit `eb0060f`
-  adds strict secret-safe exporter configuration and TLS material loading; and
-  commits through `1ce5900` add protected durable checkpoint replacement,
-  canonical per-boot spool identities, the strict checkpoint codec/store and
-  exclusive lease, a committed-live read seam, crash-safe macOS compaction,
-  and shared strict spool-record validation. Independent reviews accepted the
-  deltas after red→green guards. The executable still starts local-only:
-  closed-chain reading/adoption, OTLP transport/recovery, evidence integration,
-  and coordinated retention remain incomplete, so anchored mode and collector
-  requests remain unreachable. Checkpoint ownership is per supervisor boot,
-  with one sidecar/lease for each independently ordered boot chain; the plan
-  records this as a pending-review implementation clarification.
+- **Audited-harness Slice 2 is accepted pending local landing.** The final
+  integrated code head `3d3739a` completes job/control audit, local-only and
+  anchored OTLP export, evidence administration and retention, permanent
+  operator disposition, and the strict `ptk.audit/2` extension. Claude
+  accepted the exact fixed head with `guard_confirmed=true`; all four material
+  integrated-review findings are closed. Canonical review and platform
+  evidence are in `.agents/review/index.md` and `.agents/machines.md`.
 - **Local branch management is delegated for the remaining audited-harness
   implementation** (owner, 2026-07-11): create, switch, merge, and delete local
   implementation/review branches without per-merge confirmation. Push remains
   separately ask-first.
-- **Audited-harness slices 0-1 are complete locally.** Slice 1 commit
+- **Audited-harness slices 0-1 are complete locally; accepted Slice 2 is the
+  next local fast-forward.** Slice 1 commit
   `460c106` adds the mandatory current-server audit foundation, exact-script
   evidence, capacity reservation, protected local storage, and fail-closed
   pre-effect guards. Claude accepted the fixed-SHA implementation after an
@@ -61,11 +50,8 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Continue only audited-harness Slice 2 from `1ce5900`: add the strict closed
-   per-supervisor-boot chain reader and orphan adoption, then at-least-once
-   SIEM/OTLP export, evidence-read/export audit, unclosed-lifecycle recovery,
-   and coordinated retention; run the required Claude reviewloop before
-   Slice 3.
+1. Fast-forward accepted audited-harness Slice 2 to local `master`, record the
+   content proof, then begin Slice 3 structured routing with no model retry.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.
@@ -111,12 +97,10 @@ short and update it when important repo facts change.
 - Automated verification entry point: `.agents/repo-guidance.md`
   (Verification). Review-loop evidence lives in `.agents/review/index.md`;
   do not duplicate volatile counts here.
-- Audited-session slices 0-1 are complete. Slice 1's fixed-SHA Claude verdict
-  lives in `.agents/review/index.md`; its macOS, Windows, and ARM64 verification
-  evidence lives in `.agents/machines.md`.
-- Slice 2 is in flight; exact-checkout local evidence through `1ce5900` and
-  Windows evidence through `eb0060f` are recorded in `.agents/machines.md`.
-  No Slice 2 Claude verdict or landing record exists yet.
+- Audited-session slices 0-1 are complete. Slice 2's exact fixed-head Claude
+  acceptance and cross-platform verification are complete; local landing is
+  the only remaining Slice 2 action. Canonical evidence lives in
+  `.agents/review/index.md` and `.agents/machines.md`.
 
 ## Active Sources
 

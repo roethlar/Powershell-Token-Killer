@@ -36,10 +36,15 @@ installed-payload update._
   ACL and rejects post-creation ACL reintroduction; both guards were proved
   red before the fix and green after it.
 
-### Audited-harness Slice 2 in-flight checkout validation
+### Audited-harness Slice 2 checkout validation
 
-_Verified 2026-07-11 through `1ce5900`; this was checkout validation, not an
-installed-payload update._
+_Verified 2026-07-12 at final reviewed code head `3d3739a`; this was checkout
+validation, not an installed-payload update._
+
+- The exact final head passed 927/927 .NET tests. The PowerShell module suite
+  passed 134/136 with its two Windows-only skips, and the stdio handshake
+  passed with a zero-warning build. The separately built audit-administration
+  executable returned its exact usage contract and expected exit code 2.
 
 - At `8470b4b`, the full .NET suite passed 390/390, the PowerShell module suite
   passed 134/136 with its two Windows-only skips, and the stdio handshake
@@ -117,10 +122,23 @@ installed Windows payload was not changed._
   were removed from `F:\dev` after local landing; no installed payload or
   persistent host configuration was changed.
 
-### Audited-harness Slice 2 in-flight checkout validation
+### Audited-harness Slice 2 checkout validation
 
-_Verified 2026-07-11 through `eb0060f` in disposable copies under `F:\dev`; the
-installed Windows payload and existing repository were not changed._
+_Verified 2026-07-12 at final reviewed code head `3d3739a` in disposable copies
+under `F:\dev`; the installed Windows payload and existing repositories were
+not changed._
+
+- The exact final head passed 927/927 .NET tests, 136/136 PowerShell module
+  tests, and the stdio handshake with a zero-warning build. A separate
+  disposable checkout built the audit-administration executable and confirmed
+  its exact usage contract and expected exit code 2.
+- The corrected checkpoint durability branch independently passed its focused
+  four-test Windows guard, the full suite, a disabled-retry red mutation, and a
+  post-rename-flush red mutation. Claude's accepted one-finding re-review also
+  ran the focused guards plus ten repeated concurrency iterations.
+- Every transfer bundle and disposable validation directory was removed after
+  use. Access used `10.1.10.177` with the pinned SSH host alias
+  `netwatch-01`; no existing checkout or installed payload was modified.
 
 - The full .NET suite passed 390/390; the PowerShell module suite passed
   136/136; the stdio handshake passed with a zero-warning build.
@@ -128,11 +146,7 @@ installed Windows payload and existing repository were not changed._
   the run.
 - At `eb0060f`, the full .NET suite passed 455/455. Focused configuration/ACL
   and Schannel mTLS guards also passed. The exact Windows Pester and handshake
-  checks were not rerun at this commit.
-- Every Slice 2 commit after `eb0060f`, through `1ce5900`, still needs exact
-  Windows validation because `netwatch-01` stopped resolving from the
-  development host; the 2026-07-11 retry failed at DNS resolution and no
-  host-key bypass was attempted.
+  checks were not rerun at that historical commit.
 
 ## Disposable Ubuntu 26.04 ARM64 validation
 

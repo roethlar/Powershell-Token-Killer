@@ -1,8 +1,8 @@
 # Audited-harness Slice 2 integrated Claude review
 
-**Current status**: Reopened again at fixed head
-`49971d6ce5cb246d2283eab052163ae85a5b5c87`; the original review below is
-retained as history.
+**Current status**: Accepted / loop closed at fixed head
+`3d3739a2efee6c2a325ba1410413b2500658cf7c`. The two reopened reviews below
+are retained as history.
 
 **Reviewer**: Claude Code 2.1.207 (`claude-fable-5`)
 **Base**: `78e256ca0f3b1253aa97dd984f1d913429ea452a`
@@ -106,3 +106,25 @@ detached worktree; the coder tree remained clean.
 - Evidence publication performs a protected identity check and SHA-256 hash of
   every retained artifact on the serialized admission path, so long-lived
   installations can accumulate linear per-call latency.
+
+## Final fixed-head integration review — accepted
+
+**Reviewer**: Claude Code 2.1.207 (`claude-fable-5`)
+**Base**: `78e256ca0f3b1253aa97dd984f1d913429ea452a`
+**Reviewed head**: `3d3739a2efee6c2a325ba1410413b2500658cf7c`
+**Verdict**: `accepted`
+**Guard confirmed**: `true`
+**Recorded**: 2026-07-12T17:10:19Z
+
+The one-shot JSON envelope exited zero. Its result and structured payload
+matched exactly, both fixed SHAs matched the dispatched values, and the
+payload conformed to the reviewloop schema with no material comments. The
+reviewer used a detached disposable worktree, performed the required
+independent mutation proof, restored and ran the full macOS battery, then
+removed the clean worktree. The coder tree remained clean.
+
+The previously reopened job-ID and anchored-recovery fixes had already been
+independently reconfirmed at the first re-review. The TLS and corrected Windows
+checkpoint fixes each received their own accepted one-finding review with
+mutation proof. Their integrated content is present at this final head, so all
+four material findings are closed.
