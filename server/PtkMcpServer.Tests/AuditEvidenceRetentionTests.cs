@@ -154,6 +154,63 @@ public sealed class AuditEvidenceRetentionTests : IDisposable
             "age_expired");
     }
 
+    [Theory]
+    [InlineData((int)AuditEvidenceRetentionFaultPoint.BeforeDelete, true, "failed")]
+    [InlineData((int)AuditEvidenceRetentionFaultPoint.AfterDelete, false, "outcome_unknown")]
+    public void Retention_refuses_content_changed_through_preopened_writer(
+        int faultPointValue,
+        bool artifactRemains,
+        string expectedState)
+    {
+        var faultPoint = (AuditEvidenceRetentionFaultPoint)faultPointValue;
+        var options = Options("content-race-" + faultPoint, evidenceAggregateBytes: 512);
+        using var fixture = JournalFixture.Create(options);
+        FileStream? writer = null;
+        var replacement = Array.Empty<byte>();
+        var store = new ScriptEvidenceStore(
+            options,
+            retentionFaultInjector: point =>
+            {
+                if (point != faultPoint) return;
+                Assert.NotNull(writer);
+                writer.Position = 0;
+                writer.Write(replacement);
+                writer.Flush(flushToDisk: true);
+            });
+        var reference = store.Store("original retention evidence");
+        var path = EvidencePath(options, reference);
+        File.SetLastWriteTimeUtc(path, DateTime.UtcNow.AddMinutes(-2));
+        replacement = Encoding.UTF8.GetBytes(new string('x', reference.ByteLength));
+        using (writer = new FileStream(
+                   path,
+                   FileMode.Open,
+                   FileAccess.ReadWrite,
+                   FileShare.ReadWrite | FileShare.Delete))
+        {
+            Assert.Throws<ScriptEvidenceStorageException>(() =>
+                store.RetainEligible(fixture.Journal));
+        }
+
+        if (fixture.Sink.Lines.Count == 0)
+        {
+            Assert.True(OperatingSystem.IsWindows());
+            Assert.True(File.Exists(path));
+            return;
+        }
+
+        Assert.Equal(artifactRemains, File.Exists(path));
+        var events = Events(fixture.Sink);
+        Assert.Equal(
+            ["evidence.retention_intent", "evidence.retention_failed"],
+            events.Select(EventType));
+        Assert.Equal(expectedState, OutcomeState(events[1]));
+        AssertRetentionTuple(
+            events[1],
+            reference,
+            "local_committed",
+            "age_expired");
+    }
+
     [Fact]
     public void Multi_artifact_retention_records_completed_prefix_and_truthful_failed_item()
     {

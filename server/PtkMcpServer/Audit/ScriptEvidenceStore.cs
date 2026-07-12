@@ -1016,10 +1016,11 @@ public sealed class ScriptEvidenceStore
         AuditJournal journal,
         AuditEvidenceRetentionContext? context)
     {
+        var content = CaptureArtifactContent(artifact, requireNamed: true);
         var subject = new AuditEvidenceRetentionSubject(
             Guid.ParseExact(artifact.EvidenceId, "D"),
-            artifact.Digest,
-            artifact.ByteLength,
+            content.Digest,
+            content.Bytes,
             ArtifactStateText(artifact.State),
             reason);
         return AuditEvidenceRetentionAudit.TryDelete(
@@ -1028,11 +1029,93 @@ public sealed class ScriptEvidenceStore
             () =>
             {
                 _retentionFaultInjector?.Invoke(AuditEvidenceRetentionFaultPoint.BeforeDelete);
+                EnsureArtifactContentMatches(
+                    subject,
+                    CaptureArtifactContent(artifact, requireNamed: true));
                 DeleteArtifact(artifact);
                 _retentionFaultInjector?.Invoke(AuditEvidenceRetentionFaultPoint.AfterDelete);
+                EnsureArtifactContentMatches(
+                    subject,
+                    CaptureArtifactContent(artifact, requireNamed: false));
+                artifact.ReleaseHandle();
             },
             () => ExactArtifactStillNamed(artifact),
             context);
+    }
+
+    private EvidenceArtifactContent CaptureArtifactContent(
+        EvidenceArtifact artifact,
+        bool requireNamed)
+    {
+        var stream = artifact.RequireHandle();
+        if (requireNamed)
+            EnsureExactArtifactStillNamed(artifact, stream);
+
+        var handle = stream.SafeFileHandle;
+        var initialLength = RandomAccess.GetLength(handle);
+        if (initialLength < 0 || initialLength > _maximumBytes)
+            throw new IOException("An evidence artifact exceeds its configured bound.");
+
+        var buffer = new byte[16 * 1024];
+        try
+        {
+            using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+            long offset = 0;
+            while (offset < initialLength)
+            {
+                var requested = (int)Math.Min(buffer.Length, initialLength - offset);
+                var read = RandomAccess.Read(
+                    handle,
+                    buffer.AsSpan(0, requested),
+                    offset);
+                if (read <= 0)
+                    throw new IOException("An evidence artifact changed while it was read.");
+                hash.AppendData(buffer.AsSpan(0, read));
+                offset += read;
+            }
+            if (RandomAccess.Read(handle, buffer.AsSpan(0, 1), initialLength) != 0 ||
+                RandomAccess.GetLength(handle) != initialLength)
+            {
+                throw new IOException("An evidence artifact changed while it was read.");
+            }
+            if (requireNamed)
+                EnsureExactArtifactStillNamed(artifact, stream);
+
+            var digest = Convert.ToHexString(hash.GetHashAndReset()).ToLowerInvariant();
+            if (artifact.State != ArtifactState.Temporary &&
+                !string.Equals(digest, artifact.Digest, StringComparison.Ordinal))
+            {
+                throw new IOException(
+                    "The evidence artifact digest does not match its protected name.");
+            }
+            return new EvidenceArtifactContent(digest, initialLength);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(buffer);
+        }
+    }
+
+    private static void EnsureExactArtifactStillNamed(
+        EvidenceArtifact artifact,
+        FileStream stream)
+    {
+        var observed = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+            artifact.Path,
+            stream.SafeFileHandle);
+        if (observed != artifact.Identity)
+            throw new IOException("An evidence artifact changed identity before retention.");
+    }
+
+    private static void EnsureArtifactContentMatches(
+        AuditEvidenceRetentionSubject subject,
+        EvidenceArtifactContent content)
+    {
+        if (content.Bytes != subject.Bytes ||
+            !string.Equals(content.Digest, subject.Digest, StringComparison.Ordinal))
+        {
+            throw new IOException("An evidence artifact changed content before retention.");
+        }
     }
 
     private static string ArtifactStateText(ArtifactState state) => state switch
@@ -1071,7 +1154,6 @@ public sealed class ScriptEvidenceStore
             _root,
             artifact.Path,
             handle.SafeFileHandle);
-        artifact.ReleaseHandle();
     }
 
     private void RenameArtifact(EvidenceArtifact artifact, string destinationPath)
@@ -1278,6 +1360,8 @@ public sealed class ScriptEvidenceStore
             foreach (var artifact in artifacts) artifact.Dispose();
         }
     }
+
+    private readonly record struct EvidenceArtifactContent(string Digest, long Bytes);
 
     private sealed class EvidenceArtifact(
         FileInfo file,
