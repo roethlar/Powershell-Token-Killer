@@ -118,6 +118,41 @@ internal sealed class ScriptEvidenceStoreProvider
         }
     }
 
+    internal bool ReconcileExistingAwaiting(AuditJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        lock (_gate)
+        {
+            try
+            {
+                // Preserve lazy evidence storage when no artifact root has
+                // ever existed. Startup is single-threaded before admission;
+                // a later publication installs _store and makes periodic
+                // reconciliation take the full protected path.
+                if (_store is null && !EntryExists(_options.EvidenceDirectory))
+                    return true;
+                return GetOrCreateLocked().ReconcileAwaiting(journal);
+            }
+            catch (ScriptEvidenceStorageException)
+            {
+                _store = null;
+                throw;
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                _store = null;
+                throw new ScriptEvidenceStorageException();
+            }
+        }
+    }
+
+    private static bool EntryExists(string path)
+    {
+        var file = new FileInfo(path);
+        file.Refresh();
+        return file.Exists || file.LinkTarget is not null || Directory.Exists(path);
+    }
+
     private ScriptEvidenceStore GetOrCreateLocked() =>
         _store ??= _factory?.Invoke() ?? new ScriptEvidenceStore(_options);
 

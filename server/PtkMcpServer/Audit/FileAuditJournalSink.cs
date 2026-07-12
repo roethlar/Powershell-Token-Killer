@@ -90,8 +90,38 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
             faultInjector,
             checkpointStore,
             retainedPreparationQuota: null,
-            macCloneFile)
+            macCloneFile,
+            deferInitialRetention: false)
     {
+    }
+
+    /// <summary>
+    /// Creates the local live segment without running the ordinary initial
+    /// closed-segment sweep. The caller must complete evidence reconciliation
+    /// before exposing any reservation path that can invoke retention.
+    /// </summary>
+    internal static FileAuditJournalSink CreateLocalForEvidenceReconciliation(
+        AuditOptions options,
+        Guid supervisorBootId,
+        Func<DateTimeOffset>? utcNow = null,
+        Func<FileAuditSinkFaultPoint, int, bool>? faultInjector = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        if (options.ProtectionMode != AuditProtectionMode.LocalOnly)
+        {
+            throw new ArgumentException(
+                "Deferred evidence reconciliation requires local-only audit options.",
+                nameof(options));
+        }
+        return new FileAuditJournalSink(
+            options,
+            supervisorBootId,
+            utcNow,
+            faultInjector,
+            checkpointStore: null,
+            retainedPreparationQuota: null,
+            macCloneFile: null,
+            deferInitialRetention: true);
     }
 
     private FileAuditJournalSink(
@@ -101,7 +131,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         Func<FileAuditSinkFaultPoint, int, bool>? faultInjector,
         AuditExportCheckpointStore? checkpointStore,
         AuditSpoolQuotaLease? retainedPreparationQuota,
-        Func<SafeFileHandle, string, int>? macCloneFile)
+        Func<SafeFileHandle, string, int>? macCloneFile,
+        bool deferInitialRetention)
     {
         ArgumentNullException.ThrowIfNull(options);
         AuditSpoolSegmentIdentity.RequireUuidV4(supervisorBootId, nameof(supervisorBootId));
@@ -150,7 +181,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
                 {
                     InitializeNewWriterUnderQuota(
                         recoverTemporaryArtifacts: true,
-                        directPreparedSegment: false);
+                        directPreparedSegment: false,
+                        deferInitialRetention);
                 }
             }
             _exportWriterLease = exportWriterLease;
@@ -204,7 +236,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
                 faultInjector,
                 checkpointStore: null,
                 quota,
-                macCloneFile);
+                macCloneFile,
+                deferInitialRetention: false);
             var preparation = new AuditAnchoredWriterPreparation(
                 options,
                 supervisorBootId,
@@ -221,7 +254,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 
     private void InitializeNewWriterUnderQuota(
         bool recoverTemporaryArtifacts,
-        bool directPreparedSegment)
+        bool directPreparedSegment,
+        bool deferInitialRetention = false)
     {
         if (recoverTemporaryArtifacts)
             RecoverCrashAllocationsAndValidateSpool();
@@ -234,7 +268,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         EnsureRecoveryAdmissionAvailable(segmentIndex: 0);
         (_stream, _currentSegmentPath, _currentSegmentIdentity) =
             directPreparedSegment ? CreateDirectPreparedSegment() : CreateSegment(0);
-        SweepClosedSegments(GetUtcNow(), _options.EmergencyReserveBytes);
+        if (!deferInitialRetention)
+            SweepClosedSegments(GetUtcNow(), _options.EmergencyReserveBytes);
     }
 
     public long SegmentCapacityBytes => _options.SegmentBytes;

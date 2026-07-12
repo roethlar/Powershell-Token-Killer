@@ -24,6 +24,13 @@ internal interface IScriptEvidencePublication : IDisposable
     /// without calling this method and remain pinned.
     /// </summary>
     void AbandonBeforeAuditAppend();
+
+    /// <summary>
+    /// Uses the already-held publication/quota lease to reconcile an append
+    /// whose durable outcome was ambiguous. This method must not reacquire the
+    /// evidence lease; doing so would self-deadlock.
+    /// </summary>
+    bool ReconcileAfterAmbiguousAuditAppend(AuditJournal journal);
 }
 
 internal interface IAuditEvidenceAnchorLease : IDisposable
@@ -309,6 +316,83 @@ public sealed class ScriptEvidenceStore
         finally
         {
             quota?.Dispose();
+        }
+    }
+
+    internal bool ReconcileAwaiting(AuditJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        try
+        {
+            lock (_gate)
+            using (AcquireQuotaLock())
+            {
+                // Periodic reconciliation also drives ordinary retention for
+                // artifacts proved eligible by an earlier pass.
+                _ = SweepAndMeasure(requiredPayloadBytes: null);
+                var changed = false;
+                using (var inventory = InventoryArtifacts())
+                {
+                    var awaiting = inventory.Artifacts
+                        .Where(value => value.State == ArtifactState.AwaitingAnchor)
+                        .ToArray();
+                    if (awaiting.Length == 0) return true;
+
+                    var candidates = new HashSet<AuditEvidenceIdentity>();
+                    var evidenceIds = new Dictionary<string, string>(StringComparer.Ordinal);
+                    foreach (var artifact in awaiting)
+                    {
+                        if (evidenceIds.TryGetValue(artifact.EvidenceId, out var prior) &&
+                            !string.Equals(prior, artifact.Digest, StringComparison.Ordinal))
+                        {
+                            throw new IOException(
+                                "An awaiting evidence identity has multiple protected digests.");
+                        }
+                        evidenceIds[artifact.EvidenceId] = artifact.Digest;
+                        candidates.Add(new AuditEvidenceIdentity(
+                            artifact.EvidenceId,
+                            artifact.Digest));
+                    }
+
+                    var scan = journal.ScanRetainedEvidenceReferences(candidates);
+                    if (!scan.IsComplete) return false;
+                    foreach (var artifact in awaiting)
+                    {
+                        var identity = new AuditEvidenceIdentity(
+                            artifact.EvidenceId,
+                            artifact.Digest);
+                        if (scan.ReferencedCandidates.Contains(identity))
+                        {
+                            if (_protectionMode == AuditProtectionMode.LocalOnly)
+                            {
+                                RenameArtifact(
+                                    artifact,
+                                    EvidencePath(
+                                        artifact.EvidenceId,
+                                        artifact.Digest,
+                                        ArtifactState.LocalCommitted));
+                                changed = true;
+                            }
+                            continue;
+                        }
+                        RenameArtifact(
+                            artifact,
+                            EvidencePath(
+                                artifact.EvidenceId,
+                                artifact.Digest,
+                                ArtifactState.Unreferenced));
+                        changed = true;
+                    }
+                }
+
+                if (changed)
+                    _ = SweepAndMeasure(requiredPayloadBytes: null);
+                return true;
+            }
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            throw new ScriptEvidenceStorageException();
         }
     }
 
@@ -727,6 +811,28 @@ public sealed class ScriptEvidenceStore
                 ArtifactState.Unreferenced));
     }
 
+    private bool ReconcilePublicationWhileQuotaHeld(
+        ScriptEvidenceReference reference,
+        AuditJournal journal)
+    {
+        ArgumentNullException.ThrowIfNull(journal);
+        ValidateEvidenceIdentity(reference.EvidenceId, reference.ScriptDigest);
+        var identity = new AuditEvidenceIdentity(
+            reference.EvidenceId,
+            reference.ScriptDigest);
+        var candidates = new HashSet<AuditEvidenceIdentity> { identity };
+        var scan = journal.ScanRetainedEvidenceReferences(candidates);
+        if (!scan.IsComplete)
+            return false;
+        if (scan.ReferencedCandidates.Contains(identity))
+        {
+            MarkLocalCommittedWhileQuotaHeld(reference);
+            return true;
+        }
+        MarkUnreferencedWhileQuotaHeld(reference);
+        return true;
+    }
+
     private void MarkLocalCommittedWhileQuotaHeld(ScriptEvidenceReference reference)
     {
         if (_protectionMode != AuditProtectionMode.LocalOnly)
@@ -916,6 +1022,27 @@ public sealed class ScriptEvidenceStore
                     throw new ObjectDisposedException(nameof(EvidencePublication));
                 owner.MarkUnreferencedWhileQuotaHeld(Reference);
                 ReleaseLocked();
+            }
+        }
+
+        public bool ReconcileAfterAmbiguousAuditAppend(AuditJournal journal)
+        {
+            lock (_gate)
+            {
+                if (_quota is null)
+                    throw new ObjectDisposedException(nameof(EvidencePublication));
+                try
+                {
+                    return owner.ReconcilePublicationWhileQuotaHeld(Reference, journal);
+                }
+                catch (ScriptEvidenceStorageException)
+                {
+                    throw;
+                }
+                catch (Exception exception) when (!IsFatal(exception))
+                {
+                    throw new ScriptEvidenceStorageException();
+                }
             }
         }
 

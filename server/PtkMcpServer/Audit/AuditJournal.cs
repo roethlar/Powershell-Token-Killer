@@ -368,6 +368,30 @@ internal sealed class AuditJournal : IDisposable
             currentSegment);
     }
 
+    /// <summary>
+    /// Captures a complete retained-journal evidence-reference proof while
+    /// holding the authoritative writer gate. Callers must already own the
+    /// evidence publication/quota lease; the scanner then acquires global
+    /// spool topology, establishing evidence -&gt; journal -&gt; spool order.
+    /// </summary>
+    internal AuditEvidenceReferenceScan ScanRetainedEvidenceReferences(
+        IReadOnlySet<AuditEvidenceIdentity> candidates)
+    {
+        ArgumentNullException.ThrowIfNull(candidates);
+        lock (_gate)
+        {
+            if (_disposed ||
+                _sink is not IAuditCommittedSpoolSource source)
+            {
+                return AuditEvidenceReferenceScan.Incomplete;
+            }
+            return AuditEvidenceSpoolScanner.CaptureUnderJournalGate(
+                _options,
+                source,
+                candidates);
+        }
+    }
+
     internal bool TryReserve(
         int maxRecordSlots,
         out AuditReservation? reservation,

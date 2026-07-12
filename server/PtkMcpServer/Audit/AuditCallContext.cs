@@ -166,17 +166,28 @@ internal sealed class AuditCallContext
             try
             {
                 if (!_accepted &&
-                    evidencePublication is not null &&
-                    !auditAppendAttempted)
+                    evidencePublication is not null)
                 {
                     try
                     {
-                        evidencePublication.AbandonBeforeAuditAppend();
+                        if (auditAppendAttempted)
+                        {
+                            // The publication already owns the evidence quota.
+                            // Reconcile through that capability before Dispose;
+                            // reacquiring via the provider would self-deadlock.
+                            _ = evidencePublication.ReconcileAfterAmbiguousAuditAppend(
+                                _journal);
+                        }
+                        else
+                        {
+                            evidencePublication.AbandonBeforeAuditAppend();
+                        }
                     }
                     catch (ScriptEvidenceStorageException)
                     {
                         _journal.EnterExternalUnavailable("evidence.storage");
-                        failureClass = "evidence.storage";
+                        if (!auditAppendAttempted)
+                            failureClass = "evidence.storage";
                     }
                 }
             }

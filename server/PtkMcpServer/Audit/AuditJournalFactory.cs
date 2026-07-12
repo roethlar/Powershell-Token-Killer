@@ -19,9 +19,41 @@ internal static class AuditJournalFactory
         Action<string>? hostIdentityReadCompletedForTests = null,
         Action? hostIdentityDestinationCheckedForTests = null)
     {
+        return OpenCore(
+            options,
+            health,
+            producerVersion,
+            binaryDigest,
+            utcNow,
+            uuidV7Factory,
+            sinkFaultInjector,
+            hostIdentityReadCompletedForTests,
+            hostIdentityDestinationCheckedForTests,
+            deferInitialRetentionForEvidenceReconciliation: false);
+    }
+
+    private static AuditJournal OpenCore(
+        AuditOptions options,
+        AuditHealth health,
+        string producerVersion,
+        string? binaryDigest,
+        Func<DateTimeOffset>? utcNow,
+        Func<DateTimeOffset, Guid>? uuidV7Factory,
+        Func<FileAuditSinkFaultPoint, int, bool>? sinkFaultInjector,
+        Action<string>? hostIdentityReadCompletedForTests,
+        Action? hostIdentityDestinationCheckedForTests,
+        bool deferInitialRetentionForEvidenceReconciliation)
+    {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(health);
         ArgumentException.ThrowIfNullOrWhiteSpace(producerVersion);
+        if (deferInitialRetentionForEvidenceReconciliation &&
+            options.ProtectionMode != AuditProtectionMode.LocalOnly)
+        {
+            throw new ArgumentException(
+                "Only local audit startup may defer its initial retention pass.",
+                nameof(options));
+        }
 
         var root = SecureAuditStorage.PrepareRoot(options.RootDirectory);
         _ = SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
@@ -30,7 +62,17 @@ internal static class AuditJournalFactory
             hostIdentityReadCompletedForTests,
             hostIdentityDestinationCheckedForTests);
         var supervisorBootId = Guid.NewGuid();
-        var sink = new FileAuditJournalSink(options, supervisorBootId, utcNow, sinkFaultInjector);
+        var sink = deferInitialRetentionForEvidenceReconciliation
+            ? FileAuditJournalSink.CreateLocalForEvidenceReconciliation(
+                options,
+                supervisorBootId,
+                utcNow,
+                sinkFaultInjector)
+            : new FileAuditJournalSink(
+                options,
+                supervisorBootId,
+                utcNow,
+                sinkFaultInjector);
         return CreateJournalTakingSink(
             options,
             health,
@@ -41,6 +83,60 @@ internal static class AuditJournalFactory
             binaryDigest,
             utcNow,
             uuidV7Factory);
+    }
+
+    /// <summary>
+    /// Opens a local writer without allowing its constructor to retain old
+    /// closed segments first, reconciles every awaiting evidence artifact,
+    /// and only then exposes a journal whose first reservation may run normal
+    /// local retention. Both the MCP supervisor and the out-of-band admin
+    /// writer must use this path.
+    /// </summary>
+    internal static AuditJournal OpenReconciledLocal(
+        AuditOptions options,
+        AuditHealth health,
+        string producerVersion,
+        ScriptEvidenceStoreProvider evidence)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(health);
+        ArgumentNullException.ThrowIfNull(evidence);
+        ArgumentException.ThrowIfNullOrWhiteSpace(producerVersion);
+        if (options.ProtectionMode != AuditProtectionMode.LocalOnly)
+        {
+            throw new ArgumentException(
+                "Reconciled local journal startup requires local-only audit options.",
+                nameof(options));
+        }
+
+        AuditJournal? journal = null;
+        try
+        {
+            journal = OpenCore(
+                options,
+                health,
+                producerVersion,
+                binaryDigest: null,
+                utcNow: null,
+                uuidV7Factory: null,
+                sinkFaultInjector: null,
+                hostIdentityReadCompletedForTests: null,
+                hostIdentityDestinationCheckedForTests: null,
+                deferInitialRetentionForEvidenceReconciliation: true);
+            var reconciler = new AuditEvidenceOrphanReconciler(journal, evidence);
+            if (!reconciler.ReconcileNow() &&
+                health.Snapshot().State != AuditHealthState.Unavailable)
+            {
+                journal.EnterExternalUnavailable("evidence.reconciliation");
+            }
+            var result = journal;
+            journal = null;
+            return result;
+        }
+        finally
+        {
+            journal?.Dispose();
+        }
     }
 
     /// <summary>

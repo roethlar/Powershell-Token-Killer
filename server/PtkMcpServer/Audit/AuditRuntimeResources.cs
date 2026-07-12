@@ -34,6 +34,45 @@ internal sealed class AuditRuntimeResources : IDisposable
 
     internal AuditExportLoopSnapshot? ExportSnapshot => _exportLoop?.Snapshot;
 
+    internal static AuditRuntimeResources OpenLocal(
+        AuditOptions options,
+        AuditHealth health,
+        string producerVersion,
+        ScriptEvidenceStoreProvider evidence)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(health);
+        ArgumentNullException.ThrowIfNull(evidence);
+        ArgumentException.ThrowIfNullOrWhiteSpace(producerVersion);
+        if (options.ProtectionMode != AuditProtectionMode.LocalOnly)
+        {
+            throw new ArgumentException(
+                "Local runtime resources require local-only audit options.",
+                nameof(options));
+        }
+
+        AuditJournal? journal = null;
+        try
+        {
+            // The writer creates its new current segment but cannot sweep old
+            // closed segments until evidence reconciliation has inspected the
+            // complete retained topology. A failed proof closes admission, so
+            // the first CanReserve cannot turn uncertainty into deletion.
+            journal = AuditJournalFactory.OpenReconciledLocal(
+                options,
+                health,
+                producerVersion,
+                evidence);
+            var resources = new AuditRuntimeResources(journal);
+            journal = null;
+            return resources;
+        }
+        finally
+        {
+            journal?.Dispose();
+        }
+    }
+
     internal static AuditRuntimeResources OpenAnchored(
         AuditOptions options,
         AuditHealth health,
@@ -68,6 +107,7 @@ internal sealed class AuditRuntimeResources : IDisposable
         AuditJournal? journal = null;
         AuditBootExportSource? current = null;
         AuditExportCoordinator? coordinator = null;
+        IAuditExportStepSource? exportSource = null;
         AuditExportLoop? exportLoop = null;
         var acknowledgmentObserver =
             new ScriptEvidenceAcknowledgmentObserver(evidence);
@@ -83,6 +123,15 @@ internal sealed class AuditRuntimeResources : IDisposable
                 health,
                 producerVersion,
                 sink);
+            // Activate consumes and releases the staged writer's global spool
+            // quota before reconciliation takes evidence then journal then
+            // global topology. Startup can therefore never invert the staged
+            // global -> checkpoint construction order.
+            var evidenceReconciler = new AuditEvidenceOrphanReconciler(
+                journal,
+                evidence,
+                timeProvider);
+            _ = evidenceReconciler.ReconcileNow();
             current = new AuditBootExportSource(
                 journal,
                 checkpointStore,
@@ -96,14 +145,18 @@ internal sealed class AuditRuntimeResources : IDisposable
                 acknowledgmentObserver,
                 timeProvider);
             current = null;
-            exportLoop = new AuditExportLoop(
+            exportSource = new AuditEvidenceReconcilingExportSource(
                 coordinator,
+                evidenceReconciler);
+            coordinator = null;
+            exportLoop = new AuditExportLoop(
+                exportSource,
                 timeProvider: timeProvider,
                 healthObserver: new AuditExportTransitionRecorder(
                     journal,
                     health.ExportObserver,
                     AuditBacklogHysteresis.CreateFor(options)));
-            coordinator = null;
+            exportSource = null;
 
             var resources = new AuditRuntimeResources(
                 journal,
@@ -129,6 +182,7 @@ internal sealed class AuditRuntimeResources : IDisposable
             }
             else
             {
+                exportSource?.Dispose();
                 coordinator?.Dispose();
                 current?.Dispose();
             }

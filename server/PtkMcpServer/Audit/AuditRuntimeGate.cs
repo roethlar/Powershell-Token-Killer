@@ -55,9 +55,13 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
             throw new ArgumentException(
                 "Specify either a journal factory or a runtime-resource factory, not both.");
         }
-        _openRuntime = openRuntime ?? (() => new AuditRuntimeResources(
-            openJournal?.Invoke() ??
-                AuditJournalFactory.Open(_options, _health, _producerVersion)));
+        _openRuntime = openRuntime ?? (openJournal is not null
+            ? () => new AuditRuntimeResources(openJournal())
+            : () => AuditRuntimeResources.OpenLocal(
+                _options,
+                _health,
+                _producerVersion,
+                _evidence));
     }
 
     private AuditRuntimeGate(
