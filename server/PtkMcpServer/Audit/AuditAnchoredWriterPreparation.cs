@@ -157,6 +157,9 @@ internal static class AuditAnchoredWriterStartupPreflight
         }
 
         retainedQuota.VerifyOwnership();
+        _ = AuditCompletedChainRetirement.RecoverUnderQuota(
+            options,
+            retainedQuota);
         var initial = ReadTopology(options);
         var initialControls = ReadControls(options);
         var candidates = ClassifyCandidatesOrThrow(options, initial, initialControls);

@@ -40,6 +40,7 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
     private AuditExportCoordinatorStep? _currentBlocked;
     private bool _currentComplete;
     private bool _preferCurrent;
+    private DateTimeOffset _nextCompletedRetentionUtc = DateTimeOffset.MinValue;
     private int _lifecycle;
 
     internal AuditExportCoordinator(
@@ -108,6 +109,7 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
         try
         {
             cancellationToken.ThrowIfCancellationRequested();
+            RetireEligibleCompletedBoots();
 
             if (!_preferCurrent)
             {
@@ -220,6 +222,8 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
                         : AuditExportCoordinatorStepKind.Advanced);
                 _completedBoots.Add(adopted.SupervisorBootId);
                 ReleaseAdopted(adopted, sweepAcknowledgedPrefix: true);
+                if (TryRetireCompletedBoot(adopted.SupervisorBootId))
+                    _completedBoots.Remove(adopted.SupervisorBootId);
                 return mapped;
             }
             case AuditClosedSpoolExportStepKind.PrefixComplete:
@@ -368,6 +372,28 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
             _timeProvider.GetUtcNow().ToUniversalTime(),
             checked(_options.SegmentBytes + _options.EmergencyReserveBytes));
     }
+
+    private void RetireEligibleCompletedBoots()
+    {
+        if (_completedBoots.Count == 0)
+            return;
+        var now = _timeProvider.GetUtcNow().ToUniversalTime();
+        if (now < _nextCompletedRetentionUtc)
+            return;
+        _nextCompletedRetentionUtc = now + TimeSpan.FromSeconds(30);
+        foreach (var supervisorBootId in _completedBoots.ToArray())
+        {
+            if (TryRetireCompletedBoot(supervisorBootId))
+                _completedBoots.Remove(supervisorBootId);
+        }
+    }
+
+    private bool TryRetireCompletedBoot(Guid supervisorBootId) =>
+        AuditCompletedChainRetirement.TryRetire(
+            _options,
+            supervisorBootId,
+            _timeProvider.GetUtcNow().ToUniversalTime(),
+            checked(_options.SegmentBytes + _options.EmergencyReserveBytes));
 
     private void ReleaseAdopted(
         AdoptedChain adopted,

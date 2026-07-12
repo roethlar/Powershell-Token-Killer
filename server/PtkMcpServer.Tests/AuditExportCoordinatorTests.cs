@@ -44,6 +44,35 @@ public sealed class AuditExportCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Coordinator_retires_an_aged_fully_acknowledged_orphan_chain()
+    {
+        var options = Options(NewRoot());
+        var orphan = WriteClosedBoot(options, OrphanBoot);
+        var orphanPath = Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolSegmentIdentity.Create(OrphanBoot, 0).FileName);
+        File.SetLastWriteTimeUtc(orphanPath, DateTime.UtcNow - TimeSpan.FromHours(1));
+        var transport = new CapturingTransport();
+        using var current = new CurrentFixture(options, transport);
+        using var coordinator = new AuditExportCoordinator(
+            options,
+            current.Source,
+            transport);
+
+        var step = await coordinator.ExportNextAsync(CancellationToken.None);
+
+        Assert.Equal(AuditExportCoordinatorStepKind.Advanced, step.Kind);
+        Assert.Equal(orphan.EventId, step.EventId);
+        Assert.False(File.Exists(orphanPath));
+        Assert.False(File.Exists(Path.Combine(
+            options.RootDirectory,
+            AuditExportCheckpointStore.CheckpointFileName(OrphanBoot))));
+        Assert.False(File.Exists(Path.Combine(
+            options.RootDirectory,
+            AuditExportCheckpointStore.LockFileName(OrphanBoot))));
+    }
+
+    [Fact]
     public async Task Coordinator_carries_the_current_evidence_observer_into_adopted_orphans()
     {
         var options = Options(NewRoot());
