@@ -1315,3 +1315,7 @@ against `78e256ca0f3b1253aa97dd984f1d913429ea452a`,
 death after protected rotation-temporary creation can make anchored startup
 and `ptk-audit-admin` reject the spool forever. Canonical detail is in
 `.agents/review/findings/s2-anchored-temp-recovery.md`.
+
+The complete structured integrated-review record, independent mutations,
+verification, Windows static review, and non-material observations are in
+`.agents/review/slice2-integrated-claude.md`.

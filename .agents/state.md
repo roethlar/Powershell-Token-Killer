@@ -5,6 +5,9 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **Active audited-harness Slice 2 review loop:** the fixed-SHA integrated
+  Claude review reopened two material findings; canonical status and evidence
+  are in `.agents/review/index.md`.
 - **Audited-harness Slice 2 is implementing on
   `feat/audited-harness-slice2`.** Commit `8470b4b` completes current-server
   job/control/retrieval lifecycle facts, truthful kill/reset attribution, and
