@@ -1,3 +1,4 @@
+using System.Buffers;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
 using System.Security.Cryptography;
@@ -12,6 +13,10 @@ internal enum FileAuditSinkFaultPoint
     PhysicalAllocation,
     BeforePhysicalFlush,
     AfterPhysicalFlush,
+    MacCompactionCopy,
+    MacCompactionTemporaryDurable,
+    MacCompactionPublished,
+    MacCompactionDirectoryFlushStarting,
 }
 
 internal enum AuditCommittedSpoolReadStatus
@@ -49,12 +54,14 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 {
     private const string QuotaLockFileName = ".ptk-audit-quota.lock";
     private const string AllocatingSuffix = ".allocating";
+    private const string CompactingSuffix = ".compacting";
     private const int AllocationIdLength = 32;
     private static readonly byte[] EventHashMarker = Encoding.ASCII.GetBytes(",\"event_hash\":\"");
     private readonly AuditOptions _options;
     private readonly Guid _supervisorBootId;
     private readonly Func<DateTimeOffset> _utcNow;
     private readonly Func<FileAuditSinkFaultPoint, int, bool>? _faultInjector;
+    private readonly Func<SafeFileHandle, string, int> _macCloneFile;
     private readonly string _spoolRoot;
     private readonly string _quotaLockPath;
     private IDisposable? _exportWriterLease;
@@ -65,6 +72,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
     private int _segmentIndex;
     private int _allocationAttempt;
     private int _flushAttempt;
+    private int _compactionAttempt;
+    private bool _currentPathFailureReported;
     private bool _disposed;
 
     internal FileAuditJournalSink(
@@ -72,7 +81,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         Guid supervisorBootId,
         Func<DateTimeOffset>? utcNow = null,
         Func<FileAuditSinkFaultPoint, int, bool>? faultInjector = null,
-        AuditExportCheckpointStore? checkpointStore = null)
+        AuditExportCheckpointStore? checkpointStore = null,
+        Func<SafeFileHandle, string, int>? macCloneFile = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         AuditSpoolSegmentIdentity.RequireUuidV4(supervisorBootId, nameof(supervisorBootId));
@@ -80,6 +90,7 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         _supervisorBootId = supervisorBootId;
         _utcNow = utcNow ?? (() => DateTimeOffset.UtcNow);
         _faultInjector = faultInjector;
+        _macCloneFile = macCloneFile ?? MacNative.CloneFile;
         _spoolRoot = SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
         _quotaLockPath = Path.Combine(_spoolRoot, QuotaLockFileName);
         IDisposable? exportWriterLease = null;
@@ -300,12 +311,14 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         var nextIndex = checked(_segmentIndex + 1);
         var (nextStream, nextPath, nextIdentity) = CreateSegment(nextIndex);
         var previous = _stream;
+        var previousPath = _currentSegmentPath;
         _stream = nextStream;
         _currentSegmentPath = nextPath;
         _currentSegmentIdentity = nextIdentity;
         _committedSegmentBytes = 0;
         _segmentIndex = nextIndex;
-        CloseAndTrim(previous);
+        _currentPathFailureReported = false;
+        CloseAndTrim(previous, previousPath, pathFailureAlreadyReported: false);
     }
 
     private void EnsureQuotaLockFile()
@@ -478,22 +491,210 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         }
     }
 
-    private void CloseAndTrimCurrent() => CloseAndTrim(_stream);
+    private void CloseAndTrimCurrent() => CloseAndTrim(
+        _stream,
+        _currentSegmentPath,
+        _currentPathFailureReported);
 
-    private void CloseAndTrim(FileStream stream)
+    private void CloseAndTrim(
+        FileStream stream,
+        string path,
+        bool pathFailureAlreadyReported)
     {
         var logicalLength = stream.Length;
         try
         {
             stream.Flush(flushToDisk: true);
-            PhysicalAllocation.TrimBeyondEof(stream, logicalLength, SegmentCapacityBytes);
-            if (stream.Length != logicalLength)
+            if (!File.Exists(path))
+            {
+                if (pathFailureAlreadyReported) return;
+                throw new IOException("The live audit segment disappeared before close.");
+            }
+            TrimOrCompact(stream, path, logicalLength);
+            if (new FileInfo(path).Length != logicalLength)
                 throw new IOException("Trimming audit allocation changed logical JSONL EOF.");
-            stream.Flush(flushToDisk: true);
+            if (!OperatingSystem.IsMacOS()) stream.Flush(flushToDisk: true);
         }
         finally
         {
             stream.Dispose();
+        }
+    }
+
+    private void TrimOrCompact(FileStream stream, string path, long logicalLength)
+    {
+        if (!OperatingSystem.IsMacOS())
+        {
+            PhysicalAllocation.TrimBeyondEof(stream, logicalLength, SegmentCapacityBytes);
+            return;
+        }
+
+        var allocation = SecureAuditStorage.GetMacFileAllocation(stream.SafeFileHandle);
+        if (allocation.LogicalBytes != logicalLength)
+            throw new IOException("The macOS audit segment changed before compaction.");
+        var allocationUnit = Math.Max(512L, allocation.AllocationUnitBytes);
+        var compactLogicalBytes = checked(
+            (logicalLength + allocationUnit - 1) / allocationUnit * allocationUnit);
+        if (allocation.AllocatedBytes <= compactLogicalBytes)
+            return;
+
+        CompactMacSegment(stream, path, logicalLength);
+    }
+
+    private void CompactMacSegment(FileStream source, string path, long logicalLength)
+    {
+        var fileName = Path.GetFileName(path);
+        if (!AuditSpoolSegmentIdentity.TryParse(fileName, out _))
+            throw new IOException("The macOS audit compaction source name is invalid.");
+        var temporaryPath = Path.Combine(
+            _spoolRoot,
+            $".{fileName}.{Guid.NewGuid():N}{CompactingSuffix}");
+        var attempt = checked(++_compactionAttempt);
+        try
+        {
+            if (_macCloneFile(source.SafeFileHandle, temporaryPath) != 0)
+            {
+                SecureAuditStorage.TryDelete(temporaryPath);
+                CopyExactMacSegment(source, temporaryPath, logicalLength, attempt);
+            }
+            else
+            {
+                SecureAuditStorage.ProtectExistingFile(temporaryPath);
+                using var clone = new FileStream(
+                    temporaryPath,
+                    FileMode.Open,
+                    FileAccess.ReadWrite,
+                    FileShare.None,
+                    bufferSize: 16 * 1024,
+                    FileOptions.WriteThrough);
+                if (clone.Length != logicalLength)
+                    throw new IOException("The cloned audit segment changed logical EOF.");
+                ValidateExactMacClone(source, clone, logicalLength);
+                clone.Flush(flushToDisk: true);
+            }
+
+            if (_faultInjector?.Invoke(
+                    FileAuditSinkFaultPoint.MacCompactionTemporaryDurable,
+                    attempt) == true)
+            {
+                throw new IOException("Injected pre-publish macOS compaction failure.");
+            }
+
+            SecureAuditStorage.ReplaceAtomically(
+                temporaryPath,
+                path,
+                _spoolRoot,
+                () =>
+                {
+                    if (_faultInjector?.Invoke(
+                            FileAuditSinkFaultPoint.MacCompactionPublished,
+                            attempt) == true)
+                    {
+                        throw new IOException("Injected post-publish macOS compaction failure.");
+                    }
+                },
+                () =>
+                {
+                    if (_faultInjector?.Invoke(
+                            FileAuditSinkFaultPoint.MacCompactionDirectoryFlushStarting,
+                            attempt) == true)
+                    {
+                        throw new IOException("Injected macOS compaction directory-flush failure.");
+                    }
+                });
+            if (new FileInfo(path).Length != logicalLength)
+                throw new IOException("The compacted audit segment changed logical EOF.");
+        }
+        finally
+        {
+            SecureAuditStorage.TryDelete(temporaryPath);
+        }
+    }
+
+    private void CopyExactMacSegment(
+        FileStream source,
+        string temporaryPath,
+        long logicalLength,
+        int attempt)
+    {
+        var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+        try
+        {
+            using var destination = SecureAuditStorage.CreateExclusiveFile(temporaryPath);
+            if (_faultInjector?.Invoke(FileAuditSinkFaultPoint.MacCompactionCopy, attempt) == true)
+                throw new IOException("Injected macOS compaction copy failure.");
+            long offset = 0;
+            while (offset < logicalLength)
+            {
+                var requested = checked((int)Math.Min(buffer.Length, logicalLength - offset));
+                var read = RandomAccess.Read(
+                    source.SafeFileHandle,
+                    buffer.AsSpan(0, requested),
+                    offset);
+                if (read == 0)
+                    throw new IOException("The audit segment ended during macOS compaction.");
+                destination.Write(buffer.AsSpan(0, read));
+                offset += read;
+            }
+            if (source.Length != logicalLength || destination.Length != logicalLength)
+                throw new IOException("The audit segment changed during macOS compaction.");
+            destination.Flush(flushToDisk: true);
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer, clearArray: true);
+        }
+    }
+
+    private static void ValidateExactMacClone(
+        FileStream source,
+        FileStream clone,
+        long logicalLength)
+    {
+        var sourceBuffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+        var cloneBuffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+        try
+        {
+            long offset = 0;
+            while (offset < logicalLength)
+            {
+                var requested = checked((int)Math.Min(sourceBuffer.Length, logicalLength - offset));
+                ReadExactlyAt(
+                    source.SafeFileHandle,
+                    sourceBuffer.AsSpan(0, requested),
+                    offset);
+                ReadExactlyAt(
+                    clone.SafeFileHandle,
+                    cloneBuffer.AsSpan(0, requested),
+                    offset);
+                if (!sourceBuffer.AsSpan(0, requested).SequenceEqual(
+                        cloneBuffer.AsSpan(0, requested)))
+                {
+                    throw new IOException("The cloned audit segment does not match the writer's bytes.");
+                }
+
+                offset += requested;
+            }
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(sourceBuffer, clearArray: true);
+            ArrayPool<byte>.Shared.Return(cloneBuffer, clearArray: true);
+        }
+    }
+
+    private static void ReadExactlyAt(
+        SafeFileHandle file,
+        Span<byte> destination,
+        long offset)
+    {
+        var total = 0;
+        while (total < destination.Length)
+        {
+            var read = RandomAccess.Read(file, destination[total..], offset + total);
+            if (read == 0)
+                throw new IOException("The audit segment ended during exact comparison.");
+            total += read;
         }
     }
 
@@ -607,10 +808,10 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         {
             RefuseLinkOrReparsePoint(new FileInfo(segment.FullName));
             var logicalLength = exclusive.Length;
-            PhysicalAllocation.TrimBeyondEof(exclusive, logicalLength, SegmentCapacityBytes);
-            if (exclusive.Length != logicalLength)
+            TrimOrCompact(exclusive, segment.FullName, logicalLength);
+            if (new FileInfo(segment.FullName).Length != logicalLength)
                 throw new IOException("Reclaiming a closed audit allocation changed logical JSONL EOF.");
-            exclusive.Flush(flushToDisk: true);
+            if (!OperatingSystem.IsMacOS()) exclusive.Flush(flushToDisk: true);
         }
         File.SetLastWriteTimeUtc(segment.FullName, lastWriteUtc);
         segment.Refresh();
@@ -659,6 +860,11 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
                 continue;
             if (AuditSpoolSegmentIdentity.TryParse(file.Name, out _))
                 continue;
+            if (TryParseCanonicalCompactionName(file.Name, out var sourceName))
+            {
+                RecoverCrashCompaction(file, sourceName);
+                continue;
+            }
             if (!IsCanonicalAllocationName(file.Name))
             {
                 throw new IOException("The audit spool contains an unknown entry.");
@@ -683,6 +889,29 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
             if (File.Exists(file.FullName))
                 throw new IOException("A crash-left audit allocation could not be removed.");
         }
+    }
+
+    private void RecoverCrashCompaction(FileInfo temporary, string sourceName)
+    {
+        RefuseLinkOrReparsePoint(temporary);
+        SecureAuditStorage.VerifyProtectedFile(temporary.FullName);
+        var sourcePath = Path.Combine(_spoolRoot, sourceName);
+        if (!File.Exists(sourcePath))
+            throw new IOException("A crash-left audit compaction lost its source segment.");
+        SecureAuditStorage.VerifyProtectedFile(sourcePath);
+        using (var exclusive = new FileStream(
+                   temporary.FullName,
+                   FileMode.Open,
+                   FileAccess.ReadWrite,
+                   FileShare.None,
+                   bufferSize: 1,
+                   FileOptions.WriteThrough))
+        {
+            RefuseLinkOrReparsePoint(new FileInfo(temporary.FullName));
+        }
+        File.Delete(temporary.FullName);
+        if (File.Exists(temporary.FullName))
+            throw new IOException("A crash-left audit compaction could not be removed.");
     }
 
     private long TotalBytesUnderQuotaLock() =>
@@ -885,12 +1114,20 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 
     private void ValidateCurrentSegmentPath(bool requireLengthMatch = true)
     {
-        SecureAuditStorage.VerifyProtectedDirectory(_spoolRoot);
-        SecureAuditStorage.VerifyProtectedFile(_currentSegmentPath);
-        var named = new FileInfo(_currentSegmentPath);
-        named.Refresh();
-        if (!named.Exists || (requireLengthMatch && named.Length != _stream.Length))
-            throw new IOException("The live audit segment path no longer identifies the writer's file.");
+        try
+        {
+            SecureAuditStorage.VerifyProtectedDirectory(_spoolRoot);
+            SecureAuditStorage.VerifyProtectedFile(_currentSegmentPath);
+            var named = new FileInfo(_currentSegmentPath);
+            named.Refresh();
+            if (!named.Exists || (requireLengthMatch && named.Length != _stream.Length))
+                throw new IOException("The live audit segment path no longer identifies the writer's file.");
+        }
+        catch
+        {
+            _currentPathFailureReported = true;
+            throw;
+        }
     }
 
     private static void RefuseLinkOrReparsePoint(FileInfo file)
@@ -934,6 +1171,57 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
             out _);
     }
 
+    private static bool TryParseCanonicalCompactionName(
+        string fileName,
+        out string sourceName)
+    {
+        sourceName = string.Empty;
+        var idSeparator = 1 + AuditSpoolSegmentIdentity.FileNameLength;
+        var expectedLength = idSeparator + 1 + AllocationIdLength + CompactingSuffix.Length;
+        if (fileName.Length != expectedLength || fileName[0] != '.' ||
+            fileName[idSeparator] != '.' ||
+            !fileName.EndsWith(CompactingSuffix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+
+        sourceName = fileName.Substring(1, AuditSpoolSegmentIdentity.FileNameLength);
+        return AuditSpoolSegmentIdentity.TryParse(sourceName, out _) &&
+               AuditSpoolSegmentIdentity.TryParseCanonicalUuidV4(
+                   fileName.AsSpan(idSeparator + 1, AllocationIdLength),
+                   out _);
+    }
+
+    private static class MacNative
+    {
+        private const int AtCurrentWorkingDirectory = -2;
+
+        internal static int CloneFile(
+            SafeFileHandle source,
+            string destination)
+        {
+            try
+            {
+                return fclonefileat(
+                    source,
+                    AtCurrentWorkingDirectory,
+                    destination,
+                    flags: 0);
+            }
+            catch (EntryPointNotFoundException)
+            {
+                return -1;
+            }
+        }
+
+        [DllImport("libc", EntryPoint = "fclonefileat", SetLastError = true)]
+        private static extern int fclonefileat(
+            SafeFileHandle source,
+            int destinationDirectory,
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string destination,
+            int flags);
+    }
+
     private static class PhysicalAllocation
     {
         private const int LinuxKeepSize = 0x01;
@@ -958,21 +1246,6 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
                 {
                     throw new Win32Exception(Marshal.GetLastPInvokeError());
                 }
-                return;
-            }
-
-            if (OperatingSystem.IsMacOS())
-            {
-                // Preallocation on macOS reserves blocks beyond logical EOF.
-                // Truncating to the already-current EOF is a no-op and leaves
-                // those blocks charged. First materialize the reserved range as
-                // the logical extent, then truncate it back to the exact JSONL
-                // length so APFS/HFS+ releases every block beyond EOF.
-                var descriptor = Descriptor(stream.SafeFileHandle);
-                if (ftruncate(descriptor, allocatedBytes) != 0)
-                    throw new Win32Exception(Marshal.GetLastPInvokeError());
-                if (ftruncate(descriptor, logicalLength) != 0)
-                    throw new Win32Exception(Marshal.GetLastPInvokeError());
                 return;
             }
 
@@ -1003,9 +1276,6 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 
         [DllImport("libc", SetLastError = true)]
         private static extern int fallocate(int fileDescriptor, int mode, long offset, long length);
-
-        [DllImport("libc", SetLastError = true)]
-        private static extern int ftruncate(int fileDescriptor, long length);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]

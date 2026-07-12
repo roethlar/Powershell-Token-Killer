@@ -5,6 +5,7 @@ using System.Security.AccessControl;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
+using Microsoft.Win32.SafeHandles;
 using PtkMcpServer.Audit;
 
 namespace PtkMcpServer.Tests;
@@ -314,6 +315,17 @@ public sealed class FileAuditJournalSinkTests : IDisposable
     }
 
     [Fact]
+    public void Dispose_refuses_a_live_segment_deleted_before_any_prior_path_failure()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var options = Options(NewRoot(), segmentSlots: 2, aggregateSegments: 3);
+        var sink = new FileAuditJournalSink(options, BootId, () => BaseTime);
+        File.Delete(sink.CurrentSegmentPath);
+
+        Assert.Throws<IOException>(sink.Dispose);
+    }
+
+    [Fact]
     public void Permission_broadened_retained_segment_is_rejected_on_unix()
     {
         if (OperatingSystem.IsWindows()) return;
@@ -572,6 +584,263 @@ public sealed class FileAuditJournalSinkTests : IDisposable
         var closedBlocks = GetMacAllocatedBlocks(path);
         Assert.True(liveBlocks > 0);
         Assert.Equal(0, closedBlocks);
+    }
+
+    [Fact]
+    public void Macos_allocation_metadata_matches_the_native_file_status()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var root = SecureAuditStorage.PrepareRoot(NewRoot());
+        var path = Path.Combine(root, "allocation.bin");
+        using var stream = SecureAuditStorage.CreateExclusiveFile(path, 1024 * 1024);
+        stream.Write("allocation-metadata"u8);
+        stream.Flush(flushToDisk: true);
+
+        var allocation = SecureAuditStorage.GetMacFileAllocation(stream.SafeFileHandle);
+
+        Assert.Equal(stream.Length, allocation.LogicalBytes);
+        Assert.Equal(checked(GetMacAllocatedBlocks(path) * 512L), allocation.AllocatedBytes);
+        Assert.True(allocation.AllocationUnitBytes > 0);
+    }
+
+    [Theory]
+    [InlineData((int)FileAuditSinkFaultPoint.MacCompactionTemporaryDurable)]
+    [InlineData((int)FileAuditSinkFaultPoint.MacCompactionPublished)]
+    public void Macos_compaction_failure_preserves_exact_jsonl_and_restart(
+        int faultPointValue)
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var faultPoint = (FileAuditSinkFaultPoint)faultPointValue;
+        var options = Options(NewRoot(), segmentSlots: 255, aggregateSegments: 3);
+        var health = new AuditHealth(options, () => BaseTime);
+        var directoryFlushStarted = false;
+        var sink = new FileAuditJournalSink(
+            options,
+            BootId,
+            () => BaseTime,
+            (point, attempt) =>
+            {
+                if (point == FileAuditSinkFaultPoint.MacCompactionDirectoryFlushStarting)
+                {
+                    directoryFlushStarted = true;
+                    return false;
+                }
+
+                return point == faultPoint && attempt == 1;
+            });
+        var path = sink.CurrentSegmentPath;
+        var journal = Journal(options, health, sink, BootId);
+        Assert.True(journal.TryReserve(1, out var reservation, out _));
+        var serialized = journal.Append(reservation!, Input("call.accepted"));
+        reservation!.Release();
+
+        Assert.Throws<IOException>(journal.Dispose);
+
+        Assert.False(directoryFlushStarted);
+        Assert.Equal(serialized.Utf8Line.ToArray(), File.ReadAllBytes(path));
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(options.SpoolDirectory),
+            candidate => candidate.EndsWith(".compacting", StringComparison.Ordinal));
+        using var restarted = new FileAuditJournalSink(
+            options,
+            Guid.Parse("62345678-1234-4abc-8def-0123456789ab"),
+            () => BaseTime);
+        Assert.True(File.Exists(path));
+    }
+
+    [Fact]
+    public void Macos_clone_unsupported_fallback_preserves_exact_protected_jsonl()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var cloneAttempts = 0;
+        var directoryFlushStarted = false;
+        var options = Options(NewRoot(), segmentSlots: 255, aggregateSegments: 3);
+        var health = new AuditHealth(options, () => BaseTime);
+        var sink = new FileAuditJournalSink(
+            options,
+            BootId,
+            () => BaseTime,
+            (point, _) =>
+            {
+                if (point == FileAuditSinkFaultPoint.MacCompactionDirectoryFlushStarting)
+                    directoryFlushStarted = true;
+                return false;
+            },
+            macCloneFile: (_, _) =>
+            {
+                cloneAttempts++;
+                return -1;
+            });
+        var path = sink.CurrentSegmentPath;
+        var journal = Journal(options, health, sink, BootId);
+        Assert.True(journal.TryReserve(1, out var reservation, out _));
+        var serialized = journal.Append(reservation!, Input("call.accepted"));
+        reservation!.Release();
+
+        journal.Dispose();
+
+        Assert.Equal(1, cloneAttempts);
+        Assert.True(directoryFlushStarted);
+        Assert.Equal(serialized.Utf8Line.ToArray(), File.ReadAllBytes(path));
+        SecureAuditStorage.VerifyProtectedFile(path);
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(options.SpoolDirectory),
+            candidate => candidate.EndsWith(".compacting", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Macos_copy_failure_preserves_source_and_restart_recovers()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var options = Options(NewRoot(), segmentSlots: 255, aggregateSegments: 3);
+        var health = new AuditHealth(options, () => BaseTime);
+        var sink = new FileAuditJournalSink(
+            options,
+            BootId,
+            () => BaseTime,
+            (point, attempt) =>
+                point == FileAuditSinkFaultPoint.MacCompactionCopy && attempt == 1,
+            macCloneFile: (_, _) => -1);
+        var path = sink.CurrentSegmentPath;
+        var journal = Journal(options, health, sink, BootId);
+        Assert.True(journal.TryReserve(1, out var reservation, out _));
+        var serialized = journal.Append(reservation!, Input("call.accepted"));
+        reservation!.Release();
+
+        Assert.Throws<IOException>(journal.Dispose);
+
+        Assert.Equal(serialized.Utf8Line.ToArray(), File.ReadAllBytes(path));
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(options.SpoolDirectory),
+            candidate => candidate.EndsWith(".compacting", StringComparison.Ordinal));
+        using var restarted = new FileAuditJournalSink(
+            options,
+            Guid.Parse("a2345678-1234-4abc-8def-0123456789ab"),
+            () => BaseTime);
+        Assert.True(File.Exists(path));
+    }
+
+    [Fact]
+    public void Macos_clone_mismatch_never_replaces_the_authoritative_segment()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        byte[]? corruptClone = null;
+        var options = Options(NewRoot(), segmentSlots: 255, aggregateSegments: 3);
+        var health = new AuditHealth(options, () => BaseTime);
+        var sink = new FileAuditJournalSink(
+            options,
+            BootId,
+            () => BaseTime,
+            macCloneFile: (_, destination) =>
+            {
+                using var clone = SecureAuditStorage.CreateExclusiveFile(destination);
+                clone.Write(corruptClone!);
+                clone.Flush(flushToDisk: true);
+                return 0;
+            });
+        var path = sink.CurrentSegmentPath;
+        var journal = Journal(options, health, sink, BootId);
+        Assert.True(journal.TryReserve(1, out var reservation, out _));
+        var serialized = journal.Append(reservation!, Input("call.accepted"));
+        reservation!.Release();
+        corruptClone = Enumerable.Repeat((byte)'x', serialized.Utf8Line.Length).ToArray();
+
+        Assert.Throws<IOException>(journal.Dispose);
+
+        Assert.Equal(serialized.Utf8Line.ToArray(), File.ReadAllBytes(path));
+        Assert.DoesNotContain(
+            Directory.EnumerateFiles(options.SpoolDirectory),
+            candidate => candidate.EndsWith(".compacting", StringComparison.Ordinal));
+    }
+
+    [Fact]
+    public void Macos_already_compact_segments_are_not_copied_again_on_restart()
+    {
+        if (!OperatingSystem.IsMacOS()) return;
+        var cloneAttempts = 0;
+        int CloneUnavailable(SafeFileHandle _, string __)
+        {
+            cloneAttempts++;
+            return -1;
+        }
+
+        var options = Options(NewRoot(), segmentSlots: 255, aggregateSegments: 6);
+        var health = new AuditHealth(options, () => BaseTime);
+        var first = new FileAuditJournalSink(
+            options,
+            BootId,
+            () => BaseTime,
+            macCloneFile: CloneUnavailable);
+        var firstJournal = Journal(options, health, first, BootId);
+        Assert.True(firstJournal.TryReserve(1, out var reservation, out _));
+        firstJournal.Append(reservation!, Input("call.accepted"));
+        reservation!.Release();
+        firstJournal.Dispose();
+        Assert.Equal(1, cloneAttempts);
+
+        var secondBoot = Guid.Parse("b2345678-1234-4abc-8def-0123456789ab");
+        var second = new FileAuditJournalSink(
+            options,
+            secondBoot,
+            () => BaseTime,
+            macCloneFile: CloneUnavailable);
+        Assert.Equal(1, cloneAttempts);
+        second.Dispose();
+        Assert.Equal(2, cloneAttempts);
+
+        using var third = new FileAuditJournalSink(
+            options,
+            Guid.Parse("c2345678-1234-4abc-8def-0123456789ab"),
+            () => BaseTime,
+            macCloneFile: CloneUnavailable);
+        Assert.Equal(2, cloneAttempts);
+    }
+
+    [Fact]
+    public void Startup_removes_canonical_compaction_temp_only_when_source_exists()
+    {
+        var options = Options(NewRoot(), segmentSlots: 2, aggregateSegments: 3);
+        string sourcePath;
+        using (var first = new FileAuditJournalSink(options, BootId, () => BaseTime))
+            sourcePath = first.CurrentSegmentPath;
+        var temporaryPath = Path.Combine(
+            options.SpoolDirectory,
+            $".{Path.GetFileName(sourcePath)}.7234567812344abc8def0123456789ab.compacting");
+        using (var temporary = SecureAuditStorage.CreateExclusiveFile(temporaryPath))
+        {
+            temporary.Write("partial compact copy"u8);
+            temporary.Flush(flushToDisk: true);
+        }
+
+        using var recovered = new FileAuditJournalSink(
+            options,
+            Guid.Parse("82345678-1234-4abc-8def-0123456789ab"),
+            () => BaseTime);
+
+        Assert.False(File.Exists(temporaryPath));
+        Assert.True(File.Exists(sourcePath));
+    }
+
+    [Fact]
+    public void Startup_refuses_compaction_temp_whose_source_is_missing()
+    {
+        var options = Options(NewRoot(), segmentSlots: 2, aggregateSegments: 3);
+        _ = SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
+        var missingSource = AuditSpoolSegmentIdentity.Create(BootId, 0).FileName;
+        var temporaryPath = Path.Combine(
+            options.SpoolDirectory,
+            $".{missingSource}.9234567812344abc8def0123456789ab.compacting");
+        using (var temporary = SecureAuditStorage.CreateExclusiveFile(temporaryPath))
+        {
+            temporary.Write("complete but orphaned copy"u8);
+            temporary.Flush(flushToDisk: true);
+        }
+
+        Assert.Throws<IOException>(() =>
+            new FileAuditJournalSink(options, BootId, () => BaseTime));
+
+        Assert.True(File.Exists(temporaryPath));
+        Assert.False(File.Exists(Path.Combine(options.SpoolDirectory, missingSource)));
     }
 
     [Fact]

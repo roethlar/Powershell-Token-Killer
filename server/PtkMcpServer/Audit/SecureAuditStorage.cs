@@ -4,6 +4,7 @@ using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using Microsoft.Win32.SafeHandles;
 
 namespace PtkMcpServer.Audit;
 
@@ -192,7 +193,8 @@ internal static class SecureAuditStorage
         string temporaryPath,
         string publishedPath,
         string root,
-        Action? destinationReplacedForTests = null)
+        Action? destinationReplacedForTests = null,
+        Action? directoryFlushStartingForTests = null)
     {
         // The caller must close and durably flush the protected temporary file
         // before entering this primitive. Replacement makes those exact bytes
@@ -229,7 +231,10 @@ internal static class SecureAuditStorage
         // new outcome; deleting it here would turn uncertainty into state loss.
         destinationReplacedForTests?.Invoke();
         if (!OperatingSystem.IsWindows())
+        {
+            directoryFlushStartingForTests?.Invoke();
             FlushUnixDirectory(protectedRoot);
+        }
         VerifyExternalProtectedDirectory(protectedRoot);
         VerifyExternalProtectedFile(publishedPath);
         if (File.Exists(temporaryPath))
@@ -255,6 +260,42 @@ internal static class SecureAuditStorage
         if (!File.Exists(path))
             throw new IOException("The protected file is missing.");
         VerifyFileProtection(path);
+    }
+
+    internal static void ProtectExistingFile(string path)
+    {
+        RefuseLinkedPathComponents(path);
+        RefuseLinkOrReparsePoint(path);
+        if (!File.Exists(path) || Directory.Exists(path))
+            throw new IOException("The file to protect is missing.");
+        ProtectFile(path);
+        RefuseLinkedPathComponents(path);
+        RefuseLinkOrReparsePoint(path);
+        VerifyFileProtection(path);
+    }
+
+    internal static (
+        long LogicalBytes,
+        long AllocatedBytes,
+        long AllocationUnitBytes) GetMacFileAllocation(SafeFileHandle handle)
+    {
+        if (!OperatingSystem.IsMacOS())
+            throw new PlatformNotSupportedException("macOS file allocation is only available on macOS.");
+        ArgumentNullException.ThrowIfNull(handle);
+        if (handle.IsInvalid || handle.IsClosed)
+            throw new IOException("The file whose allocation was requested is not open.");
+        var allocation = UnixNative.GetMacFileAllocation(handle);
+        if (allocation.LogicalBytes < 0 ||
+            allocation.AllocatedBlocks < 0 ||
+            allocation.AllocationUnitBytes <= 0)
+        {
+            throw new IOException("The macOS file allocation metadata is invalid.");
+        }
+
+        return (
+            allocation.LogicalBytes,
+            checked(allocation.AllocatedBlocks * 512L),
+            allocation.AllocationUnitBytes);
     }
 
     internal static byte[] ReadProtectedFile(
@@ -681,6 +722,22 @@ internal static class SecureAuditStorage
             internal long Reserved2;
         }
 
+        [StructLayout(LayoutKind.Sequential)]
+        private struct MacStatVfs
+        {
+            internal ulong BlockSize;
+            internal ulong FundamentalBlockSize;
+            internal uint TotalBlocks;
+            internal uint FreeBlocks;
+            internal uint AvailableBlocks;
+            internal uint TotalFiles;
+            internal uint FreeFiles;
+            internal uint AvailableFiles;
+            internal ulong FileSystemId;
+            internal ulong Flags;
+            internal ulong MaximumNameLength;
+        }
+
         internal static uint GetOwnerId(string path)
         {
             if (OperatingSystem.IsLinux())
@@ -700,7 +757,11 @@ internal static class SecureAuditStorage
 
             if (OperatingSystem.IsMacOS())
             {
-                if (lstat(path, out var status) != 0)
+                MacStat status;
+                var statResult = RuntimeInformation.ProcessArchitecture == Architecture.X64
+                    ? lstat_inode64(path, out status)
+                    : lstat(path, out status);
+                if (statResult != 0)
                 {
                     throw new Win32Exception(Marshal.GetLastPInvokeError());
                 }
@@ -710,6 +771,27 @@ internal static class SecureAuditStorage
 
             throw new PlatformNotSupportedException(
                 "Protected storage ownership verification is not implemented on this Unix platform.");
+        }
+
+        internal static (
+            long LogicalBytes,
+            long AllocatedBlocks,
+            long AllocationUnitBytes) GetMacFileAllocation(SafeFileHandle handle)
+        {
+            MacStat status;
+            var statResult = RuntimeInformation.ProcessArchitecture == Architecture.X64
+                ? fstat_inode64(handle, out status)
+                : fstat(handle, out status);
+            if (statResult != 0)
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            if (fstatvfs(handle, out var volume) != 0)
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            var allocationUnit = volume.FundamentalBlockSize != 0
+                ? volume.FundamentalBlockSize
+                : volume.BlockSize;
+            if (allocationUnit > long.MaxValue)
+                throw new IOException("The macOS allocation unit is too large.");
+            return (status.Size, status.Blocks, checked((long)allocationUnit));
         }
 
         [DllImport("libc", SetLastError = true)]
@@ -730,6 +812,26 @@ internal static class SecureAuditStorage
         private static extern int lstat(
             [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
             out MacStat status);
+
+        [DllImport("libc", EntryPoint = "lstat$INODE64", SetLastError = true)]
+        private static extern int lstat_inode64(
+            [MarshalAs(UnmanagedType.LPUTF8Str)] string path,
+            out MacStat status);
+
+        [DllImport("libc", EntryPoint = "fstat", SetLastError = true)]
+        private static extern int fstat(
+            SafeFileHandle file,
+            out MacStat status);
+
+        [DllImport("libc", EntryPoint = "fstat$INODE64", SetLastError = true)]
+        private static extern int fstat_inode64(
+            SafeFileHandle file,
+            out MacStat status);
+
+        [DllImport("libc", EntryPoint = "fstatvfs", SetLastError = true)]
+        private static extern int fstatvfs(
+            SafeFileHandle file,
+            out MacStatVfs status);
 
         [DllImport("libc", SetLastError = true)]
         internal static extern int fsync(int fileDescriptor);
