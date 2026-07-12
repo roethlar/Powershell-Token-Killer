@@ -26,6 +26,12 @@ internal interface IAuditLiveSpoolRecordPosition
 /// </summary>
 internal interface IAuditLiveSpoolRotationPosition;
 
+/// <summary>
+/// Opaque proof that the authoritative journal observed its writer closed at
+/// one exact final segment identity.
+/// </summary>
+internal interface IAuditLiveSpoolWriterClosedPosition;
+
 internal enum AuditLiveSpoolPollKind
 {
     Record,
@@ -38,7 +44,8 @@ internal sealed record AuditLiveSpoolPoll(
     AuditLiveSpoolPollKind Kind,
     AuditSpoolSegmentIdentity ObservedCurrentSegment,
     IAuditLiveSpoolRecordPosition? Record = null,
-    IAuditLiveSpoolRotationPosition? Rotation = null);
+    IAuditLiveSpoolRotationPosition? Rotation = null,
+    IAuditLiveSpoolWriterClosedPosition? WriterClosed = null);
 
 /// <summary>
 /// Reads only the authoritative writer's published durable prefix. It never
@@ -62,6 +69,8 @@ internal sealed class AuditLiveSpoolReader : IDisposable
     private RecordPosition? _pending;
     private object _rotationGeneration = new();
     private RotationPosition? _pendingRotation;
+    private object _closureGeneration = new();
+    private WriterClosedPosition? _pendingClosure;
     private bool _disposed;
 
     internal AuditLiveSpoolReader(
@@ -131,6 +140,13 @@ internal sealed class AuditLiveSpoolReader : IDisposable
                     AuditLiveSpoolPollKind.Rotated,
                     pendingRotation.To,
                     Rotation: pendingRotation);
+            }
+            if (_pendingClosure is { } pendingClosure)
+            {
+                return new AuditLiveSpoolPoll(
+                    AuditLiveSpoolPollKind.WriterClosed,
+                    pendingClosure.Final,
+                    WriterClosed: pendingClosure);
             }
 
             var read = _journal.ReadCommittedSpool(
@@ -291,6 +307,25 @@ internal sealed class AuditLiveSpoolReader : IDisposable
         return owned.Owner.RequirePendingRotation(owned, expectedSupervisorBootId);
     }
 
+    internal static AuditSpoolSegmentIdentity RequirePendingWriterClosed(
+        IAuditLiveSpoolWriterClosedPosition position,
+        Guid expectedSupervisorBootId)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        AuditSpoolSegmentIdentity.RequireUuidV4(
+            expectedSupervisorBootId,
+            nameof(expectedSupervisorBootId));
+        if (position is not WriterClosedPosition owned)
+        {
+            throw new ArgumentException(
+                "The live audit spool writer-closed capability is not authentic.",
+                nameof(position));
+        }
+        return owned.Owner.RequirePendingWriterClosed(
+            owned,
+            expectedSupervisorBootId);
+    }
+
     private AuditSpoolSegmentIdentity RequirePendingRotation(
         RotationPosition position,
         Guid expectedSupervisorBootId)
@@ -311,6 +346,29 @@ internal sealed class AuditLiveSpoolReader : IDisposable
                     nameof(position));
             }
             return position.To;
+        }
+    }
+
+    private AuditSpoolSegmentIdentity RequirePendingWriterClosed(
+        WriterClosedPosition position,
+        Guid expectedSupervisorBootId)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (expectedSupervisorBootId != _supervisorBootId ||
+                !ReferenceEquals(position.Owner, this) ||
+                !ReferenceEquals(position, _pendingClosure) ||
+                !ReferenceEquals(position.Generation, _closureGeneration) ||
+                position.From != _currentSegment ||
+                position.Final.SupervisorBootId != _supervisorBootId ||
+                position.Final.Index < position.From.Index)
+            {
+                throw new ArgumentException(
+                    "The live audit spool writer-closed capability is not the exact pending transition.",
+                    nameof(position));
+            }
+            return position.Final;
         }
     }
 
@@ -410,7 +468,16 @@ internal sealed class AuditLiveSpoolReader : IDisposable
         }
         _pendingRotation = null;
         _rotationGeneration = new object();
-        return new AuditLiveSpoolPoll(AuditLiveSpoolPollKind.WriterClosed, observed);
+        var closure = new WriterClosedPosition(
+            this,
+            _closureGeneration,
+            _currentSegment,
+            observed);
+        _pendingClosure = closure;
+        return new AuditLiveSpoolPoll(
+            AuditLiveSpoolPollKind.WriterClosed,
+            observed,
+            WriterClosed: closure);
     }
 
     public void Dispose()
@@ -421,7 +488,9 @@ internal sealed class AuditLiveSpoolReader : IDisposable
             _disposed = true;
             _pending = null;
             _pendingRotation = null;
+            _pendingClosure = null;
             _rotationGeneration = new object();
+            _closureGeneration = new object();
         }
         _checkpointLease.Dispose();
     }
@@ -492,5 +561,20 @@ internal sealed class AuditLiveSpoolReader : IDisposable
         internal AuditSpoolSegmentIdentity From { get; } = from;
 
         internal AuditSpoolSegmentIdentity To { get; } = to;
+    }
+
+    private sealed class WriterClosedPosition(
+        AuditLiveSpoolReader owner,
+        object generation,
+        AuditSpoolSegmentIdentity from,
+        AuditSpoolSegmentIdentity final) : IAuditLiveSpoolWriterClosedPosition
+    {
+        internal AuditLiveSpoolReader Owner { get; } = owner;
+
+        internal object Generation { get; } = generation;
+
+        internal AuditSpoolSegmentIdentity From { get; } = from;
+
+        internal AuditSpoolSegmentIdentity Final { get; } = final;
     }
 }

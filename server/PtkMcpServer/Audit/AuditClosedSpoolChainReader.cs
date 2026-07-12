@@ -117,7 +117,8 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     {
         return ResolveCheckpointCore(
             exclusiveLiveBoundary: null,
-            rotation: null);
+            rotation: null,
+            expectedFinalSegment: null);
     }
 
     /// <summary>
@@ -139,12 +140,38 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                 "The closed audit spool prefix exceeds its recovery segment bound.");
         }
 
-        return ResolveCheckpointCore(exclusiveLiveBoundary, rotation);
+        return ResolveCheckpointCore(
+            exclusiveLiveBoundary,
+            rotation,
+            expectedFinalSegment: null);
+    }
+
+    /// <summary>
+    /// Promotes an authoritative writer-closed observation to one retained
+    /// complete-chain snapshot whose final segment must match that observation.
+    /// </summary>
+    internal AuditClosedSpoolRecovery ResolveAfterWriterClosed(
+        IAuditLiveSpoolWriterClosedPosition writerClosed)
+    {
+        var expectedFinalSegment = AuditLiveSpoolReader.RequirePendingWriterClosed(
+            writerClosed,
+            _supervisorBootId);
+        if (expectedFinalSegment.Index >= MaximumClosedChainSegments)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(writerClosed),
+                "The closed audit spool chain exceeds its recovery segment bound.");
+        }
+        return ResolveCheckpointCore(
+            exclusiveLiveBoundary: null,
+            rotation: null,
+            expectedFinalSegment);
     }
 
     private AuditClosedSpoolRecovery ResolveCheckpointCore(
         AuditSpoolSegmentIdentity? exclusiveLiveBoundary,
-        IAuditLiveSpoolRotationPosition? rotation)
+        IAuditLiveSpoolRotationPosition? rotation,
+        AuditSpoolSegmentIdentity? expectedFinalSegment)
     {
         lock (_gate)
         {
@@ -160,6 +187,7 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                         checkpoint,
                         exclusiveLiveBoundary,
                         rotation,
+                        expectedFinalSegment,
                         quotaLease);
                     return true;
                 });
@@ -181,6 +209,7 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
         AuditExportCheckpoint checkpoint,
         AuditSpoolSegmentIdentity? exclusiveLiveBoundary,
         IAuditLiveSpoolRotationPosition? rotation,
+        AuditSpoolSegmentIdentity? expectedFinalSegment,
         AuditSpoolQuotaLease quotaLease)
     {
         SegmentHandle[] acquired = [];
@@ -202,6 +231,13 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                 }
 
                 var inventory = InventoryClosedChain(exclusiveLiveBoundary);
+                if (expectedFinalSegment is { } finalSegment &&
+                    (inventory.Length == 0 ||
+                     inventory[^1].Identity != finalSegment))
+                {
+                    throw new IOException(
+                        "The closed audit spool chain does not end at the observed writer closure.");
+                }
                 acquired = AcquireClosedChain(inventory);
                 // The complete handle set is already held FileShare.None.
                 // This second inventory rejects a name-set race before any

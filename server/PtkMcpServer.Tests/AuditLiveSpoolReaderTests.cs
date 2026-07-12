@@ -146,7 +146,68 @@ public sealed class AuditLiveSpoolReaderTests
         Assert.Equal(finalIdentity, closed.ObservedCurrentSegment);
         Assert.Null(closed.Record);
         Assert.Null(closed.Rotation);
+        Assert.NotNull(closed.WriterClosed);
+        Assert.Same(closed.WriterClosed, reader.Poll().WriterClosed);
         Assert.False(fixture.Store.Current.ChainComplete);
+    }
+
+    [Fact]
+    public void Writer_closed_proof_promotes_the_exact_final_chain_after_unseen_rotation()
+    {
+        using var fixture = new LiveFixture();
+        using var live = new AuditLiveSpoolReader(fixture.Journal, fixture.Store);
+        var firstExpected = fixture.Append("call.accepted");
+        Assert.True(fixture.Sink.CanReserve(16_000));
+        var secondExpected = fixture.Append("call.completed");
+        var finalIdentity = fixture.Sink.CurrentSegmentIdentity;
+        fixture.Journal.Dispose();
+        var closure = Assert.IsAssignableFrom<IAuditLiveSpoolWriterClosedPosition>(
+            live.Poll().WriterClosed);
+        using var closed = new AuditClosedSpoolChainReader(
+            fixture.Options,
+            fixture.Store);
+
+        Assert.Throws<ArgumentException>(() =>
+            closed.ResolveAfterWriterClosed(new ForgedWriterClosedPosition()));
+        var first = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+            closed.ResolveAfterWriterClosed(closure)).Position;
+        Assert.Equal(firstExpected.EventId, first.EventId);
+        closed.Acknowledge(first, ConfigurationIdentity);
+        var second = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
+            closed.ReadNext(first));
+        Assert.Equal(secondExpected.EventId, second.EventId);
+        Assert.Equal(finalIdentity, second.Spool);
+        closed.Acknowledge(second, ConfigurationIdentity);
+        var end = Assert.IsType<AuditClosedSpoolRecovery.ChainEnd>(
+            closed.ResolveAfterWriterClosed(closure)).Position;
+
+        closed.MarkChainComplete(end);
+
+        Assert.True(fixture.Store.Current.ChainComplete);
+        Assert.Equal(second.EventId, fixture.Store.Current.AcknowledgedEventId);
+    }
+
+    [Fact]
+    public void Writer_closed_proof_rejects_a_same_boot_suffix_after_observed_final_segment()
+    {
+        using var fixture = new LiveFixture();
+        using var live = new AuditLiveSpoolReader(fixture.Journal, fixture.Store);
+        _ = fixture.Append("call.accepted");
+        fixture.Journal.Dispose();
+        var closure = Assert.IsAssignableFrom<IAuditLiveSpoolWriterClosedPosition>(
+            live.Poll().WriterClosed);
+        var suffix = Path.Combine(
+            fixture.Options.SpoolDirectory,
+            AuditSpoolSegmentIdentity.Create(BootId, 1).FileName);
+        using (var stream = SecureAuditStorage.CreateExclusiveFile(suffix))
+            stream.Flush(flushToDisk: true);
+        using var closed = new AuditClosedSpoolChainReader(
+            fixture.Options,
+            fixture.Store);
+
+        Assert.Throws<IOException>(() =>
+            closed.ResolveAfterWriterClosed(closure));
+        Assert.Equal(0, fixture.Store.Current.Sequence);
     }
 
     [Fact]
@@ -321,4 +382,7 @@ public sealed class AuditLiveSpoolReaderTests
             HealthState = "healthy",
         },
     };
+
+    private sealed class ForgedWriterClosedPosition :
+        IAuditLiveSpoolWriterClosedPosition;
 }
