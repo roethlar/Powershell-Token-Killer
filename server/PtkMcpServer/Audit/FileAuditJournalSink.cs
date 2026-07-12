@@ -825,9 +825,25 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
     {
         if (_disposed)
             return;
-        VerifyPreparedAnchoredSegment(retainedPreparationQuota);
-        _stream.Dispose();
+        ExceptionDispatchInfo? failure = null;
+        try
+        {
+            VerifyPreparedAnchoredSegment(retainedPreparationQuota);
+        }
+        catch (Exception exception)
+        {
+            failure = ExceptionDispatchInfo.Capture(exception);
+        }
+        try
+        {
+            _stream.Dispose();
+        }
+        catch (Exception exception)
+        {
+            failure ??= ExceptionDispatchInfo.Capture(exception);
+        }
         _disposed = true;
+        failure?.Throw();
     }
 
     private void CloseAndTrimCurrent() => CloseAndTrim(

@@ -53,11 +53,32 @@ internal sealed class AuditAnchoredWriterPreparation : IDisposable
         var quota = RequireQuota();
         var sink = RequirePreparedSink();
         sink.AttachPreparedCheckpointOwner(_options, checkpointStore, quota);
-        _activated = true;
-        _preparedSink = null;
-        _quota = null;
-        quota.Dispose();
-        return sink;
+        try
+        {
+            quota.Dispose();
+            _activated = true;
+            _preparedSink = null;
+            _quota = null;
+            return sink;
+        }
+        catch
+        {
+            // Checkpoint ownership was attached, so a failed quota handoff
+            // must close the writer before the capability can be lost.
+            try
+            {
+                sink.Dispose();
+            }
+            catch
+            {
+                // Preserve the quota-identity failure that made activation
+                // unsafe; sink disposal still closes its authoritative handle.
+            }
+            _activated = true;
+            _preparedSink = null;
+            _quota = null;
+            throw;
+        }
     }
 
     internal void VerifyForCheckpointCreation(AuditOptions options)

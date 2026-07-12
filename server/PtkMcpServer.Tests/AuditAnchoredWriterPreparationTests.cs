@@ -206,6 +206,32 @@ public sealed class AuditAnchoredWriterPreparationTests : IDisposable
     }
 
     [Fact]
+    public void Preparation_dispose_closes_segment_even_when_quota_identity_is_replaced()
+    {
+        if (OperatingSystem.IsWindows())
+            return;
+
+        var options = Options(NewRoot());
+        var prepared = FileAuditJournalSink.PrepareAnchored(options, NewBoot());
+        var segment = prepared.SegmentPath;
+        var quotaPath = Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolQuotaLease.ControlFileName);
+        File.Delete(quotaPath);
+        WriteProtected(quotaPath, new byte[] { 0x50 });
+
+        Assert.Throws<IOException>(prepared.Dispose);
+
+        using var exclusive = new FileStream(
+            segment,
+            FileMode.Open,
+            FileAccess.ReadWrite,
+            FileShare.None);
+        Assert.Equal(0, exclusive.Length);
+        prepared.Dispose();
+    }
+
+    [Fact]
     public void Ambiguous_bare_topology_prevents_any_partial_cleanup()
     {
         var options = Options(NewRoot());
