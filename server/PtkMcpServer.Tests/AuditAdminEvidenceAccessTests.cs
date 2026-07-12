@@ -115,19 +115,87 @@ public sealed class AuditAdminEvidenceAccessTests : IDisposable
             fixture.Sink.Lines.Select(EventType).ToArray());
     }
 
+    [Fact]
+    public void Export_outcome_persistence_failure_removes_the_exact_final_file()
+    {
+        var options = Options();
+        var stored = new ScriptEvidenceStore(options).Store("Get-UncommittedExportSecret");
+        var outputRoot = SecureAuditStorage.PrepareRoot(
+            Path.Combine(_root, "operator-fault-output"));
+        var outputPath = Path.Combine(outputRoot, "evidence.bin");
+        using var fixture = Journal(
+            options,
+            (point, call) => point == AuditSinkFaultPoint.BeforeAppend && call == 2);
+        var operations = new AuditAdminOperations(options, fixture.Journal);
+
+        Assert.Throws<AuditAdminOperationException>(() =>
+            operations.ExportEvidence(stored.EvidenceId, outputPath));
+
+        Assert.False(File.Exists(outputPath));
+        Assert.Equal(
+            ["evidence.export_intent"],
+            fixture.Sink.Lines.Select(EventType).ToArray());
+    }
+
+    [Fact]
+    public async Task Export_final_path_appears_only_after_complete_staged_bytes_are_flushed()
+    {
+        var options = Options();
+        var script = new string('s', 900);
+        var stored = new ScriptEvidenceStore(options).Store(script);
+        var outputRoot = SecureAuditStorage.PrepareRoot(
+            Path.Combine(_root, "operator-staged-output"));
+        var outputPath = Path.Combine(outputRoot, "evidence.bin");
+        using var fixture = Journal(options);
+        using var staged = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var operations = new AuditAdminOperations(
+            options,
+            fixture.Journal,
+            beforeEvidenceExportPublishForTests: () =>
+            {
+                staged.Set();
+                release.Wait(TimeSpan.FromSeconds(10));
+            });
+
+        var export = Task.Run(() =>
+            operations.ExportEvidence(stored.EvidenceId, outputPath));
+        Assert.True(staged.Wait(TimeSpan.FromSeconds(10)));
+        try
+        {
+            Assert.False(File.Exists(outputPath));
+            Assert.Single(Directory.GetFiles(
+                outputRoot,
+                ".ptk-evidence-export-*.tmp"));
+        }
+        finally
+        {
+            release.Set();
+        }
+
+        Assert.Equal(stored, await export.WaitAsync(TimeSpan.FromSeconds(10)));
+        Assert.Equal(script, File.ReadAllText(outputPath));
+        Assert.Empty(Directory.GetFiles(
+            outputRoot,
+            ".ptk-evidence-export-*.tmp"));
+    }
+
     private AuditOptions Options() => AuditOptions.Create(
         _root,
         maxEvidenceBytes: 1024,
         evidenceAggregateBytes: 16 * 1024,
         evidenceRetentionAge: TimeSpan.FromMinutes(10));
 
-    private static JournalFixture Journal(AuditOptions options)
+    private static JournalFixture Journal(
+        AuditOptions options,
+        Func<AuditSinkFaultPoint, int, bool>? faultInjector = null)
     {
         var sink = new InMemoryAuditJournalSink(
             options.SegmentBytes,
             options.AggregateBytes,
             options.ProtectionMode,
-            options.RetentionAge);
+            options.RetentionAge,
+            faultInjector);
         var journal = new AuditJournal(
             options,
             new AuditHealth(options),

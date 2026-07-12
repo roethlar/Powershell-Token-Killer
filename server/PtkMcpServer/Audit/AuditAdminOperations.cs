@@ -35,7 +35,11 @@ internal sealed class AuditAdminJournalSession : IDisposable
         if (options.ProtectionMode == AuditProtectionMode.LocalOnly)
         {
             return new AuditAdminJournalSession(
-                AuditJournalFactory.Open(options, health, producerVersion),
+                AuditJournalFactory.OpenReconciledLocal(
+                    options,
+                    health,
+                    producerVersion,
+                    new ScriptEvidenceStoreProvider(options)),
                 checkpointStore: null);
         }
 
@@ -98,11 +102,13 @@ internal sealed class AuditAdminOperations
     private readonly AuditOptions _options;
     private readonly AuditJournal _journal;
     private readonly Func<ScriptEvidenceStore> _evidenceFactory;
+    private readonly Action? _beforeEvidenceExportPublishForTests;
 
     internal AuditAdminOperations(
         AuditOptions options,
         AuditJournal journal,
-        Func<ScriptEvidenceStore>? evidenceFactory = null)
+        Func<ScriptEvidenceStore>? evidenceFactory = null,
+        Action? beforeEvidenceExportPublishForTests = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
@@ -119,6 +125,7 @@ internal sealed class AuditAdminOperations
                 nameof(journal));
         }
         _evidenceFactory = evidenceFactory ?? (() => new ScriptEvidenceStore(options));
+        _beforeEvidenceExportPublishForTests = beforeEvidenceExportPublishForTests;
     }
 
     internal ScriptEvidenceReference ReadEvidence(string evidenceId, Stream destination)
@@ -142,6 +149,7 @@ internal sealed class AuditAdminOperations
         string? outputPath)
     {
         var parsedEvidenceId = TryParseEvidenceId(evidenceId);
+        EvidenceExportPublication? exportPublication = null;
         using var reservation = ReserveOperation();
         var intent = AppendEvent(
             reservation,
@@ -179,7 +187,11 @@ internal sealed class AuditAdminOperations
             }
             else
             {
-                reference = ExportToProtectedFile(store, evidenceId, outputPath!);
+                exportPublication = PrepareProtectedExport(
+                    store,
+                    evidenceId,
+                    outputPath!);
+                reference = exportPublication.Reference;
             }
 
             AppendEvent(
@@ -193,6 +205,7 @@ internal sealed class AuditAdminOperations
                 reference.ByteLength,
                 intent.EventId,
                 declaredTarget: null);
+            exportPublication?.CompleteAfterAuditOutcome();
             return reference;
         }
         catch (Exception exception) when (!IsFatal(exception))
@@ -207,9 +220,13 @@ internal sealed class AuditAdminOperations
                 reservation);
             throw;
         }
+        finally
+        {
+            exportPublication?.Dispose();
+        }
     }
 
-    private ScriptEvidenceReference ExportToProtectedFile(
+    private EvidenceExportPublication PrepareProtectedExport(
         ScriptEvidenceStore store,
         string evidenceId,
         string outputPath)
@@ -219,10 +236,13 @@ internal sealed class AuditAdminOperations
             ?? throw new IOException("The evidence export parent is unavailable.");
         SecureAuditStorage.VerifyExternalProtectedDirectory(parent);
 
-        using var output = SecureAuditStorage.CreateExclusiveFile(
-            fullPath,
+        var temporaryPath = Path.Combine(
+            parent,
+            $".ptk-evidence-export-{Guid.NewGuid():N}.tmp");
+        var output = SecureAuditStorage.CreateExclusiveFile(
+            temporaryPath,
+            share: FileShare.Delete,
             access: FileAccess.ReadWrite);
-        var committed = false;
         try
         {
             var reference = store.ReadExact(evidenceId, bytes =>
@@ -230,29 +250,91 @@ internal sealed class AuditAdminOperations
                 output.Write(bytes.Span);
                 output.Flush(flushToDisk: true);
             });
+            _beforeEvidenceExportPublishForTests?.Invoke();
+            SecureAuditStorage.PublishAtomically(
+                temporaryPath,
+                fullPath,
+                parent);
             SecureAuditStorage.ConfirmRetainedCreatedFileDurability(
                 parent,
                 fullPath,
                 output.SafeFileHandle);
-            committed = true;
-            return reference;
+            return new EvidenceExportPublication(
+                parent,
+                fullPath,
+                output,
+                reference);
         }
-        finally
+        catch
         {
-            if (!committed)
+            TryDeleteRetainedExport(parent, fullPath, output);
+            TryDeleteRetainedExport(parent, temporaryPath, output);
+            output.Dispose();
+            throw;
+        }
+    }
+
+    private static void TryDeleteRetainedExport(
+        string parent,
+        string path,
+        FileStream output)
+    {
+        try
+        {
+            SecureAuditStorage.DeleteRetainedProtectedFile(
+                parent,
+                path,
+                output.SafeFileHandle);
+        }
+        catch
+        {
+            // The sanitized operation failure remains authoritative. A path
+            // replacement is never deleted without the retained identity.
+        }
+    }
+
+    private sealed class EvidenceExportPublication(
+        string parent,
+        string path,
+        FileStream output,
+        ScriptEvidenceReference reference) : IDisposable
+    {
+        private FileStream? _output = output;
+        private bool _outcomeCommitted;
+
+        internal ScriptEvidenceReference Reference { get; } = reference;
+
+        internal void CompleteAfterAuditOutcome()
+        {
+            _outcomeCommitted = true;
+            var stream = Interlocked.Exchange(ref _output, null);
+            if (stream is null) return;
+            try { stream.Dispose(); }
+            catch (Exception exception) when (!IsFatal(exception))
             {
-                try
+                // The bytes and the completed outcome are already durable.
+                // A close failure cannot be truthfully rewritten as a failed
+                // export, and the process teardown will release the handle.
+            }
+        }
+
+        public void Dispose()
+        {
+            var stream = Interlocked.Exchange(ref _output, null);
+            if (stream is null) return;
+            try
+            {
+                if (!_outcomeCommitted)
                 {
                     SecureAuditStorage.DeleteRetainedProtectedFile(
                         parent,
-                        fullPath,
-                        output.SafeFileHandle);
+                        path,
+                        stream.SafeFileHandle);
                 }
-                catch
-                {
-                    // The sanitized operation failure remains authoritative;
-                    // never risk deleting a replacement by path alone.
-                }
+            }
+            finally
+            {
+                stream.Dispose();
             }
         }
     }
