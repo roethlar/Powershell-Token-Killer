@@ -1339,3 +1339,11 @@ A transient TLS peer abort is durably classified as certificate configuration
 failure, stopping same-identity export retries and eventually audited admission
 at spool high water. Canonical detail is in
 `.agents/review/findings/s2-tls-handshake-misclassification.md`.
+
+---
+
+**SLICE 2 INTEGRATED REVIEW FINDING — WINDOWS CHECKPOINT DURABILITY OPEN.**
+The Windows handle-based atomic replacement path has no post-rename
+`FlushFileBuffers` barrier before a checkpoint is treated as durable and used
+to authorize retention. Canonical detail is in
+`.agents/review/findings/s2-windows-checkpoint-durability.md`.
