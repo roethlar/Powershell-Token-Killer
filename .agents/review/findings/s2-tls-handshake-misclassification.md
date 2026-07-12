@@ -3,9 +3,9 @@
 **Severity**: HIGH — one routine collector-side handshake interruption can
 durably stop export until an operator changes configuration, eventually
 closing audited admission at spool high water.
-**Status**: Open
+**Status**: In progress
 **Branch**: `fix/s2-tls-handshake-misclassification`
-**Commit**: pending
+**Commit**: `cd0f0a49f67e640b84c8f9de0ad7acf72ad59ab0`
 
 ## Evidence
 
@@ -33,26 +33,38 @@ retryable connection failure.
 
 ## Approach
 
-Pending coder triage and implementation. Add a deterministic TLS-handshake
-peer-abort guard that exercises the real exporter classification before
-narrowing `IsTlsFailure`.
+Classify a nested `AuthenticationException`, not the ambiguous
+`SecureConnectionError` category, as the durable TLS-configuration failure.
+The deterministic guard gives authentication and peer-abort failures the same
+outer category and distinguishes their inner causes; existing real wrong-CA
+and wrong-hostname integration guards remain unchanged.
 
 ## Files changed
 
-- Pending implementation.
+- `server/PtkMcpServer/Audit/AuditOtlpHttpExporter.cs`
+- `server/PtkMcpServer.Tests/AuditOtlpHttpExporterTests.cs`
 
 ## Guard proof
 
-- Pending red-to-green exporter test for a peer abort during TLS handshake.
+- Before the production change, the exact
+  `SecureConnectionError -> IOException` case failed because it returned
+  `Blocked` instead of `Retry`. Removing the category-only check made it pass
+  while the same category with `AuthenticationException` remained blocked.
+- The wrong-CA and wrong-hostname integration guards plus the new classifier
+  guard passed 3/3 on macOS and Windows at the exact code commit.
+- The full macOS .NET suite passed 926/926.
 
 ## Coder dispute (if any)
 
-None yet; independent triage is in progress.
+None. Independent live probes on macOS and Windows .NET 10.0.9 produced
+`SecureConnectionError -> IOException -> SocketException` for peer reset and
+`SecureConnectionError -> AuthenticationException` for certificate rejection.
 
 ## Known gaps
 
-The guard must distinguish a transport abort from the existing wrong-CA and
-wrong-hostname certificate-validation cases without weakening either block.
+None identified. Ambiguous TLS-handshake failures remain retryable without
+advancing a checkpoint; authenticated certificate failures remain durably
+blocked.
 
 ## Reviewer comments
 
