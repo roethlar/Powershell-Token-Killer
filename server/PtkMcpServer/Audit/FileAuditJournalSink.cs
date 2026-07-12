@@ -1,9 +1,6 @@
 using System.Buffers;
 using System.ComponentModel;
 using System.Runtime.InteropServices;
-using System.Security.Cryptography;
-using System.Text;
-using System.Text.Json;
 using Microsoft.Win32.SafeHandles;
 
 namespace PtkMcpServer.Audit;
@@ -56,7 +53,6 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
     private const string AllocatingSuffix = ".allocating";
     private const string CompactingSuffix = ".compacting";
     private const int AllocationIdLength = 32;
-    private static readonly byte[] EventHashMarker = Encoding.ASCII.GetBytes(",\"event_hash\":\"");
     private readonly AuditOptions _options;
     private readonly Guid _supervisorBootId;
     private readonly Func<DateTimeOffset> _utcNow;
@@ -1000,19 +996,22 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
                             continue;
                         }
 
-                        var record = ValidateRetainedRecord(
+                        var record = AuditSpoolRecordCodec.Parse(
                             recordBuffer.AsSpan(0, recordLength),
                             item.BootId);
                         if (priorSequence is long sequence)
                         {
                             if (record.Sequence != sequence + 1 ||
-                                !string.Equals(record.PreviousHash, priorHash, StringComparison.Ordinal))
+                                !string.Equals(
+                                    record.PreviousEventHash,
+                                    priorHash,
+                                    StringComparison.Ordinal))
                             {
                                 throw new IOException("A retained audit hash chain is discontinuous.");
                             }
                         }
                         else if (_options.ProtectionMode == AuditProtectionMode.Anchored &&
-                                 (record.Sequence != 1 || record.PreviousHash is not null))
+                                 (record.Sequence != 1 || record.PreviousEventHash is not null))
                         {
                             throw new IOException("An anchored audit hash chain does not begin at sequence one.");
                         }
@@ -1047,70 +1046,6 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
             return false;
         }
     }
-
-    private static RetainedRecord ValidateRetainedRecord(ReadOnlySpan<byte> line, Guid expectedBootId)
-    {
-        if (line.Length < EventHashMarker.Length + 66)
-            throw new IOException("A retained audit record is truncated.");
-        var markerOffset = line.Length - EventHashMarker.Length - 66;
-        if (!line.Slice(markerOffset, EventHashMarker.Length).SequenceEqual(EventHashMarker) ||
-            line[^2] != (byte)'"' || line[^1] != (byte)'}')
-        {
-            throw new IOException("A retained audit record does not end with event_hash.");
-        }
-
-        var hashText = Encoding.ASCII.GetString(line.Slice(markerOffset + EventHashMarker.Length, 64));
-        if (hashText.Any(character =>
-                character is not (>= '0' and <= '9') and not (>= 'a' and <= 'f')))
-        {
-            throw new IOException("A retained audit event hash is invalid.");
-        }
-
-        var preHash = new byte[markerOffset + 1];
-        line[..markerOffset].CopyTo(preHash);
-        preHash[^1] = (byte)'}';
-        var computed = Convert.ToHexString(SHA256.HashData(preHash)).ToLowerInvariant();
-        if (!string.Equals(computed, hashText, StringComparison.Ordinal))
-            throw new IOException("A retained audit event hash does not match its bytes.");
-
-        try
-        {
-            using var document = JsonDocument.Parse(line.ToArray());
-            var root = document.RootElement;
-            if (root.GetProperty("schema_version").GetString() != "ptk.audit/1" ||
-                root.GetProperty("event_hash").GetString() != hashText ||
-                !Guid.TryParseExact(
-                    root.GetProperty("producer").GetProperty("supervisor_boot_id").GetString(),
-                    "D",
-                    out var bootId) ||
-                bootId != expectedBootId)
-            {
-                throw new IOException("A retained audit record has invalid identity metadata.");
-            }
-
-            var sequence = root.GetProperty("sequence").GetInt64();
-            if (sequence < 1)
-                throw new IOException("A retained audit sequence is invalid.");
-            var previousElement = root.GetProperty("previous_event_hash");
-            var previousHash = previousElement.ValueKind == JsonValueKind.Null
-                ? null
-                : previousElement.GetString();
-            if (sequence == 1 ? previousHash is not null : previousHash?.Length != 64)
-                throw new IOException("A retained audit previous hash is invalid.");
-            return new RetainedRecord(sequence, previousHash, hashText);
-        }
-        catch (IOException)
-        {
-            throw;
-        }
-        catch (Exception exception) when (
-            exception is JsonException or InvalidOperationException or KeyNotFoundException or FormatException)
-        {
-            throw new IOException("A retained audit record is invalid.");
-        }
-    }
-
-    private sealed record RetainedRecord(long Sequence, string? PreviousHash, string EventHash);
 
     private void ValidateCurrentSegmentPath(bool requireLengthMatch = true)
     {

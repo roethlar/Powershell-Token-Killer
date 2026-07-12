@@ -2,6 +2,7 @@ using System.ComponentModel;
 using System.Diagnostics;
 using System.Runtime.Versioning;
 using System.Security.AccessControl;
+using System.Security.Cryptography;
 using System.Security.Principal;
 using System.Text;
 using System.Text.Json;
@@ -298,6 +299,52 @@ public sealed class FileAuditJournalSinkTests : IDisposable
         }
 
         Assert.ThrowsAny<IOException>(() => new FileAuditJournalSink(
+            options,
+            Guid.Parse("32345678-1234-4abc-8def-0123456789ab"),
+            () => BaseTime));
+    }
+
+    [Fact]
+    public void Shared_spool_codec_returns_writer_metadata_and_rejects_rehashed_invalid_event_ids()
+    {
+        var options = Options(NewRoot(), segmentSlots: 2, aggregateSegments: 4);
+        var health = new AuditHealth(options, () => BaseTime);
+        var sink = new FileAuditJournalSink(options, BootId, () => BaseTime);
+        var path = sink.CurrentSegmentPath;
+        var journal = Journal(options, health, sink, BootId);
+        Assert.True(journal.TryReserve(1, out var reservation, out _));
+        var serialized = journal.Append(reservation!, Input("call.accepted"));
+        reservation!.Release();
+
+        var parsed = AuditSpoolRecordCodec.Parse(
+            serialized.Utf8Line.Span[..^1],
+            BootId);
+
+        Assert.Equal(serialized.EventId, parsed.EventId);
+        Assert.Equal(serialized.Sequence, parsed.Sequence);
+        Assert.Null(parsed.PreviousEventHash);
+        Assert.Equal(serialized.EventHash, parsed.EventHash);
+
+        var invalidEventIds = new[]
+        {
+            "01890f3e-abcd-7abc-8def-0123456789ab".ToUpperInvariant(),
+            "62345678-1234-4abc-8def-0123456789ab",
+            "01890f3e-1234-7abc-7def-0123456789ab",
+            "not-a-canonical-uuidv7-value-at-all",
+        };
+        foreach (var invalidEventId in invalidEventIds)
+        {
+            var invalidLine = RewriteEventIdAndRehash(serialized, invalidEventId);
+            Assert.Throws<IOException>(() =>
+                AuditSpoolRecordCodec.Parse(
+                    invalidLine.AsSpan(0, invalidLine.Length - 1),
+                    BootId));
+        }
+
+        journal.Dispose();
+        var retainedInvalid = RewriteEventIdAndRehash(serialized, invalidEventIds[1]);
+        File.WriteAllBytes(path, retainedInvalid);
+        Assert.Throws<IOException>(() => new FileAuditJournalSink(
             options,
             Guid.Parse("32345678-1234-4abc-8def-0123456789ab"),
             () => BaseTime));
@@ -913,6 +960,28 @@ public sealed class FileAuditJournalSinkTests : IDisposable
         if (process.ExitCode != 0)
             throw new InvalidOperationException($"macOS stat failed: {error}");
         return long.Parse(output.Trim());
+    }
+
+    private static byte[] RewriteEventIdAndRehash(
+        SerializedAuditEvent serialized,
+        string replacementEventId)
+    {
+        var json = Encoding.UTF8.GetString(serialized.Utf8Line.Span[..^1]);
+        var original = $"\"event_id\":\"{serialized.EventId:D}\"";
+        var replacement = $"\"event_id\":\"{replacementEventId}\"";
+        var first = json.IndexOf(original, StringComparison.Ordinal);
+        Assert.True(first >= 0);
+        Assert.Equal(first, json.LastIndexOf(original, StringComparison.Ordinal));
+        json = json[..first] + replacement + json[(first + original.Length)..];
+
+        const string hashMarker = ",\"event_hash\":\"";
+        var hashOffset = json.LastIndexOf(hashMarker, StringComparison.Ordinal);
+        Assert.True(hashOffset > 0);
+        var preHashJson = json[..hashOffset] + "}";
+        var hash = Convert.ToHexString(
+            SHA256.HashData(Encoding.UTF8.GetBytes(preHashJson))).ToLowerInvariant();
+        return Encoding.UTF8.GetBytes(
+            json[..hashOffset] + hashMarker + hash + "\"}\n");
     }
 
     private static AuditJournal Journal(
