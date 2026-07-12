@@ -10,6 +10,33 @@ namespace PtkMcpServer.Audit;
 internal enum FileAuditSinkFaultPoint
 {
     PhysicalAllocation,
+    BeforePhysicalFlush,
+    AfterPhysicalFlush,
+}
+
+internal enum AuditCommittedSpoolReadStatus
+{
+    Data,
+    AtCommittedTail,
+    NotCurrent,
+}
+
+internal readonly record struct AuditCommittedSpoolRead(
+    AuditCommittedSpoolReadStatus Status,
+    ReadOnlyMemory<byte> Bytes,
+    long CommittedTail);
+
+internal interface IAuditCommittedSpoolSource
+{
+    // The authoritative writer is deliberately lock-free internally. Product
+    // callers must hold AuditJournal's gate across this method; direct calls
+    // exist only as storage fault-seam tests.
+    AuditCommittedSpoolReadStatus TryReadCommitted(
+        AuditSpoolSegmentIdentity identity,
+        long offset,
+        Span<byte> destination,
+        out int bytesRead,
+        out long committedTail);
 }
 
 /// <summary>
@@ -18,7 +45,7 @@ internal enum FileAuditSinkFaultPoint
 /// logical EOF, and excluded from retention. Closed local-only segments are
 /// eligible for age/aggregate retention; anchored segments are never swept.
 /// </summary>
-internal sealed class FileAuditJournalSink : IAuditJournalSink
+internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedSpoolSource
 {
     private const string QuotaLockFileName = ".ptk-audit-quota.lock";
     private const string AllocatingSuffix = ".allocating";
@@ -32,8 +59,11 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink
     private readonly string _quotaLockPath;
     private FileStream _stream;
     private string _currentSegmentPath;
+    private AuditSpoolSegmentIdentity _currentSegmentIdentity;
+    private long _committedSegmentBytes;
     private int _segmentIndex;
     private int _allocationAttempt;
+    private int _flushAttempt;
     private bool _disposed;
 
     internal FileAuditJournalSink(
@@ -60,7 +90,7 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink
             // slack before charging the new supervisor's full live segment.
             ReclaimClosedAllocations();
             EnsurePhysicalAllocationAvailable();
-            (_stream, _currentSegmentPath) = CreateSegment(0);
+            (_stream, _currentSegmentPath, _currentSegmentIdentity) = CreateSegment(0);
             SweepClosedSegments(GetUtcNow(), options.EmergencyReserveBytes);
         }
     }
@@ -98,6 +128,15 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink
         {
             ThrowIfDisposed();
             return _currentSegmentPath;
+        }
+    }
+
+    internal AuditSpoolSegmentIdentity CurrentSegmentIdentity
+    {
+        get
+        {
+            ThrowIfDisposed();
+            return _currentSegmentIdentity;
         }
     }
 
@@ -144,8 +183,61 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink
     {
         ThrowIfDisposed();
         ValidateCurrentSegmentPath(requireLengthMatch: false);
+        var attempt = checked(++_flushAttempt);
+        if (_faultInjector?.Invoke(FileAuditSinkFaultPoint.BeforePhysicalFlush, attempt) == true)
+            throw new IOException("Injected pre-flush audit failure.");
         _stream.Flush(flushToDisk: true);
+        // Once Flush(true) returns, these exact bytes can survive this process
+        // and will be read from the closed segment after rotation or restart.
+        // Publish the same durable boundary to the live reader even if a
+        // subsequent path check poisons the journal; hiding it only in memory
+        // would make live and recovered export disagree.
+        _committedSegmentBytes = _stream.Length;
+        if (_faultInjector?.Invoke(FileAuditSinkFaultPoint.AfterPhysicalFlush, attempt) == true)
+            throw new IOException("Injected post-flush audit failure.");
         ValidateCurrentSegmentPath();
+    }
+
+    public AuditCommittedSpoolReadStatus TryReadCommitted(
+        AuditSpoolSegmentIdentity identity,
+        long offset,
+        Span<byte> destination,
+        out int bytesRead,
+        out long committedTail)
+    {
+        bytesRead = 0;
+        committedTail = 0;
+        if (_disposed || identity != _currentSegmentIdentity)
+            return AuditCommittedSpoolReadStatus.NotCurrent;
+        if (offset < 0)
+            throw new ArgumentOutOfRangeException(nameof(offset));
+        if (destination.Length < 1)
+            throw new ArgumentException("A committed audit read requires a destination.", nameof(destination));
+
+        ValidateCurrentSegmentPath(requireLengthMatch: false);
+        committedTail = _committedSegmentBytes;
+        if (new FileInfo(_currentSegmentPath).Length < committedTail)
+            throw new IOException("The live audit segment is shorter than its durable tail.");
+        if (offset > committedTail)
+            throw new IOException("The committed audit read offset is beyond the durable tail.");
+        if (offset == committedTail)
+            return AuditCommittedSpoolReadStatus.AtCommittedTail;
+
+        var required = checked((int)Math.Min(destination.Length, committedTail - offset));
+        while (bytesRead < required)
+        {
+            var read = RandomAccess.Read(
+                _stream.SafeFileHandle,
+                destination.Slice(bytesRead, required - bytesRead),
+                offset + bytesRead);
+            if (read == 0)
+                throw new IOException("The committed audit segment ended before its durable tail.");
+            bytesRead += read;
+        }
+        ValidateCurrentSegmentPath(requireLengthMatch: false);
+        if (_committedSegmentBytes != committedTail)
+            throw new IOException("The committed audit tail changed during a synchronized read.");
+        return AuditCommittedSpoolReadStatus.Data;
     }
 
     public void Dispose()
@@ -174,10 +266,12 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink
         ReclaimClosedAllocations();
         EnsurePhysicalAllocationAvailable();
         var nextIndex = checked(_segmentIndex + 1);
-        var (nextStream, nextPath) = CreateSegment(nextIndex);
+        var (nextStream, nextPath, nextIdentity) = CreateSegment(nextIndex);
         var previous = _stream;
         _stream = nextStream;
         _currentSegmentPath = nextPath;
+        _currentSegmentIdentity = nextIdentity;
+        _committedSegmentBytes = 0;
         _segmentIndex = nextIndex;
         CloseAndTrim(previous);
     }
@@ -306,9 +400,10 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink
         }
     }
 
-    private (FileStream Stream, string Path) CreateSegment(int index)
+    private (FileStream Stream, string Path, AuditSpoolSegmentIdentity Identity) CreateSegment(int index)
     {
-        var fileName = AuditSpoolSegmentIdentity.Create(_supervisorBootId, index).FileName;
+        var identity = AuditSpoolSegmentIdentity.Create(_supervisorBootId, index);
+        var fileName = identity.FileName;
         var path = Path.Combine(_spoolRoot, fileName);
         var temporaryPath = Path.Combine(
             _spoolRoot,
@@ -336,11 +431,11 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink
             stream = new FileStream(
                 path,
                 FileMode.Open,
-                FileAccess.Write,
+                FileAccess.ReadWrite,
                 FileShare.None,
                 bufferSize: 16 * 1024,
                 FileOptions.WriteThrough);
-            return (stream, path);
+            return (stream, path, identity);
         }
         catch
         {

@@ -306,6 +306,58 @@ internal sealed class AuditJournal : IDisposable
         }
     }
 
+    /// <summary>
+    /// Copies only the current segment prefix whose flush-to-disk boundary
+    /// completed. The journal gate spans the writer identity, durable-tail,
+    /// and positional read checks; parsing and network work happen later. A
+    /// later successful close flush, or bytes surviving a hard crash, can make
+    /// a complete record beyond this live watermark recoverable evidence. The
+    /// closed-segment reader retains such records and unclosed-event recovery
+    /// supplies their outcome ambiguity; audit bytes are never truncated just
+    /// because the original writer did not observe its flush completing.
+    /// </summary>
+    internal AuditCommittedSpoolRead ReadCommittedSpool(
+        AuditSpoolSegmentIdentity identity,
+        long offset,
+        int maximumBytes)
+    {
+        if (offset < 0)
+            throw new ArgumentOutOfRangeException(nameof(offset));
+        if (maximumBytes < 1 || maximumBytes > _options.MaxRecordBytes)
+            throw new ArgumentOutOfRangeException(nameof(maximumBytes));
+
+        var buffer = new byte[maximumBytes];
+        AuditCommittedSpoolReadStatus status;
+        int bytesRead;
+        long committedTail;
+        lock (_gate)
+        {
+            if (_sink is not IAuditCommittedSpoolSource source)
+            {
+                return new AuditCommittedSpoolRead(
+                    AuditCommittedSpoolReadStatus.NotCurrent,
+                    ReadOnlyMemory<byte>.Empty,
+                    0);
+            }
+
+            status = source.TryReadCommitted(
+                identity,
+                offset,
+                buffer,
+                out bytesRead,
+                out committedTail);
+        }
+        if (bytesRead == 0)
+        {
+            return new AuditCommittedSpoolRead(
+                status,
+                ReadOnlyMemory<byte>.Empty,
+                committedTail);
+        }
+        if (bytesRead != buffer.Length) Array.Resize(ref buffer, bytesRead);
+        return new AuditCommittedSpoolRead(status, buffer, committedTail);
+    }
+
     internal bool TryReserve(
         int maxRecordSlots,
         out AuditReservation? reservation,
