@@ -413,6 +413,7 @@ public sealed class ScriptEvidenceStore
             throw new ArgumentException("The script evidence identity is invalid.", nameof(evidenceId));
 
         byte[]? bytes = null;
+        ScriptEvidenceReference? reference = null;
         try
         {
             lock (_gate)
@@ -445,17 +446,18 @@ public sealed class ScriptEvidenceStore
                 _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
                     artifact.Path,
                     stream.SafeFileHandle);
-
-                consume(bytes);
-
-                _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
-                    artifact.Path,
-                    stream.SafeFileHandle);
-                return new ScriptEvidenceReference(
+                reference = new ScriptEvidenceReference(
                     artifact.EvidenceId,
                     artifact.Digest,
                     bytes.Length);
             }
+
+            // The verified snapshot is private to this call. Do not retain the
+            // evidence inventory, filesystem quota lease, or process-local gate
+            // while invoking a potentially blocking external consumer.
+            consume(bytes);
+            return reference ?? throw new IOException(
+                "The requested evidence artifact was not resolved.");
         }
         catch (ArgumentException)
         {

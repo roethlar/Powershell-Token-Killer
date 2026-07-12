@@ -451,6 +451,43 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
                 StringComparison.Ordinal));
     }
 
+    [Fact]
+    public async Task Blocking_read_consumer_does_not_hold_evidence_admission_leases()
+    {
+        var options = EvidenceOptions(
+            Path.Combine(_parent, "blocking-read-audit"),
+            AuditProtectionMode.LocalOnly,
+            aggregateBytes: 512);
+        var store = new ScriptEvidenceStore(options);
+        var stored = store.Store("exported evidence");
+        using var consumerEntered = new ManualResetEventSlim();
+        using var releaseConsumer = new ManualResetEventSlim();
+
+        var read = Task.Run(() => store.ReadExact(
+            stored.EvidenceId,
+            bytes =>
+            {
+                Assert.Equal(stored.ByteLength, bytes.Length);
+                consumerEntered.Set();
+                Assert.True(releaseConsumer.Wait(TimeSpan.FromSeconds(10)));
+            }));
+
+        Assert.True(consumerEntered.Wait(TimeSpan.FromSeconds(5)));
+        try
+        {
+            var concurrentStore = Task.Run(() => store.Store("concurrent evidence"));
+            var replacement = await concurrentStore.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, replacement)));
+            Assert.False(read.IsCompleted);
+        }
+        finally
+        {
+            releaseConsumer.Set();
+        }
+
+        Assert.Equal(stored, await read.WaitAsync(TimeSpan.FromSeconds(5)));
+    }
+
     private static AuditOptions EvidenceOptions(
         string root,
         AuditProtectionMode protectionMode,
