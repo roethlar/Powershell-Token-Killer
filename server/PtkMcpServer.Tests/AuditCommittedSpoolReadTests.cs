@@ -124,9 +124,10 @@ public sealed class AuditCommittedSpoolReadTests : IDisposable
 
         Assert.True(sink.CanReserve(800));
 
-        Assert.Equal(1, sink.CurrentSegmentIdentity.Index);
+        var currentIdentity = sink.CurrentSegmentIdentity;
+        Assert.Equal(1, currentIdentity.Index);
         Assert.Equal(
-            AuditCommittedSpoolReadStatus.NotCurrent,
+            AuditCommittedSpoolReadStatus.Rotated,
             sink.TryReadCommitted(
                 priorIdentity,
                 0,
@@ -135,12 +136,58 @@ public sealed class AuditCommittedSpoolReadTests : IDisposable
                 out var committedTail));
         Assert.Equal(0, bytesRead);
         Assert.Equal(0, committedTail);
+        var futureIdentity = AuditSpoolSegmentIdentity.Create(BootId, 2);
+        Assert.Equal(
+            AuditCommittedSpoolReadStatus.NotCurrent,
+            sink.TryReadCommitted(
+                futureIdentity,
+                0,
+                new byte[256],
+                out _,
+                out _));
+        var foreignIdentity = AuditSpoolSegmentIdentity.Create(
+            Guid.ParseExact("22222222-3333-4444-8555-666666666666", "D"),
+            0);
+        Assert.Equal(
+            AuditCommittedSpoolReadStatus.NotCurrent,
+            sink.TryReadCommitted(
+                foreignIdentity,
+                0,
+                new byte[256],
+                out _,
+                out _));
         using var closed = new FileStream(
             priorPath,
             FileMode.Open,
             FileAccess.Read,
             FileShare.Read | FileShare.Delete);
         Assert.Equal(line.Length, closed.Length);
+
+        sink.Dispose();
+        Assert.Equal(
+            AuditCommittedSpoolReadStatus.WriterClosed,
+            sink.TryReadCommitted(
+                priorIdentity,
+                0,
+                new byte[256],
+                out _,
+                out _));
+        Assert.Equal(
+            AuditCommittedSpoolReadStatus.WriterClosed,
+            sink.TryReadCommitted(
+                currentIdentity,
+                0,
+                new byte[256],
+                out _,
+                out _));
+        Assert.Equal(
+            AuditCommittedSpoolReadStatus.NotCurrent,
+            sink.TryReadCommitted(
+                futureIdentity,
+                0,
+                new byte[256],
+                out _,
+                out _));
     }
 
     [Fact]
@@ -167,6 +214,7 @@ public sealed class AuditCommittedSpoolReadTests : IDisposable
             var read = journal.ReadCommittedSpool(identity, 0, options.MaxRecordBytes);
 
             Assert.Equal(AuditCommittedSpoolReadStatus.Data, read.Status);
+            Assert.Equal(identity, read.CurrentSegment);
             Assert.Equal(serialized.Utf8Line.ToArray(), read.Bytes.ToArray());
             Assert.Equal(serialized.Utf8Line.Length, read.CommittedTail);
             var atTail = journal.ReadCommittedSpool(
@@ -174,20 +222,27 @@ public sealed class AuditCommittedSpoolReadTests : IDisposable
                 read.CommittedTail,
                 options.MaxRecordBytes);
             Assert.Equal(AuditCommittedSpoolReadStatus.AtCommittedTail, atTail.Status);
+            Assert.Equal(identity, atTail.CurrentSegment);
             Assert.Empty(atTail.Bytes.ToArray());
         }
 
         var otherIdentity = AuditSpoolSegmentIdentity.Create(
             Guid.ParseExact("22222222-3333-4444-8555-666666666666", "D"),
             0);
-        Assert.Equal(
-            AuditCommittedSpoolReadStatus.NotCurrent,
-            journal.ReadCommittedSpool(otherIdentity, 0, options.MaxRecordBytes).Status);
+        var other = journal.ReadCommittedSpool(
+            otherIdentity,
+            0,
+            options.MaxRecordBytes);
+        Assert.Equal(AuditCommittedSpoolReadStatus.NotCurrent, other.Status);
+        Assert.Equal(identity, other.CurrentSegment);
 
         journal.Dispose();
-        Assert.Equal(
-            AuditCommittedSpoolReadStatus.NotCurrent,
-            journal.ReadCommittedSpool(identity, 0, options.MaxRecordBytes).Status);
+        var closedRead = journal.ReadCommittedSpool(
+            identity,
+            0,
+            options.MaxRecordBytes);
+        Assert.Equal(AuditCommittedSpoolReadStatus.WriterClosed, closedRead.Status);
+        Assert.Equal(identity, closedRead.CurrentSegment);
     }
 
     [Fact]

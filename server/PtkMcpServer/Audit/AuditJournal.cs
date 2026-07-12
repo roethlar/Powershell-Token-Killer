@@ -328,6 +328,7 @@ internal sealed class AuditJournal : IDisposable
 
         var buffer = new byte[maximumBytes];
         AuditCommittedSpoolReadStatus status;
+        AuditSpoolSegmentIdentity? currentSegment;
         int bytesRead;
         long committedTail;
         lock (_gate)
@@ -337,9 +338,11 @@ internal sealed class AuditJournal : IDisposable
                 return new AuditCommittedSpoolRead(
                     AuditCommittedSpoolReadStatus.NotCurrent,
                     ReadOnlyMemory<byte>.Empty,
-                    0);
+                    0,
+                    CurrentSegment: null);
             }
 
+            currentSegment = source.CurrentSegmentIdentity;
             status = source.TryReadCommitted(
                 identity,
                 offset,
@@ -352,10 +355,15 @@ internal sealed class AuditJournal : IDisposable
             return new AuditCommittedSpoolRead(
                 status,
                 ReadOnlyMemory<byte>.Empty,
-                committedTail);
+                committedTail,
+                currentSegment);
         }
         if (bytesRead != buffer.Length) Array.Resize(ref buffer, bytesRead);
-        return new AuditCommittedSpoolRead(status, buffer, committedTail);
+        return new AuditCommittedSpoolRead(
+            status,
+            buffer,
+            committedTail,
+            currentSegment);
     }
 
     internal bool TryReserve(

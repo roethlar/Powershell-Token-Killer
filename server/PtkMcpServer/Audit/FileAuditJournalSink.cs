@@ -20,16 +20,21 @@ internal enum AuditCommittedSpoolReadStatus
 {
     Data,
     AtCommittedTail,
+    Rotated,
+    WriterClosed,
     NotCurrent,
 }
 
 internal readonly record struct AuditCommittedSpoolRead(
     AuditCommittedSpoolReadStatus Status,
     ReadOnlyMemory<byte> Bytes,
-    long CommittedTail);
+    long CommittedTail,
+    AuditSpoolSegmentIdentity? CurrentSegment);
 
 internal interface IAuditCommittedSpoolSource
 {
+    AuditSpoolSegmentIdentity CurrentSegmentIdentity { get; }
+
     // The authoritative writer is deliberately lock-free internally. Product
     // callers must hold AuditJournal's gate across this method; direct calls
     // exist only as storage fault-seam tests.
@@ -178,6 +183,9 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         }
     }
 
+    AuditSpoolSegmentIdentity IAuditCommittedSpoolSource.CurrentSegmentIdentity =>
+        _currentSegmentIdentity;
+
     public bool CanReserve(long reservedBytes)
     {
         ThrowIfDisposed();
@@ -245,7 +253,14 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
     {
         bytesRead = 0;
         committedTail = 0;
-        if (_disposed || identity != _currentSegmentIdentity)
+        if (identity.SupervisorBootId != _currentSegmentIdentity.SupervisorBootId ||
+            identity.Index > _currentSegmentIdentity.Index)
+            return AuditCommittedSpoolReadStatus.NotCurrent;
+        if (_disposed)
+            return AuditCommittedSpoolReadStatus.WriterClosed;
+        if (identity.Index < _currentSegmentIdentity.Index)
+            return AuditCommittedSpoolReadStatus.Rotated;
+        if (identity != _currentSegmentIdentity)
             return AuditCommittedSpoolReadStatus.NotCurrent;
         if (offset < 0)
             throw new ArgumentOutOfRangeException(nameof(offset));
