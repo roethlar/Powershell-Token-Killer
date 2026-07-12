@@ -315,6 +315,33 @@ public sealed class AuditAnchoredWriterPreparationTests : IDisposable
     }
 
     [Fact]
+    public void Unrelated_operator_controls_do_not_consume_writer_recovery_bounds()
+    {
+        var options = Options(NewRoot());
+        InitializeStorage(options);
+        for (var index = 0;
+             index <= AuditClosedSpoolChainReader.MaximumSpoolInventoryEntries;
+             index++)
+        {
+            WriteProtected(
+                Path.Combine(
+                    options.RootDirectory,
+                    $"operator.disposition-noise-{index:D4}.json"),
+                []);
+        }
+
+        using var preparation = FileAuditJournalSink.PrepareAnchored(
+            options,
+            NewBoot());
+
+        Assert.Equal(
+            AuditClosedSpoolChainReader.MaximumSpoolInventoryEntries + 1,
+            Directory.GetFiles(
+                options.RootDirectory,
+                "operator.disposition-noise-*.json").Length);
+    }
+
+    [Fact]
     public void Anchored_capacity_reserves_one_segment_but_local_capacity_is_unchanged()
     {
         var root = NewRoot();

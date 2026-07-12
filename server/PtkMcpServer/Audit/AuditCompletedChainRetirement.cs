@@ -215,6 +215,11 @@ internal static class AuditCompletedChainRetirement
         foreach (var entry in new DirectoryInfo(root)
                      .EnumerateFileSystemInfos("*", SearchOption.TopDirectoryOnly))
         {
+            if (!entry.Name.StartsWith(FilePrefix, StringComparison.Ordinal) &&
+                !entry.Name.StartsWith("." + FilePrefix, StringComparison.Ordinal))
+            {
+                continue;
+            }
             entries = checked(entries + 1);
             if (entries > AuditClosedSpoolChainReader.MaximumSpoolInventoryEntries)
             {
@@ -223,12 +228,7 @@ internal static class AuditCompletedChainRetirement
             }
             if (entry is not FileInfo file)
             {
-                if (entry.Name.StartsWith(FilePrefix, StringComparison.Ordinal) ||
-                    entry.Name.StartsWith("." + FilePrefix, StringComparison.Ordinal))
-                {
-                    throw new IOException("The audit root contains malformed retirement state.");
-                }
-                continue;
+                throw new IOException("The audit root contains malformed retirement state.");
             }
             if (TryParseIntentFileName(file.Name, out var bootId))
             {
@@ -242,11 +242,7 @@ internal static class AuditCompletedChainRetirement
                 temporaries.Add((temporaryBootId, file.FullName));
                 continue;
             }
-            if (file.Name.StartsWith(FilePrefix, StringComparison.Ordinal) ||
-                file.Name.StartsWith("." + FilePrefix, StringComparison.Ordinal))
-            {
-                throw new IOException("The audit root contains malformed retirement state.");
-            }
+            throw new IOException("The audit root contains malformed retirement state.");
         }
 
         if (intentPaths.Select(value => value.BootId).Distinct().Count() !=

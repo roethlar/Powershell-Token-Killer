@@ -408,14 +408,14 @@ internal static class AuditAnchoredWriterStartupPreflight
         foreach (var entry in new DirectoryInfo(options.RootDirectory)
                      .EnumerateFileSystemInfos("*", SearchOption.TopDirectoryOnly))
         {
+            if (!entry.Name.StartsWith("export.checkpoint-", StringComparison.Ordinal))
+                continue;
             inventoryCount = checked(inventoryCount + 1);
             if (inventoryCount > AuditClosedSpoolChainReader.MaximumSpoolInventoryEntries)
             {
                 throw new IOException(
                     "The audit root exceeds the bounded writer-recovery inventory.");
             }
-            if (!entry.Name.StartsWith("export.checkpoint-", StringComparison.Ordinal))
-                continue;
             if (entry is not FileInfo file ||
                 !AuditExportCheckpointStore.TryParseControlFileName(
                     entry.Name,
