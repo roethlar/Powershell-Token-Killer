@@ -3,7 +3,7 @@
 **Severity**: HIGH — one routine collector-side handshake interruption can
 durably stop export until an operator changes configuration, eventually
 closing audited admission at spool high water.
-**Status**: In progress
+**Status**: Verified
 **Branch**: `fix/s2-tls-handshake-misclassification`
 **Commit**: `cd0f0a49f67e640b84c8f9de0ad7acf72ad59ab0`
 
@@ -75,3 +75,14 @@ Claude Code 2.1.207 reviewed fixed head
 `SecureConnectionError` classification and the durable same-identity retry
 block as a transient, model-independent path to process-lifetime export loss
 and eventual fail-closed admission.
+
+Claude Code 2.1.207 reviewed fixed head
+`94ba05a14df535877d6b3f92ede8eb1c4cf7630e` against
+`0c9f430b71f14ac40c89aad6ad7da712aa2fc47e`, `guard_confirmed=true`, verdict
+`accepted`, recorded 2026-07-12T15:55:08Z. It independently reinstated the
+category-only classifier, observed the peer-abort guard fail with `Blocked`
+instead of `Retry`, restored byte-exact source, and passed the focused 3/3,
+full .NET 926/926, Pester 134 with two platform skips, and the zero-warning
+handshake. It confirmed retry does not acknowledge or advance a checkpoint,
+and that real wrong-CA/hostname plus direct authentication failures remain
+durably blocked.
