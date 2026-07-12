@@ -147,6 +147,54 @@ internal sealed class AuditLiveSpoolReader
         }
     }
 
+    /// <summary>
+    /// Consumes one exact pending rotation only after the retained closed
+    /// prefix proves that its durable checkpoint reached the validated tail.
+    /// </summary>
+    internal void AdvanceAfterClosedPrefix(
+        IAuditLiveSpoolRotationPosition rotation,
+        IAuditClosedSpoolPrefixEndPosition prefixEnd)
+    {
+        ArgumentNullException.ThrowIfNull(rotation);
+        ArgumentNullException.ThrowIfNull(prefixEnd);
+        _ = RequirePendingRotation(rotation, _supervisorBootId);
+        var transition = AuditClosedSpoolChainReader.RequireCurrentPrefixEnd(
+            prefixEnd,
+            rotation,
+            _supervisorBootId);
+        var nextSequence = transition.TailSequence == 0
+            ? 1
+            : CheckedNext(transition.TailSequence);
+        if ((transition.TailSequence == 0) != (transition.TailEventHash is null))
+        {
+            throw new IOException(
+                "The closed audit spool prefix supplied an invalid hash-chain tail.");
+        }
+
+        lock (_gate)
+        {
+            if (rotation is not RotationPosition owned ||
+                !ReferenceEquals(owned.Owner, this) ||
+                !ReferenceEquals(owned, _pendingRotation) ||
+                !ReferenceEquals(owned.Generation, _rotationGeneration) ||
+                owned.From != _currentSegment ||
+                owned.To != transition.Boundary ||
+                _pending is not null)
+            {
+                throw new ArgumentException(
+                    "The live audit spool rotation is no longer the exact pending transition.",
+                    nameof(rotation));
+            }
+
+            _currentSegment = transition.Boundary;
+            _offset = 0;
+            _expectedSequence = nextSequence;
+            _previousHash = transition.TailEventHash;
+            _pendingRotation = null;
+            _rotationGeneration = new object();
+        }
+    }
+
     internal static AuditSpoolSegmentIdentity RequirePendingRotation(
         IAuditLiveSpoolRotationPosition position,
         Guid expectedSupervisorBootId)

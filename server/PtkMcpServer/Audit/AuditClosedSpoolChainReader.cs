@@ -38,6 +38,11 @@ internal interface IAuditClosedSpoolPrefixEndPosition;
 /// </summary>
 internal interface IAuditClosedSpoolConfigurationRetryAuthorization;
 
+internal sealed record AuditClosedSpoolPrefixTransitionState(
+    AuditSpoolSegmentIdentity Boundary,
+    long TailSequence,
+    string? TailEventHash);
+
 /// <summary>
 /// Reads one immutable, closed anchored spool chain. This reader does not
 /// discover live writer state or acquire an orphan lease; its caller must hold
@@ -110,7 +115,9 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     /// </summary>
     internal AuditClosedSpoolRecovery ResolveCheckpoint()
     {
-        return ResolveCheckpointCore(exclusiveLiveBoundary: null);
+        return ResolveCheckpointCore(
+            exclusiveLiveBoundary: null,
+            rotation: null);
     }
 
     /// <summary>
@@ -132,11 +139,12 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                 "The closed audit spool prefix exceeds its recovery segment bound.");
         }
 
-        return ResolveCheckpointCore(exclusiveLiveBoundary);
+        return ResolveCheckpointCore(exclusiveLiveBoundary, rotation);
     }
 
     private AuditClosedSpoolRecovery ResolveCheckpointCore(
-        AuditSpoolSegmentIdentity? exclusiveLiveBoundary)
+        AuditSpoolSegmentIdentity? exclusiveLiveBoundary,
+        IAuditLiveSpoolRotationPosition? rotation)
     {
         lock (_gate)
         {
@@ -151,6 +159,7 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                     pending = ResolveOwnedCheckpoint(
                         checkpoint,
                         exclusiveLiveBoundary,
+                        rotation,
                         quotaLease);
                     return true;
                 });
@@ -171,6 +180,7 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     private PendingResolution ResolveOwnedCheckpoint(
         AuditExportCheckpoint checkpoint,
         AuditSpoolSegmentIdentity? exclusiveLiveBoundary,
+        IAuditLiveSpoolRotationPosition? rotation,
         AuditSpoolQuotaLease quotaLease)
     {
         SegmentHandle[] acquired = [];
@@ -299,11 +309,27 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                 }
                 else if (exclusiveLiveBoundary is { } boundary)
                 {
+                    if (rotation is null)
+                    {
+                        throw new IOException(
+                            "The closed audit spool prefix lost its live rotation proof.");
+                    }
+                    var tailSequence = previousSequence ?? 0;
+                    if (checkpoint.Sequence != tailSequence ||
+                        (tailSequence == 0) != (previousHash is null))
+                    {
+                        throw new IOException(
+                            "The closed audit spool prefix tail does not match its checkpoint.");
+                    }
                     recovery = new AuditClosedSpoolRecovery.PrefixEnd(
                         new PrefixEndPosition(
                             this,
                             snapshotToken,
-                            boundary));
+                            rotation,
+                            boundary,
+                            checkpoint,
+                            tailSequence,
+                            previousHash));
                 }
                 else
                 {
@@ -525,6 +551,62 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                 parameterName);
         }
         return ownedPosition;
+    }
+
+    internal static AuditClosedSpoolPrefixTransitionState RequireCurrentPrefixEnd(
+        IAuditClosedSpoolPrefixEndPosition position,
+        IAuditLiveSpoolRotationPosition rotation,
+        Guid expectedSupervisorBootId)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        ArgumentNullException.ThrowIfNull(rotation);
+        var boundary = AuditLiveSpoolReader.RequirePendingRotation(
+            rotation,
+            expectedSupervisorBootId);
+        if (position is not PrefixEndPosition owned)
+        {
+            throw new ArgumentException(
+                "The closed audit spool prefix-end capability is not authentic.",
+                nameof(position));
+        }
+        return owned.Owner.RequireCurrentPrefixEndLocked(
+            owned,
+            rotation,
+            boundary);
+    }
+
+    private AuditClosedSpoolPrefixTransitionState RequireCurrentPrefixEndLocked(
+        PrefixEndPosition position,
+        IAuditLiveSpoolRotationPosition rotation,
+        AuditSpoolSegmentIdentity boundary)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (!ReferenceEquals(position.Owner, this) ||
+                _snapshotToken is null ||
+                !ReferenceEquals(position.SnapshotToken, _snapshotToken) ||
+                !ReferenceEquals(position.Rotation, rotation) ||
+                position.ExclusiveLiveBoundary != boundary)
+            {
+                throw new ArgumentException(
+                    "The closed audit spool prefix-end capability is stale or belongs to another transition.",
+                    nameof(position));
+            }
+
+            return _checkpointLease.WithOwnedCheckpoint(checkpoint =>
+            {
+                if (!ReferenceEquals(checkpoint, position.Checkpoint))
+                {
+                    throw new IOException(
+                        "The audit export checkpoint changed after the closed prefix ended.");
+                }
+                return new AuditClosedSpoolPrefixTransitionState(
+                    boundary,
+                    position.TailSequence,
+                    position.TailEventHash);
+            });
+        }
     }
 
     private ConfigurationRetryAuthorization RequireConfigurationRetryAuthorizationLocked(
@@ -1016,18 +1098,34 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
         internal PrefixEndPosition(
             AuditClosedSpoolChainReader owner,
             object snapshotToken,
-            AuditSpoolSegmentIdentity exclusiveLiveBoundary)
+            IAuditLiveSpoolRotationPosition rotation,
+            AuditSpoolSegmentIdentity exclusiveLiveBoundary,
+            AuditExportCheckpoint checkpoint,
+            long tailSequence,
+            string? tailEventHash)
         {
             Owner = owner;
             SnapshotToken = snapshotToken;
+            Rotation = rotation;
             ExclusiveLiveBoundary = exclusiveLiveBoundary;
+            Checkpoint = checkpoint;
+            TailSequence = tailSequence;
+            TailEventHash = tailEventHash;
         }
 
         internal AuditClosedSpoolChainReader Owner { get; }
 
         internal object SnapshotToken { get; }
 
+        internal IAuditLiveSpoolRotationPosition Rotation { get; }
+
         internal AuditSpoolSegmentIdentity ExclusiveLiveBoundary { get; }
+
+        internal AuditExportCheckpoint Checkpoint { get; }
+
+        internal long TailSequence { get; }
+
+        internal string? TailEventHash { get; }
     }
 }
 
