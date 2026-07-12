@@ -2,9 +2,9 @@
 
 **Severity**: HIGH — a crash during rotation can permanently prevent anchored
 startup and its out-of-band administration path.
-**Status**: Open
+**Status**: In progress
 **Branch**: `fix/s2-anchored-temp-recovery`
-**Commit**: pending
+**Commit**: `622c4c88750a2c8b24f0189479f32a65171f5a2f`
 
 ## Evidence
 
@@ -31,18 +31,28 @@ continue to fail closed.
 
 ## Approach
 
-Pending implementation. Reuse one canonical parser/recovery path rather than
-duplicating filename rules. Add anchored restart guards for valid crash debris
-and invalid near-miss names, with exact protection and quota behavior retained.
+Refactor local and anchored startup onto one bounded temporary-recovery path.
+Inventory and validate the complete spool before deleting anything, retain the
+canonical temporary identities under the quota handle, then delete only valid,
+protected, zero-length allocation temporaries or compaction temporaries whose
+protected source segment still exists. Anchored startup invokes that recovery
+while the root and quota identities remain pinned, before topology validation.
 
 ## Files changed
 
-- Pending implementation.
+- `server/PtkMcpServer/Audit/FileAuditJournalSink.cs`
+- `server/PtkMcpServer/Audit/AuditAnchoredWriterPreparation.cs`
+- `server/PtkMcpServer.Tests/AuditAnchoredWriterPreparationTests.cs`
 
 ## Guard proof
 
-- Pending red-to-green anchored restart proof with a valid protected
-  `.allocating` artifact.
+- At `622c4c88750a2c8b24f0189479f32a65171f5a2f`, temporarily removing the
+  anchored preflight recovery call made both new canonical allocation and
+  compaction restart tests fail at the former unknown-entry refusal. Restoring
+  the call made the focused startup suite pass.
+- Full macOS .NET verification passed 926/926.
+- The exact committed SHA passed the focused anchored writer and journal sink
+  suite on Windows 72/72 in a disposable worktree.
 
 ## Coder dispute (if any)
 
