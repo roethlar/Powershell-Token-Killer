@@ -3,9 +3,9 @@
 **Severity**: HIGH — a Windows power loss can revert a checkpoint already used
 to authorize retention, causing duplicate export or permanent chain-adoption
 failure after acknowledged data was deleted.
-**Status**: Open
+**Status**: In progress
 **Branch**: `fix/s2-windows-checkpoint-durability`
-**Commit**: pending
+**Commit**: `e56d9f2d1b5efc7366be5809d4355b6c3ba6c47f`
 
 ## Evidence
 
@@ -36,18 +36,30 @@ delete gap.
 
 ## Approach
 
-Pending coder triage and implementation. Confirm the retained source handle is
-valid after rename, then place `FlushFileBuffers` at the exact post-publication
-boundary and add an instrumented Windows guard proving the call and ordering.
+Open the already identity-verified retained source handle with the write access
+required by `FlushFileBuffers`. After `SetFileInformationByHandle` publishes
+that exact file, flush through the same retained handle before returning to the
+existing destination-replaced commit callback. A post-flush test seam proves
+the ordering without reopening the published path or adding a TOCTOU gap.
 
 ## Files changed
 
-- Pending implementation.
+- `server/PtkMcpServer/Audit/SecureAuditStorage.cs`
+- `server/PtkMcpServer.Tests/SecureAuditStorageTests.cs`
 
 ## Guard proof
 
-- Pending red-to-green Windows guard for a post-rename file flush before the
-  replacement is reported durable.
+- At exact Windows head `e56d9f2d1b5efc7366be5809d4355b6c3ba6c47f`,
+  the new post-flush ordering/held-reader guard passed. A disposable mutation
+  removed only the `FlushRenamedFile` call; the same guard failed because the
+  destination callback observed that no flush had completed. The mutation tree
+  and branch were removed after proof.
+- The Windows ordering/held-reader guard and concurrent no-gap reader guard
+  passed together 2/2. They exercise the real `FlushFileBuffers` P/Invoke and
+  `GENERIC_WRITE` access combination.
+- The full macOS .NET suite passed 926/926; the Windows-only guard compiles but
+  returns early there, so the exact Windows proof is authoritative for the new
+  behavior.
 
 ## Coder dispute (if any)
 
@@ -58,9 +70,9 @@ correction removes the missing durability barrier or rollback risk.
 
 ## Known gaps
 
-The test cannot simulate power loss directly. It must prove the durability
-primitive and ordering without reverting the open-reader replacement
-semantics already guarded on Windows.
+The test cannot simulate power loss directly. It proves the documented
+durability primitive and its pre-commit ordering while retaining the separate
+open-reader and concurrent no-gap replacement guards.
 
 ## Reviewer comments
 
