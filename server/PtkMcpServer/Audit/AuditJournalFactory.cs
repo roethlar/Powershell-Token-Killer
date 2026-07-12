@@ -31,6 +31,80 @@ internal static class AuditJournalFactory
             hostIdentityDestinationCheckedForTests);
         var supervisorBootId = Guid.NewGuid();
         var sink = new FileAuditJournalSink(options, supervisorBootId, utcNow, sinkFaultInjector);
+        return CreateJournalTakingSink(
+            options,
+            health,
+            producerVersion,
+            sink,
+            supervisorBootId,
+            hostId,
+            binaryDigest,
+            utcNow,
+            uuidV7Factory);
+    }
+
+    /// <summary>
+    /// Completes journal construction around an already activated staged
+    /// anchored sink. Sink ownership transfers on entry, including failure.
+    /// </summary>
+    internal static AuditJournal OpenActivatedAnchored(
+        AuditOptions options,
+        AuditHealth health,
+        string producerVersion,
+        FileAuditJournalSink sink,
+        string? binaryDigest = null,
+        Func<DateTimeOffset>? utcNow = null,
+        Func<DateTimeOffset, Guid>? uuidV7Factory = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(health);
+        ArgumentNullException.ThrowIfNull(sink);
+        ArgumentException.ThrowIfNullOrWhiteSpace(producerVersion);
+        if (options.ProtectionMode != AuditProtectionMode.Anchored)
+        {
+            sink.Dispose();
+            throw new ArgumentException(
+                "An activated anchored sink requires anchored audit options.",
+                nameof(options));
+        }
+
+        Guid hostId;
+        Guid supervisorBootId;
+        try
+        {
+            var root = SecureAuditStorage.PrepareRoot(options.RootDirectory);
+            _ = SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
+            hostId = LoadOrCreateHostId(root, null, null);
+            supervisorBootId = sink.CurrentSegmentIdentity.SupervisorBootId;
+        }
+        catch
+        {
+            sink.Dispose();
+            throw;
+        }
+        return CreateJournalTakingSink(
+            options,
+            health,
+            producerVersion,
+            sink,
+            supervisorBootId,
+            hostId,
+            binaryDigest,
+            utcNow,
+            uuidV7Factory);
+    }
+
+    private static AuditJournal CreateJournalTakingSink(
+        AuditOptions options,
+        AuditHealth health,
+        string producerVersion,
+        FileAuditJournalSink sink,
+        Guid supervisorBootId,
+        Guid hostId,
+        string? binaryDigest,
+        Func<DateTimeOffset>? utcNow,
+        Func<DateTimeOffset, Guid>? uuidV7Factory)
+    {
         try
         {
             return new AuditJournal(

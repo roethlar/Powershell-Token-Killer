@@ -34,6 +34,100 @@ internal sealed class AuditRuntimeResources : IDisposable
 
     internal AuditExportLoopSnapshot? ExportSnapshot => _exportLoop?.Snapshot;
 
+    internal static AuditRuntimeResources OpenAnchored(
+        AuditOptions options,
+        AuditHealth health,
+        string producerVersion,
+        IAuditOtlpExportTransport transport,
+        TimeProvider? timeProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(health);
+        ArgumentNullException.ThrowIfNull(transport);
+        ArgumentException.ThrowIfNullOrWhiteSpace(producerVersion);
+        if (options.ProtectionMode != AuditProtectionMode.Anchored)
+        {
+            throw new ArgumentException(
+                "Anchored runtime resources require anchored audit options.",
+                nameof(options));
+        }
+        if (!string.Equals(
+                options.ExportConfigurationIdentity,
+                transport.ConfigurationIdentity,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "The audit transport does not match the startup-frozen export configuration.",
+                nameof(transport));
+        }
+
+        AuditAnchoredWriterPreparation? preparation = null;
+        AuditExportCheckpointStore? checkpointStore = null;
+        AuditJournal? journal = null;
+        AuditBootExportSource? current = null;
+        AuditExportCoordinator? coordinator = null;
+        AuditExportLoop? exportLoop = null;
+        try
+        {
+            preparation = FileAuditJournalSink.PrepareAnchored(
+                options,
+                Guid.NewGuid());
+            checkpointStore = preparation.CreateCheckpointStore();
+            var sink = preparation.Activate(checkpointStore);
+            journal = AuditJournalFactory.OpenActivatedAnchored(
+                options,
+                health,
+                producerVersion,
+                sink);
+            current = new AuditBootExportSource(
+                journal,
+                checkpointStore,
+                transport,
+                timeProvider);
+            coordinator = new AuditExportCoordinator(
+                options,
+                current,
+                transport,
+                timeProvider);
+            current = null;
+            exportLoop = new AuditExportLoop(
+                coordinator,
+                timeProvider: timeProvider,
+                healthObserver: health.ExportObserver);
+            coordinator = null;
+
+            var resources = new AuditRuntimeResources(
+                journal,
+                ownsJournal: true,
+                exportLoop,
+                checkpointStore);
+            journal = null;
+            exportLoop = null;
+            checkpointStore = null;
+            return resources;
+        }
+        finally
+        {
+            preparation?.Dispose();
+            if (exportLoop is not null)
+            {
+                try { exportLoop.DisposeAsync().AsTask().GetAwaiter().GetResult(); }
+                catch when (journal is not null || checkpointStore is not null)
+                {
+                    // Continue unwinding the construction graph. A caller sees
+                    // the originating construction/disposal failure.
+                }
+            }
+            else
+            {
+                coordinator?.Dispose();
+                current?.Dispose();
+            }
+            journal?.Dispose();
+            checkpointStore?.Dispose();
+        }
+    }
+
     internal void StartExporter()
     {
         ObjectDisposedException.ThrowIf(Volatile.Read(ref _disposed) != 0, this);

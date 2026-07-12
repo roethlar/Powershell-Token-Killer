@@ -26,25 +26,40 @@ var maxCallTimeout = TimeSpan.FromSeconds(
 // startup. A failed lookup is also frozen so a later PATH cannot supply one.
 var jobPwshExecutable = JobPwshExecutable.ResolveFromPath();
 
-// Audit is mandatory and startup-frozen. Local-only is the default and needs
-// no SIEM configuration; PTK_AUDIT_ROOT exists for an operator-controlled
-// protected location and for isolated integration tests.
-var configuredAuditRoot = Environment.GetEnvironmentVariable("PTK_AUDIT_ROOT");
-var auditOptions = string.IsNullOrWhiteSpace(configuredAuditRoot)
-    ? AuditOptions.CreateDefault()
-    : AuditOptions.Create(Path.GetFullPath(configuredAuditRoot));
+// Audit is mandatory and startup-frozen. No export configuration means
+// protected local-only logging. Merely supplying PTK_AUDIT_EXPORT_CONFIG is
+// explicit anchored intent: its complete protected configuration must validate
+// before the host exists, and there is no endpoint or credential fallback.
+using var auditStartup = AuditStartupConfiguration.LoadFromEnvironment();
+var auditOptions = auditStartup.AuditOptions;
 var producerVersion = typeof(RunspaceHost).Assembly.GetName().Version?.ToString() ?? "0.0.0";
+using var auditExporter = auditStartup.ExportOptions is null
+    ? null
+    : AuditOtlpHttpExporter.Create(auditStartup.ExportOptions, producerVersion);
 
 builder.Services.AddSingleton(auditOptions);
 builder.Services.AddSingleton(sp => new AuditHealth(sp.GetRequiredService<AuditOptions>()));
 builder.Services.AddSingleton(sp => new ScriptEvidenceStoreProvider(
     sp.GetRequiredService<AuditOptions>()));
 builder.Services.AddScoped<AuditCallContextAccessor>();
-builder.Services.AddSingleton(sp => new AuditRuntimeGate(
-    sp.GetRequiredService<AuditOptions>(),
-    sp.GetRequiredService<AuditHealth>(),
-    sp.GetRequiredService<ScriptEvidenceStoreProvider>(),
-    producerVersion));
+builder.Services.AddSingleton(sp =>
+{
+    var options = sp.GetRequiredService<AuditOptions>();
+    var health = sp.GetRequiredService<AuditHealth>();
+    Func<AuditRuntimeResources>? openRuntime = auditExporter is null
+        ? null
+        : () => AuditRuntimeResources.OpenAnchored(
+            options,
+            health,
+            producerVersion,
+            auditExporter);
+    return new AuditRuntimeGate(
+        options,
+        health,
+        sp.GetRequiredService<ScriptEvidenceStoreProvider>(),
+        producerVersion,
+        openRuntime: openRuntime);
+});
 builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<AuditRuntimeGate>());
 
 builder.Services.AddSingleton(sp =>
