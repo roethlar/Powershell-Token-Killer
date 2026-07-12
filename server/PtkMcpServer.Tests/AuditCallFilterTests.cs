@@ -181,6 +181,16 @@ public sealed class AuditCallFilterTests : IDisposable
             "audit exporter: disabled (local-only), warning false",
             observed.HealthStatusLine(),
             StringComparison.Ordinal);
+        var health = observed.HealthStatusLine();
+        Assert.Contains("audit storage: spool ", health, StringComparison.Ordinal);
+        Assert.Contains(
+            "/28672 bytes, reserved 0 bytes, effective free ",
+            health,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "emergency reserved 8192/8192 bytes",
+            health,
+            StringComparison.Ordinal);
         Assert.Null(fixture.Accessor.Current);
         Assert.Equal("é", ResultText(result));
         Assert.Equal(2, fixture.Sink.Lines.Count);

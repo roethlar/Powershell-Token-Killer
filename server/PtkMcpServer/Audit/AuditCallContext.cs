@@ -476,6 +476,9 @@ internal sealed class AuditCallContext
             ? "none"
             : snapshot.ExportConfigurationIdentity;
         return $"audit: {state}, protection {protection}, export configuration {export}{failure}{since}\n" +
+            $"audit storage: spool {snapshot.SpoolBytes}/{snapshot.SpoolCapacityBytes} bytes, " +
+            $"reserved {snapshot.ReservedBytes} bytes, effective free {snapshot.EffectiveFreeBytes} bytes, " +
+            $"emergency reserved {snapshot.EmergencyReserveBytes}/{snapshot.EmergencyReserveCapacityBytes} bytes\n" +
             AuditExporterHealthText.FormatNormal(snapshot.Exporter);
     }
 
