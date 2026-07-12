@@ -241,6 +241,20 @@ internal static class SecureAuditStorage
             throw new IOException("The atomic replacement left its temporary file published.");
     }
 
+    internal static void ConfirmAtomicReplacementDurability(
+        string root,
+        string publishedPath)
+    {
+        var protectedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
+        VerifyExternalProtectedDirectory(protectedRoot);
+        publishedPath = RequireDirectChild(protectedRoot, publishedPath);
+        VerifyExternalProtectedFile(publishedPath);
+        if (!OperatingSystem.IsWindows())
+            FlushUnixDirectory(protectedRoot);
+        VerifyExternalProtectedDirectory(protectedRoot);
+        VerifyExternalProtectedFile(publishedPath);
+    }
+
     internal static void TryDelete(string path)
     {
         try

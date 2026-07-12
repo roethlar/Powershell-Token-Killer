@@ -168,7 +168,9 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         AuditExportCheckpoint next,
         Action? beforeAtomicReplaceForTests = null,
         Action? destinationReplacedForTests = null,
-        Action? afterAtomicReplaceForTests = null)
+        Action? afterAtomicReplaceForTests = null,
+        Action? beforeDurabilityConfirmationForTests = null,
+        Action? directoryFlushStartingForTests = null)
     {
         lock (_lifetimeGate)
         {
@@ -176,7 +178,9 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                 next,
                 beforeAtomicReplaceForTests,
                 destinationReplacedForTests,
-                afterAtomicReplaceForTests);
+                afterAtomicReplaceForTests,
+                beforeDurabilityConfirmationForTests,
+                directoryFlushStartingForTests);
         }
     }
 
@@ -184,7 +188,9 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         AuditExportCheckpoint next,
         Action? beforeAtomicReplaceForTests,
         Action? destinationReplacedForTests,
-        Action? afterAtomicReplaceForTests)
+        Action? afterAtomicReplaceForTests,
+        Action? beforeDurabilityConfirmationForTests,
+        Action? directoryFlushStartingForTests)
     {
         ThrowIfUnavailable();
         ArgumentNullException.ThrowIfNull(next);
@@ -203,6 +209,8 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         try
         {
             WriteDurableTemporary(temporaryPath, intendedBytes);
+            var destinationReplaced = false;
+            var destinationCallbackCompleted = false;
             try
             {
                 beforeAtomicReplaceForTests?.Invoke();
@@ -210,11 +218,23 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                     temporaryPath,
                     _checkpointPath,
                     _root,
-                    destinationReplacedForTests);
+                    () =>
+                    {
+                        destinationReplaced = true;
+                        destinationReplacedForTests?.Invoke();
+                        destinationCallbackCompleted = true;
+                    },
+                    directoryFlushStartingForTests);
             }
             catch (Exception exception) when (!IsFatal(exception))
             {
-                ResolveUncertainReplacement(next, intendedBytes, exception);
+                ResolveUncertainReplacement(
+                    next,
+                    intendedBytes,
+                    exception,
+                    destinationReplaced,
+                    destinationCallbackCompleted,
+                    beforeDurabilityConfirmationForTests);
                 return;
             }
 
@@ -487,7 +507,10 @@ internal sealed class AuditExportCheckpointStore : IDisposable
     private void ResolveUncertainReplacement(
         AuditExportCheckpoint intended,
         ReadOnlySpan<byte> intendedBytes,
-        Exception originalException)
+        Exception originalException,
+        bool destinationReplaced,
+        bool destinationCallbackCompleted,
+        Action? beforeDurabilityConfirmationForTests)
     {
         (AuditExportCheckpoint Checkpoint, byte[] Bytes) persisted;
         try
@@ -507,13 +530,52 @@ internal sealed class AuditExportCheckpointStore : IDisposable
 
         if (persisted.Bytes.AsSpan().SequenceEqual(intendedBytes))
         {
+            if (!destinationReplaced)
+            {
+                _faulted = true;
+                throw new IOException(
+                    "The intended audit export checkpoint appeared without a confirmed atomic replacement.",
+                    originalException);
+            }
+
+            if (destinationCallbackCompleted)
+            {
+                _faulted = true;
+                throw new IOException(
+                    "The audit export checkpoint replacement failed after its recovery-safe commit seam.",
+                    originalException);
+            }
+
+            try
+            {
+                beforeDurabilityConfirmationForTests?.Invoke();
+                SecureAuditStorage.ConfirmAtomicReplacementDurability(
+                    _root,
+                    _checkpointPath);
+            }
+            catch (Exception durabilityException) when (!IsFatal(durabilityException))
+            {
+                _faulted = true;
+                throw new IOException(
+                    "The audit export checkpoint replacement durability could not be confirmed.",
+                    durabilityException);
+            }
+
             _current = intended;
             _currentBytes = persisted.Bytes;
             return;
         }
 
         if (persisted.Bytes.AsSpan().SequenceEqual(_currentBytes))
-            ExceptionDispatchInfo.Capture(originalException).Throw();
+        {
+            if (!destinationReplaced)
+                ExceptionDispatchInfo.Capture(originalException).Throw();
+
+            _faulted = true;
+            throw new IOException(
+                "The audit export checkpoint reverted after a confirmed atomic replacement.",
+                originalException);
+        }
 
         _faulted = true;
         throw new IOException(

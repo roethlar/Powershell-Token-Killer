@@ -622,6 +622,88 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     }
 
     [Fact]
+    public void Intended_bytes_without_a_confirmed_replace_fault_the_store()
+    {
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
+        var intendedBytes = AuditExportCheckpointCodec.Serialize(intended);
+        var injected = new InjectedCheckpointException("before replace");
+
+        var exception = Assert.Throws<IOException>(() => store.Save(
+            intended,
+            beforeAtomicReplaceForTests: () =>
+            {
+                File.WriteAllBytes(store.CheckpointPath, intendedBytes);
+                throw injected;
+            }));
+
+        Assert.Contains("without a confirmed atomic replacement", exception.Message);
+        Assert.Equal(intendedBytes, File.ReadAllBytes(store.CheckpointPath));
+        Assert.Throws<IOException>(() => _ = store.Current);
+    }
+
+    [Fact]
+    public void Confirmed_replace_that_reloads_prior_bytes_faults_the_store()
+    {
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var priorBytes = File.ReadAllBytes(store.CheckpointPath);
+        var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
+        var injected = new InjectedCheckpointException("after replace");
+
+        var exception = Assert.Throws<IOException>(() => store.Save(
+            intended,
+            destinationReplacedForTests: () =>
+            {
+                File.WriteAllBytes(store.CheckpointPath, priorBytes);
+                throw injected;
+            }));
+
+        Assert.Contains("reverted after a confirmed atomic replacement", exception.Message);
+        Assert.Equal(priorBytes, File.ReadAllBytes(store.CheckpointPath));
+        Assert.Throws<IOException>(() => _ = store.Current);
+    }
+
+    [Fact]
+    public void Failed_post_replace_durability_confirmation_faults_the_store()
+    {
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
+
+        var exception = Assert.Throws<IOException>(() => store.Save(
+            intended,
+            destinationReplacedForTests: () =>
+                throw new InjectedCheckpointException("after replace"),
+            beforeDurabilityConfirmationForTests: () =>
+                File.Delete(store.CheckpointPath)));
+
+        Assert.Contains("durability could not be confirmed", exception.Message);
+        Assert.False(File.Exists(store.CheckpointPath));
+        Assert.Throws<IOException>(() => _ = store.Current);
+    }
+
+    [Fact]
+    public void Failure_after_the_recovery_safe_replace_seam_faults_without_fsync_retry()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
+        var intendedBytes = AuditExportCheckpointCodec.Serialize(intended);
+
+        var exception = Assert.Throws<IOException>(() => store.Save(
+            intended,
+            directoryFlushStartingForTests: () =>
+                throw new InjectedCheckpointException("directory fsync")));
+
+        Assert.Contains("after its recovery-safe commit seam", exception.Message);
+        Assert.Equal(intendedBytes, File.ReadAllBytes(store.CheckpointPath));
+        Assert.Throws<IOException>(() => _ = store.Current);
+    }
+
+    [Fact]
     public void Uncertain_replace_with_neither_prior_nor_intended_state_faults_store()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
