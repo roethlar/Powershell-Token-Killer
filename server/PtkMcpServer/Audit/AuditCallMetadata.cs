@@ -228,7 +228,6 @@ internal static class AuditCallMetadataCapture
             }
             jobId = value;
         }
-
         long? offset = null;
         if (arguments.TryGetValue("offset", out var offsetElement))
         {
@@ -243,6 +242,13 @@ internal static class AuditCallMetadataCapture
         else if (action == "output")
         {
             offset = 0;
+        }
+
+        if (action is "status" or "output" or "kill" && !jobId.HasValue)
+        {
+            return Fail(
+                "audit_boundary_invalid: ptk_job.arguments.id is required for this action",
+                out failure);
         }
 
         var request = BaseRequest("ptk_job", action, providedFields) with

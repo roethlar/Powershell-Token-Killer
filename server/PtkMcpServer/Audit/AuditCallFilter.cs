@@ -139,14 +139,16 @@ internal static class AuditCallFilter
                 throw new InvalidOperationException("The MCP tool returned no result.");
             }
 
+            var authorizationRefused =
+                admittedAudit.AuthorizationPersistenceFailed &&
+                !admittedAudit.EffectAuthorized;
             if (!admittedAudit.TerminalWritten)
             {
-                admittedAudit.CompleteFromFilter(
-                    result.IsError == true ? "failed" : "completed",
-                    ReturnedTextBytes(result));
+                var terminal = ResolveFallbackTerminal(result, authorizationRefused);
+                admittedAudit.CompleteFromFilter(terminal.State, terminal.BytesReturned);
             }
 
-            if (admittedAudit.AuthorizationPersistenceFailed && !admittedAudit.EffectAuthorized)
+            if (authorizationRefused)
                 return Refusal(null);
 
             return result;
@@ -167,6 +169,16 @@ internal static class AuditCallFilter
         {
             accessor.Current = null;
         }
+    }
+
+    internal static (string State, long BytesReturned) ResolveFallbackTerminal(
+        CallToolResult result,
+        bool authorizationRefused)
+    {
+        ArgumentNullException.ThrowIfNull(result);
+        return (
+            authorizationRefused || result.IsError == true ? "failed" : "completed",
+            authorizationRefused ? 0 : ReturnedTextBytes(result));
     }
 
     private static AuditClientContext CaptureClient(McpServer server)

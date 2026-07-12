@@ -113,6 +113,17 @@ public sealed class AuditCallMetadataTests
         Assert.Contains("id", metadata.Request.ProvidedFields);
     }
 
+    [Theory]
+    [InlineData("status")]
+    [InlineData("output")]
+    [InlineData("kill")]
+    public void Job_specific_actions_require_an_identifier(string action)
+    {
+        AssertRejected(
+            Call("ptk_job", ("action", action)),
+            "id is required for this action");
+    }
+
     [Fact]
     public void State_and_reset_capture_effective_current_defaults()
     {
