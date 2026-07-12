@@ -109,22 +109,20 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
 
     /// <summary>
     /// Acquires and validates exactly the closed segments preceding the
-    /// caller's exclusive live-segment identity. The boundary and any newer
-    /// segments are observed by name only and are never opened by this reader.
+    /// authoritative live reader's opaque rotation boundary. The boundary and
+    /// any newer segments are observed by name only and are never opened by
+    /// this reader.
     /// </summary>
     internal AuditClosedSpoolRecovery ResolveClosedPrefix(
-        AuditSpoolSegmentIdentity exclusiveLiveBoundary)
+        IAuditLiveSpoolRotationPosition rotation)
     {
-        if (exclusiveLiveBoundary.SupervisorBootId != _supervisorBootId)
-        {
-            throw new ArgumentException(
-                "The exclusive live-segment boundary belongs to another spool chain.",
-                nameof(exclusiveLiveBoundary));
-        }
+        var exclusiveLiveBoundary = AuditLiveSpoolReader.RequirePendingRotation(
+            rotation,
+            _supervisorBootId);
         if (exclusiveLiveBoundary.Index > MaximumClosedChainSegments)
         {
             throw new ArgumentOutOfRangeException(
-                nameof(exclusiveLiveBoundary),
+                nameof(rotation),
                 "The closed audit spool prefix exceeds its recovery segment bound.");
         }
 

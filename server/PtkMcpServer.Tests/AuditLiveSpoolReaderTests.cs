@@ -69,9 +69,11 @@ public sealed class AuditLiveSpoolReaderTests
         Assert.Equal(AuditLiveSpoolPollKind.Rotated, rotated.Kind);
         Assert.Equal(boundary, rotated.ObservedCurrentSegment);
         Assert.Null(rotated.Record);
+        Assert.NotNull(rotated.Rotation);
         var repeated = reader.Poll();
         Assert.Equal(AuditLiveSpoolPollKind.Rotated, repeated.Kind);
         Assert.Equal(boundary, repeated.ObservedCurrentSegment);
+        Assert.Same(rotated.Rotation, repeated.Rotation);
         Assert.False(fixture.Store.Current.ChainComplete);
     }
 
@@ -93,6 +95,7 @@ public sealed class AuditLiveSpoolReaderTests
         Assert.Equal(AuditLiveSpoolPollKind.WriterClosed, closed.Kind);
         Assert.Equal(finalIdentity, closed.ObservedCurrentSegment);
         Assert.Null(closed.Record);
+        Assert.Null(closed.Rotation);
         Assert.False(fixture.Store.Current.ChainComplete);
     }
 

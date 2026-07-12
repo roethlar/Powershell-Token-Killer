@@ -19,6 +19,13 @@ internal interface IAuditLiveSpoolRecordPosition
     ReadOnlyMemory<byte> ExactJsonlBytes { get; }
 }
 
+/// <summary>
+/// Opaque proof that the authoritative live journal observed one exact
+/// from/to segment rotation. It remains pending until a matching validated
+/// closed-prefix proof consumes it.
+/// </summary>
+internal interface IAuditLiveSpoolRotationPosition;
+
 internal enum AuditLiveSpoolPollKind
 {
     Record,
@@ -30,7 +37,8 @@ internal enum AuditLiveSpoolPollKind
 internal sealed record AuditLiveSpoolPoll(
     AuditLiveSpoolPollKind Kind,
     AuditSpoolSegmentIdentity ObservedCurrentSegment,
-    IAuditLiveSpoolRecordPosition? Record = null);
+    IAuditLiveSpoolRecordPosition? Record = null,
+    IAuditLiveSpoolRotationPosition? Rotation = null);
 
 /// <summary>
 /// Reads only the authoritative writer's published durable prefix. It never
@@ -50,6 +58,8 @@ internal sealed class AuditLiveSpoolReader
     private long _expectedSequence = 1;
     private string? _previousHash;
     private RecordPosition? _pending;
+    private object _rotationGeneration = new();
+    private RotationPosition? _pendingRotation;
 
     internal AuditLiveSpoolReader(AuditJournal journal)
     {
@@ -78,6 +88,13 @@ internal sealed class AuditLiveSpoolReader
                     AuditLiveSpoolPollKind.Record,
                     _currentSegment,
                     pending);
+            }
+            if (_pendingRotation is { } pendingRotation)
+            {
+                return new AuditLiveSpoolPoll(
+                    AuditLiveSpoolPollKind.Rotated,
+                    pendingRotation.To,
+                    Rotation: pendingRotation);
             }
 
             var read = _journal.ReadCommittedSpool(
@@ -127,6 +144,45 @@ internal sealed class AuditLiveSpoolReader
             _expectedSequence = CheckedNext(owned.Sequence);
             _previousHash = owned.EventHash;
             _pending = null;
+        }
+    }
+
+    internal static AuditSpoolSegmentIdentity RequirePendingRotation(
+        IAuditLiveSpoolRotationPosition position,
+        Guid expectedSupervisorBootId)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        AuditSpoolSegmentIdentity.RequireUuidV4(
+            expectedSupervisorBootId,
+            nameof(expectedSupervisorBootId));
+        if (position is not RotationPosition owned)
+        {
+            throw new ArgumentException(
+                "The live audit spool rotation capability is not authentic.",
+                nameof(position));
+        }
+        return owned.Owner.RequirePendingRotation(owned, expectedSupervisorBootId);
+    }
+
+    private AuditSpoolSegmentIdentity RequirePendingRotation(
+        RotationPosition position,
+        Guid expectedSupervisorBootId)
+    {
+        lock (_gate)
+        {
+            if (expectedSupervisorBootId != _supervisorBootId ||
+                !ReferenceEquals(position.Owner, this) ||
+                !ReferenceEquals(position, _pendingRotation) ||
+                !ReferenceEquals(position.Generation, _rotationGeneration) ||
+                position.From != _currentSegment ||
+                position.To.SupervisorBootId != _supervisorBootId ||
+                position.To.Index <= position.From.Index)
+            {
+                throw new ArgumentException(
+                    "The live audit spool rotation capability is not the exact pending transition.",
+                    nameof(position));
+            }
+            return position.To;
         }
     }
 
@@ -203,7 +259,16 @@ internal sealed class AuditLiveSpoolReader
         {
             throw new IOException("The live audit spool returned an invalid rotation.");
         }
-        return new AuditLiveSpoolPoll(AuditLiveSpoolPollKind.Rotated, observed);
+        var rotation = new RotationPosition(
+            this,
+            _rotationGeneration,
+            _currentSegment,
+            observed);
+        _pendingRotation = rotation;
+        return new AuditLiveSpoolPoll(
+            AuditLiveSpoolPollKind.Rotated,
+            observed,
+            Rotation: rotation);
     }
 
     private AuditLiveSpoolPoll WriterClosed(
@@ -215,6 +280,8 @@ internal sealed class AuditLiveSpoolReader
         {
             throw new IOException("The closed audit writer returned an invalid final identity.");
         }
+        _pendingRotation = null;
+        _rotationGeneration = new object();
         return new AuditLiveSpoolPoll(AuditLiveSpoolPollKind.WriterClosed, observed);
     }
 
@@ -253,5 +320,20 @@ internal sealed class AuditLiveSpoolReader
         public string EventHash { get; } = parsed.EventHash;
 
         public ReadOnlyMemory<byte> ExactJsonlBytes { get; } = exactJsonlBytes;
+    }
+
+    private sealed class RotationPosition(
+        AuditLiveSpoolReader owner,
+        object generation,
+        AuditSpoolSegmentIdentity from,
+        AuditSpoolSegmentIdentity to) : IAuditLiveSpoolRotationPosition
+    {
+        internal AuditLiveSpoolReader Owner { get; } = owner;
+
+        internal object Generation { get; } = generation;
+
+        internal AuditSpoolSegmentIdentity From { get; } = from;
+
+        internal AuditSpoolSegmentIdentity To { get; } = to;
     }
 }
