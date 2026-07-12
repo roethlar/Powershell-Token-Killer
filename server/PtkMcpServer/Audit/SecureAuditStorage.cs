@@ -1,6 +1,9 @@
 using System.ComponentModel;
 using System.Runtime.InteropServices;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Cryptography;
+using System.Security.Principal;
 
 namespace PtkMcpServer.Audit;
 
@@ -206,12 +209,24 @@ internal static class SecureAuditStorage
         VerifyFileProtection(path);
     }
 
-    internal static byte[] ReadProtectedFile(string path, int maximumBytes)
+    internal static byte[] ReadProtectedFile(
+        string path,
+        int maximumBytes,
+        bool requireProtectedParent = false,
+        bool verifyWithoutMutation = false)
     {
         if (maximumBytes < 1)
             throw new ArgumentOutOfRangeException(nameof(maximumBytes));
 
-        VerifyProtectedFile(path);
+        var parent = Path.GetDirectoryName(Path.GetFullPath(path))
+            ?? throw new IOException("The protected file parent is unavailable.");
+        if (requireProtectedParent)
+        {
+            if (verifyWithoutMutation) VerifyExternalProtectedDirectory(parent);
+            else VerifyProtectedDirectory(parent);
+        }
+        if (verifyWithoutMutation) VerifyExternalProtectedFile(path);
+        else VerifyProtectedFile(path);
         using var stream = new FileStream(
             path,
             FileMode.Open,
@@ -229,13 +244,73 @@ internal static class SecureAuditStorage
             if (stream.ReadByte() != -1)
                 throw new IOException("The protected file changed while it was read.");
 
-            VerifyProtectedFile(path);
+            if (verifyWithoutMutation) VerifyExternalProtectedFile(path);
+            else VerifyProtectedFile(path);
+            if (requireProtectedParent)
+            {
+                if (verifyWithoutMutation) VerifyExternalProtectedDirectory(parent);
+                else VerifyProtectedDirectory(parent);
+            }
             return bytes;
         }
         catch
         {
             CryptographicOperations.ZeroMemory(bytes);
             throw;
+        }
+    }
+
+    private static void VerifyExternalProtectedFile(string path)
+    {
+        RefuseLinkedPathComponents(path);
+        RefuseLinkOrReparsePoint(path);
+        if (!File.Exists(path) || Directory.Exists(path))
+            throw new IOException("The protected external file is missing.");
+        if (OperatingSystem.IsWindows())
+        {
+            VerifyWindowsOwnerOnlyAcl(path, isDirectory: false);
+            return;
+        }
+        VerifyUnixProtection(path, OwnerFileMode, "file");
+    }
+
+    private static void VerifyExternalProtectedDirectory(string path)
+    {
+        RefuseLinkedPathComponents(path);
+        RefuseLinkOrReparsePoint(path);
+        if (!Directory.Exists(path) || File.Exists(path))
+            throw new IOException("The protected external directory is missing.");
+        if (OperatingSystem.IsWindows())
+        {
+            VerifyWindowsOwnerOnlyAcl(path, isDirectory: true);
+            return;
+        }
+        VerifyUnixProtection(path, OwnerDirectoryMode, "directory");
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void VerifyWindowsOwnerOnlyAcl(string path, bool isDirectory)
+    {
+        FileSystemSecurity security = isDirectory
+            ? FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path))
+            : FileSystemAclExtensions.GetAccessControl(new FileInfo(path));
+        using var identity = WindowsIdentity.GetCurrent();
+        var currentUser = identity.User
+            ?? throw new IOException("The current Windows user SID is unavailable.");
+        var descriptorBytes = security.GetSecurityDescriptorBinaryForm();
+        var descriptor = new RawSecurityDescriptor(descriptorBytes, 0);
+        if (descriptor.Owner is null ||
+            !currentUser.Equals(descriptor.Owner) ||
+            !descriptor.ControlFlags.HasFlag(ControlFlags.DiscretionaryAclProtected) ||
+            descriptor.DiscretionaryAcl is not { Count: 1 } dacl ||
+            dacl[0] is not CommonAce ace ||
+            ace.AceQualifier != AceQualifier.AccessAllowed ||
+            ace.IsCallback ||
+            ace.AceFlags != AceFlags.None ||
+            !currentUser.Equals(ace.SecurityIdentifier) ||
+            ace.AccessMask != (int)FileSystemRights.FullControl)
+        {
+            throw new IOException("The protected external path owner or DACL is invalid.");
         }
     }
 
