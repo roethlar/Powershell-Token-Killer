@@ -99,7 +99,10 @@ internal sealed class AuditRuntimeResources : IDisposable
             exportLoop = new AuditExportLoop(
                 coordinator,
                 timeProvider: timeProvider,
-                healthObserver: health.ExportObserver);
+                healthObserver: new AuditExportTransitionRecorder(
+                    journal,
+                    health.ExportObserver,
+                    AuditBacklogHysteresis.CreateFor(options)));
             coordinator = null;
 
             var resources = new AuditRuntimeResources(

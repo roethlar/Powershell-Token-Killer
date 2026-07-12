@@ -42,6 +42,10 @@ public sealed class AuditAnchoredRuntimeTests : IDisposable
         var firstStarted = await transport.WaitForAsync(
             record => record.EventType == "server.started",
             TimeSpan.FromSeconds(10));
+        _ = await transport.WaitForAsync(
+            record => record.SupervisorBootId == firstStarted.SupervisorBootId &&
+                      record.EventType == "export.started",
+            TimeSpan.FromSeconds(10));
         await WaitUntilAsync(
             () => AuditExportCheckpointStore
                 .ReadSnapshot(options, firstStarted.SupervisorBootId).Sequence == 1,
@@ -121,6 +125,10 @@ public sealed class AuditAnchoredRuntimeTests : IDisposable
             transport.Snapshot(),
             record => record.SupervisorBootId == firstStarted.SupervisorBootId &&
                       record.EventType == "server.started");
+        Assert.Single(
+            transport.Snapshot(),
+            record => record.SupervisorBootId == firstStarted.SupervisorBootId &&
+                      record.EventType == "export.started");
     }
 
     private static AuditRuntimeGate Runtime(
