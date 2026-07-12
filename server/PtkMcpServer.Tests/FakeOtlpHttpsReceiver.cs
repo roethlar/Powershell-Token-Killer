@@ -371,7 +371,7 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
         {
             return;
         }
-        catch (IOException) when (!cancellationToken.IsCancellationRequested)
+        catch (IOException)
         {
             // A client that rejects the CA or hostname aborts its side of the
             // handshake. That is an expected integration outcome, not a fake
@@ -396,6 +396,13 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
             catch (IOException)
             {
             }
+            return;
+        }
+        catch (IOException)
+        {
+            // Schannel can complete the server-side handshake and report the
+            // peer's certificate rejection on the first TLS read instead of
+            // returning EOF. No HTTP request was observed.
             return;
         }
 
