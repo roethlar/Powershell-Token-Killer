@@ -18,9 +18,9 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
     private readonly AuditHealth _health;
     private readonly ScriptEvidenceStoreProvider _evidence;
     private readonly string _producerVersion;
-    private readonly Func<AuditJournal> _openJournal;
-    private readonly bool _ownsJournal;
+    private readonly Func<AuditRuntimeResources> _openRuntime;
 
+    private AuditRuntimeResources? _resources;
     private AuditJournal? _journal;
     private AuditServerLifecycle? _lifecycle;
     private RunspaceHost? _runspaceHost;
@@ -38,7 +38,8 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
         AuditHealth health,
         ScriptEvidenceStoreProvider evidence,
         string producerVersion,
-        Func<AuditJournal>? openJournal = null)
+        Func<AuditJournal>? openJournal = null,
+        Func<AuditRuntimeResources>? openRuntime = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(health);
@@ -49,9 +50,14 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
         _health = health;
         _evidence = evidence;
         _producerVersion = producerVersion;
-        _openJournal = openJournal ?? (() =>
-            AuditJournalFactory.Open(_options, _health, _producerVersion));
-        _ownsJournal = true;
+        if (openJournal is not null && openRuntime is not null)
+        {
+            throw new ArgumentException(
+                "Specify either a journal factory or a runtime-resource factory, not both.");
+        }
+        _openRuntime = openRuntime ?? (() => new AuditRuntimeResources(
+            openJournal?.Invoke() ??
+                AuditJournalFactory.Open(_options, _health, _producerVersion)));
     }
 
     private AuditRuntimeGate(
@@ -64,10 +70,10 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
         _health = health;
         _evidence = evidence;
         _producerVersion = "test";
-        _openJournal = () => journal;
+        _openRuntime = () => new AuditRuntimeResources(journal, ownsJournal: false);
+        _resources = new AuditRuntimeResources(journal, ownsJournal: false);
         _journal = journal;
         _testOperational = true;
-        _ownsJournal = false;
     }
 
     internal static AuditRuntimeGate CreateOperationalForTests(
@@ -296,7 +302,8 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
                         activeCalls,
                         _runspaceHost,
                         _jobManager,
-                        _lifecycle);
+                        _lifecycle,
+                        _resources);
                     return _stopTask;
                 }
             }
@@ -329,7 +336,8 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
             }
             finally
             {
-                if (_ownsJournal) _journal?.Dispose();
+                _resources?.Dispose();
+                _resources = null;
                 _lifecycle = null;
                 _journal = null;
             }
@@ -341,13 +349,16 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
         Task activeCalls,
         RunspaceHost? runspaceHost,
         JobManager? jobs,
-        AuditServerLifecycle? lifecycle)
+        AuditServerLifecycle? lifecycle,
+        AuditRuntimeResources? resources)
     {
         await activeCalls.ConfigureAwait(false);
         if (jobs is not null)
             await jobs.ShutdownAsync().ConfigureAwait(false);
         if (runspaceHost is not null)
             await runspaceHost.ShutdownAsync().ConfigureAwait(false);
+        if (resources is not null)
+            await resources.StopExporterAsync().ConfigureAwait(false);
         lifecycle?.Stop();
     }
 
@@ -379,11 +390,12 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
 
     private bool TryInitializeSerialized(int upcomingRecordSlots)
     {
-        AuditJournal? candidateJournal = null;
+        AuditRuntimeResources? candidateResources = null;
         AuditServerLifecycle? candidateLifecycle = null;
         try
         {
-            candidateJournal = _openJournal();
+            candidateResources = _openRuntime();
+            var candidateJournal = candidateResources.Journal;
             var health = _health.Snapshot();
             if (health.State is AuditHealthState.Degraded or AuditHealthState.Unavailable)
             {
@@ -400,18 +412,21 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
 
             candidateLifecycle = new AuditServerLifecycle(candidateJournal, _options);
             candidateLifecycle.EnsureStarted();
+            candidateResources.StartExporter();
 
             lock (_gate)
             {
+                _resources = candidateResources;
                 _journal = candidateJournal;
                 _lifecycle = candidateLifecycle;
             }
+            candidateResources = null;
             return true;
         }
         catch (Exception exception) when (!IsFatal(exception))
         {
             try { candidateLifecycle?.Dispose(); } catch { /* keep startup diagnostic-only */ }
-            try { candidateJournal?.Dispose(); } catch { /* keep startup diagnostic-only */ }
+            try { candidateResources?.Dispose(); } catch { /* keep startup diagnostic-only */ }
             MarkStartupUnavailable();
             return false;
         }

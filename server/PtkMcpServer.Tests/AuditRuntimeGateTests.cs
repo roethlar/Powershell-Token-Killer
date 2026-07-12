@@ -74,6 +74,86 @@ public sealed class AuditRuntimeGateTests : IDisposable
     }
 
     [Fact]
+    public async Task Export_starts_after_server_started_and_stops_before_server_stopped()
+    {
+        var root = NewRoot();
+        var options = CreateOptions(Path.Combine(root, "audit"));
+        var health = new AuditHealth(options);
+        BlockingExportSource? source = null;
+
+        AuditRuntimeResources OpenRuntime()
+        {
+            var journal = AuditJournalFactory.Open(
+                options,
+                health,
+                "runtime-export-order-test");
+            source = new BlockingExportSource(() => journal.Sequence);
+            var loop = new AuditExportLoop(
+                source,
+                idlePollInterval: TimeSpan.FromMilliseconds(10));
+            return new AuditRuntimeResources(journal, exportLoop: loop);
+        }
+
+        var runtime = new AuditRuntimeGate(
+            options,
+            health,
+            new ScriptEvidenceStoreProvider(options),
+            "runtime-export-order-test",
+            openRuntime: OpenRuntime);
+        await runtime.StartAsync(CancellationToken.None);
+        var activeSource = Assert.IsType<BlockingExportSource>(source);
+        await activeSource.Started.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+        Assert.Equal(1, activeSource.SequenceAtStart);
+        await runtime.StopAsync(CancellationToken.None);
+        Assert.False(activeSource.ServerStoppedWasDurableAtCancellation);
+        runtime.Dispose();
+
+        Assert.True(activeSource.Disposed);
+        Assert.Equal(
+            ["server.started", "server.stopped"],
+            ReadEvents(options).Select(EventType));
+    }
+
+    [Fact]
+    public async Task Export_loop_failure_prevents_false_server_stopped()
+    {
+        var root = NewRoot();
+        var options = CreateOptions(Path.Combine(root, "audit"));
+        var health = new AuditHealth(options);
+        ThrowingExportSource? source = null;
+
+        AuditRuntimeResources OpenRuntime()
+        {
+            var journal = AuditJournalFactory.Open(
+                options,
+                health,
+                "runtime-export-fault-test");
+            source = new ThrowingExportSource();
+            return new AuditRuntimeResources(
+                journal,
+                exportLoop: new AuditExportLoop(source));
+        }
+
+        var runtime = new AuditRuntimeGate(
+            options,
+            health,
+            new ScriptEvidenceStoreProvider(options),
+            "runtime-export-fault-test",
+            openRuntime: OpenRuntime);
+        await runtime.StartAsync(CancellationToken.None);
+        await Assert.IsType<ThrowingExportSource>(source).Faulted.Task
+            .WaitAsync(TimeSpan.FromSeconds(5));
+
+        await Assert.ThrowsAsync<IOException>(() =>
+            runtime.StopAsync(CancellationToken.None));
+        Assert.ThrowsAny<Exception>(() => runtime.Dispose());
+        Assert.Equal(
+            ["server.started"],
+            ReadEvents(options).Select(EventType));
+    }
+
+    [Fact]
     public async Task Repaired_startup_persists_recovery_before_start_and_acceptance()
     {
         var parent = NewRoot();
@@ -842,5 +922,62 @@ public sealed class AuditRuntimeGateTests : IDisposable
         private Action? _onDispose = onDispose;
 
         public void Dispose() => Interlocked.Exchange(ref _onDispose, null)?.Invoke();
+    }
+
+    private sealed class BlockingExportSource(Func<long> readSequence) : IAuditExportStepSource
+    {
+        private int _disposed;
+
+        internal TaskCompletionSource Started { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal long SequenceAtStart { get; private set; }
+
+        internal bool ServerStoppedWasDurableAtCancellation { get; private set; }
+
+        internal bool Disposed => Volatile.Read(ref _disposed) != 0;
+
+        public async Task<AuditExportCoordinatorStep> ExportNextAsync(
+            CancellationToken cancellationToken)
+        {
+            try
+            {
+                SequenceAtStart = readSequence();
+            }
+            finally
+            {
+                Started.TrySetResult();
+            }
+            try
+            {
+                await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                ServerStoppedWasDurableAtCancellation =
+                    readSequence() >= 2;
+                throw;
+            }
+            throw new InvalidOperationException("The blocking export source resumed unexpectedly.");
+        }
+
+        public void Dispose() => Interlocked.Exchange(ref _disposed, 1);
+    }
+
+    private sealed class ThrowingExportSource : IAuditExportStepSource
+    {
+        internal TaskCompletionSource Faulted { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public Task<AuditExportCoordinatorStep> ExportNextAsync(
+            CancellationToken cancellationToken)
+        {
+            Faulted.TrySetResult();
+            throw new IOException("injected exporter loop failure");
+        }
+
+        public void Dispose()
+        {
+        }
     }
 }
