@@ -18,9 +18,15 @@ internal enum FakeOtlpResponseMode
     Success,
     ServiceUnavailable,
     Redirect,
+    PersistThenDisconnect,
+    PartialRejection,
+    BadRequest,
+    ZeroRejectionWarning,
 }
 
 internal sealed record FakeOtlpReceipt(byte[] ExactJsonBody, string EventId);
+
+internal sealed record FakeOtlpRequestSnapshot(string Target, byte[] Body);
 
 internal sealed record FakeOtlpResponseSnapshot(
     int StatusCode,
@@ -134,7 +140,7 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
 
     private readonly TcpListener _listener;
     private readonly X509Certificate2 _serverCertificate;
-    private readonly FakeOtlpResponseMode _responseMode;
+    private readonly FakeOtlpResponseMode[] _responseModes;
     private readonly Uri? _redirectLocation;
     private readonly CancellationTokenSource _shutdown = new();
     private readonly Task _acceptLoop;
@@ -146,7 +152,10 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
     private readonly TaskCompletionSource _responseStarted =
         new(TaskCreationOptions.RunContinuationsAsynchronously);
     private readonly bool _blockReceiptFlush;
+    private readonly object _requestGate = new();
+    private readonly List<FakeOtlpRequestSnapshot> _requests = [];
     private int _requestCount;
+    private int _responseModeIndex;
     private int _disposed;
 
     internal FakeOtlpHttpsReceiver(
@@ -154,15 +163,37 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
         FakeOtlpResponseMode responseMode = FakeOtlpResponseMode.Success,
         Uri? redirectLocation = null,
         bool blockReceiptFlush = false)
+        : this(pki, [responseMode], redirectLocation, blockReceiptFlush)
+    {
+    }
+
+    internal FakeOtlpHttpsReceiver(
+        FakeOtlpPki pki,
+        IReadOnlyList<FakeOtlpResponseMode> responseModes,
+        bool blockReceiptFlush = false)
+        : this(pki, responseModes, redirectLocation: null, blockReceiptFlush)
+    {
+    }
+
+    private FakeOtlpHttpsReceiver(
+        FakeOtlpPki pki,
+        IReadOnlyList<FakeOtlpResponseMode> responseModes,
+        Uri? redirectLocation,
+        bool blockReceiptFlush)
     {
         ArgumentNullException.ThrowIfNull(pki);
-        if ((responseMode == FakeOtlpResponseMode.Redirect) != (redirectLocation is not null))
+        ArgumentNullException.ThrowIfNull(responseModes);
+        if (responseModes.Count == 0)
+            throw new ArgumentException("At least one fake OTLP response mode is required.", nameof(responseModes));
+        if (responseModes.Any(mode => !Enum.IsDefined(mode)))
+            throw new ArgumentException("A fake OTLP response mode is invalid.", nameof(responseModes));
+        if ((responseModes.Contains(FakeOtlpResponseMode.Redirect)) != (redirectLocation is not null))
             throw new ArgumentException("Redirect mode requires exactly one redirect location.");
         if (redirectLocation is not null && redirectLocation.Scheme != Uri.UriSchemeHttps)
             throw new ArgumentException("The fake redirect target must use HTTPS.", nameof(redirectLocation));
 
         _serverCertificate = pki.ServerCertificate;
-        _responseMode = responseMode;
+        _responseModes = responseModes.ToArray();
         _redirectLocation = redirectLocation;
         _blockReceiptFlush = blockReceiptFlush;
         AuthorizationValue = $"Bearer {Convert.ToHexString(RandomNumberGenerator.GetBytes(32)).ToLowerInvariant()}";
@@ -194,6 +225,21 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
     internal string ReceiptPath { get; }
 
     internal int RequestCount => Volatile.Read(ref _requestCount);
+
+    internal IReadOnlyList<FakeOtlpRequestSnapshot> Requests
+    {
+        get
+        {
+            lock (_requestGate)
+            {
+                return _requests
+                    .Select(request => new FakeOtlpRequestSnapshot(
+                        request.Target,
+                        request.Body.ToArray()))
+                    .ToArray();
+            }
+        }
+    }
 
     internal string? LastRequestTarget { get; private set; }
 
@@ -356,6 +402,12 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
         Interlocked.Increment(ref _requestCount);
         LastRequestTarget = request.Target;
         LastRequestBody = request.Body.ToArray();
+        lock (_requestGate)
+        {
+            _requests.Add(new FakeOtlpRequestSnapshot(
+                request.Target,
+                request.Body.ToArray()));
+        }
         if (!string.Equals(request.Target, "/v1/logs", StringComparison.Ordinal))
         {
             await SendFailureAsync(stream, 404, "not found", cancellationToken).ConfigureAwait(false);
@@ -375,7 +427,8 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
             return;
         }
 
-        if (_responseMode == FakeOtlpResponseMode.ServiceUnavailable)
+        var responseMode = NextResponseMode();
+        if (responseMode == FakeOtlpResponseMode.ServiceUnavailable)
         {
             await SendFailureAsync(
                 stream,
@@ -388,7 +441,7 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
                 }).ConfigureAwait(false);
             return;
         }
-        if (_responseMode == FakeOtlpResponseMode.Redirect)
+        if (responseMode == FakeOtlpResponseMode.Redirect)
         {
             await SendAsync(
                 stream,
@@ -398,6 +451,15 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
                 {
                     ["Location"] = _redirectLocation!.AbsoluteUri,
                 },
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+        if (responseMode == FakeOtlpResponseMode.BadRequest)
+        {
+            await SendFailureAsync(
+                stream,
+                400,
+                "bad data",
                 cancellationToken).ConfigureAwait(false);
             return;
         }
@@ -417,13 +479,50 @@ internal sealed class FakeOtlpHttpsReceiver : IAsyncDisposable
             return;
         }
 
+        if (responseMode == FakeOtlpResponseMode.PartialRejection)
+        {
+            await SendAsync(
+                stream,
+                200,
+                new ExportLogsServiceResponse
+                {
+                    PartialSuccess = new ExportLogsPartialSuccess
+                    {
+                        RejectedLogRecords = 1,
+                        ErrorMessage = "bad record",
+                    },
+                }.ToByteArray(),
+                new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
+                cancellationToken).ConfigureAwait(false);
+            return;
+        }
+
         await PersistReceiptAsync(receipt, cancellationToken).ConfigureAwait(false);
+        if (responseMode == FakeOtlpResponseMode.PersistThenDisconnect)
+            return;
+
+        var response = responseMode == FakeOtlpResponseMode.ZeroRejectionWarning
+            ? new ExportLogsServiceResponse
+            {
+                PartialSuccess = new ExportLogsPartialSuccess
+                {
+                    RejectedLogRecords = 0,
+                    ErrorMessage = "receiver warning",
+                },
+            }
+            : new ExportLogsServiceResponse();
         await SendAsync(
             stream,
             200,
-            new ExportLogsServiceResponse().ToByteArray(),
+            response.ToByteArray(),
             new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase),
             cancellationToken).ConfigureAwait(false);
+    }
+
+    private FakeOtlpResponseMode NextResponseMode()
+    {
+        var index = Interlocked.Increment(ref _responseModeIndex) - 1;
+        return _responseModes[Math.Min(index, _responseModes.Length - 1)];
     }
 
     private bool HasExpectedAuthorization(string? actual)
