@@ -1,3 +1,4 @@
+using System.Diagnostics.CodeAnalysis;
 using System.Runtime.ExceptionServices;
 
 namespace PtkMcpServer.Audit;
@@ -237,14 +238,9 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         FileStream? lease = null;
         try
         {
-            try
-            {
-                lease = OpenExistingPersistentLease(root, lockPath);
-            }
-            catch (IOException exception) when (IsLeaseSharingViolation(exception))
-            {
+            if (!TryOpenExistingPersistentLease(lockPath, out lease))
                 return false;
-            }
+            VerifyLease(lease, root, lockPath);
 
             CleanStaleTemporaryFiles(root, supervisorBootId);
             if (!HasSameBootSegment(options.SpoolDirectory, supervisorBootId))
@@ -809,27 +805,28 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         }
     }
 
-    private static FileStream OpenExistingPersistentLease(string root, string lockPath)
+    private static bool TryOpenExistingPersistentLease(
+        string lockPath,
+        [NotNullWhen(true)] out FileStream? lease)
     {
-        var lease = new FileStream(
-            lockPath,
-            new FileStreamOptions
-            {
-                Mode = FileMode.Open,
-                Access = FileAccess.ReadWrite,
-                Share = FileShare.None,
-                BufferSize = 1,
-                Options = FileOptions.WriteThrough,
-            });
+        lease = null;
         try
         {
-            VerifyLease(lease, root, lockPath);
-            return lease;
+            lease = new FileStream(
+                lockPath,
+                new FileStreamOptions
+                {
+                    Mode = FileMode.Open,
+                    Access = FileAccess.ReadWrite,
+                    Share = FileShare.None,
+                    BufferSize = 1,
+                    Options = FileOptions.WriteThrough,
+                });
+            return true;
         }
-        catch
+        catch (IOException exception) when (IsLeaseSharingViolation(exception))
         {
-            lease.Dispose();
-            throw;
+            return false;
         }
     }
 
