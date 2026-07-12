@@ -20,6 +20,36 @@ public sealed class AuditClosedSpoolExportPumpTests
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
     [Fact]
+    public async Task Adopted_pump_uses_the_already_retained_recovery_before_reinventory()
+    {
+        using var fixture = new ClosedFixture(recordCount: 2);
+        var acquisitions = 0;
+        using var reader = new AuditClosedSpoolChainReader(
+            fixture.Options,
+            fixture.Store,
+            handlesAcquiredForTests: () => acquisitions++);
+        var quota = AuditSpoolQuotaLease.AcquireExisting(
+            fixture.Options.SpoolDirectory);
+        var initial = reader.ResolveCheckpointForAdoption(quota);
+        var transport = new ScriptedTransport(
+            AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false),
+            AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false));
+        using var pump = AuditClosedSpoolExportPump.ForAdoptedClosedChain(
+            reader,
+            initial,
+            transport);
+
+        Assert.Equal(
+            AuditClosedSpoolExportStepKind.Advanced,
+            (await pump.ExportNextAsync(CancellationToken.None)).Kind);
+        Assert.Equal(1, acquisitions);
+        Assert.Equal(
+            AuditClosedSpoolExportStepKind.ChainComplete,
+            (await pump.ExportNextAsync(CancellationToken.None)).Kind);
+        Assert.Equal(2, acquisitions);
+    }
+
+    [Fact]
     public async Task Acknowledgment_advances_exactly_once_and_completes_after_the_final_record()
     {
         using var fixture = new ClosedFixture(recordCount: 2);

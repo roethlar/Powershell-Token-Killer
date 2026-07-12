@@ -40,6 +40,7 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
     private readonly AuditClosedSpoolExportMode _mode;
     private readonly IAuditLiveSpoolRotationPosition? _rotation;
     private readonly IAuditLiveSpoolWriterClosedPosition? _writerClosed;
+    private AuditClosedSpoolRecovery? _initialRecovery;
     private IAuditClosedSpoolRecordPosition? _next;
     private AuditExportBlockedRecord? _blocked;
     private IAuditClosedSpoolPrefixEndPosition? _prefixEnd;
@@ -58,6 +59,7 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
             AuditClosedSpoolExportMode.CompleteChain,
             rotation: null,
             writerClosed: null,
+            initialRecovery: null,
             timeProvider)
     {
     }
@@ -68,6 +70,7 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
         AuditClosedSpoolExportMode mode,
         IAuditLiveSpoolRotationPosition? rotation,
         IAuditLiveSpoolWriterClosedPosition? writerClosed,
+        AuditClosedSpoolRecovery? initialRecovery,
         TimeProvider? timeProvider)
     {
         ArgumentNullException.ThrowIfNull(reader);
@@ -91,6 +94,7 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
         _mode = mode;
         _rotation = rotation;
         _writerClosed = writerClosed;
+        _initialRecovery = initialRecovery;
     }
 
     internal static AuditClosedSpoolExportPump ForClosedPrefix(
@@ -106,6 +110,7 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
             AuditClosedSpoolExportMode.ClosedPrefix,
             rotation,
             writerClosed: null,
+            initialRecovery: null,
             timeProvider);
     }
 
@@ -122,6 +127,30 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
             AuditClosedSpoolExportMode.WriterClosedChain,
             rotation: null,
             writerClosed,
+            initialRecovery: null,
+            timeProvider);
+    }
+
+    internal static AuditClosedSpoolExportPump ForAdoptedClosedChain(
+        AuditClosedSpoolChainReader reader,
+        AuditClosedSpoolRecovery initialRecovery,
+        IAuditOtlpExportTransport transport,
+        TimeProvider? timeProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(initialRecovery);
+        if (initialRecovery is AuditClosedSpoolRecovery.PrefixEnd)
+        {
+            throw new ArgumentException(
+                "An adopted closed chain cannot begin at a live-prefix end.",
+                nameof(initialRecovery));
+        }
+        return new AuditClosedSpoolExportPump(
+            reader,
+            transport,
+            AuditClosedSpoolExportMode.CompleteChain,
+            rotation: null,
+            writerClosed: null,
+            initialRecovery,
             timeProvider);
     }
 
@@ -159,7 +188,8 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
             {
                 try
                 {
-                    var initial = ResolveCurrent();
+                    var initial = _initialRecovery ?? ResolveCurrent();
+                    _initialRecovery = null;
                     if (initial is AuditClosedSpoolRecovery.PrefixEnd initialPrefix)
                     {
                         if (_mode != AuditClosedSpoolExportMode.ClosedPrefix)
