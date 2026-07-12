@@ -1009,6 +1009,57 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Windows_snapshot_retries_the_retained_post_flush_write_handle()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
+        var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
+        var temporaryPath = Path.Combine(
+            options.RootDirectory,
+            AuditExportCheckpointStore.TemporaryFileName(BootId, Guid.NewGuid()));
+        WriteProtected(temporaryPath, AuditExportCheckpointCodec.Serialize(intended));
+        var flushHandleHeld = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var retryObserved = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releaseFlushHandle = new ManualResetEventSlim();
+        var replacement = Task.Run(() => SecureAuditStorage.ReplaceAtomically(
+            temporaryPath,
+            store.CheckpointPath,
+            options.RootDirectory,
+            windowsFileFlushedForTests: () =>
+            {
+                flushHandleHeld.TrySetResult();
+                if (!releaseFlushHandle.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("The checkpoint read did not release the flush handle.");
+            }));
+
+        try
+        {
+            await flushHandleHeld.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            var read = Task.Run(() => AuditExportCheckpointStore.ReadSnapshot(
+                options,
+                BootId,
+                () => retryObserved.TrySetResult()));
+            var first = await Task.WhenAny(read, retryObserved.Task)
+                .WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Same(retryObserved.Task, first);
+            Assert.False(read.IsCompleted);
+
+            releaseFlushHandle.Set();
+            await replacement.WaitAsync(TimeSpan.FromSeconds(10));
+            var observed = await read.WaitAsync(TimeSpan.FromSeconds(10));
+            AssertCheckpoint(observed, sequence: 1, chainComplete: false);
+        }
+        finally
+        {
+            releaseFlushHandle.Set();
+            await replacement.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+    }
+
+    [Fact]
     public void Restart_removes_only_canonical_protected_stale_temporary_file()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
