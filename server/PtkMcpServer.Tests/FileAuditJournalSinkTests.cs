@@ -631,6 +631,27 @@ public sealed class FileAuditJournalSinkTests : IDisposable
     }
 
     [Fact]
+    public void Startup_rejects_a_malformed_quota_control_before_creating_a_segment()
+    {
+        var options = Options(NewRoot(), segmentSlots: 2, aggregateSegments: 2);
+        _ = SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
+        var quotaPath = Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolQuotaLease.ControlFileName);
+        using (var quota = SecureAuditStorage.CreateExclusiveFile(quotaPath))
+        {
+            quota.WriteByte(0x51);
+            quota.Flush(flushToDisk: true);
+        }
+
+        Assert.Throws<IOException>(() =>
+            new FileAuditJournalSink(options, BootId, () => BaseTime));
+
+        Assert.Equal(new byte[] { 0x51 }, File.ReadAllBytes(quotaPath));
+        Assert.Empty(Directory.EnumerateFiles(options.SpoolDirectory, "*.jsonl"));
+    }
+
+    [Fact]
     public void Age_retention_does_not_delete_behind_a_newer_per_boot_prefix()
     {
         var options = Options(

@@ -54,7 +54,6 @@ internal interface IAuditCommittedSpoolSource
 /// </summary>
 internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedSpoolSource
 {
-    private const string QuotaLockFileName = ".ptk-audit-quota.lock";
     private const string AllocatingSuffix = ".allocating";
     private const string CompactingSuffix = ".compacting";
     private const int AllocationIdLength = 32;
@@ -64,7 +63,6 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
     private readonly Func<FileAuditSinkFaultPoint, int, bool>? _faultInjector;
     private readonly Func<SafeFileHandle, string, int> _macCloneFile;
     private readonly string _spoolRoot;
-    private readonly string _quotaLockPath;
     private IDisposable? _exportWriterLease;
     private FileStream _stream;
     private string _currentSegmentPath;
@@ -93,7 +91,6 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         _faultInjector = faultInjector;
         _macCloneFile = macCloneFile ?? MacNative.CloneFile;
         _spoolRoot = SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
-        _quotaLockPath = Path.Combine(_spoolRoot, QuotaLockFileName);
         IDisposable? exportWriterLease = null;
         if (options.ProtectionMode == AuditProtectionMode.Anchored)
         {
@@ -111,8 +108,7 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 
         try
         {
-            EnsureQuotaLockFile();
-            using (AcquireQuotaLock())
+            using (AuditSpoolQuotaLease.CreateControlAndAcquire(_spoolRoot))
             {
                 RecoverCrashAllocationsAndValidateSpool();
                 ValidateRetainedSegments();
@@ -332,47 +328,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         CloseAndTrim(previous, previousPath, pathFailureAlreadyReported: false);
     }
 
-    private void EnsureQuotaLockFile()
-    {
-        if (File.Exists(_quotaLockPath))
-        {
-            SecureAuditStorage.VerifyProtectedFile(_quotaLockPath);
-            return;
-        }
-
-        try
-        {
-            using var stream = SecureAuditStorage.CreateExclusiveFile(_quotaLockPath);
-            stream.WriteByte(0x50);
-            stream.Flush(flushToDisk: true);
-        }
-        catch (IOException) when (File.Exists(_quotaLockPath))
-        {
-            SecureAuditStorage.VerifyProtectedFile(_quotaLockPath);
-        }
-    }
-
-    private IDisposable AcquireQuotaLock()
-    {
-        var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(30);
-        while (true)
-        {
-            try
-            {
-                return new FileLockLease(new FileStream(
-                    _quotaLockPath,
-                    FileMode.Open,
-                    FileAccess.ReadWrite,
-                    FileShare.None,
-                    bufferSize: 1,
-                    FileOptions.WriteThrough));
-            }
-            catch (IOException) when (DateTimeOffset.UtcNow < deadline)
-            {
-                Thread.Sleep(25);
-            }
-        }
-    }
+    private AuditSpoolQuotaLease AcquireQuotaLock() =>
+        AuditSpoolQuotaLease.AcquireExisting(_spoolRoot);
 
     internal IDisposable AcquireQuotaLockForTests() => AcquireQuotaLock();
 
@@ -444,16 +401,6 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
     {
         const long block = 4096;
         return checked((length + block - 1) / block * block);
-    }
-
-    private sealed class FileLockLease(FileStream stream) : IDisposable
-    {
-        private FileStream? _stream = stream;
-
-        public void Dispose()
-        {
-            Interlocked.Exchange(ref _stream, null)?.Dispose();
-        }
     }
 
     private (FileStream Stream, string Path, AuditSpoolSegmentIdentity Identity) CreateSegment(int index)
@@ -838,7 +785,10 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
                      .ToArray())
         {
             if (entry is FileInfo lockFile &&
-                string.Equals(lockFile.Name, QuotaLockFileName, StringComparison.Ordinal))
+                string.Equals(
+                    lockFile.Name,
+                    AuditSpoolQuotaLease.ControlFileName,
+                    StringComparison.Ordinal))
             {
                 continue;
             }
@@ -867,7 +817,10 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         {
             if (entry is not FileInfo file)
                 throw new IOException("The audit spool contains an unknown entry.");
-            if (string.Equals(file.Name, QuotaLockFileName, StringComparison.Ordinal))
+            if (string.Equals(
+                    file.Name,
+                    AuditSpoolQuotaLease.ControlFileName,
+                    StringComparison.Ordinal))
                 continue;
             if (AuditSpoolSegmentIdentity.TryParse(file.Name, out _))
                 continue;
