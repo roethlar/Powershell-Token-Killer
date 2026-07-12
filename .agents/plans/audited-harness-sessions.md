@@ -12,7 +12,7 @@ and the required fixed-SHA Claude reviewloop with `guard_confirmed=true` on
 `6fb256c`, `6e604c1`, and `f3790ec` carry the immutable foreground plan through
 separate durable plan/dispatch barriers, enforce strict RTK eligibility and
 exact-original pre-start fallback, and prevent second-pass RTK shaping. The
-active Bash increment adds the audited parse-fatal/detector/syntax gate,
+`412ce60` adds the audited parse-fatal/detector/syntax gate,
 startup-frozen executable identities, bounded direct process lifecycle, and
 pre-authorized RTK log shaping. Post-success mixed-domain guidance remains.
 No push was performed or authorized.

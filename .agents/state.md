@@ -11,13 +11,15 @@ short and update it when important repo facts change.
   assertion, and `f3790ec` separates audited plan and dispatch barriers,
   enforces exact-original pre-start fallback without model retry, labels forced
   fallbacks, and prevents every RTK provenance from entering a second generic
-  `rtk log` shaping pass. Ordered RTK-to-direct fallback dispatches are audited
-  under one bounded plan and still execute once. Mutation guards cover both
-  availability windows, audit route truth, single shaping, and the absence of
-  a callback-only audit bypass; the full checkout battery passes. PowerShell's
-  path-based launch retains a final same-path replacement race, so the RTK
-  installation remains an OS-protected dependency until an execution-bound
-  identity/handle exists.
+  `rtk log` shaping pass. Commit `412ce60` adds the audited three-part Bash
+  gate, startup-frozen/bounded RTK and Bash identities, exact no-profile
+  delegation, deadline-bounded root/stream handling, typed terminal facts,
+  and pre-authorized foreground/job `rtk log` shaping. Its mutation guards,
+  full 1,001-test managed battery, 139-pass Pester battery (2 platform skips),
+  and zero-warning stdio handshake pass on macOS. OS-protected installation
+  remains required for the final check/start race, Windows ACL/macOS xattr
+  changes, dynamic dependencies, and other facts a byte/mode snapshot cannot
+  bind. Post-success mixed-domain guidance is the only Slice 3 behavior left.
 - **Audited-harness Slice 2 is complete locally.** The final
   integrated code head `3d3739a` completes job/control audit, local-only and
   anchored OTLP export, evidence administration and retention, permanent
@@ -63,8 +65,8 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Continue audited-harness Slice 3 with the post-audit bounded Bash
-   validator/delegation, then add post-success mixed-dataflow guidance.
+1. Complete audited-harness Slice 3 with post-success mixed-dataflow guidance,
+   then run cross-platform verification and the fixed-SHA Claude reviewloop.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.
