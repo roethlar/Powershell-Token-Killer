@@ -732,6 +732,64 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         }
     }
 
+    private void ApplyPermanentBlockDisposition(
+        ClosedChainReaderLease reader,
+        AuditSpoolSegmentIdentity spool,
+        long startOffset,
+        long nextOffset,
+        long sequence,
+        Guid eventId,
+        AuditOperatorDispositionIntent intent)
+    {
+        lock (_lifetimeGate)
+        {
+            EnsureClosedReaderLease(reader);
+            ArgumentNullException.ThrowIfNull(intent);
+            var blocked = _current.BlockedRecord;
+            if (blocked is null ||
+                blocked.Spool != spool ||
+                blocked.ByteOffset != startOffset ||
+                blocked.Sequence != sequence ||
+                blocked.EventId != eventId)
+            {
+                throw new ArgumentException(
+                    "The operator disposition does not identify the exact blocked record.",
+                    nameof(intent));
+            }
+            if (blocked.FailureClass is not (
+                    AuditExportFailureClass.PartialRejection or
+                    AuditExportFailureClass.Data or
+                    AuditExportFailureClass.Protocol))
+            {
+                throw new InvalidOperationException(
+                    "Only a permanent audit export block accepts operator disposition.");
+            }
+
+            intent.ConsumeForCheckpointAdvance(
+                _supervisorBootId,
+                spool,
+                startOffset,
+                nextOffset,
+                sequence,
+                eventId,
+                blocked.FailureClass);
+            SaveLocked(
+                new AuditExportCheckpoint(
+                    _supervisorBootId,
+                    chainComplete: false,
+                    spool,
+                    nextOffset,
+                    sequence,
+                    eventId,
+                    blockedRecord: null),
+                null,
+                null,
+                null,
+                null,
+                null);
+        }
+    }
+
     private void CompleteClosedChain(
         ClosedChainReaderLease reader,
         AuditExportCheckpoint expectedOpenCheckpoint)
@@ -1473,6 +1531,26 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                 responseDigest,
                 firstFailureUtc,
                 exportConfigurationIdentity);
+        }
+
+        internal void ApplyPermanentBlockDisposition(
+            AuditSpoolSegmentIdentity spool,
+            long startOffset,
+            long nextOffset,
+            long sequence,
+            Guid eventId,
+            AuditOperatorDispositionIntent intent)
+        {
+            var currentOwner = Volatile.Read(ref _owner)
+                ?? throw new ObjectDisposedException(nameof(ClosedChainReaderLease));
+            currentOwner.ApplyPermanentBlockDisposition(
+                this,
+                spool,
+                startOffset,
+                nextOffset,
+                sequence,
+                eventId,
+                intent);
         }
 
         internal void MarkChainComplete(AuditExportCheckpoint expectedOpenCheckpoint)

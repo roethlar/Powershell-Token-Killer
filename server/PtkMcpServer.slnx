@@ -1,4 +1,5 @@
 <Solution>
   <Project Path="PtkMcpServer.Tests/PtkMcpServer.Tests.csproj" />
   <Project Path="PtkMcpServer/PtkMcpServer.csproj" />
+  <Project Path="PtkAuditAdmin/PtkAuditAdmin.csproj" />
 </Solution>

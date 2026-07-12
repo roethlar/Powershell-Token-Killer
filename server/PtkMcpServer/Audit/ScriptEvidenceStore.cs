@@ -79,6 +79,7 @@ public sealed class ScriptEvidenceStore
         AwaitingAnchor,
         Anchoring,
         Anchored,
+        LocalCommitted,
         Unreferenced,
     }
 
@@ -311,6 +312,82 @@ public sealed class ScriptEvidenceStore
         }
     }
 
+    /// <summary>
+    /// Resolves one opaque evidence ID to exactly one protected artifact,
+    /// verifies its filename digest against the retained bytes, and exposes
+    /// those bytes only to the supplied in-process consumer. Callers are
+    /// responsible for durably recording access intent before invoking this
+    /// method. The temporary plaintext buffer is cleared before return.
+    /// </summary>
+    internal ScriptEvidenceReference ReadExact(
+        string evidenceId,
+        Action<ReadOnlyMemory<byte>> consume)
+    {
+        ArgumentException.ThrowIfNullOrEmpty(evidenceId);
+        ArgumentNullException.ThrowIfNull(consume);
+        if (!IsCanonicalEvidenceId(evidenceId))
+            throw new ArgumentException("The script evidence identity is invalid.", nameof(evidenceId));
+
+        byte[]? bytes = null;
+        try
+        {
+            lock (_gate)
+            using (AcquireQuotaLock())
+            using (var inventory = InventoryArtifacts())
+            {
+                var matches = inventory.Artifacts
+                    .Where(artifact => string.Equals(
+                        artifact.EvidenceId,
+                        evidenceId,
+                        StringComparison.Ordinal))
+                    .ToArray();
+                if (matches.Length != 1)
+                    throw new IOException("The requested evidence artifact state is ambiguous.");
+
+                var artifact = matches[0];
+                var stream = artifact.RequireHandle();
+                if (stream.Length < 0 || stream.Length > _maximumBytes)
+                    throw new IOException("The evidence artifact exceeds its configured bound.");
+
+                bytes = new byte[checked((int)stream.Length)];
+                stream.Position = 0;
+                stream.ReadExactly(bytes);
+                if (stream.Position != stream.Length)
+                    throw new IOException("The evidence artifact length changed while it was read.");
+
+                var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+                if (!string.Equals(digest, artifact.Digest, StringComparison.Ordinal))
+                    throw new IOException("The evidence artifact digest changed while it was read.");
+                _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+                    artifact.Path,
+                    stream.SafeFileHandle);
+
+                consume(bytes);
+
+                _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+                    artifact.Path,
+                    stream.SafeFileHandle);
+                return new ScriptEvidenceReference(
+                    artifact.EvidenceId,
+                    artifact.Digest,
+                    bytes.Length);
+            }
+        }
+        catch (ArgumentException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            throw new ScriptEvidenceStorageException();
+        }
+        finally
+        {
+            if (bytes is not null)
+                CryptographicOperations.ZeroMemory(bytes);
+        }
+    }
+
     internal IDisposable AcquireQuotaLockForTests() => AcquireQuotaLock();
 
     private long SweepAndMeasure(int? requiredPayloadBytes)
@@ -510,6 +587,11 @@ public sealed class ScriptEvidenceStore
             state = ArtifactState.Anchored;
             stem = name[..^16];
         }
+        else if (name.EndsWith(".local-committed.script", StringComparison.Ordinal))
+        {
+            state = ArtifactState.LocalCommitted;
+            stem = name[..^23];
+        }
         else if (name.EndsWith(".script", StringComparison.Ordinal))
         {
             state = ArtifactState.AwaitingAnchor;
@@ -566,7 +648,8 @@ public sealed class ScriptEvidenceStore
     }
 
     private static bool IsRetentionEligible(EvidenceArtifact artifact) =>
-        artifact.State is ArtifactState.Anchored or ArtifactState.Unreferenced;
+        artifact.State is ArtifactState.Anchored or ArtifactState.LocalCommitted or
+            ArtifactState.Unreferenced;
 
     private void DeleteArtifact(EvidenceArtifact artifact)
     {
@@ -644,6 +727,31 @@ public sealed class ScriptEvidenceStore
                 ArtifactState.Unreferenced));
     }
 
+    private void MarkLocalCommittedWhileQuotaHeld(ScriptEvidenceReference reference)
+    {
+        if (_protectionMode != AuditProtectionMode.LocalOnly)
+            return;
+        ValidateEvidenceIdentity(reference.EvidenceId, reference.ScriptDigest);
+        using var inventory = InventoryArtifacts();
+        var matches = inventory.Artifacts
+            .Where(artifact =>
+                string.Equals(artifact.EvidenceId, reference.EvidenceId, StringComparison.Ordinal) &&
+                string.Equals(artifact.Digest, reference.ScriptDigest, StringComparison.Ordinal))
+            .ToArray();
+        if (matches.Length != 1)
+            throw new IOException("The locally committed evidence state is ambiguous.");
+        var artifact = matches[0];
+        if (artifact.State == ArtifactState.LocalCommitted) return;
+        if (artifact.State != ArtifactState.AwaitingAnchor)
+            throw new IOException("Only newly published local evidence can be committed.");
+        RenameArtifact(
+            artifact,
+            EvidencePath(
+                reference.EvidenceId,
+                reference.ScriptDigest,
+                ArtifactState.LocalCommitted));
+    }
+
     private void FinalizeAnchoredWhileQuotaHeld(
         AuditEvidenceAcknowledgmentPosition acknowledgment,
         bool alreadyAnchored)
@@ -690,6 +798,7 @@ public sealed class ScriptEvidenceStore
             ArtifactState.Anchoring => throw new IOException(
                 "Anchoring evidence requires an exact checkpoint position."),
             ArtifactState.Anchored => ".anchored.script",
+            ArtifactState.LocalCommitted => ".local-committed.script",
             ArtifactState.Unreferenced => ".unreferenced.script",
             _ => throw new IOException("The evidence artifact state is invalid."),
         };
@@ -790,7 +899,13 @@ public sealed class ScriptEvidenceStore
 
         public void CompleteAfterAuditAppend()
         {
-            lock (_gate) ReleaseLocked();
+            lock (_gate)
+            {
+                if (_quota is null)
+                    throw new ObjectDisposedException(nameof(EvidencePublication));
+                owner.MarkLocalCommittedWhileQuotaHeld(Reference);
+                ReleaseLocked();
+            }
         }
 
         public void AbandonBeforeAuditAppend()

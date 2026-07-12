@@ -497,6 +497,31 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     }
 
     /// <summary>
+    /// Advances one exact permanently blocked record only under an immutable,
+    /// durably persisted out-of-band operator intent. Ordinary transport
+    /// acknowledgment cannot clear a block and never reaches this path.
+    /// </summary>
+    internal void ApplyPermanentBlockDisposition(
+        IAuditClosedSpoolRecordPosition position,
+        AuditOperatorDispositionIntent intent)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        ArgumentNullException.ThrowIfNull(intent);
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var owned = RequireRecordPositionLocked(position, nameof(position));
+            _checkpointLease.ApplyPermanentBlockDisposition(
+                owned.Spool,
+                owned.StartOffset,
+                owned.NextOffset,
+                owned.Sequence,
+                owned.EventId,
+                intent);
+        }
+    }
+
+    /// <summary>
     /// Durably consumes the one retry granted by a changed configuration and
     /// returns the only capability that may settle that exact attempt.
     /// </summary>

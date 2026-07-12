@@ -37,7 +37,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             reference.ScriptDigest);
         Assert.Matches("^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$", reference.EvidenceId);
         Assert.Equal(
-            reference.EvidenceId + "." + reference.ScriptDigest + ".script",
+            reference.EvidenceId + "." + reference.ScriptDigest + ".local-committed.script",
             Path.GetFileName(published));
         Assert.DoesNotContain(script, reference.ToString(), StringComparison.Ordinal);
         Assert.Empty(Directory.GetFiles(root, "*.tmp"));
@@ -201,7 +201,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
     }
 
     [Fact]
-    public void Local_only_store_refuses_capacity_without_deleting_referenced_evidence()
+    public void Local_only_committed_evidence_enters_quota_retention()
     {
         var options = EvidenceOptions(
             Path.Combine(_parent, "quota-audit"),
@@ -213,12 +213,11 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             EvidencePath(options.EvidenceDirectory, first),
             DateTime.UtcNow.AddSeconds(-5));
         var second = store.Store(new string('b', 256));
-        var error = Assert.Throws<ScriptEvidenceStorageException>(() =>
-            store.Store(new string('c', 256)));
+        var third = store.Store(new string('c', 256));
 
-        Assert.Equal("Protected script evidence storage failed.", error.Message);
-        Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, first)));
+        Assert.False(File.Exists(EvidencePath(options.EvidenceDirectory, first)));
         Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, second)));
+        Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, third)));
         Assert.Equal(2, Directory.GetFiles(options.EvidenceDirectory, "*.script").Length);
         Assert.Equal(512, Directory.GetFiles(options.EvidenceDirectory, "*.script").Sum(path => new FileInfo(path).Length));
     }
@@ -273,7 +272,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
     }
 
     [Fact]
-    public void Local_only_store_does_not_age_out_evidence_without_journal_aware_gc()
+    public void Local_only_committed_evidence_enters_age_retention()
     {
         var options = EvidenceOptions(
             Path.Combine(_parent, "retention-audit"),
@@ -286,7 +285,7 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
 
         var current = store.Store("new");
 
-        Assert.True(File.Exists(expiredPath));
+        Assert.False(File.Exists(expiredPath));
         Assert.True(File.Exists(EvidencePath(options.EvidenceDirectory, current)));
     }
 
@@ -474,8 +473,17 @@ public sealed class ScriptEvidenceStoreTests : IDisposable
             evidenceRetentionAge: TimeSpan.FromMinutes(1));
     }
 
-    private static string EvidencePath(string root, ScriptEvidenceReference reference) =>
-        Path.Combine(root, reference.EvidenceId + "." + reference.ScriptDigest + ".script");
+    private static string EvidencePath(string root, ScriptEvidenceReference reference)
+    {
+        var awaiting = Path.Combine(
+            root,
+            reference.EvidenceId + "." + reference.ScriptDigest + ".script");
+        if (File.Exists(awaiting)) return awaiting;
+        var localCommitted = Path.Combine(
+            root,
+            reference.EvidenceId + "." + reference.ScriptDigest + ".local-committed.script");
+        return File.Exists(localCommitted) ? localCommitted : awaiting;
+    }
 
     private static AuditEvidenceAcknowledgmentPosition Acknowledgment(
         ScriptEvidenceReference reference,
