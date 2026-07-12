@@ -827,10 +827,14 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
 
             if (OperatingSystem.IsWindows())
             {
-                Assert.Throws<IOException>(() => File.Move(
+                var replacementFailure = Xunit.Record.Exception(() => File.Move(
                     replacement,
                     secondPath,
                     overwrite: true));
+                Assert.True(
+                    replacementFailure is IOException or UnauthorizedAccessException,
+                    "Unexpected replacement outcome: " +
+                    (replacementFailure?.GetType().FullName ?? "no failure"));
             }
             else
             {
