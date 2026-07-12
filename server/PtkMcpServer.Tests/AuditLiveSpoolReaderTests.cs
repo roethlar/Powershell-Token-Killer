@@ -289,6 +289,63 @@ public sealed class AuditLiveSpoolReaderTests
         Assert.Same(rotation, reader.Poll().Rotation);
     }
 
+    [Fact]
+    public async Task Closed_prefix_pump_returns_a_proof_without_completing_the_chain()
+    {
+        using var fixture = new LiveFixture();
+        using var live = new AuditLiveSpoolReader(fixture.Journal, fixture.Store);
+        _ = fixture.Append("call.accepted");
+        _ = fixture.Append("call.completed");
+        Assert.True(fixture.Sink.CanReserve(16_000));
+        var rotation = Assert.IsAssignableFrom<IAuditLiveSpoolRotationPosition>(
+            live.Poll().Rotation);
+        using var closed = new AuditClosedSpoolChainReader(
+            fixture.Options,
+            fixture.Store);
+        var transport = new AcknowledgingTransport();
+        using var pump = AuditClosedSpoolExportPump.ForClosedPrefix(
+            closed,
+            rotation,
+            transport);
+
+        Assert.Equal(
+            AuditClosedSpoolExportStepKind.Advanced,
+            (await pump.ExportNextAsync(CancellationToken.None)).Kind);
+        var complete = await pump.ExportNextAsync(CancellationToken.None);
+
+        Assert.Equal(AuditClosedSpoolExportStepKind.PrefixComplete, complete.Kind);
+        Assert.NotNull(complete.PrefixEnd);
+        Assert.Equal(2, transport.Calls);
+        Assert.False(fixture.Store.Current.ChainComplete);
+        live.AdvanceAfterClosedPrefix(rotation, complete.PrefixEnd!);
+        Assert.Equal(AuditLiveSpoolPollKind.AtCommittedTail, live.Poll().Kind);
+    }
+
+    [Fact]
+    public async Task Writer_closed_pump_completes_only_the_observed_final_chain()
+    {
+        using var fixture = new LiveFixture();
+        using var live = new AuditLiveSpoolReader(fixture.Journal, fixture.Store);
+        _ = fixture.Append("call.accepted");
+        fixture.Journal.Dispose();
+        var closure = Assert.IsAssignableFrom<IAuditLiveSpoolWriterClosedPosition>(
+            live.Poll().WriterClosed);
+        using var closed = new AuditClosedSpoolChainReader(
+            fixture.Options,
+            fixture.Store);
+        var transport = new AcknowledgingTransport();
+        using var pump = AuditClosedSpoolExportPump.AfterWriterClosed(
+            closed,
+            closure,
+            transport);
+
+        var complete = await pump.ExportNextAsync(CancellationToken.None);
+
+        Assert.Equal(AuditClosedSpoolExportStepKind.ChainComplete, complete.Kind);
+        Assert.Equal(1, transport.Calls);
+        Assert.True(fixture.Store.Current.ChainComplete);
+    }
+
     private sealed class LiveFixture : IDisposable
     {
         private readonly string _root;
@@ -385,4 +442,23 @@ public sealed class AuditLiveSpoolReaderTests
 
     private sealed class ForgedWriterClosedPosition :
         IAuditLiveSpoolWriterClosedPosition;
+
+    private sealed class AcknowledgingTransport : IAuditOtlpExportTransport
+    {
+        internal int Calls { get; private set; }
+
+        public string ConfigurationIdentity =>
+            AuditLiveSpoolReaderTests.ConfigurationIdentity;
+
+        public Task<AuditExportAttemptResult> ExportAsync(
+            AuditOtlpRecord record,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Calls++;
+            return Task.FromResult(AuditExportAttemptResult.Acknowledged(
+                new string('b', 64),
+                warning: false));
+        }
+    }
 }

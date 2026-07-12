@@ -3,6 +3,7 @@ namespace PtkMcpServer.Audit;
 internal enum AuditClosedSpoolExportStepKind
 {
     Advanced,
+    PrefixComplete,
     ChainComplete,
     Retry,
     Blocked,
@@ -14,7 +15,15 @@ internal sealed record AuditClosedSpoolExportStep(
     string DetailCode,
     AuditExportFailureClass? FailureClass = null,
     TimeSpan? RetryAfter = null,
-    bool HasHealthWarning = false);
+    bool HasHealthWarning = false,
+    IAuditClosedSpoolPrefixEndPosition? PrefixEnd = null);
+
+internal enum AuditClosedSpoolExportMode
+{
+    CompleteChain,
+    ClosedPrefix,
+    WriterClosedChain,
+}
 
 /// <summary>
 /// Couples one validated, retained closed spool snapshot to one OTLP transport.
@@ -28,8 +37,12 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
     private readonly IAuditOtlpExportTransport _transport;
     private readonly string _configurationIdentity;
     private readonly TimeProvider _timeProvider;
+    private readonly AuditClosedSpoolExportMode _mode;
+    private readonly IAuditLiveSpoolRotationPosition? _rotation;
+    private readonly IAuditLiveSpoolWriterClosedPosition? _writerClosed;
     private IAuditClosedSpoolRecordPosition? _next;
     private AuditExportBlockedRecord? _blocked;
+    private IAuditClosedSpoolPrefixEndPosition? _prefixEnd;
     private bool _initialized;
     private bool _complete;
     private bool _faulted;
@@ -39,6 +52,23 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
         AuditClosedSpoolChainReader reader,
         IAuditOtlpExportTransport transport,
         TimeProvider? timeProvider = null)
+        : this(
+            reader,
+            transport,
+            AuditClosedSpoolExportMode.CompleteChain,
+            rotation: null,
+            writerClosed: null,
+            timeProvider)
+    {
+    }
+
+    private AuditClosedSpoolExportPump(
+        AuditClosedSpoolChainReader reader,
+        IAuditOtlpExportTransport transport,
+        AuditClosedSpoolExportMode mode,
+        IAuditLiveSpoolRotationPosition? rotation,
+        IAuditLiveSpoolWriterClosedPosition? writerClosed,
+        TimeProvider? timeProvider)
     {
         ArgumentNullException.ThrowIfNull(reader);
         ArgumentNullException.ThrowIfNull(transport);
@@ -58,6 +88,41 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
         _transport = transport;
         _configurationIdentity = configurationIdentity;
         _timeProvider = timeProvider ?? TimeProvider.System;
+        _mode = mode;
+        _rotation = rotation;
+        _writerClosed = writerClosed;
+    }
+
+    internal static AuditClosedSpoolExportPump ForClosedPrefix(
+        AuditClosedSpoolChainReader reader,
+        IAuditLiveSpoolRotationPosition rotation,
+        IAuditOtlpExportTransport transport,
+        TimeProvider? timeProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(rotation);
+        return new AuditClosedSpoolExportPump(
+            reader,
+            transport,
+            AuditClosedSpoolExportMode.ClosedPrefix,
+            rotation,
+            writerClosed: null,
+            timeProvider);
+    }
+
+    internal static AuditClosedSpoolExportPump AfterWriterClosed(
+        AuditClosedSpoolChainReader reader,
+        IAuditLiveSpoolWriterClosedPosition writerClosed,
+        IAuditOtlpExportTransport transport,
+        TimeProvider? timeProvider = null)
+    {
+        ArgumentNullException.ThrowIfNull(writerClosed);
+        return new AuditClosedSpoolExportPump(
+            reader,
+            transport,
+            AuditClosedSpoolExportMode.WriterClosedChain,
+            rotation: null,
+            writerClosed,
+            timeProvider);
     }
 
     internal async Task<AuditClosedSpoolExportStep> ExportNextAsync(
@@ -81,24 +146,48 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
                     "The closed audit spool export pump is faulted and requires checkpoint recovery.");
             }
             if (_complete)
-                return ChainComplete(null, "chain.complete");
+            {
+                return _mode == AuditClosedSpoolExportMode.ClosedPrefix
+                    ? PrefixComplete(
+                        _prefixEnd ?? throw new IOException(
+                            "The closed-prefix exporter lost its terminal proof."),
+                        eventId: null,
+                        "prefix.complete")
+                    : ChainComplete(null, "chain.complete");
+            }
             if (!_initialized)
             {
                 try
                 {
-                    var initial = _reader.ResolveCheckpoint();
+                    var initial = ResolveCurrent();
+                    if (initial is AuditClosedSpoolRecovery.PrefixEnd initialPrefix)
+                    {
+                        if (_mode != AuditClosedSpoolExportMode.ClosedPrefix)
+                        {
+                            throw new IOException(
+                                "A complete-chain exporter received a closed-prefix boundary.");
+                        }
+                        _prefixEnd = initialPrefix.Position;
+                        _complete = true;
+                        return PrefixComplete(
+                            initialPrefix.Position,
+                            eventId: null,
+                            "prefix.complete");
+                    }
                     if (initial is AuditClosedSpoolRecovery.ChainEnd initialEnd)
                     {
+                        if (_mode == AuditClosedSpoolExportMode.ClosedPrefix)
+                        {
+                            throw new IOException(
+                                "A closed-prefix exporter received a complete-chain end.");
+                        }
                         _reader.MarkChainComplete(initialEnd.Position);
                         _complete = true;
                         return ChainComplete(null, "chain.complete");
                     }
 
                     if (initial is not AuditClosedSpoolRecovery.Record initialRecord)
-                    {
-                        throw new IOException(
-                            "The complete-chain exporter received a closed-prefix boundary.");
-                    }
+                        throw new IOException("The closed audit spool recovery is invalid.");
                     _next = initialRecord.Position;
                     _blocked = initialRecord.BlockedRecord;
                     _initialized = true;
@@ -254,8 +343,24 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
                 HasHealthWarning: hasHealthWarning);
         }
 
-        var completion = _reader.ResolveCheckpoint();
-        if (completion is not AuditClosedSpoolRecovery.ChainEnd end)
+        var completion = ResolveCurrent();
+        if (completion is AuditClosedSpoolRecovery.PrefixEnd prefixEnd)
+        {
+            if (_mode != AuditClosedSpoolExportMode.ClosedPrefix)
+            {
+                throw new IOException(
+                    "The acknowledged complete audit spool resolved as a prefix.");
+            }
+            _prefixEnd = prefixEnd.Position;
+            _complete = true;
+            return PrefixComplete(
+                prefixEnd.Position,
+                position.EventId,
+                detailCode,
+                hasHealthWarning);
+        }
+        if (completion is not AuditClosedSpoolRecovery.ChainEnd end ||
+            _mode == AuditClosedSpoolExportMode.ClosedPrefix)
         {
             throw new IOException(
                 "The acknowledged closed audit spool did not resolve to its exact end.");
@@ -264,6 +369,18 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
         _complete = true;
         return ChainComplete(position.EventId, detailCode, hasHealthWarning);
     }
+
+    private AuditClosedSpoolRecovery ResolveCurrent() => _mode switch
+    {
+        AuditClosedSpoolExportMode.CompleteChain => _reader.ResolveCheckpoint(),
+        AuditClosedSpoolExportMode.ClosedPrefix => _reader.ResolveClosedPrefix(
+            _rotation ?? throw new IOException(
+                "The closed-prefix exporter lost its rotation capability.")),
+        AuditClosedSpoolExportMode.WriterClosedChain => _reader.ResolveAfterWriterClosed(
+            _writerClosed ?? throw new IOException(
+                "The writer-closed exporter lost its closure capability.")),
+        _ => throw new IOException("The closed audit spool exporter mode is invalid."),
+    };
 
     private AuditClosedSpoolExportStep PersistBlock(
         IAuditClosedSpoolRecordPosition position,
@@ -357,6 +474,18 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
             eventId,
             detailCode,
             HasHealthWarning: hasHealthWarning);
+
+    private static AuditClosedSpoolExportStep PrefixComplete(
+        IAuditClosedSpoolPrefixEndPosition prefixEnd,
+        Guid? eventId,
+        string detailCode,
+        bool hasHealthWarning = false) =>
+        new(
+            AuditClosedSpoolExportStepKind.PrefixComplete,
+            eventId,
+            detailCode,
+            HasHealthWarning: hasHealthWarning,
+            PrefixEnd: prefixEnd);
 
     private static void RequireConfigurationIdentity(string value)
     {
