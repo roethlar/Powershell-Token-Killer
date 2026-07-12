@@ -417,32 +417,100 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
     private long PhysicalCommittedBytes(IEnumerable<FileInfo> segments)
     {
         long committed = 0;
-        foreach (var segment in segments)
+        foreach (var segment in ClassifyRetainedSegments(segments))
         {
-            committed = checked(committed + (IsLockedLiveSegment(segment)
+            // Only the live newest handle can still own the full keep-EOF
+            // preallocation. Export-reader handles retain already-closed
+            // prefix bytes and are charged at their aligned logical length.
+            committed = checked(committed + (segment.Access == RetainedSegmentAccess.LiveNewest
                 ? SegmentCapacityBytes
-                : AlignAllocation(segment.Length)));
+                : AlignAllocation(segment.Named.Segment.Length)));
         }
         return committed;
     }
 
-    private static bool IsLockedLiveSegment(FileInfo segment)
+    // Every caller holds the global spool quota. Compliant writers and export
+    // readers therefore cannot acquire a new segment handle while this
+    // topology is classified; a handle may only be released underneath us.
+    private ClassifiedSegment[] ClassifyRetainedSegments(IEnumerable<FileInfo> segments)
     {
-        try
+        var classified = new List<ClassifiedSegment>();
+        foreach (var group in segments
+                     .Select(ParseNamedSegment)
+                     .GroupBy(item => item.BootId))
         {
-            using var stream = new FileStream(
-                segment.FullName,
-                FileMode.Open,
-                FileAccess.ReadWrite,
-                FileShare.None,
-                bufferSize: 1,
-                FileOptions.None);
-            return false;
+            var ordered = group.OrderBy(item => item.Index).ToArray();
+            var sawClosed = false;
+            var checkpointOwnerConfirmed = false;
+            int? priorIndex = null;
+            for (var index = 0; index < ordered.Length; index++)
+            {
+                var item = ordered[index];
+                if (priorIndex is int previousIndex && item.Index != previousIndex + 1)
+                    throw new IOException("A retained audit segment sequence has an internal gap.");
+                if (priorIndex is null &&
+                    _options.ProtectionMode == AuditProtectionMode.Anchored &&
+                    item.Index != 0)
+                {
+                    throw new IOException("An anchored audit segment prefix is missing.");
+                }
+                priorIndex = item.Index;
+
+                if (!IsLockedSegment(item.Segment))
+                {
+                    sawClosed = true;
+                    classified.Add(new ClassifiedSegment(item, RetainedSegmentAccess.Closed));
+                    continue;
+                }
+
+                if (index == ordered.Length - 1)
+                {
+                    classified.Add(new ClassifiedSegment(item, RetainedSegmentAccess.LiveNewest));
+                    continue;
+                }
+
+                if (sawClosed)
+                    throw new IOException("A nonterminal audit segment is unexpectedly locked.");
+                if (!checkpointOwnerConfirmed)
+                {
+                    RequireCheckpointOwnedPrefix(item.BootId);
+                    checkpointOwnerConfirmed = true;
+                }
+                classified.Add(new ClassifiedSegment(
+                    item,
+                    RetainedSegmentAccess.ExporterRetainedPrefix));
+            }
         }
-        catch (IOException)
-        {
+
+        return classified.ToArray();
+    }
+
+    private static bool IsLockedSegment(FileInfo segment)
+    {
+        if (!TryOpenClosedSegment(segment, out var stream) || stream is null)
             return true;
+        stream.Dispose();
+        return false;
+    }
+
+    private void RequireCheckpointOwnedPrefix(Guid supervisorBootId)
+    {
+        if (_options.ProtectionMode != AuditProtectionMode.Anchored)
+        {
+            throw new IOException("A nonterminal audit segment is unexpectedly locked.");
         }
+
+        if (!AuditExportCheckpointStore.TryAcquireExisting(
+                _options,
+                supervisorBootId,
+                out var availableOwner))
+        {
+            return;
+        }
+
+        availableOwner?.Dispose();
+        throw new IOException(
+            "A nonterminal locked audit prefix has no active checkpoint owner.");
     }
 
     private static long AlignAllocation(long length)
@@ -954,41 +1022,54 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 
     private readonly record struct NamedSegment(FileInfo Segment, Guid BootId, int Index);
 
+    private enum RetainedSegmentAccess
+    {
+        Closed,
+        ExporterRetainedPrefix,
+        LiveNewest,
+    }
+
+    private readonly record struct ClassifiedSegment(
+        NamedSegment Named,
+        RetainedSegmentAccess Access);
+
     private void ValidateRetainedSegments()
     {
-        var named = EnumerateSegments()
-            .Select(ParseNamedSegment)
-            .GroupBy(item => item.BootId);
+        var named = ClassifyRetainedSegments(EnumerateSegments())
+            .GroupBy(item => item.Named.BootId);
 
         foreach (var group in named)
         {
-            var ordered = group.OrderBy(item => item.Index).ToArray();
+            var ordered = group.OrderBy(item => item.Named.Index).ToArray();
             long? priorSequence = null;
             string? priorHash = null;
-            int? priorIndex = null;
-            foreach (var item in ordered)
+            var hasOpaquePrefix = false;
+            foreach (var classified in ordered)
             {
-                if (priorIndex is int previousIndex && item.Index != previousIndex + 1)
-                    throw new IOException("A retained audit segment sequence has an internal gap.");
-                if (priorIndex is null && _options.ProtectionMode == AuditProtectionMode.Anchored && item.Index != 0)
-                    throw new IOException("An anchored audit segment prefix is missing.");
-                priorIndex = item.Index;
+                var item = classified.Named;
+                if (classified.Access == RetainedSegmentAccess.ExporterRetainedPrefix)
+                {
+                    // The export reader retains these exact closed handles
+                    // FileShare.None. Ownership and topology authorize only
+                    // leaving the bytes untouched; this writer does not parse,
+                    // trim, or infer deletion from the inaccessible prefix.
+                    hasOpaquePrefix = true;
+                    continue;
+                }
+                if (classified.Access == RetainedSegmentAccess.LiveNewest)
+                    break;
 
                 if (!TryOpenClosedSegment(item.Segment, out var stream) || stream is null)
                 {
-                    // A live segment must be the writer's newest segment for
-                    // that boot. Older locked data beside a newer segment is
-                    // not a valid rotation state.
-                    if (item.Index != ordered[^1].Index)
-                        throw new IOException("A nonterminal audit segment is unexpectedly locked.");
-                    break;
+                    throw new IOException(
+                        "A retained audit segment lock changed during validation.");
                 }
 
                 using (stream)
                 {
                     if (stream.Length == 0)
                     {
-                        if (item.Index != ordered[^1].Index)
+                        if (item.Index != ordered[^1].Named.Index)
                             throw new IOException("An intermediate audit segment is empty.");
                         continue;
                     }
@@ -1032,7 +1113,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
                                 throw new IOException("A retained audit hash chain is discontinuous.");
                             }
                         }
-                        else if (_options.ProtectionMode == AuditProtectionMode.Anchored &&
+                        else if (!hasOpaquePrefix &&
+                                 _options.ProtectionMode == AuditProtectionMode.Anchored &&
                                  (record.Sequence != 1 || record.PreviousEventHash is not null))
                         {
                             throw new IOException("An anchored audit hash chain does not begin at sequence one.");
@@ -1062,11 +1144,23 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
                 FileOptions.SequentialScan);
             return true;
         }
-        catch (IOException)
+        catch (IOException exception) when (IsSharingViolation(exception))
         {
             stream = null;
             return false;
         }
+    }
+
+    private static bool IsSharingViolation(IOException exception)
+    {
+        var nativeCode = exception.HResult & 0xffff;
+        if (OperatingSystem.IsWindows())
+            return nativeCode is 32 or 33;
+        if (OperatingSystem.IsLinux())
+            return exception.HResult == 11 || nativeCode == 11;
+        if (OperatingSystem.IsMacOS())
+            return exception.HResult == 35 || nativeCode == 35;
+        return false;
     }
 
     private void ValidateCurrentSegmentPath(bool requireLengthMatch = true)
