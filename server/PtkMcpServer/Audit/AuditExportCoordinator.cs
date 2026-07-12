@@ -389,7 +389,7 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
     }
 
     private bool TryRetireCompletedBoot(Guid supervisorBootId) =>
-        AuditCompletedChainRetirement.TryRetire(
+        AuditCompletedChainRetirement.TryRetireObservedCompleted(
             _options,
             supervisorBootId,
             _timeProvider.GetUtcNow().ToUniversalTime(),

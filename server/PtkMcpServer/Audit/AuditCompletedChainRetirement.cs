@@ -44,6 +44,38 @@ internal static class AuditCompletedChainRetirement
         long requiredHeadroomBytes,
         Action<AuditCompletedChainRetirementFaultPoint, int>? faultInjector = null)
     {
+        return TryRetireCore(
+            options,
+            supervisorBootId,
+            utcNow,
+            requiredHeadroomBytes,
+            acceptFullyAbsentObservedBoot: false,
+            faultInjector);
+    }
+
+    internal static bool TryRetireObservedCompleted(
+        AuditOptions options,
+        Guid supervisorBootId,
+        DateTimeOffset utcNow,
+        long requiredHeadroomBytes)
+    {
+        return TryRetireCore(
+            options,
+            supervisorBootId,
+            utcNow,
+            requiredHeadroomBytes,
+            acceptFullyAbsentObservedBoot: true,
+            faultInjector: null);
+    }
+
+    private static bool TryRetireCore(
+        AuditOptions options,
+        Guid supervisorBootId,
+        DateTimeOffset utcNow,
+        long requiredHeadroomBytes,
+        bool acceptFullyAbsentObservedBoot,
+        Action<AuditCompletedChainRetirementFaultPoint, int>? faultInjector)
+    {
         ValidateArguments(options, supervisorBootId, utcNow, requiredHeadroomBytes);
         if (!AuditSpoolQuotaLease.TryAcquireExisting(options.SpoolDirectory, out var quota))
             return false;
@@ -53,6 +85,11 @@ internal static class AuditCompletedChainRetirement
             var recovered = RecoverUnderQuota(options, quota, faultInjector);
             if (recovered.Contains(supervisorBootId))
                 return true;
+            if (acceptFullyAbsentObservedBoot &&
+                IsFullyAbsent(options, supervisorBootId))
+            {
+                return true;
+            }
 
             if (!AuditExportCheckpointStore.TryAcquireExisting(
                     options,
@@ -124,6 +161,22 @@ internal static class AuditCompletedChainRetirement
                     store.Dispose();
             }
         }
+    }
+
+    private static bool IsFullyAbsent(
+        AuditOptions options,
+        Guid supervisorBootId)
+    {
+        var checkpointPath = Path.Combine(
+            options.RootDirectory,
+            AuditExportCheckpointStore.CheckpointFileName(supervisorBootId));
+        var lockPath = Path.Combine(
+            options.RootDirectory,
+            AuditExportCheckpointStore.LockFileName(supervisorBootId));
+        if (EntryExists(checkpointPath) || EntryExists(lockPath))
+            return false;
+        return !InventorySpool(options).Any(segment =>
+            segment.Identity.SupervisorBootId == supervisorBootId);
     }
 
     /// <summary>

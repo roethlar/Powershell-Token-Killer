@@ -226,6 +226,50 @@ public sealed class AuditExportCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Two_coordinators_treat_a_winner_retired_completed_boot_as_idempotent_success()
+    {
+        var options = Options(NewRoot());
+        _ = WriteClosedBoot(options, OrphanBoot);
+        var orphanPath = Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolSegmentIdentity.Create(OrphanBoot, 0).FileName);
+        var transport = new CapturingTransport();
+        using var firstCurrent = new CurrentFixture(
+            options,
+            transport,
+            CurrentBoot);
+        using var secondCurrent = new CurrentFixture(
+            options,
+            transport,
+            SecondCurrentBoot);
+        using var first = new AuditExportCoordinator(
+            options,
+            firstCurrent.Source,
+            transport);
+        using var second = new AuditExportCoordinator(
+            options,
+            secondCurrent.Source,
+            transport);
+
+        _ = await first.ExportNextAsync(CancellationToken.None);
+        _ = await second.ExportNextAsync(CancellationToken.None);
+        Assert.True(File.Exists(orphanPath));
+        File.SetLastWriteTimeUtc(orphanPath, DateTime.UtcNow - TimeSpan.FromHours(1));
+
+        _ = await first.ExportNextAsync(CancellationToken.None);
+        var loser = await second.ExportNextAsync(CancellationToken.None);
+
+        Assert.False(File.Exists(orphanPath));
+        Assert.Equal(AuditExportCoordinatorStepKind.Idle, loser.Kind);
+        Assert.False(File.Exists(Path.Combine(
+            options.RootDirectory,
+            AuditExportCheckpointStore.CheckpointFileName(OrphanBoot))));
+        Assert.False(File.Exists(Path.Combine(
+            options.RootDirectory,
+            AuditExportCheckpointStore.LockFileName(OrphanBoot))));
+    }
+
+    [Fact]
     public async Task Permanently_blocked_orphan_is_parked_while_another_boot_exports()
     {
         var options = Options(NewRoot());
