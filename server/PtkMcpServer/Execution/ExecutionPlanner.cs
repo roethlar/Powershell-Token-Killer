@@ -89,33 +89,36 @@ internal static class ExecutionPlanner
                     : null);
         }
 
-        if (requestedRoute != RequestedExecutionRoute.Rtk)
+        var resolved = commands.Resolve(name, CommandTypes.All);
+        if (resolved?.CommandType != CommandTypes.Application)
         {
-            var resolved = commands.Resolve(name, CommandTypes.All);
-            if (resolved?.CommandType != CommandTypes.Application)
-                return Direct(
-                    script,
-                    raw,
-                    compressAvailable,
-                    resolutionContext,
-                    requestedRoute,
-                    domain,
-                    fallbacks,
-                    fallbackReason: null);
-            var extension = Path.GetExtension(resolved.Source ?? string.Empty);
-            if (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase) ||
-                extension.Equals(".bat", StringComparison.OrdinalIgnoreCase))
-            {
-                return Direct(
-                    script,
-                    raw,
-                    compressAvailable,
-                    resolutionContext,
-                    requestedRoute,
-                    domain,
-                    fallbacks,
-                    fallbackReason: null);
-            }
+            return Direct(
+                script,
+                raw,
+                compressAvailable,
+                resolutionContext,
+                requestedRoute,
+                domain,
+                fallbacks,
+                requestedRoute == RequestedExecutionRoute.Rtk
+                    ? ExecutionFallbackReason.RtkResolutionNotApplication
+                    : null);
+        }
+        var extension = Path.GetExtension(resolved.Source ?? string.Empty);
+        if (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase) ||
+            extension.Equals(".bat", StringComparison.OrdinalIgnoreCase))
+        {
+            return Direct(
+                script,
+                raw,
+                compressAvailable,
+                resolutionContext,
+                requestedRoute,
+                domain,
+                fallbacks,
+                requestedRoute == RequestedExecutionRoute.Rtk
+                    ? ExecutionFallbackReason.RtkFidelityExclusion
+                    : null);
         }
 
         var escapedRtk = effectiveRtkPath.Replace("'", "''");

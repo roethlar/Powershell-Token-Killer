@@ -42,6 +42,8 @@ internal enum ExecutionFallbackReason
     RtkExecutableUnavailable,
     RtkIneligibleShape,
     RtkSelfInvocation,
+    RtkResolutionNotApplication,
+    RtkFidelityExclusion,
 }
 
 internal enum OutputProvenance
@@ -221,6 +223,8 @@ internal static class ExecutionPlanMachineCodes
         ExecutionFallbackReason.RtkExecutableUnavailable => "rtk_executable_unavailable",
         ExecutionFallbackReason.RtkIneligibleShape => "rtk_ineligible_shape",
         ExecutionFallbackReason.RtkSelfInvocation => "rtk_self_invocation",
+        ExecutionFallbackReason.RtkResolutionNotApplication => "rtk_resolution_not_application",
+        ExecutionFallbackReason.RtkFidelityExclusion => "rtk_fidelity_exclusion",
         _ => throw new ArgumentOutOfRangeException(nameof(value), value, null),
     };
 }

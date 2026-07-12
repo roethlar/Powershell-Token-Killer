@@ -90,7 +90,7 @@ public sealed class ExecutionPlannerTests
     }
 
     [Fact]
-    public void Honors_absent_rtk_pwsh_and_current_forced_rtk_contracts()
+    public void Honors_absent_rtk_pwsh_and_strict_forced_rtk_contracts()
     {
         var commands = new TrustedCommandSnapshot();
         commands.Set("Get-ChildItem", CommandTypes.All, new ResolvedCommand(CommandTypes.Cmdlet));
@@ -108,13 +108,19 @@ public sealed class ExecutionPlannerTests
         Assert.Null(pwsh.Domain);
 
         var forced = Plan("Get-ChildItem", "RTK", RtkPath, commands);
-        Assert.Equal(
-            $"& '{RtkPath.Replace("'", "''")}' Get-ChildItem",
-            forced.ExecutionScript);
+        AssertDirect(forced, "Get-ChildItem", RequestedExecutionRoute.Rtk);
         Assert.Equal(ExecutionDomain.PowerShell, forced.Domain);
-        Assert.Equal(ExecutionPath.Rtk, forced.ExecutionPath);
-        Assert.Equal(RequestedExecutionRoute.Rtk, forced.RequestedRoute);
-        Assert.Equal(RtkPath, forced.RtkExecutableIdentity?.ExecutablePath);
+        Assert.Equal(
+            ExecutionFallbackReason.RtkResolutionNotApplication,
+            forced.FallbackReason);
+
+        var batchCommands = Application("git", "/tmp/git.cmd");
+        var forcedBatch = Plan("git status", "rtk", RtkPath, batchCommands);
+        AssertDirect(forcedBatch, "git status", RequestedExecutionRoute.Rtk);
+        Assert.Equal(ExecutionDomain.NativeTerminal, forcedBatch.Domain);
+        Assert.Equal(
+            ExecutionFallbackReason.RtkFidelityExclusion,
+            forcedBatch.FallbackReason);
 
         var forcedFallback = Plan("git status | Out-Null", "rtk", RtkPath, commands);
         AssertDirect(
@@ -178,7 +184,13 @@ public sealed class ExecutionPlannerTests
             ["powershell_objects", "direct_text", "rtk_unknown", "rtk_filtered", "rtk_passthrough"],
             Enum.GetValues<OutputProvenance>().Select(value => value.ToMachineCode()));
         Assert.Equal(
-            ["rtk_executable_unavailable", "rtk_ineligible_shape", "rtk_self_invocation"],
+            [
+                "rtk_executable_unavailable",
+                "rtk_ineligible_shape",
+                "rtk_self_invocation",
+                "rtk_resolution_not_application",
+                "rtk_fidelity_exclusion",
+            ],
             Enum.GetValues<ExecutionFallbackReason>().Select(value => value.ToMachineCode()));
     }
 

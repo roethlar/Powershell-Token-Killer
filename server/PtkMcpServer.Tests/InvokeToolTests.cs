@@ -280,6 +280,54 @@ public sealed class InvokeToolTests : IDisposable
     }
 
     [Fact]
+    public async Task Forced_rtk_function_executes_the_original_once_without_running_rtk()
+    {
+        var (dir, stub) = CreateRtkStub("echo must-not-run\nexit /b 0");
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            var defined = await _host.InvokeAsync(
+                "function global:ptkForcedFunction { " +
+                "$global:ptkForcedCount = 1 + [int]$global:ptkForcedCount; " +
+                "\"FUNCTION:$global:ptkForcedCount\" }",
+                raw: true,
+                route: "pwsh");
+            Assert.True(defined.Success, string.Join(Environment.NewLine, defined.Errors));
+            ExecutionPlan? observed = null;
+
+            var result = await _host.InvokeAsync(
+                "ptkForcedFunction",
+                (plan, _) =>
+                {
+                    observed = plan;
+                    return ValueTask.FromResult(true);
+                },
+                route: "rtk");
+
+            Assert.True(result.Success, string.Join(Environment.NewLine, result.Errors));
+            Assert.Contains("FUNCTION:1", result.Output);
+            Assert.DoesNotContain("must-not-run", result.Output);
+            Assert.NotNull(observed);
+            Assert.Equal(ExecutionDomain.PowerShell, observed.Domain);
+            Assert.Equal(ExecutionPath.PowerShellDirect, observed.ExecutionPath);
+            Assert.Equal(
+                ExecutionFallbackReason.RtkResolutionNotApplication,
+                observed.FallbackReason);
+            var count = await _host.InvokeAsync(
+                "$global:ptkForcedCount",
+                raw: true,
+                route: "pwsh");
+            Assert.Equal("1", count.Output.Trim());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Windows_external_script_shadows_same_name_application_before_rtk_routing()
     {
         if (!OperatingSystem.IsWindows()) return;
