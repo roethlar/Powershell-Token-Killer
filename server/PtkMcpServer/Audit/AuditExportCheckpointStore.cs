@@ -767,12 +767,8 @@ internal sealed class AuditExportCheckpointStore : IDisposable
 
             intent.ConsumeForCheckpointAdvance(
                 _supervisorBootId,
-                spool,
-                startOffset,
                 nextOffset,
-                sequence,
-                eventId,
-                blocked.FailureClass);
+                blocked);
             SaveLocked(
                 new AuditExportCheckpoint(
                     _supervisorBootId,

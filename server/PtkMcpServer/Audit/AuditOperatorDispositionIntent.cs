@@ -89,6 +89,10 @@ internal sealed class AuditOperatorDispositionIntent
             "sequence",
             "event_id",
             "failure_class",
+            "detail_code",
+            "response_digest",
+            "first_failure_utc",
+            "export_configuration_identity",
             "proof_kind",
             "verified_receipt_digest",
             "acknowledged_gap_reason",
@@ -110,6 +114,10 @@ internal sealed class AuditOperatorDispositionIntent
         long sequence,
         Guid eventId,
         AuditExportFailureClass failureClass,
+        string detailCode,
+        string? responseDigest,
+        DateTimeOffset firstFailureUtc,
+        string exportConfigurationIdentity,
         AuditOperatorDispositionProof proof,
         DateTimeOffset createdUtc,
         byte[] canonicalBytes)
@@ -123,6 +131,10 @@ internal sealed class AuditOperatorDispositionIntent
         Sequence = sequence;
         EventId = eventId;
         FailureClass = failureClass;
+        DetailCode = detailCode;
+        ResponseDigest = responseDigest;
+        FirstFailureUtc = firstFailureUtc;
+        ExportConfigurationIdentity = exportConfigurationIdentity;
         Proof = proof;
         CreatedUtc = createdUtc;
         _canonicalBytes = canonicalBytes;
@@ -144,6 +156,14 @@ internal sealed class AuditOperatorDispositionIntent
     internal Guid EventId { get; }
 
     internal AuditExportFailureClass FailureClass { get; }
+
+    internal string DetailCode { get; }
+
+    internal string? ResponseDigest { get; }
+
+    internal DateTimeOffset FirstFailureUtc { get; }
+
+    internal string ExportConfigurationIdentity { get; }
 
     internal AuditOperatorDispositionProof Proof { get; }
 
@@ -185,6 +205,10 @@ internal sealed class AuditOperatorDispositionIntent
             blocked.Sequence,
             blocked.EventId,
             blocked.FailureClass,
+            blocked.DetailCode,
+            blocked.ResponseDigest,
+            blocked.FirstFailureUtc,
+            blocked.ExportConfigurationIdentity,
             proof,
             (utcNow?.Invoke() ?? DateTimeOffset.UtcNow).ToUniversalTime());
         ValidateFields(expected);
@@ -253,23 +277,16 @@ internal sealed class AuditOperatorDispositionIntent
 
     internal void ConsumeForCheckpointAdvance(
         Guid supervisorBootId,
-        AuditSpoolSegmentIdentity spool,
-        long startOffset,
         long nextOffset,
-        long sequence,
-        Guid eventId,
-        AuditExportFailureClass failureClass)
+        AuditExportBlockedRecord blocked)
     {
+        ArgumentNullException.ThrowIfNull(blocked);
         if (Volatile.Read(ref _consumed) != 0)
             throw new InvalidOperationException("The operator disposition intent was already consumed.");
         RequireExactTarget(
             supervisorBootId,
-            spool,
-            startOffset,
             nextOffset,
-            sequence,
-            eventId,
-            failureClass);
+            blocked);
 
         var persisted = Read(_path);
         if (!persisted._canonicalBytes.AsSpan().SequenceEqual(_canonicalBytes) ||
@@ -299,20 +316,23 @@ internal sealed class AuditOperatorDispositionIntent
 
     private void RequireExactTarget(
         Guid supervisorBootId,
-        AuditSpoolSegmentIdentity spool,
-        long startOffset,
         long nextOffset,
-        long sequence,
-        Guid eventId,
-        AuditExportFailureClass failureClass)
+        AuditExportBlockedRecord blocked)
     {
         if (SupervisorBootId != supervisorBootId ||
-            Spool != spool ||
-            StartOffset != startOffset ||
+            Spool != blocked.Spool ||
+            StartOffset != blocked.ByteOffset ||
             NextOffset != nextOffset ||
-            Sequence != sequence ||
-            EventId != eventId ||
-            FailureClass != failureClass)
+            Sequence != blocked.Sequence ||
+            EventId != blocked.EventId ||
+            FailureClass != blocked.FailureClass ||
+            !string.Equals(DetailCode, blocked.DetailCode, StringComparison.Ordinal) ||
+            !string.Equals(ResponseDigest, blocked.ResponseDigest, StringComparison.Ordinal) ||
+            FirstFailureUtc != blocked.FirstFailureUtc ||
+            !string.Equals(
+                ExportConfigurationIdentity,
+                blocked.ExportConfigurationIdentity,
+                StringComparison.Ordinal))
         {
             throw new ArgumentException(
                 "The operator disposition intent belongs to another blocked record.");
@@ -331,6 +351,13 @@ internal sealed class AuditOperatorDispositionIntent
                          actual.Sequence == expected.Sequence &&
                          actual.EventId == expected.EventId &&
                          actual.FailureClass == expected.FailureClass &&
+                         string.Equals(actual.DetailCode, expected.DetailCode, StringComparison.Ordinal) &&
+                         string.Equals(actual.ResponseDigest, expected.ResponseDigest, StringComparison.Ordinal) &&
+                         actual.FirstFailureUtc == expected.FirstFailureUtc &&
+                         string.Equals(
+                             actual.ExportConfigurationIdentity,
+                             expected.ExportConfigurationIdentity,
+                             StringComparison.Ordinal) &&
                          actual.Proof == expected.Proof;
         if (!ignoreIdentityAndTime)
         {
@@ -381,6 +408,10 @@ internal sealed class AuditOperatorDispositionIntent
                 fields.Sequence,
                 fields.EventId,
                 fields.FailureClass,
+                fields.DetailCode,
+                fields.ResponseDigest,
+                fields.FirstFailureUtc,
+                fields.ExportConfigurationIdentity,
                 fields.Proof,
                 fields.CreatedUtc,
                 canonical);
@@ -412,6 +443,14 @@ internal sealed class AuditOperatorDispositionIntent
             writer.WriteNumber("sequence", fields.Sequence);
             writer.WriteString("event_id", fields.EventId.ToString("D"));
             writer.WriteString("failure_class", FailureClassText(fields.FailureClass));
+            writer.WriteString("detail_code", fields.DetailCode);
+            WriteNullableString(writer, "response_digest", fields.ResponseDigest);
+            writer.WriteString(
+                "first_failure_utc",
+                fields.FirstFailureUtc.ToString(TimestampFormat, CultureInfo.InvariantCulture));
+            writer.WriteString(
+                "export_configuration_identity",
+                fields.ExportConfigurationIdentity);
             writer.WriteString("proof_kind", ProofKindText(fields.Proof.Kind));
             WriteNullableString(writer, "verified_receipt_digest", fields.Proof.VerifiedReceiptDigest);
             WriteNullableString(writer, "acknowledged_gap_reason", fields.Proof.AcknowledgedGapReason);
@@ -487,6 +526,10 @@ internal sealed class AuditOperatorDispositionIntent
             RequiredInt64(root, "sequence"),
             RequiredGuid(root, "event_id", version: 7),
             ParseFailureClass(RequiredString(root, "failure_class")),
+            RequiredString(root, "detail_code"),
+            RequiredNullableString(root, "response_digest"),
+            RequiredTimestamp(root, "first_failure_utc"),
+            RequiredString(root, "export_configuration_identity"),
             proof,
             RequiredTimestamp(root, "created_utc"));
     }
@@ -502,6 +545,10 @@ internal sealed class AuditOperatorDispositionIntent
             Sequence,
             EventId,
             FailureClass,
+            DetailCode,
+            ResponseDigest,
+            FirstFailureUtc,
+            ExportConfigurationIdentity,
             Proof,
             CreatedUtc));
     }
@@ -510,6 +557,16 @@ internal sealed class AuditOperatorDispositionIntent
     {
         AuditSpoolSegmentIdentity.RequireUuidV4(fields.DispositionId, nameof(fields.DispositionId));
         AuditSpoolSegmentIdentity.RequireUuidV4(fields.SupervisorBootId, nameof(fields.SupervisorBootId));
+        _ = new AuditExportBlockedRecord(
+            fields.Spool,
+            fields.StartOffset,
+            fields.Sequence,
+            fields.EventId,
+            fields.FailureClass,
+            fields.DetailCode,
+            fields.ResponseDigest,
+            fields.FirstFailureUtc,
+            fields.ExportConfigurationIdentity);
         if (fields.Spool.SupervisorBootId != fields.SupervisorBootId ||
             fields.StartOffset < 0 ||
             fields.NextOffset <= fields.StartOffset ||
@@ -635,6 +692,10 @@ internal sealed class AuditOperatorDispositionIntent
         long Sequence,
         Guid EventId,
         AuditExportFailureClass FailureClass,
+        string DetailCode,
+        string? ResponseDigest,
+        DateTimeOffset FirstFailureUtc,
+        string ExportConfigurationIdentity,
         AuditOperatorDispositionProof Proof,
         DateTimeOffset CreatedUtc);
 }

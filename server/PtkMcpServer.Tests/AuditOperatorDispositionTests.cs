@@ -190,6 +190,58 @@ public sealed class AuditOperatorDispositionTests : IDisposable
             admin.Sink.Lines.Select(EventType).ToArray());
     }
 
+    [Theory]
+    [InlineData(BlockedField.DetailCode)]
+    [InlineData(BlockedField.ResponseDigest)]
+    [InlineData(BlockedField.FirstFailureUtc)]
+    [InlineData(BlockedField.ExportConfigurationIdentity)]
+    public void Durable_intent_rejects_each_mutated_frozen_block_field(BlockedField field)
+    {
+        var options = Options();
+        var target = CreateBlockedTarget(
+            options,
+            AuditExportFailureClass.Data,
+            responseDigest: new string('a', 64));
+        var blocked = Assert.IsType<AuditExportBlockedRecord>(
+            Checkpoint(options, target.BootId).BlockedRecord);
+        var position = new IntentPosition(
+            blocked.Spool,
+            blocked.ByteOffset,
+            checked(blocked.ByteOffset + 1),
+            blocked.Sequence,
+            blocked.EventId);
+        var intent = AuditOperatorDispositionIntent.CreateOrOpen(
+            options,
+            position,
+            blocked,
+            AuditOperatorDispositionProof.AcknowledgedGap("operator.accepted"));
+
+        var path = Assert.Single(Directory.GetFiles(
+            options.RootDirectory,
+            "operator.disposition-*.json"));
+        using (var document = JsonDocument.Parse(File.ReadAllBytes(path)))
+        {
+            var root = document.RootElement;
+            Assert.Equal(blocked.DetailCode, root.GetProperty("detail_code").GetString());
+            Assert.Equal(blocked.ResponseDigest, root.GetProperty("response_digest").GetString());
+            Assert.Equal(
+                blocked.FirstFailureUtc.ToString(
+                    "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'",
+                    System.Globalization.CultureInfo.InvariantCulture),
+                root.GetProperty("first_failure_utc").GetString());
+            Assert.Equal(
+                blocked.ExportConfigurationIdentity,
+                root.GetProperty("export_configuration_identity").GetString());
+        }
+
+        Assert.Throws<ArgumentException>(() =>
+            intent.ConsumeForCheckpointAdvance(
+                target.BootId,
+                position.NextOffset,
+                Mutate(blocked, field)));
+        Assert.NotNull(Checkpoint(options, target.BootId).BlockedRecord);
+    }
+
     [Fact]
     public void Configuration_block_and_live_checkpoint_lease_both_fail_closed()
     {
@@ -228,7 +280,8 @@ public sealed class AuditOperatorDispositionTests : IDisposable
 
     private BlockedTarget CreateBlockedTarget(
         AuditOptions options,
-        AuditExportFailureClass failureClass)
+        AuditExportFailureClass failureClass,
+        string? responseDigest = null)
     {
         var bootId = Guid.NewGuid();
         using (var preparation = FileAuditJournalSink.PrepareAnchored(options, bootId))
@@ -259,7 +312,7 @@ public sealed class AuditOperatorDispositionTests : IDisposable
                     recovery.Position,
                     failureClass,
                     "test.block",
-                    responseDigest: null,
+                    responseDigest,
                     DateTimeOffset.UtcNow,
                     ConfigurationIdentity);
             }
@@ -339,12 +392,51 @@ public sealed class AuditOperatorDispositionTests : IDisposable
         return document.RootElement.GetProperty("event_type").GetString()!;
     }
 
+    private static AuditExportBlockedRecord Mutate(
+        AuditExportBlockedRecord blocked,
+        BlockedField field) => new(
+        blocked.Spool,
+        blocked.ByteOffset,
+        blocked.Sequence,
+        blocked.EventId,
+        blocked.FailureClass,
+        field == BlockedField.DetailCode ? "test.changed" : blocked.DetailCode,
+        field == BlockedField.ResponseDigest ? new string('f', 64) : blocked.ResponseDigest,
+        field == BlockedField.FirstFailureUtc
+            ? blocked.FirstFailureUtc.AddTicks(1)
+            : blocked.FirstFailureUtc,
+        field == BlockedField.ExportConfigurationIdentity
+            ? new string('f', 64)
+            : blocked.ExportConfigurationIdentity);
+
     public void Dispose()
     {
         if (Directory.Exists(_root)) Directory.Delete(_root, recursive: true);
     }
 
     private sealed record BlockedTarget(Guid BootId, Guid EventId);
+
+    public enum BlockedField
+    {
+        DetailCode,
+        ResponseDigest,
+        FirstFailureUtc,
+        ExportConfigurationIdentity,
+    }
+
+    private sealed record IntentPosition(
+        AuditSpoolSegmentIdentity Spool,
+        long StartOffset,
+        long NextOffset,
+        long Sequence,
+        Guid EventId) : IAuditClosedSpoolRecordPosition
+    {
+        public string? PreviousEventHash => null;
+
+        public string EventHash => new('0', 64);
+
+        public ReadOnlyMemory<byte> ExactJsonlBytes => ReadOnlyMemory<byte>.Empty;
+    }
 
     private sealed record AdminJournalFixture(
         AuditJournal Journal,
