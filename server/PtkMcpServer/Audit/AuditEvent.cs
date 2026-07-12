@@ -22,10 +22,30 @@ internal sealed record AuditEventInput
     public required AuditActor Actor { get; init; }
     public required AuditCorrelation Correlation { get; init; }
     public required AuditRequest Request { get; init; }
+    public AuditOperatorDispositionFacts? OperatorDisposition { get; init; }
     public required AuditRouting Routing { get; init; }
     public required AuditOutcome Outcome { get; init; }
     public required AuditCoverage Coverage { get; init; }
     public required AuditEventHealth Audit { get; init; }
+}
+
+internal sealed record AuditOperatorDispositionFacts
+{
+    public Guid? DispositionId { get; init; }
+    public required Guid TargetSupervisorBootId { get; init; }
+    public string? TargetSpoolFile { get; init; }
+    public long? TargetStartOffset { get; init; }
+    public long? TargetNextOffset { get; init; }
+    public long? TargetSequence { get; init; }
+    public required Guid TargetEventId { get; init; }
+    public string? FailureClass { get; init; }
+    public string? DetailCode { get; init; }
+    public string? ResponseDigest { get; init; }
+    public DateTimeOffset? FirstFailureUtc { get; init; }
+    public string? TargetExportConfigurationIdentity { get; init; }
+    public required string ProofKind { get; init; }
+    public string? VerifiedReceiptDigest { get; init; }
+    public string? AcknowledgedGapReason { get; init; }
 }
 
 internal sealed record AuditSession
@@ -165,6 +185,10 @@ internal static class AuditEventSerializer
         new(["auto", "pwsh", "rtk"], StringComparer.Ordinal);
     private static readonly HashSet<string> DestinationKinds =
         new(["stdout", "protected_file"], StringComparer.Ordinal);
+    private static readonly HashSet<string> DispositionProofKinds =
+        new(["verified_receipt", "acknowledged_gap"], StringComparer.Ordinal);
+    private static readonly HashSet<string> DispositionFailureClasses =
+        new(["partial_rejection", "data", "protocol"], StringComparer.Ordinal);
     private static readonly HashSet<string> Domains =
         new(["powershell", "native_terminal", "mixed_dataflow", "bash"], StringComparer.Ordinal);
     private static readonly HashSet<string> EffectiveRoutes =
@@ -194,6 +218,13 @@ internal static class AuditEventSerializer
             "execution.canceled",
             "execution.timed_out",
             "execution.outcome_unknown"
+        ], StringComparer.Ordinal);
+    private static readonly HashSet<string> OperatorDispositionEvents =
+        new([
+            "export.disposition_intent",
+            "export.disposition_authorized",
+            "export.disposition_completed",
+            "export.disposition_failed",
         ], StringComparer.Ordinal);
 
     internal static SerializedAuditEvent Serialize(
@@ -306,6 +337,7 @@ internal static class AuditEventSerializer
         ValidateCorrelation(input.Correlation);
         var providedFields = NormalizeProvidedFields(input.Request.ProvidedFields);
         ValidateRequest(input.Request);
+        ValidateOperatorDispositionFacts(input.EventType, input.OperatorDisposition);
         var permittedFallbacks = NormalizePermittedFallbacks(input.Routing.PermittedFallbacks);
         ValidateRouting(input.Routing);
         ValidateOutcome(input.Outcome);
@@ -318,6 +350,40 @@ internal static class AuditEventSerializer
             throw Invalid("routing.permitted_fallbacks", "must be empty when there is no prepared plan");
 
         return new NormalizedArrays(providedFields, permittedFallbacks);
+    }
+
+    internal static void ValidateOperatorDispositionFacts(
+        string eventType,
+        AuditOperatorDispositionFacts? disposition)
+    {
+        ValidateOperatorDisposition(disposition);
+        if (OperatorDispositionEvents.Contains(eventType) !=
+            (disposition is not null))
+        {
+            throw Invalid(
+                "operator_disposition",
+                OperatorDispositionEvents.Contains(eventType)
+                    ? $"must be nonnull for {eventType}"
+                    : $"must be null for {eventType}");
+        }
+        if (disposition is not null)
+        {
+            var resolved = disposition.DispositionId is not null;
+            if (eventType == "export.disposition_intent" && resolved)
+            {
+                throw Invalid(
+                    "operator_disposition.disposition_id",
+                    "must be null on export.disposition_intent");
+            }
+            if (eventType is (
+                    "export.disposition_authorized" or
+                    "export.disposition_completed") && !resolved)
+            {
+                throw Invalid(
+                    "operator_disposition.disposition_id",
+                    $"must be nonnull on {eventType}");
+            }
+        }
     }
 
     private static void ValidateSession(AuditSession value)
@@ -393,6 +459,135 @@ internal static class AuditEventSerializer
         RequireLowerHex(value.RtkBinaryDigest, 64, "routing.rtk_binary_digest", nullable: true);
         RequireEnum(value.Provenance, ProvenanceValues, "routing.provenance", nullable: true);
         RequireMachineCode(value.FallbackReason, "routing.fallback_reason", nullable: true);
+    }
+
+    private static void ValidateOperatorDisposition(AuditOperatorDispositionFacts? value)
+    {
+        if (value is null) return;
+
+        RequireUuid(
+            value.TargetSupervisorBootId,
+            4,
+            "operator_disposition.target_supervisor_boot_id");
+        RequireUuid(value.TargetEventId, 7, "operator_disposition.target_event_id");
+        RequireEnum(
+            value.ProofKind,
+            DispositionProofKinds,
+            "operator_disposition.proof_kind",
+            nullable: false);
+        switch (value.ProofKind)
+        {
+            case "verified_receipt":
+                RequireLowerHex(
+                    value.VerifiedReceiptDigest,
+                    64,
+                    "operator_disposition.verified_receipt_digest",
+                    nullable: false);
+                if (value.AcknowledgedGapReason is not null)
+                {
+                    throw Invalid(
+                        "operator_disposition.acknowledged_gap_reason",
+                        "must be null for verified_receipt proof");
+                }
+                break;
+            case "acknowledged_gap":
+                if (value.VerifiedReceiptDigest is not null)
+                {
+                    throw Invalid(
+                        "operator_disposition.verified_receipt_digest",
+                        "must be null for acknowledged_gap proof");
+                }
+                RequireDispositionGapReason(value.AcknowledgedGapReason);
+                break;
+        }
+
+        if (value.DispositionId is null)
+        {
+            if (value.TargetSpoolFile is not null ||
+                value.TargetStartOffset is not null ||
+                value.TargetNextOffset is not null ||
+                value.TargetSequence is not null ||
+                value.FailureClass is not null ||
+                value.DetailCode is not null ||
+                value.ResponseDigest is not null ||
+                value.FirstFailureUtc is not null ||
+                value.TargetExportConfigurationIdentity is not null)
+            {
+                throw Invalid(
+                    "operator_disposition",
+                    "an unresolved request may contain only target boot/event and proof");
+            }
+            return;
+        }
+
+        RequireUuid(value.DispositionId.Value, 4, "operator_disposition.disposition_id");
+        if (value.TargetSpoolFile is null ||
+            !AuditSpoolSegmentIdentity.TryParse(value.TargetSpoolFile, out var spool) ||
+            spool.SupervisorBootId != value.TargetSupervisorBootId)
+        {
+            throw Invalid(
+                "operator_disposition.target_spool_file",
+                "must be a canonical target-boot spool file");
+        }
+        RequireNonNegative(
+            value.TargetStartOffset,
+            "operator_disposition.target_start_offset");
+        RequirePositive(value.TargetNextOffset, "operator_disposition.target_next_offset");
+        RequirePositive(value.TargetSequence, "operator_disposition.target_sequence");
+        if (value.TargetStartOffset is null ||
+            value.TargetNextOffset is null ||
+            value.TargetSequence is null ||
+            value.TargetNextOffset <= value.TargetStartOffset)
+        {
+            throw Invalid(
+                "operator_disposition.target_next_offset",
+                "must be greater than target_start_offset");
+        }
+        RequireEnum(
+            value.FailureClass,
+            DispositionFailureClasses,
+            "operator_disposition.failure_class",
+            nullable: false);
+        RequireMachineCode(
+            value.DetailCode,
+            "operator_disposition.detail_code",
+            nullable: false);
+        RequireLowerHex(
+            value.ResponseDigest,
+            64,
+            "operator_disposition.response_digest",
+            nullable: true);
+        if (value.FirstFailureUtc is null)
+        {
+            throw Invalid(
+                "operator_disposition.first_failure_utc",
+                "must be nonnull for an authorized disposition");
+        }
+        RequireUtc(
+            value.FirstFailureUtc.Value,
+            "operator_disposition.first_failure_utc");
+        RequireLowerHex(
+            value.TargetExportConfigurationIdentity,
+            64,
+            "operator_disposition.target_export_configuration_identity",
+            nullable: false);
+    }
+
+    private static void RequireDispositionGapReason(string? value)
+    {
+        const string field = "operator_disposition.acknowledged_gap_reason";
+        RequireMachineCode(value, field, nullable: false);
+        if (value is null) return;
+        var previousWasSeparator = false;
+        foreach (var character in value)
+        {
+            var separator = character is '_' or '.' or '-';
+            if (separator && previousWasSeparator)
+                throw Invalid(field, "must not contain consecutive separators");
+            previousWasSeparator = separator;
+        }
+        if (previousWasSeparator)
+            throw Invalid(field, "must end with a lowercase letter or digit");
     }
 
     private static void ValidateOutcome(AuditOutcome value)
@@ -616,6 +811,42 @@ internal static class AuditEventSerializer
         WriteString(writer, "original_script_digest", input.Request.OriginalScriptDigest);
         WriteUuid(writer, "script_evidence_id", input.Request.ScriptEvidenceId);
         writer.WriteEndObject();
+
+        if (input.OperatorDisposition is not { } disposition)
+        {
+            writer.WriteNull("operator_disposition");
+        }
+        else
+        {
+            writer.WriteStartObject("operator_disposition");
+            WriteUuid(writer, "disposition_id", disposition.DispositionId);
+            writer.WriteString(
+                "target_supervisor_boot_id",
+                FormatUuid(disposition.TargetSupervisorBootId));
+            WriteString(writer, "target_spool_file", disposition.TargetSpoolFile);
+            WriteNumber(writer, "target_start_offset", disposition.TargetStartOffset);
+            WriteNumber(writer, "target_next_offset", disposition.TargetNextOffset);
+            WriteNumber(writer, "target_sequence", disposition.TargetSequence);
+            writer.WriteString("target_event_id", FormatUuid(disposition.TargetEventId));
+            WriteString(writer, "failure_class", disposition.FailureClass);
+            WriteString(writer, "detail_code", disposition.DetailCode);
+            WriteString(writer, "response_digest", disposition.ResponseDigest);
+            WriteTimestamp(writer, "first_failure_utc", disposition.FirstFailureUtc);
+            WriteString(
+                writer,
+                "target_export_configuration_identity",
+                disposition.TargetExportConfigurationIdentity);
+            writer.WriteString("proof_kind", disposition.ProofKind);
+            WriteString(
+                writer,
+                "verified_receipt_digest",
+                disposition.VerifiedReceiptDigest);
+            WriteString(
+                writer,
+                "acknowledged_gap_reason",
+                disposition.AcknowledgedGapReason);
+            writer.WriteEndObject();
+        }
 
         writer.WriteStartObject("routing");
         WriteString(writer, "domain", input.Routing.Domain);

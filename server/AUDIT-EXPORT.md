@@ -118,8 +118,8 @@ separate executable, not an MCP tool. It uses the same
 `PTK_AUDIT_ROOT` and optional `PTK_AUDIT_EXPORT_CONFIG` startup environment as
 the server. Every evidence access durably records an intent before opening the
 payload and records success or failure afterward. Core events contain the
-opaque evidence ID, digest, and byte count, never the script bytes or export
-path.
+opaque evidence ID, digest, byte count, destination kind, and protected export
+path when one is used, never the script bytes themselves.
 
 ```text
 PtkAuditAdmin evidence read --id <evidence-uuid>
@@ -149,6 +149,16 @@ intent, and only then advances that one checkpoint. The receipt digest is an
 operator attestation; this executable does not query or independently verify a
 SIEM. Configuration/authentication blocks still require corrected startup
 configuration rather than operator disposition.
+
+Disposition audit is a correlated sequence: `export.disposition_intent`
+records the requested target boot/event and exact proof;
+`export.disposition_authorized` records the durable disposition ID and frozen
+blocked-record tuple before the checkpoint changes; and the completed or failed
+terminal event repeats the fullest known facts. These values live in the
+dedicated `operator_disposition` object in the OTLP body. Query attributes under
+`ptk.disposition.*` project the disposition ID, target boot/event, proof kind,
+failure class, target export-configuration identity, and the selected proof
+value without replacing the complete body.
 
 This separation is an interface boundary, not hostile same-user isolation.
 An agent allowed to run arbitrary native commands under the PTK account can

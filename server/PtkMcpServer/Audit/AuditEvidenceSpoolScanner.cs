@@ -27,7 +27,7 @@ internal static class AuditEvidenceSpoolScanner
         [
             "schema_version", "event_id", "event_type", "occurred_utc",
             "observed_utc", "producer", "sequence", "previous_event_hash",
-            "session", "actor", "correlation", "request", "routing",
+            "session", "actor", "correlation", "request", "operator_disposition", "routing",
             "outcome", "coverage", "audit", "event_hash",
         ],
         StringComparer.Ordinal);
@@ -78,6 +78,16 @@ internal static class AuditEvidenceSpoolScanner
         ],
         StringComparer.Ordinal);
 
+    private static readonly HashSet<string> OperatorDispositionProperties = new(
+        [
+            "disposition_id", "target_supervisor_boot_id", "target_spool_file",
+            "target_start_offset", "target_next_offset", "target_sequence",
+            "target_event_id", "failure_class", "detail_code", "response_digest",
+            "first_failure_utc", "target_export_configuration_identity",
+            "proof_kind", "verified_receipt_digest", "acknowledged_gap_reason",
+        ],
+        StringComparer.Ordinal);
+
     private static readonly HashSet<string> OutcomeProperties = new(
         [
             "state", "detail_code", "exit_code", "duration_ms", "queue_ms",
@@ -114,6 +124,19 @@ internal static class AuditEvidenceSpoolScanner
             liveSource.CurrentSegmentIdentity,
             liveSource,
             candidates);
+    }
+
+    internal static void ValidateExactEnvelopeShapeForTests(ReadOnlyMemory<byte> exactJson)
+    {
+        using var document = JsonDocument.Parse(
+            exactJson,
+            new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 16,
+            });
+        _ = RequireExactEnvelopeShape(document.RootElement);
     }
 
     /// <summary>
@@ -507,15 +530,7 @@ internal static class AuditEvidenceSpoolScanner
                 MaxDepth = 16,
             });
         var root = RequireExactObject(document.RootElement, RootProperties);
-        _ = RequireExactObject(root.GetProperty("producer"), ProducerProperties);
-        _ = RequireExactObject(root.GetProperty("session"), SessionProperties);
-        _ = RequireExactObject(root.GetProperty("actor"), ActorProperties);
-        _ = RequireExactObject(root.GetProperty("correlation"), CorrelationProperties);
-        var request = RequireExactObject(root.GetProperty("request"), RequestProperties);
-        _ = RequireExactObject(root.GetProperty("routing"), RoutingProperties);
-        _ = RequireExactObject(root.GetProperty("outcome"), OutcomeProperties);
-        _ = RequireExactObject(root.GetProperty("coverage"), CoverageProperties);
-        _ = RequireExactObject(root.GetProperty("audit"), AuditProperties);
+        var request = RequireExactEnvelopeShape(root);
 
         var evidenceId = NullableString(request, "script_evidence_id");
         var scriptDigest = NullableString(request, "original_script_digest");
@@ -538,6 +553,24 @@ internal static class AuditEvidenceSpoolScanner
 
         expectedSequence = checked(expectedSequence + 1);
         expectedPreviousHash = parsed.EventHash;
+    }
+
+    private static JsonElement RequireExactEnvelopeShape(JsonElement root)
+    {
+        root = RequireExactObject(root, RootProperties);
+        _ = RequireExactObject(root.GetProperty("producer"), ProducerProperties);
+        _ = RequireExactObject(root.GetProperty("session"), SessionProperties);
+        _ = RequireExactObject(root.GetProperty("actor"), ActorProperties);
+        _ = RequireExactObject(root.GetProperty("correlation"), CorrelationProperties);
+        var request = RequireExactObject(root.GetProperty("request"), RequestProperties);
+        var disposition = root.GetProperty("operator_disposition");
+        if (disposition.ValueKind != JsonValueKind.Null)
+            _ = RequireExactObject(disposition, OperatorDispositionProperties);
+        _ = RequireExactObject(root.GetProperty("routing"), RoutingProperties);
+        _ = RequireExactObject(root.GetProperty("outcome"), OutcomeProperties);
+        _ = RequireExactObject(root.GetProperty("coverage"), CoverageProperties);
+        _ = RequireExactObject(root.GetProperty("audit"), AuditProperties);
+        return request;
     }
 
     private static JsonElement RequireExactObject(

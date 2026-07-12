@@ -53,6 +53,15 @@ internal static class AuditOtlpRecordMapper
 {
     private const string TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'";
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+    private static readonly HashSet<string> OperatorDispositionProperties = new(
+        [
+            "disposition_id", "target_supervisor_boot_id", "target_spool_file",
+            "target_start_offset", "target_next_offset", "target_sequence",
+            "target_event_id", "failure_class", "detail_code", "response_digest",
+            "first_failure_utc", "target_export_configuration_identity",
+            "proof_kind", "verified_receipt_digest", "acknowledged_gap_reason",
+        ],
+        StringComparer.Ordinal);
 
     internal static AuditOtlpRecord Map(ReadOnlyMemory<byte> jsonlLine)
     {
@@ -125,6 +134,60 @@ internal static class AuditOtlpRecordMapper
             var outcomeState = NullableString(outcome, "state");
             var terminationCertainty = NullableString(outcome, "termination_certainty");
 
+            AuditOperatorDispositionFacts? dispositionFacts = null;
+            var dispositionElement = root.GetProperty("operator_disposition");
+            if (dispositionElement.ValueKind != JsonValueKind.Null)
+            {
+                var disposition = RequiredObject(dispositionElement);
+                RequireExactProperties(disposition, OperatorDispositionProperties);
+                dispositionFacts = new AuditOperatorDispositionFacts
+                {
+                    DispositionId = NullableCanonicalUuid(
+                        disposition,
+                        "disposition_id",
+                        version: 4),
+                    TargetSupervisorBootId = RequiredCanonicalUuid(
+                        RequiredString(disposition, "target_supervisor_boot_id"),
+                        version: 4),
+                    TargetSpoolFile = NullableString(disposition, "target_spool_file"),
+                    TargetStartOffset = NullableInt64(disposition, "target_start_offset"),
+                    TargetNextOffset = NullableInt64(disposition, "target_next_offset"),
+                    TargetSequence = NullableInt64(disposition, "target_sequence"),
+                    TargetEventId = RequiredCanonicalUuid(
+                        RequiredString(disposition, "target_event_id"),
+                        version: 7),
+                    FailureClass = NullableString(disposition, "failure_class"),
+                    DetailCode = NullableString(disposition, "detail_code"),
+                    ResponseDigest = NullableString(disposition, "response_digest"),
+                    FirstFailureUtc = NullableUtc(disposition, "first_failure_utc"),
+                    TargetExportConfigurationIdentity = NullableString(
+                        disposition,
+                        "target_export_configuration_identity"),
+                    ProofKind = RequiredString(disposition, "proof_kind"),
+                    VerifiedReceiptDigest = NullableString(
+                        disposition,
+                        "verified_receipt_digest"),
+                    AcknowledgedGapReason = NullableString(
+                        disposition,
+                        "acknowledged_gap_reason"),
+                };
+            }
+            AuditEventSerializer.ValidateOperatorDispositionFacts(
+                eventType,
+                dispositionFacts);
+            var dispositionId = dispositionFacts?.DispositionId?.ToString("D");
+            var dispositionTargetBootId =
+                dispositionFacts?.TargetSupervisorBootId.ToString("D");
+            var dispositionTargetEventId = dispositionFacts?.TargetEventId.ToString("D");
+            var dispositionProofKind = dispositionFacts?.ProofKind;
+            var dispositionFailureClass = dispositionFacts?.FailureClass;
+            var dispositionTargetExportIdentity =
+                dispositionFacts?.TargetExportConfigurationIdentity;
+            var dispositionVerifiedReceiptDigest =
+                dispositionFacts?.VerifiedReceiptDigest;
+            var dispositionAcknowledgedGapReason =
+                dispositionFacts?.AcknowledgedGapReason;
+
             var resource = new OtlpResource();
             resource.Attributes.Add(StringAttribute("service.namespace", "ptk"));
             resource.Attributes.Add(StringAttribute("service.name", "powershell-token-killer"));
@@ -161,6 +224,35 @@ internal static class AuditOtlpRecordMapper
             AddOptionalInt(logRecord, "ptk.job.id", jobId);
             AddOptionalString(logRecord, "ptk.outcome.state", outcomeState);
             AddOptionalString(logRecord, "ptk.termination.certainty", terminationCertainty);
+            AddOptionalString(logRecord, "ptk.disposition.id", dispositionId);
+            AddOptionalString(
+                logRecord,
+                "ptk.disposition.target.boot_id",
+                dispositionTargetBootId);
+            AddOptionalString(
+                logRecord,
+                "ptk.disposition.target.event_id",
+                dispositionTargetEventId);
+            AddOptionalString(
+                logRecord,
+                "ptk.disposition.proof_kind",
+                dispositionProofKind);
+            AddOptionalString(
+                logRecord,
+                "ptk.disposition.failure_class",
+                dispositionFailureClass);
+            AddOptionalString(
+                logRecord,
+                "ptk.disposition.target.export_configuration_identity",
+                dispositionTargetExportIdentity);
+            AddOptionalString(
+                logRecord,
+                "ptk.disposition.verified_receipt_digest",
+                dispositionVerifiedReceiptDigest);
+            AddOptionalString(
+                logRecord,
+                "ptk.disposition.acknowledged_gap_reason",
+                dispositionAcknowledgedGapReason);
 
             var scopeLogs = new ScopeLogs { Scope = scope };
             scopeLogs.LogRecords.Add(logRecord);
@@ -217,6 +309,20 @@ internal static class AuditOtlpRecordMapper
         }
     }
 
+    private static void RequireExactProperties(
+        JsonElement element,
+        IReadOnlySet<string> expected)
+    {
+        var observed = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var property in element.EnumerateObject())
+        {
+            if (!observed.Add(property.Name) || !expected.Contains(property.Name))
+                Fail("disposition_shape");
+        }
+        if (!observed.SetEquals(expected))
+            Fail("disposition_shape");
+    }
+
     private static string RequiredString(JsonElement root, string propertyName)
     {
         var element = root.GetProperty(propertyName);
@@ -252,6 +358,15 @@ internal static class AuditOtlpRecordMapper
         return element.ValueKind == JsonValueKind.Null ? null : RequiredInt64(element);
     }
 
+    private static Guid? NullableCanonicalUuid(
+        JsonElement root,
+        string propertyName,
+        int version)
+    {
+        var value = NullableString(root, propertyName);
+        return value is null ? null : RequiredCanonicalUuid(value, version);
+    }
+
     private static long RequiredInt64(JsonElement element)
     {
         if (element.ValueKind != JsonValueKind.Number) Fail("int64_kind");
@@ -285,6 +400,14 @@ internal static class AuditOtlpRecordMapper
             Fail("timestamp");
         }
         return parsed;
+    }
+
+    private static DateTimeOffset? NullableUtc(JsonElement root, string propertyName)
+    {
+        var element = root.GetProperty(propertyName);
+        return element.ValueKind == JsonValueKind.Null
+            ? null
+            : RequiredUtc(root, propertyName);
     }
 
     private static ulong ToUnixNanoseconds(DateTimeOffset value) =>

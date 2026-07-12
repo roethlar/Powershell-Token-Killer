@@ -392,20 +392,25 @@ internal sealed class AuditAdminOperations
         if (_options.ProtectionMode != AuditProtectionMode.Anchored)
             throw new InvalidOperationException("Export-block disposition requires anchored audit mode.");
 
-        // A completion-receipt failure happens after the completed event is
-        // durable and must still have one reserved slot for its failure fact.
-        using var reservation = ReserveOperation(maxRecordSlots: 3);
+        // Intent, pre-effect authorization, completion, and a possible
+        // post-completion failure each retain their own durable slot.
+        using var reservation = ReserveOperation(maxRecordSlots: 4);
         AuditSpoolQuotaLease? quota = null;
         AuditExportCheckpointStore? checkpointStore = null;
         AuditClosedSpoolChainReader? reader = null;
+        var dispositionFacts = RequestDispositionFacts(
+            supervisorBootId,
+            blockedEventId,
+            proof);
+        SerializedAuditEvent? authorized = null;
         var auditIntent = AppendDispositionEvent(
             reservation,
             "export.disposition_intent",
             "accepted",
             ProofDetail(proof),
-            supervisorBootId,
-            blockedEventId,
+            dispositionFacts,
             parentEventId: blockedEventId);
+        var failureParentEventId = auditIntent.EventId;
         try
         {
             var durableIntent = AuditOperatorDispositionIntent.OpenExisting(
@@ -414,20 +419,34 @@ internal sealed class AuditAdminOperations
                 blockedEventId,
                 proof);
 
+            if (durableIntent is not null)
+            {
+                dispositionFacts = AuthorizedDispositionFacts(durableIntent);
+                authorized = AppendDispositionEvent(
+                    reservation,
+                    "export.disposition_authorized",
+                    "authorized",
+                    "disposition.authorized",
+                    dispositionFacts,
+                    auditIntent.EventId);
+                failureParentEventId = authorized.Value.EventId;
+                afterDurableIntentForTests?.Invoke();
+            }
+
             if (durableIntent is not null &&
                 AuditOperatorDispositionOutcome.TryOpenCommitted(
                     _options,
                     durableIntent) is not null)
             {
                 afterDurableIntentForTests?.Invoke();
-                AppendDispositionEvent(
+                var replayCompleted = AppendDispositionEvent(
                     reservation,
                     "export.disposition_completed",
                     "completed",
                     "disposition.previously_completed",
-                    supervisorBootId,
-                    blockedEventId,
-                    auditIntent.EventId);
+                    dispositionFacts,
+                    authorized!.Value.EventId);
+                failureParentEventId = replayCompleted.EventId;
                 return durableIntent.DispositionId;
             }
 
@@ -442,15 +461,14 @@ internal sealed class AuditAdminOperations
 
             if (durableIntent is not null && durableIntent.IsAlreadyApplied(checkpointStore.Current))
             {
-                afterDurableIntentForTests?.Invoke();
                 var completed = AppendDispositionEvent(
                     reservation,
                     "export.disposition_completed",
                     "completed",
                     "disposition.already_applied",
-                    supervisorBootId,
-                    blockedEventId,
-                    auditIntent.EventId);
+                    dispositionFacts,
+                    authorized!.Value.EventId);
+                failureParentEventId = completed.EventId;
                 afterCompletedAuditAppendForTests?.Invoke();
                 _ = AuditOperatorDispositionOutcome.Commit(
                     _options,
@@ -476,7 +494,19 @@ internal sealed class AuditAdminOperations
                 record.Position,
                 blocked,
                 proof);
-            afterDurableIntentForTests?.Invoke();
+            if (authorized is null)
+            {
+                dispositionFacts = AuthorizedDispositionFacts(durableIntent);
+                authorized = AppendDispositionEvent(
+                    reservation,
+                    "export.disposition_authorized",
+                    "authorized",
+                    "disposition.authorized",
+                    dispositionFacts,
+                    auditIntent.EventId);
+                failureParentEventId = authorized.Value.EventId;
+                afterDurableIntentForTests?.Invoke();
+            }
             reader.ApplyPermanentBlockDisposition(record.Position, durableIntent);
             afterCheckpointAdvanceForTests?.Invoke();
             var applied = AppendDispositionEvent(
@@ -484,9 +514,9 @@ internal sealed class AuditAdminOperations
                 "export.disposition_completed",
                 "completed",
                 "disposition.applied",
-                supervisorBootId,
-                blockedEventId,
-                auditIntent.EventId);
+                dispositionFacts,
+                authorized.Value.EventId);
+            failureParentEventId = applied.EventId;
             afterCompletedAuditAppendForTests?.Invoke();
             _ = AuditOperatorDispositionOutcome.Commit(
                 _options,
@@ -503,9 +533,10 @@ internal sealed class AuditAdminOperations
                 "export.disposition_failed",
                 "disposition",
                 evidenceId: null,
-                auditIntent.EventId,
+                failureParentEventId,
                 supervisorBootId.ToString("D"),
-                reservation);
+                reservation,
+                operatorDisposition: dispositionFacts);
             throw;
         }
         finally
@@ -528,7 +559,8 @@ internal sealed class AuditAdminOperations
         string? destinationPath = null,
         string failureDetailCode = "operation.failed",
         string? failureScriptDigest = null,
-        long? failureBytesReturned = null)
+        long? failureBytesReturned = null,
+        AuditOperatorDispositionFacts? operatorDisposition = null)
     {
         try
         {
@@ -544,7 +576,8 @@ internal sealed class AuditAdminOperations
                 parentEventId,
                 declaredTarget,
                 destinationKind,
-                destinationPath);
+                destinationPath,
+                operatorDisposition);
         }
         catch (Exception auditFailure) when (!IsFatal(auditFailure))
         {
@@ -559,8 +592,7 @@ internal sealed class AuditAdminOperations
         string eventType,
         string state,
         string detailCode,
-        Guid bootId,
-        Guid eventId,
+        AuditOperatorDispositionFacts disposition,
         Guid parentEventId) =>
         AppendEvent(
             reservation,
@@ -572,7 +604,8 @@ internal sealed class AuditAdminOperations
             scriptDigest: null,
             bytesReturned: null,
             parentEventId,
-            bootId.ToString("D"));
+            disposition.TargetSupervisorBootId.ToString("D"),
+            operatorDisposition: disposition);
 
     private SerializedAuditEvent AppendEvent(
         AuditReservation reservation,
@@ -586,7 +619,8 @@ internal sealed class AuditAdminOperations
         Guid? parentEventId,
         string? declaredTarget,
         string? destinationKind = null,
-        string? destinationPath = null)
+        string? destinationPath = null,
+        AuditOperatorDispositionFacts? operatorDisposition = null)
     {
         var health = _journal.Health.Snapshot();
         var unhealthy = health.State is AuditHealthState.Degraded or AuditHealthState.Unavailable;
@@ -610,6 +644,7 @@ internal sealed class AuditAdminOperations
                 ScriptEvidenceId = evidenceId,
                 OriginalScriptDigest = scriptDigest,
             },
+            OperatorDisposition = operatorDisposition,
             Routing = new AuditRouting(),
             Outcome = new AuditOutcome
             {
@@ -637,6 +672,38 @@ internal sealed class AuditAdminOperations
             },
         });
     }
+
+    private static AuditOperatorDispositionFacts RequestDispositionFacts(
+        Guid supervisorBootId,
+        Guid blockedEventId,
+        AuditOperatorDispositionProof proof) => new()
+    {
+        TargetSupervisorBootId = supervisorBootId,
+        TargetEventId = blockedEventId,
+        ProofKind = ProofKind(proof),
+        VerifiedReceiptDigest = proof.VerifiedReceiptDigest,
+        AcknowledgedGapReason = proof.AcknowledgedGapReason,
+    };
+
+    private static AuditOperatorDispositionFacts AuthorizedDispositionFacts(
+        AuditOperatorDispositionIntent intent) => new()
+    {
+        DispositionId = intent.DispositionId,
+        TargetSupervisorBootId = intent.SupervisorBootId,
+        TargetSpoolFile = intent.Spool.FileName,
+        TargetStartOffset = intent.StartOffset,
+        TargetNextOffset = intent.NextOffset,
+        TargetSequence = intent.Sequence,
+        TargetEventId = intent.EventId,
+        FailureClass = FailureClass(intent.FailureClass),
+        DetailCode = intent.DetailCode,
+        ResponseDigest = intent.ResponseDigest,
+        FirstFailureUtc = intent.FirstFailureUtc,
+        TargetExportConfigurationIdentity = intent.ExportConfigurationIdentity,
+        ProofKind = ProofKind(intent.Proof),
+        VerifiedReceiptDigest = intent.Proof.VerifiedReceiptDigest,
+        AcknowledgedGapReason = intent.Proof.AcknowledgedGapReason,
+    };
 
     private AuditReservation ReserveOperation(int maxRecordSlots = 2)
     {
@@ -688,6 +755,21 @@ internal sealed class AuditAdminOperations
         AuditOperatorDispositionProofKind.VerifiedReceipt => "proof.verified_receipt",
         AuditOperatorDispositionProofKind.AcknowledgedGap => "proof.acknowledged_gap",
         _ => throw new ArgumentOutOfRangeException(nameof(proof)),
+    };
+
+    private static string ProofKind(AuditOperatorDispositionProof proof) => proof.Kind switch
+    {
+        AuditOperatorDispositionProofKind.VerifiedReceipt => "verified_receipt",
+        AuditOperatorDispositionProofKind.AcknowledgedGap => "acknowledged_gap",
+        _ => throw new ArgumentOutOfRangeException(nameof(proof)),
+    };
+
+    private static string FailureClass(AuditExportFailureClass failureClass) => failureClass switch
+    {
+        AuditExportFailureClass.PartialRejection => "partial_rejection",
+        AuditExportFailureClass.Data => "data",
+        AuditExportFailureClass.Protocol => "protocol",
+        _ => throw new ArgumentOutOfRangeException(nameof(failureClass)),
     };
 
     private static bool PathsEqual(string left, string right) => string.Equals(

@@ -125,6 +125,36 @@ public sealed class AuditOtlpRecordMapperTests
     }
 
     [Fact]
+    public void Map_emits_operator_disposition_query_attributes_without_flattening_the_body()
+    {
+        var dispositionId = Guid.Parse("62345678-1234-4abc-8def-0123456789ab");
+        var facts = DispositionFacts(dispositionId);
+        var source = AuditOtlpTestRecord.Create(operatorDisposition: facts);
+
+        var request = ExportLogsServiceRequest.Parser.ParseFrom(
+            AuditOtlpRecordMapper.Map(source.Utf8Line).RequestBytes.Span);
+        var attributes = request.ResourceLogs[0].ScopeLogs[0].LogRecords[0]
+            .Attributes.ToDictionary(value => value.Key, value => value.Value);
+
+        Assert.Equal(dispositionId.ToString("D"), attributes["ptk.disposition.id"].StringValue);
+        Assert.Equal(
+            AuditOtlpTestRecord.SupervisorBootId.ToString("D"),
+            attributes["ptk.disposition.target.boot_id"].StringValue);
+        Assert.Equal(
+            AuditOtlpTestRecord.ParentEventId.ToString("D"),
+            attributes["ptk.disposition.target.event_id"].StringValue);
+        Assert.Equal("acknowledged_gap", attributes["ptk.disposition.proof_kind"].StringValue);
+        Assert.Equal("protocol", attributes["ptk.disposition.failure_class"].StringValue);
+        Assert.Equal(
+            AuditOtlpTestRecord.HashA,
+            attributes["ptk.disposition.target.export_configuration_identity"].StringValue);
+        Assert.Equal(
+            "operator.accepted",
+            attributes["ptk.disposition.acknowledged_gap_reason"].StringValue);
+        Assert.DoesNotContain("ptk.disposition.verified_receipt_digest", attributes.Keys);
+    }
+
+    [Fact]
     public void Map_is_deterministic_for_the_same_authoritative_jsonl_bytes()
     {
         var source = AuditOtlpTestRecord.Create();
@@ -154,7 +184,44 @@ public sealed class AuditOtlpRecordMapperTests
         Assert.Throws<AuditOtlpMappingException>(() => AuditOtlpRecordMapper.Map(invalidTrace));
         Assert.Throws<AuditOtlpMappingException>(() => AuditOtlpRecordMapper.Map(zeroTrace));
         Assert.Throws<AuditOtlpMappingException>(() => AuditOtlpRecordMapper.Map(source.Utf8Line[..^1]));
+
+        var dispositionSource = AuditOtlpTestRecord.Create(
+            operatorDisposition: DispositionFacts(
+                Guid.Parse("62345678-1234-4abc-8def-0123456789ab")));
+        var dispositionText = Encoding.UTF8.GetString(dispositionSource.Utf8Line.Span);
+        var missingResolvedSequence = Encoding.UTF8.GetBytes(dispositionText.Replace(
+            "\"target_sequence\":7",
+            "\"target_sequence\":null",
+            StringComparison.Ordinal));
+        var unknownDispositionProperty = Encoding.UTF8.GetBytes(dispositionText.Replace(
+            "\"operator_disposition\":{",
+            "\"operator_disposition\":{\"unknown\":null,",
+            StringComparison.Ordinal));
+        Assert.Throws<AuditOtlpMappingException>(() =>
+            AuditOtlpRecordMapper.Map(missingResolvedSequence));
+        Assert.Throws<AuditOtlpMappingException>(() =>
+            AuditOtlpRecordMapper.Map(unknownDispositionProperty));
     }
+
+    private static AuditOperatorDispositionFacts DispositionFacts(Guid dispositionId) => new()
+    {
+        DispositionId = dispositionId,
+        TargetSupervisorBootId = AuditOtlpTestRecord.SupervisorBootId,
+        TargetSpoolFile = AuditSpoolSegmentIdentity.Create(
+            AuditOtlpTestRecord.SupervisorBootId,
+            2).FileName,
+        TargetStartOffset = 10,
+        TargetNextOffset = 20,
+        TargetSequence = 7,
+        TargetEventId = AuditOtlpTestRecord.ParentEventId,
+        FailureClass = "protocol",
+        DetailCode = "otlp.bad_response",
+        ResponseDigest = null,
+        FirstFailureUtc = AuditOtlpTestRecord.Occurred,
+        TargetExportConfigurationIdentity = AuditOtlpTestRecord.HashA,
+        ProofKind = "acknowledged_gap",
+        AcknowledgedGapReason = "operator.accepted",
+    };
 
     private static ulong ToUnixNanoseconds(DateTimeOffset value) =>
         checked((ulong)(value.UtcDateTime.Ticks - DateTime.UnixEpoch.Ticks) * 100UL);
@@ -180,7 +247,8 @@ internal static class AuditOtlpTestRecord
         bool includeOptionalQueryValues = true,
         long sequence = 1,
         string? previousEventHash = null,
-        string? outcomeState = null) =>
+        string? outcomeState = null,
+        AuditOperatorDispositionFacts? operatorDisposition = null) =>
         AuditEventSerializer.Serialize(
             sequence,
             previousEventHash,
@@ -191,16 +259,19 @@ internal static class AuditOtlpTestRecord
                 4321,
                 "1.2.3-test",
                 HashA),
-            CompleteInput(includeOptionalQueryValues, outcomeState),
+            CompleteInput(includeOptionalQueryValues, outcomeState, operatorDisposition),
             EventId,
             Occurred,
             Observed);
 
     private static AuditEventInput CompleteInput(
         bool includeOptionalQueryValues,
-        string? outcomeState) => new()
+        string? outcomeState,
+        AuditOperatorDispositionFacts? operatorDisposition) => new()
     {
-        EventType = "execution.planned",
+        EventType = operatorDisposition is null
+            ? "execution.planned"
+            : "export.disposition_authorized",
         Session = new AuditSession
         {
             Name = includeOptionalQueryValues ? "default" : null,
@@ -249,6 +320,7 @@ internal static class AuditOtlpTestRecord
             OriginalScriptDigest = HashA,
             ScriptEvidenceId = EvidenceId,
         },
+        OperatorDisposition = operatorDisposition,
         Routing = new AuditRouting
         {
             Domain = "powershell",

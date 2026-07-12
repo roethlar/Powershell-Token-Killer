@@ -15,6 +15,8 @@ public sealed class AuditEventTests
     private static readonly Guid WorkerBootId = Guid.Parse("32345678-1234-4abc-8def-0123456789ab");
     private static readonly Guid PlanId = Guid.Parse("42345678-1234-4abc-8def-0123456789ab");
     private static readonly Guid EvidenceId = Guid.Parse("52345678-1234-4abc-8def-0123456789ab");
+    private static readonly Guid DispositionId = Guid.Parse("62345678-1234-4abc-8def-0123456789ab");
+    private static readonly Guid TargetEventId = Guid.Parse("01890f3e-abcd-7abc-8def-0123456789ab");
     private static readonly DateTimeOffset Occurred = new(2026, 7, 11, 12, 34, 56, 123, TimeSpan.Zero);
     private static readonly DateTimeOffset Observed = Occurred.AddTicks(4567);
     private const string HashA = "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
@@ -41,7 +43,7 @@ public sealed class AuditEventTests
         Assert.Equal(
             ["schema_version", "event_id", "event_type", "occurred_utc", "observed_utc",
              "producer", "sequence", "previous_event_hash", "session", "actor", "correlation",
-             "request", "routing", "outcome", "coverage", "audit", "event_hash"],
+             "request", "operator_disposition", "routing", "outcome", "coverage", "audit", "event_hash"],
             root.EnumerateObject().Select(property => property.Name));
         Assert.Equal(
             ["host_id", "supervisor_boot_id", "worker_boot_id", "pid", "version", "binary_digest"],
@@ -89,6 +91,7 @@ public sealed class AuditEventTests
         Assert.Equal(JsonValueKind.Null, root.GetProperty("previous_event_hash").ValueKind);
         Assert.Equal(JsonValueKind.Null, root.GetProperty("session").GetProperty("template_name").ValueKind);
         Assert.Equal(JsonValueKind.Null, root.GetProperty("outcome").GetProperty("exit_code").ValueKind);
+        Assert.Equal(JsonValueKind.Null, root.GetProperty("operator_disposition").ValueKind);
         Assert.Equal(["action", "raw"], Strings(root.GetProperty("request").GetProperty("provided_fields")));
         Assert.Equal(
             ["native_direct", "powershell_direct"],
@@ -231,6 +234,111 @@ public sealed class AuditEventTests
         Assert.Equal(
             ["native_direct", "powershell_direct"],
             Strings(document.RootElement.GetProperty("routing").GetProperty("permitted_fallbacks")));
+    }
+
+    [Fact]
+    public void Serialize_enforces_exact_operator_disposition_shapes_and_event_coupling()
+    {
+        var requestFacts = new AuditOperatorDispositionFacts
+        {
+            TargetSupervisorBootId = SupervisorBootId,
+            TargetEventId = TargetEventId,
+            ProofKind = "acknowledged_gap",
+            AcknowledgedGapReason = "operator.accepted",
+        };
+        var request = CompleteInput() with
+        {
+            EventType = "export.disposition_intent",
+            Correlation = CompleteInput().Correlation with { PlanId = null },
+            Routing = CompleteInput().Routing with { PermittedFallbacks = [] },
+            OperatorDisposition = requestFacts,
+        };
+        var serializedRequest = Serialize(1, null, request);
+        using (var document = Parse(serializedRequest))
+        {
+            var facts = document.RootElement.GetProperty("operator_disposition");
+            Assert.Equal(
+                [
+                    "disposition_id", "target_supervisor_boot_id", "target_spool_file",
+                    "target_start_offset", "target_next_offset", "target_sequence",
+                    "target_event_id", "failure_class", "detail_code", "response_digest",
+                    "first_failure_utc", "target_export_configuration_identity",
+                    "proof_kind", "verified_receipt_digest", "acknowledged_gap_reason",
+                ],
+                facts.EnumerateObject().Select(property => property.Name));
+            Assert.Equal(JsonValueKind.Null, facts.GetProperty("disposition_id").ValueKind);
+            Assert.Equal(
+                SupervisorBootId.ToString("D"),
+                facts.GetProperty("target_supervisor_boot_id").GetString());
+            Assert.Equal(TargetEventId.ToString("D"), facts.GetProperty("target_event_id").GetString());
+            Assert.Equal("acknowledged_gap", facts.GetProperty("proof_kind").GetString());
+            Assert.Equal("operator.accepted", facts.GetProperty("acknowledged_gap_reason").GetString());
+        }
+
+        var authorizedFacts = requestFacts with
+        {
+            DispositionId = DispositionId,
+            TargetSpoolFile = AuditSpoolSegmentIdentity.Create(SupervisorBootId, 3).FileName,
+            TargetStartOffset = 10,
+            TargetNextOffset = 20,
+            TargetSequence = 7,
+            FailureClass = "data",
+            DetailCode = "otlp.bad_record",
+            FirstFailureUtc = Occurred,
+            TargetExportConfigurationIdentity = HashB,
+            ProofKind = "verified_receipt",
+            VerifiedReceiptDigest = HashA,
+            AcknowledgedGapReason = null,
+        };
+        var authorized = request with
+        {
+            EventType = "export.disposition_authorized",
+            OperatorDisposition = authorizedFacts,
+        };
+        Serialize(1, null, authorized);
+
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1,
+            null,
+            request with { OperatorDisposition = null }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1,
+            null,
+            CompleteInput() with { OperatorDisposition = requestFacts }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1,
+            null,
+            request with
+            {
+                OperatorDisposition = requestFacts with { TargetSequence = 1 },
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1,
+            null,
+            authorized with
+            {
+                OperatorDisposition = authorizedFacts with { TargetSequence = null },
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1,
+            null,
+            request with
+            {
+                OperatorDisposition = requestFacts with
+                {
+                    AcknowledgedGapReason = "operator..accepted",
+                },
+            }));
+        Assert.Throws<AuditEventValidationException>(() => Serialize(
+            1,
+            null,
+            authorized with
+            {
+                OperatorDisposition = authorizedFacts with
+                {
+                    AcknowledgedGapReason = "unexpected",
+                },
+            }));
     }
 
     [Fact]

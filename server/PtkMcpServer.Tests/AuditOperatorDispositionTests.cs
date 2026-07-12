@@ -48,8 +48,52 @@ public sealed class AuditOperatorDispositionTests : IDisposable
             Assert.Equal(target.EventId, checkpoint.AcknowledgedEventId);
             Assert.Null(checkpoint.BlockedRecord);
             Assert.Equal(
-                ["export.disposition_intent", "export.disposition_completed"],
+                [
+                    "export.disposition_intent",
+                    "export.disposition_authorized",
+                    "export.disposition_completed",
+                ],
                 admin.Sink.Lines.Select(EventType).ToArray());
+            using var intentEvent = JsonDocument.Parse(admin.Sink.Lines[0]);
+            using var authorizedEvent = JsonDocument.Parse(admin.Sink.Lines[1]);
+            using var completedEvent = JsonDocument.Parse(admin.Sink.Lines[2]);
+            var requestFacts = intentEvent.RootElement.GetProperty("operator_disposition");
+            Assert.Equal(JsonValueKind.Null, requestFacts.GetProperty("disposition_id").ValueKind);
+            Assert.Equal(
+                target.BootId.ToString("D"),
+                requestFacts.GetProperty("target_supervisor_boot_id").GetString());
+            Assert.Equal(
+                target.EventId.ToString("D"),
+                requestFacts.GetProperty("target_event_id").GetString());
+            Assert.Equal("verified_receipt", requestFacts.GetProperty("proof_kind").GetString());
+            Assert.Equal(new string('b', 64), requestFacts.GetProperty("verified_receipt_digest").GetString());
+            Assert.Equal(JsonValueKind.Null, requestFacts.GetProperty("failure_class").ValueKind);
+
+            var authorizedFacts = authorizedEvent.RootElement.GetProperty("operator_disposition");
+            Assert.Equal(dispositionId.ToString("D"), authorizedFacts.GetProperty("disposition_id").GetString());
+            Assert.Equal(
+                FailureClassText(failureClass),
+                authorizedFacts.GetProperty("failure_class").GetString());
+            Assert.Equal("test.block", authorizedFacts.GetProperty("detail_code").GetString());
+            Assert.Equal(
+                ConfigurationIdentity,
+                authorizedFacts.GetProperty("target_export_configuration_identity").GetString());
+            Assert.Equal(
+                authorizedFacts.GetRawText(),
+                completedEvent.RootElement.GetProperty("operator_disposition").GetRawText());
+
+            Assert.Equal(
+                target.EventId.ToString("D"),
+                intentEvent.RootElement.GetProperty("correlation")
+                    .GetProperty("parent_event_id").GetString());
+            Assert.Equal(
+                intentEvent.RootElement.GetProperty("event_id").GetString(),
+                authorizedEvent.RootElement.GetProperty("correlation")
+                    .GetProperty("parent_event_id").GetString());
+            Assert.Equal(
+                authorizedEvent.RootElement.GetProperty("event_id").GetString(),
+                completedEvent.RootElement.GetProperty("correlation")
+                    .GetProperty("parent_event_id").GetString());
             var outcomePath = Assert.Single(
                 DispositionOutcomes(options),
                 path => Path.GetFileName(path).Contains(
@@ -68,11 +112,6 @@ public sealed class AuditOperatorDispositionTests : IDisposable
             Assert.Equal(
                 admin.Journal.SupervisorBootId.ToString("D"),
                 outcome.RootElement.GetProperty("completed_audit_supervisor_boot_id").GetString());
-            using var intentEvent = JsonDocument.Parse(admin.Sink.Lines[0]);
-            Assert.Equal(
-                target.EventId.ToString("D"),
-                intentEvent.RootElement.GetProperty("correlation")
-                    .GetProperty("parent_event_id").GetString());
         }
     }
 
@@ -95,8 +134,21 @@ public sealed class AuditOperatorDispositionTests : IDisposable
             Assert.NotNull(Checkpoint(options, target.BootId).BlockedRecord);
             persistedId = ReadDispositionId(options);
             Assert.Equal(
-                ["export.disposition_intent", "export.disposition_failed"],
+                [
+                    "export.disposition_intent",
+                    "export.disposition_authorized",
+                    "export.disposition_failed",
+                ],
                 firstAdmin.Sink.Lines.Select(EventType).ToArray());
+            using var authorized = JsonDocument.Parse(firstAdmin.Sink.Lines[1]);
+            using var failed = JsonDocument.Parse(firstAdmin.Sink.Lines[2]);
+            Assert.Equal(
+                authorized.RootElement.GetProperty("operator_disposition").GetRawText(),
+                failed.RootElement.GetProperty("operator_disposition").GetRawText());
+            Assert.Equal(
+                authorized.RootElement.GetProperty("event_id").GetString(),
+                failed.RootElement.GetProperty("correlation")
+                    .GetProperty("parent_event_id").GetString());
         }
 
         using var secondAdmin = AdminJournal(options);
@@ -149,9 +201,13 @@ public sealed class AuditOperatorDispositionTests : IDisposable
             Assert.Equal(persistedId, resumedId);
             Assert.Null(Checkpoint(options, target.BootId).BlockedRecord);
             Assert.Equal(
-                ["export.disposition_intent", "export.disposition_completed"],
+                [
+                    "export.disposition_intent",
+                    "export.disposition_authorized",
+                    "export.disposition_completed",
+                ],
                 secondAdmin.Sink.Lines.Select(EventType).ToArray());
-            using var completed = JsonDocument.Parse(secondAdmin.Sink.Lines[1]);
+            using var completed = JsonDocument.Parse(secondAdmin.Sink.Lines[2]);
             Assert.Equal(
                 "disposition.already_applied",
                 completed.RootElement.GetProperty("outcome").GetProperty("detail_code").GetString());
@@ -171,9 +227,13 @@ public sealed class AuditOperatorDispositionTests : IDisposable
             persistedId,
             replay.ApplyPermanentBlockDisposition(target.BootId, target.EventId, proof));
         Assert.Equal(
-            ["export.disposition_intent", "export.disposition_completed"],
+            [
+                "export.disposition_intent",
+                "export.disposition_authorized",
+                "export.disposition_completed",
+            ],
             replayAdmin.Sink.Lines.Select(EventType).ToArray());
-        using var replayed = JsonDocument.Parse(replayAdmin.Sink.Lines[1]);
+        using var replayed = JsonDocument.Parse(replayAdmin.Sink.Lines[2]);
         Assert.Equal(
             "disposition.previously_completed",
             replayed.RootElement.GetProperty("outcome").GetProperty("detail_code").GetString());
@@ -202,10 +262,17 @@ public sealed class AuditOperatorDispositionTests : IDisposable
             Assert.Equal(
                 [
                     "export.disposition_intent",
+                    "export.disposition_authorized",
                     "export.disposition_completed",
                     "export.disposition_failed",
                 ],
                 firstAdmin.Sink.Lines.Select(EventType).ToArray());
+            using var completed = JsonDocument.Parse(firstAdmin.Sink.Lines[2]);
+            using var failed = JsonDocument.Parse(firstAdmin.Sink.Lines[3]);
+            Assert.Equal(
+                completed.RootElement.GetProperty("event_id").GetString(),
+                failed.RootElement.GetProperty("correlation")
+                    .GetProperty("parent_event_id").GetString());
         }
 
         using var secondAdmin = AdminJournal(options);
@@ -279,6 +346,7 @@ public sealed class AuditOperatorDispositionTests : IDisposable
             Assert.Equal(
                 [
                     "export.disposition_intent",
+                    "export.disposition_authorized",
                     "export.disposition_completed",
                     "export.disposition_failed",
                 ],
@@ -290,7 +358,7 @@ public sealed class AuditOperatorDispositionTests : IDisposable
         Assert.Equal(
             persistedId,
             second.ApplyPermanentBlockDisposition(target.BootId, target.EventId, proof));
-        using var replayed = JsonDocument.Parse(secondAdmin.Sink.Lines[1]);
+        using var replayed = JsonDocument.Parse(secondAdmin.Sink.Lines[2]);
         Assert.Equal(
             "disposition.previously_completed",
             replayed.RootElement.GetProperty("outcome").GetProperty("detail_code").GetString());
@@ -353,8 +421,59 @@ public sealed class AuditOperatorDispositionTests : IDisposable
 
         Assert.NotNull(Checkpoint(options, target.BootId).BlockedRecord);
         Assert.Equal(
-            ["export.disposition_intent", "export.disposition_failed"],
+            [
+                "export.disposition_intent",
+                "export.disposition_authorized",
+                "export.disposition_failed",
+            ],
             admin.Sink.Lines.Select(EventType).ToArray());
+    }
+
+    [Fact]
+    public void Completion_receipt_rejects_another_same_boot_disposition_event()
+    {
+        var options = Options();
+        var target = CreateBlockedTarget(options, AuditExportFailureClass.Data);
+        var blocked = Assert.IsType<AuditExportBlockedRecord>(
+            Checkpoint(options, target.BootId).BlockedRecord);
+        var position = new IntentPosition(
+            blocked.Spool,
+            blocked.ByteOffset,
+            checked(blocked.ByteOffset + 1),
+            blocked.Sequence,
+            blocked.EventId);
+        var proof = AuditOperatorDispositionProof.AcknowledgedGap("operator.accepted");
+        var intent = AuditOperatorDispositionIntent.CreateOrOpen(
+            options,
+            position,
+            blocked,
+            proof);
+        var otherFacts = new AuditOperatorDispositionFacts
+        {
+            DispositionId = Guid.NewGuid(),
+            TargetSupervisorBootId = intent.SupervisorBootId,
+            TargetSpoolFile = intent.Spool.FileName,
+            TargetStartOffset = intent.StartOffset,
+            TargetNextOffset = intent.NextOffset,
+            TargetSequence = intent.Sequence,
+            TargetEventId = intent.EventId,
+            FailureClass = "data",
+            DetailCode = intent.DetailCode,
+            ResponseDigest = intent.ResponseDigest,
+            FirstFailureUtc = intent.FirstFailureUtc,
+            TargetExportConfigurationIdentity = intent.ExportConfigurationIdentity,
+            ProofKind = "acknowledged_gap",
+            AcknowledgedGapReason = proof.AcknowledgedGapReason,
+        };
+        using var admin = AdminJournal(options);
+        var completed = AppendCompletedDispositionEvent(admin, otherFacts);
+
+        Assert.Throws<ArgumentException>(() => AuditOperatorDispositionOutcome.Commit(
+            options,
+            intent,
+            admin.Journal.SupervisorBootId,
+            completed));
+        Assert.Empty(DispositionOutcomes(options));
     }
 
     [Theory]
@@ -561,6 +680,62 @@ public sealed class AuditOperatorDispositionTests : IDisposable
         using var document = JsonDocument.Parse(line);
         return document.RootElement.GetProperty("event_type").GetString()!;
     }
+
+    private static SerializedAuditEvent AppendCompletedDispositionEvent(
+        AdminJournalFixture admin,
+        AuditOperatorDispositionFacts facts)
+    {
+        Assert.True(admin.Journal.TryReserve(
+            1,
+            out var reservation,
+            out var failure),
+            failure);
+        using (reservation)
+        {
+            return admin.Journal.Append(reservation!, new AuditEventInput
+            {
+                EventType = "export.disposition_completed",
+                Session = new AuditSession
+                {
+                    DeclaredPurpose = "audit_administration",
+                    DeclaredTarget = facts.TargetSupervisorBootId.ToString("D"),
+                },
+                Actor = new AuditActor { AttributionStrength = "unknown" },
+                Correlation = new AuditCorrelation { ParentEventId = Guid.CreateVersion7() },
+                Request = new AuditRequest { Tool = "audit_admin", Action = "disposition" },
+                OperatorDisposition = facts,
+                Routing = new AuditRouting(),
+                Outcome = new AuditOutcome
+                {
+                    State = "completed",
+                    DetailCode = "disposition.applied",
+                    TerminationCertainty = "not_applicable",
+                },
+                Coverage = new AuditCoverage
+                {
+                    PtkRequest = false,
+                    RootProcessObserved = "not_applicable",
+                    DescendantsObserved = "not_applicable",
+                    RemoteEffectObserved = "not_applicable",
+                },
+                Audit = new AuditEventHealth
+                {
+                    ProtectionMode = "anchored",
+                    ExportConfigurationIdentity = ConfigurationIdentity,
+                    HealthState = "healthy",
+                },
+            });
+        }
+    }
+
+    private static string FailureClassText(AuditExportFailureClass failureClass) =>
+        failureClass switch
+        {
+            AuditExportFailureClass.PartialRejection => "partial_rejection",
+            AuditExportFailureClass.Data => "data",
+            AuditExportFailureClass.Protocol => "protocol",
+            _ => throw new ArgumentOutOfRangeException(nameof(failureClass)),
+        };
 
     private static string[] DispositionOutcomes(AuditOptions options) =>
         Directory.GetFiles(

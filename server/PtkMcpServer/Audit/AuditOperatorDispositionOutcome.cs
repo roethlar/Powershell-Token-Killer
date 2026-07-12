@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 using System.Text.Json;
@@ -17,6 +18,7 @@ internal sealed class AuditOperatorDispositionOutcome
     private const string FileSuffix = ".json";
     private const string TemporaryPrefix = ".operator.disposition-completed-";
     private const string TemporarySuffix = ".json.tmp";
+    private const string TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'";
     private const int MaximumBytes = 8 * 1024;
 
     private static readonly HashSet<string> Properties = new(
@@ -31,6 +33,16 @@ internal sealed class AuditOperatorDispositionOutcome
             "completed_audit_event_hash",
             "completed_audit_sequence",
             "completed_audit_record_sha256",
+        ],
+        StringComparer.Ordinal);
+
+    private static readonly HashSet<string> CompletedDispositionProperties = new(
+        [
+            "disposition_id", "target_supervisor_boot_id", "target_spool_file",
+            "target_start_offset", "target_next_offset", "target_sequence",
+            "target_event_id", "failure_class", "detail_code", "response_digest",
+            "first_failure_utc", "target_export_configuration_identity",
+            "proof_kind", "verified_receipt_digest", "acknowledged_gap_reason",
         ],
         StringComparer.Ordinal);
 
@@ -439,6 +451,9 @@ internal sealed class AuditOperatorDispositionOutcome
             var correlation = root.GetProperty("correlation");
             var request = root.GetProperty("request");
             var outcome = root.GetProperty("outcome");
+            RequireCompletedDispositionFacts(
+                root.GetProperty("operator_disposition"),
+                intent);
             var detail = RequiredString(outcome, "detail_code");
             if (!string.Equals(
                     RequiredString(root, "event_type"),
@@ -482,6 +497,78 @@ internal sealed class AuditOperatorDispositionOutcome
                 "The disposition completion audit event is invalid.",
                 nameof(completedAuditEvent),
                 exception);
+        }
+    }
+
+    private static void RequireCompletedDispositionFacts(
+        JsonElement facts,
+        AuditOperatorDispositionIntent intent)
+    {
+        if (facts.ValueKind != JsonValueKind.Object)
+            throw new FormatException();
+        var names = facts.EnumerateObject().Select(property => property.Name).ToArray();
+        if (names.Length != CompletedDispositionProperties.Count ||
+            names.Distinct(StringComparer.Ordinal).Count() != names.Length ||
+            names.Any(name => !CompletedDispositionProperties.Contains(name)))
+        {
+            throw new FormatException();
+        }
+
+        var expectedFailureClass = intent.FailureClass switch
+        {
+            AuditExportFailureClass.PartialRejection => "partial_rejection",
+            AuditExportFailureClass.Data => "data",
+            AuditExportFailureClass.Protocol => "protocol",
+            _ => throw new FormatException(),
+        };
+        var expectedProofKind = intent.Proof.Kind switch
+        {
+            AuditOperatorDispositionProofKind.VerifiedReceipt => "verified_receipt",
+            AuditOperatorDispositionProofKind.AcknowledgedGap => "acknowledged_gap",
+            _ => throw new FormatException(),
+        };
+        if (RequiredGuid(facts, "disposition_id", version: 4) != intent.DispositionId ||
+            RequiredGuid(facts, "target_supervisor_boot_id", version: 4) !=
+                intent.SupervisorBootId ||
+            !string.Equals(
+                RequiredString(facts, "target_spool_file"),
+                intent.Spool.FileName,
+                StringComparison.Ordinal) ||
+            RequiredInt64(facts, "target_start_offset") != intent.StartOffset ||
+            RequiredInt64(facts, "target_next_offset") != intent.NextOffset ||
+            RequiredInt64(facts, "target_sequence") != intent.Sequence ||
+            RequiredGuid(facts, "target_event_id", version: 7) != intent.EventId ||
+            !string.Equals(
+                RequiredString(facts, "failure_class"),
+                expectedFailureClass,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                RequiredString(facts, "detail_code"),
+                intent.DetailCode,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                RequiredNullableString(facts, "response_digest"),
+                intent.ResponseDigest,
+                StringComparison.Ordinal) ||
+            RequiredTimestamp(facts, "first_failure_utc") != intent.FirstFailureUtc ||
+            !string.Equals(
+                RequiredString(facts, "target_export_configuration_identity"),
+                intent.ExportConfigurationIdentity,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                RequiredString(facts, "proof_kind"),
+                expectedProofKind,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                RequiredNullableString(facts, "verified_receipt_digest"),
+                intent.Proof.VerifiedReceiptDigest,
+                StringComparison.Ordinal) ||
+            !string.Equals(
+                RequiredNullableString(facts, "acknowledged_gap_reason"),
+                intent.Proof.AcknowledgedGapReason,
+                StringComparison.Ordinal))
+        {
+            throw new FormatException();
         }
     }
 
@@ -539,6 +626,36 @@ internal sealed class AuditOperatorDispositionOutcome
         if (value.ValueKind != JsonValueKind.Number || !value.TryGetInt64(out var result))
             throw new FormatException();
         return result;
+    }
+
+    private static string? RequiredNullableString(JsonElement root, string name)
+    {
+        var value = root.GetProperty(name);
+        return value.ValueKind switch
+        {
+            JsonValueKind.Null => null,
+            JsonValueKind.String => value.GetString() ?? throw new FormatException(),
+            _ => throw new FormatException(),
+        };
+    }
+
+    private static DateTimeOffset RequiredTimestamp(JsonElement root, string name)
+    {
+        var text = RequiredString(root, name);
+        if (!DateTimeOffset.TryParseExact(
+                text,
+                TimestampFormat,
+                CultureInfo.InvariantCulture,
+                DateTimeStyles.AssumeUniversal | DateTimeStyles.AdjustToUniversal,
+                out var value) ||
+            !string.Equals(
+                text,
+                value.ToString(TimestampFormat, CultureInfo.InvariantCulture),
+                StringComparison.Ordinal))
+        {
+            throw new FormatException();
+        }
+        return value;
     }
 
     private static Guid RequiredGuid(JsonElement root, string name, int version)
