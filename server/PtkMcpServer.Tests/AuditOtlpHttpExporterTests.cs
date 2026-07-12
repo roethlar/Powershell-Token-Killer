@@ -362,20 +362,31 @@ public sealed class AuditOtlpHttpExporterTests
     }
 
     [Fact]
-    public async Task Tls_validation_failure_blocks_until_configuration_changes_but_connection_failure_retries()
+    public async Task Tls_authentication_failure_blocks_but_secure_handshake_transport_failure_retries()
     {
         using var tlsExporter = CreateExporter((_, _) => throw new HttpRequestException(
+            HttpRequestError.SecureConnectionError,
             "must not escape",
             new AuthenticationException("wrong ca")));
+        using var handshakeTransportExporter = CreateExporter((_, _) => throw new HttpRequestException(
+            HttpRequestError.SecureConnectionError,
+            "must not escape",
+            new IOException("peer aborted during TLS handshake")));
         using var connectionExporter = CreateExporter((_, _) => throw new HttpRequestException("dns"));
         var record = AuditOtlpRecordMapper.Map(AuditOtlpTestRecord.Create().Utf8Line);
 
         var tls = await tlsExporter.ExportAsync(record, CancellationToken.None);
+        var handshakeTransport = await handshakeTransportExporter.ExportAsync(
+            record,
+            CancellationToken.None);
         var connection = await connectionExporter.ExportAsync(record, CancellationToken.None);
 
         Assert.Equal(AuditExportAttemptKind.Blocked, tls.Kind);
         Assert.Equal(AuditExportFailureClass.Configuration, tls.FailureClass);
         Assert.Equal("tls.validation", tls.DetailCode);
+        Assert.Equal(AuditExportAttemptKind.Retry, handshakeTransport.Kind);
+        Assert.Null(handshakeTransport.FailureClass);
+        Assert.Equal("transport.connection", handshakeTransport.DetailCode);
         Assert.Equal(AuditExportAttemptKind.Retry, connection.Kind);
         Assert.Null(connection.FailureClass);
         Assert.Equal("transport.connection", connection.DetailCode);

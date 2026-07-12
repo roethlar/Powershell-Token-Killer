@@ -172,7 +172,7 @@ internal sealed class AuditOtlpHttpExporter : IAuditOtlpExportTransport, IDispos
             {
                 return AuditExportAttemptResult.Retry("transport.timeout");
             }
-            catch (HttpRequestException exception) when (IsTlsFailure(exception))
+            catch (HttpRequestException exception) when (HasAuthenticationFailure(exception))
             {
                 return AuditExportAttemptResult.Blocked(
                     AuditExportFailureClass.Configuration,
@@ -360,9 +360,8 @@ internal sealed class AuditOtlpHttpExporter : IAuditOtlpExportTransport, IDispos
         }
     }
 
-    private static bool IsTlsFailure(HttpRequestException exception)
+    private static bool HasAuthenticationFailure(HttpRequestException exception)
     {
-        if (exception.HttpRequestError == HttpRequestError.SecureConnectionError) return true;
         for (Exception? current = exception; current is not null; current = current.InnerException)
         {
             if (current is AuthenticationException) return true;
