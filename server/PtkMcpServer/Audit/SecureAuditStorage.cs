@@ -246,7 +246,8 @@ internal static class SecureAuditStorage
         string publishedPath,
         string root,
         Action? destinationReplacedForTests = null,
-        Action? directoryFlushStartingForTests = null)
+        Action? directoryFlushStartingForTests = null,
+        Action? windowsFileFlushedForTests = null)
     {
         // The caller must close and durably flush the protected temporary file
         // before entering this primitive. Replacement makes those exact bytes
@@ -262,7 +263,10 @@ internal static class SecureAuditStorage
 
         if (OperatingSystem.IsWindows())
         {
-            WindowsNative.ReplaceFileAtomically(temporaryPath, publishedPath);
+            WindowsNative.ReplaceFileAtomically(
+                temporaryPath,
+                publishedPath,
+                windowsFileFlushedForTests);
         }
         else
         {
@@ -1181,6 +1185,7 @@ internal static class SecureAuditStorage
         private const uint DeleteAccess = 0x00010000;
         private const uint SynchronizeAccess = 0x00100000;
         private const uint FileReadAttributes = 0x00000080;
+        private const uint GenericWrite = 0x40000000;
         private const uint ShareReadWriteDelete = 0x00000007;
         private const uint OpenExisting = 3;
         private const uint FileFlagOpenReparsePoint = 0x00200000;
@@ -1237,11 +1242,12 @@ internal static class SecureAuditStorage
 
         internal static void ReplaceFileAtomically(
             string temporaryPath,
-            string publishedPath)
+            string publishedPath,
+            Action? fileFlushedForTests)
         {
             using var source = CreateFile(
                 temporaryPath,
-                DeleteAccess | SynchronizeAccess | FileReadAttributes,
+                DeleteAccess | SynchronizeAccess | FileReadAttributes | GenericWrite,
                 ShareReadWriteDelete,
                 securityAttributes: IntPtr.Zero,
                 creationDisposition: OpenExisting,
@@ -1273,12 +1279,23 @@ internal static class SecureAuditStorage
                 {
                     throw new Win32Exception(Marshal.GetLastPInvokeError());
                 }
+
+                FlushRenamedFile(source, fileFlushedForTests);
             }
             finally
             {
                 CryptographicOperations.ZeroMemory(fileNameBytes);
                 CryptographicOperations.ZeroMemory(information);
             }
+        }
+
+        private static void FlushRenamedFile(
+            SafeFileHandle renamedFile,
+            Action? fileFlushedForTests)
+        {
+            if (!FlushFileBuffers(renamedFile))
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            fileFlushedForTests?.Invoke();
         }
 
         internal static ProtectedFileIdentity GetProtectedFileIdentity(
@@ -1476,6 +1493,10 @@ internal static class SecureAuditStorage
             int fileInformationClass,
             [In] byte[] fileInformation,
             uint bufferSize);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool FlushFileBuffers(SafeFileHandle file);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]

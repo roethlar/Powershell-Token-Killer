@@ -328,7 +328,7 @@ public sealed class SecureAuditStorageTests : IDisposable
     }
 
     [Fact]
-    public void Windows_atomic_replace_preserves_an_open_reader_and_publishes_new_bytes()
+    public void Windows_atomic_replace_flushes_new_bytes_before_commit_and_preserves_open_reader()
     {
         if (!OperatingSystem.IsWindows()) return;
         var root = SecureAuditStorage.PrepareRoot(NewRoot());
@@ -343,11 +343,30 @@ public sealed class SecureAuditStorageTests : IDisposable
             FileMode.Open,
             FileAccess.Read,
             FileShare.ReadWrite | FileShare.Delete);
+        var flushObserved = false;
+        var destinationCallbackObserved = false;
 
-        SecureAuditStorage.ReplaceAtomically(temporary, published, root);
+        SecureAuditStorage.ReplaceAtomically(
+            temporary,
+            published,
+            root,
+            destinationReplacedForTests: () =>
+            {
+                Assert.True(flushObserved);
+                destinationCallbackObserved = true;
+            },
+            windowsFileFlushedForTests: () =>
+            {
+                Assert.False(destinationCallbackObserved);
+                Assert.True(File.Exists(published));
+                Assert.False(File.Exists(temporary));
+                flushObserved = true;
+            });
 
         var heldBytes = new byte[Encoding.UTF8.GetByteCount(oldState)];
         retained.ReadExactly(heldBytes);
+        Assert.True(flushObserved);
+        Assert.True(destinationCallbackObserved);
         Assert.Equal(oldState, Encoding.UTF8.GetString(heldBytes));
         Assert.Equal(newState, File.ReadAllText(published, Encoding.UTF8));
         Assert.False(File.Exists(temporary));

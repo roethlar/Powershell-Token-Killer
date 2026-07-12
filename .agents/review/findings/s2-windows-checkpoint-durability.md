@@ -3,9 +3,9 @@
 **Severity**: HIGH — a Windows power loss can revert a checkpoint already used
 to authorize retention, causing duplicate export or permanent chain-adoption
 failure after acknowledged data was deleted.
-**Status**: Open
+**Status**: Verified
 **Branch**: `fix/s2-windows-checkpoint-durability`
-**Commit**: pending
+**Commit**: `e56d9f2d1b5efc7366be5809d4355b6c3ba6c47f`
 
 ## Evidence
 
@@ -36,18 +36,30 @@ delete gap.
 
 ## Approach
 
-Pending coder triage and implementation. Confirm the retained source handle is
-valid after rename, then place `FlushFileBuffers` at the exact post-publication
-boundary and add an instrumented Windows guard proving the call and ordering.
+Open the already identity-verified retained source handle with the write access
+required by `FlushFileBuffers`. After `SetFileInformationByHandle` publishes
+that exact file, flush through the same retained handle before returning to the
+existing destination-replaced commit callback. A post-flush test seam proves
+the ordering without reopening the published path or adding a TOCTOU gap.
 
 ## Files changed
 
-- Pending implementation.
+- `server/PtkMcpServer/Audit/SecureAuditStorage.cs`
+- `server/PtkMcpServer.Tests/SecureAuditStorageTests.cs`
 
 ## Guard proof
 
-- Pending red-to-green Windows guard for a post-rename file flush before the
-  replacement is reported durable.
+- At exact Windows head `e56d9f2d1b5efc7366be5809d4355b6c3ba6c47f`,
+  the new post-flush ordering/held-reader guard passed. A disposable mutation
+  removed only the `FlushRenamedFile` call; the same guard failed because the
+  destination callback observed that no flush had completed. The mutation tree
+  and branch were removed after proof.
+- The Windows ordering/held-reader guard and concurrent no-gap reader guard
+  passed together 2/2. They exercise the real `FlushFileBuffers` P/Invoke and
+  `GENERIC_WRITE` access combination.
+- The full macOS .NET suite passed 926/926; the Windows-only guard compiles but
+  returns early there, so the exact Windows proof is authoritative for the new
+  behavior.
 
 ## Coder dispute (if any)
 
@@ -58,9 +70,9 @@ correction removes the missing durability barrier or rollback risk.
 
 ## Known gaps
 
-The test cannot simulate power loss directly. It must prove the durability
-primitive and ordering without reverting the open-reader replacement
-semantics already guarded on Windows.
+The test cannot simulate power loss directly. It proves the documented
+durability primitive and its pre-commit ordering while retaining the separate
+open-reader and concurrent no-gap replacement guards.
 
 ## Reviewer comments
 
@@ -70,3 +82,15 @@ Claude Code 2.1.207 reviewed fixed head
 `reopened`, recorded 2026-07-12T15:35:30Z. It traced the missing Windows
 post-rename flush into checkpoint rollback after retention and classified the
 result as a cross-volume crash-durability and availability failure.
+
+Claude Code 2.1.207 reviewed fixed head
+`346829b4e6b00ec1fb8d0bcc5f9e092b09cfac3d` against
+`0c9f430b71f14ac40c89aad6ad7da712aa2fc47e`, `guard_confirmed=true`, verdict
+`accepted`, recorded 2026-07-12T16:09:47Z. In its own disposable Windows
+worktree it passed the ordering/held-reader and concurrent no-gap guards 2/2,
+removed only the production flush call and observed the intended assertion
+fail, restored byte-exact source, and passed 2/2 again. It also passed local
+.NET 926/926, Pester 134 with two platform skips, and the zero-warning
+handshake. Static review confirmed write access, retained-handle ordering, and
+fail-closed checkpoint recovery before retention authorization; all local and
+remote review artifacts were removed.
