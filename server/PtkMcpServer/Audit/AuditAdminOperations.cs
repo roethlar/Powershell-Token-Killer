@@ -110,6 +110,7 @@ internal sealed class AuditAdminOperations
     private readonly AuditJournal _journal;
     private readonly Func<ScriptEvidenceStore> _evidenceFactory;
     private readonly Action? _beforeEvidenceExportPublishForTests;
+    private readonly string _effectiveIdentity;
 
     internal AuditAdminOperations(
         AuditOptions options,
@@ -133,6 +134,7 @@ internal sealed class AuditAdminOperations
         }
         _evidenceFactory = evidenceFactory ?? (() => new ScriptEvidenceStore(options));
         _beforeEvidenceExportPublishForTests = beforeEvidenceExportPublishForTests;
+        _effectiveIdentity = AuditEffectiveIdentity.Capture();
     }
 
     internal ScriptEvidenceReference ReadEvidence(string evidenceId, Stream destination)
@@ -581,6 +583,7 @@ internal sealed class AuditAdminOperations
             {
                 DeclaredPurpose = "audit_administration",
                 DeclaredTarget = declaredTarget,
+                EffectiveIdentity = _effectiveIdentity,
             },
             Actor = new AuditActor { AttributionStrength = "unknown" },
             Correlation = new AuditCorrelation { ParentEventId = parentEventId },

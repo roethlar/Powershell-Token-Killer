@@ -47,6 +47,7 @@ public sealed class AuditAdminEvidenceAccessTests : IDisposable
         Assert.Equal(
             stored.ByteLength,
             outcome.RootElement.GetProperty("outcome").GetProperty("bytes_returned").GetInt64());
+        AssertEffectiveAdminIdentity(outcome.RootElement);
     }
 
     [Fact]
@@ -264,6 +265,20 @@ public sealed class AuditAdminEvidenceAccessTests : IDisposable
     {
         using var document = JsonDocument.Parse(line);
         return document.RootElement.GetProperty("event_type").GetString()!;
+    }
+
+    private static void AssertEffectiveAdminIdentity(JsonElement root)
+    {
+        var identity = root.GetProperty("session")
+            .GetProperty("effective_identity").GetString();
+        Assert.NotNull(identity);
+        if (OperatingSystem.IsWindows())
+            Assert.StartsWith("windows-sid:S-", identity, StringComparison.Ordinal);
+        else
+            Assert.Matches("^unix-euid:[0-9]+$", identity);
+        Assert.Equal(
+            "unknown",
+            root.GetProperty("actor").GetProperty("attribution_strength").GetString());
     }
 
     public void Dispose()
