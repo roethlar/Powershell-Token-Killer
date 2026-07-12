@@ -45,9 +45,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             using var reader = new AuditClosedSpoolChainReader(options, store);
 
             var recovery = reader.ResolveCheckpoint();
-            var first = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
-                recovery.NextRecord);
-            Assert.Null(recovery.EndPosition);
+            var first = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                recovery).Position;
             AssertPosition(
                 first,
                 segment: 0,
@@ -70,9 +69,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             store.SaveForTests(CheckpointAfter(second));
             store.SaveForTests(CheckpointAfter(third));
             var endRecovery = reader.ResolveCheckpoint();
-            Assert.Null(endRecovery.NextRecord);
-            var end = Assert.IsAssignableFrom<IAuditClosedSpoolEndPosition>(
-                endRecovery.EndPosition);
+            var end = Assert.IsType<AuditClosedSpoolRecovery.ChainEnd>(
+                endRecovery).Position;
             reader.MarkChainComplete(end);
             var complete = store.Current;
             Assert.True(complete.ChainComplete);
@@ -80,6 +78,135 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             Assert.Equal(third.NextOffset, complete.ByteOffset);
             Assert.Equal(third.Sequence, complete.Sequence);
             Assert.Equal(third.EventId, complete.AcknowledgedEventId);
+        }
+    }
+
+    [Fact]
+    public void Closed_prefix_drains_while_the_live_boundary_remains_exclusive()
+    {
+        var (options, store) = OwnedFixture();
+        using (store)
+        {
+            var records = Records(3);
+            var firstPath = WriteSegment(options, 0, records[0]);
+            var secondPath = WriteSegment(options, 1, records[1]);
+            var boundary = AuditSpoolSegmentIdentity.Create(BootId, 2);
+            using var live = CreateLiveSegment(options, boundary.Index, records[2]);
+            // A same-boot suffix is outside this snapshot even when its bytes
+            // are not a valid closed record.
+            WriteSegmentBytes(options, 3, [(byte)'x']);
+            using var reader = new AuditClosedSpoolChainReader(options, store);
+
+            var first = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                reader.ResolveClosedPrefix(boundary)).Position;
+            AssertPosition(first, 0, 0, records[0]);
+            var second = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
+                reader.ReadNext(first));
+            AssertPosition(second, 1, 0, records[1]);
+            Assert.Null(reader.ReadNext(second));
+
+            reader.Acknowledge(first, ConfigurationIdentity);
+            reader.Acknowledge(second, ConfigurationIdentity);
+            var prefixEnd = Assert.IsType<AuditClosedSpoolRecovery.PrefixEnd>(
+                reader.ResolveClosedPrefix(boundary));
+
+            Assert.IsAssignableFrom<IAuditClosedSpoolPrefixEndPosition>(
+                prefixEnd.Position);
+            Assert.False(store.Current.ChainComplete);
+            Assert.Throws<IOException>(() => new FileStream(
+                SegmentPath(options, boundary.Index),
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read));
+            Assert.Throws<IOException>(() => new FileStream(
+                firstPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read));
+            Assert.Throws<IOException>(() => new FileStream(
+                secondPath,
+                FileMode.Open,
+                FileAccess.Read,
+                FileShare.Read));
+        }
+    }
+
+    [Fact]
+    public void Prefix_end_cannot_complete_and_stale_chain_end_is_rejected_across_modes()
+    {
+        var (options, store) = OwnedFixture();
+        using (store)
+        {
+            var record = Records(1)[0];
+            WriteSegment(options, 0, record);
+            using var reader = new AuditClosedSpoolChainReader(options, store);
+            var position = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                reader.ResolveCheckpoint()).Position;
+            reader.Acknowledge(position, ConfigurationIdentity);
+            var staleChainEnd = Assert.IsType<AuditClosedSpoolRecovery.ChainEnd>(
+                reader.ResolveCheckpoint()).Position;
+
+            var boundary = AuditSpoolSegmentIdentity.Create(BootId, 1);
+            using var live = CreateLiveSegment(options, boundary.Index);
+            var prefixEnd = Assert.IsType<AuditClosedSpoolRecovery.PrefixEnd>(
+                reader.ResolveClosedPrefix(boundary)).Position;
+
+            Assert.False(prefixEnd is IAuditClosedSpoolChainEndPosition);
+            Assert.False(store.Current.ChainComplete);
+            Assert.Throws<ArgumentException>(() =>
+                reader.MarkChainComplete(staleChainEnd));
+            Assert.False(store.Current.ChainComplete);
+        }
+    }
+
+    [Fact]
+    public void Corrupt_closed_prefix_faults_without_moving_the_checkpoint()
+    {
+        var (options, store) = OwnedFixture();
+        using (store)
+        {
+            var record = Records(1)[0];
+            WriteSegment(options, 0, record);
+            WriteSegmentBytes(options, 1, [(byte)'{', (byte)'}', (byte)'\n']);
+            var boundary = AuditSpoolSegmentIdentity.Create(BootId, 2);
+            using var live = CreateLiveSegment(options, boundary.Index);
+            store.SaveForTests(new AuditExportCheckpoint(
+                BootId,
+                false,
+                AuditSpoolSegmentIdentity.Create(BootId, 0),
+                record.Utf8Line.Length,
+                record.Sequence,
+                record.EventId,
+                blockedRecord: null));
+            var checkpointBefore = File.ReadAllBytes(store.CheckpointPath);
+            using var reader = new AuditClosedSpoolChainReader(options, store);
+
+            Assert.Throws<IOException>(() => reader.ResolveClosedPrefix(boundary));
+
+            Assert.Equal(checkpointBefore, File.ReadAllBytes(store.CheckpointPath));
+            Assert.Equal(record.Sequence, store.Current.Sequence);
+            Assert.False(store.Current.ChainComplete);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Closed_prefix_requires_every_pre_boundary_segment_nonempty(bool omitMiddle)
+    {
+        var (options, store) = OwnedFixture();
+        using (store)
+        {
+            var record = Records(1)[0];
+            WriteSegment(options, 0, record);
+            if (!omitMiddle)
+                WriteSegment(options, 1);
+            var boundary = AuditSpoolSegmentIdentity.Create(BootId, 2);
+            using var live = CreateLiveSegment(options, boundary.Index);
+            using var reader = new AuditClosedSpoolChainReader(options, store);
+
+            Assert.Throws<IOException>(() => reader.ResolveClosedPrefix(boundary));
+            Assert.Equal(0, store.Current.Sequence);
         }
     }
 
@@ -103,8 +230,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
                 Blocked(next, firstEnd, records[1])));
 
             using var reader = new AuditClosedSpoolChainReader(options, store);
-            var resolved = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
-                reader.ResolveCheckpoint().NextRecord);
+            var resolved = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                reader.ResolveCheckpoint()).Position;
 
             AssertPosition(resolved, 0, firstEnd, records[1]);
         }
@@ -119,8 +246,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             var records = Records(2);
             WriteSegment(options, 0, records);
             using var reader = new AuditClosedSpoolChainReader(options, store);
-            var first = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
-                reader.ResolveCheckpoint().NextRecord);
+            var first = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                reader.ResolveCheckpoint()).Position;
             var second = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
                 reader.ReadNext(first));
 
@@ -151,8 +278,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             var record = Records(1)[0];
             WriteSegment(options, 0, record);
             using var reader = new AuditClosedSpoolChainReader(options, store);
-            var position = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
-                reader.ResolveCheckpoint().NextRecord);
+            var position = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                reader.ResolveCheckpoint()).Position;
             var responseDigest = new string('b', 64);
 
             reader.PersistBlock(
@@ -190,8 +317,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             var record = Records(1)[0];
             WriteSegment(options, 0, record);
             using var reader = new AuditClosedSpoolChainReader(options, store);
-            var position = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
-                reader.ResolveCheckpoint().NextRecord);
+            var position = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                reader.ResolveCheckpoint()).Position;
             reader.PersistBlock(
                 position,
                 AuditExportFailureClass.Configuration,
@@ -218,8 +345,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
         {
             WriteSegment(options, 0);
             using var reader = new AuditClosedSpoolChainReader(options, store);
-            var end = Assert.IsAssignableFrom<IAuditClosedSpoolEndPosition>(
-                reader.ResolveCheckpoint().EndPosition);
+            var end = Assert.IsType<AuditClosedSpoolRecovery.ChainEnd>(
+                reader.ResolveCheckpoint()).Position;
 
             reader.MarkChainComplete(end);
 
@@ -484,8 +611,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
             WriteSegment(options, 0, records[0]);
             var secondPath = WriteSegment(options, 1, records[1]);
             using var reader = new AuditClosedSpoolChainReader(options, store);
-            var first = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
-                reader.ResolveCheckpoint().NextRecord);
+            var first = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                reader.ResolveCheckpoint()).Position;
             var replacement = ProtectedTemporary(
                 options,
                 records[1].Utf8Line.Length,
@@ -606,8 +733,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
         {
             WriteSegment(options, 0);
             using var reader = new AuditClosedSpoolChainReader(options, store);
-            var firstEnd = Assert.IsAssignableFrom<IAuditClosedSpoolEndPosition>(
-                reader.ResolveCheckpoint().EndPosition);
+            var firstEnd = Assert.IsType<AuditClosedSpoolRecovery.ChainEnd>(
+                reader.ResolveCheckpoint()).Position;
             Assert.Throws<ArgumentException>(() =>
                 reader.MarkChainComplete(new FakeEndPosition()));
 
@@ -793,6 +920,26 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
         return path;
     }
 
+    private static FileStream CreateLiveSegment(
+        AuditOptions options,
+        int index,
+        params SerializedAuditEvent[] records)
+    {
+        var bytes = records.SelectMany(record => record.Utf8Line.ToArray()).ToArray();
+        var stream = SecureAuditStorage.CreateExclusiveFile(SegmentPath(options, index));
+        try
+        {
+            stream.Write(bytes);
+            stream.Flush(flushToDisk: true);
+            return stream;
+        }
+        catch
+        {
+            stream.Dispose();
+            throw;
+        }
+    }
+
     private static string SegmentPath(AuditOptions options, int index) =>
         Path.Combine(
             options.SpoolDirectory,
@@ -860,7 +1007,7 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
         WrongEventId,
     }
 
-    private sealed class FakeEndPosition : IAuditClosedSpoolEndPosition;
+    private sealed class FakeEndPosition : IAuditClosedSpoolChainEndPosition;
 
     private sealed class InjectedAcquisitionException : Exception;
 }

@@ -21,9 +21,16 @@ internal interface IAuditClosedSpoolRecordPosition
 
 /// <summary>
 /// Opaque proof that one exact checkpoint was observed at the end of a
-/// retained, validated closed-chain snapshot.
+/// retained, validated complete-chain snapshot.
 /// </summary>
-internal interface IAuditClosedSpoolEndPosition;
+internal interface IAuditClosedSpoolChainEndPosition;
+
+/// <summary>
+/// Opaque proof that one exact checkpoint was observed at the end of the
+/// retained closed prefix before one caller-owned exclusive live segment.
+/// This proof cannot authorize chain completion.
+/// </summary>
+internal interface IAuditClosedSpoolPrefixEndPosition;
 
 /// <summary>
 /// Reads one immutable, closed anchored spool chain. This reader does not
@@ -98,6 +105,36 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     /// </summary>
     internal AuditClosedSpoolRecovery ResolveCheckpoint()
     {
+        return ResolveCheckpointCore(exclusiveLiveBoundary: null);
+    }
+
+    /// <summary>
+    /// Acquires and validates exactly the closed segments preceding the
+    /// caller's exclusive live-segment identity. The boundary and any newer
+    /// segments are observed by name only and are never opened by this reader.
+    /// </summary>
+    internal AuditClosedSpoolRecovery ResolveClosedPrefix(
+        AuditSpoolSegmentIdentity exclusiveLiveBoundary)
+    {
+        if (exclusiveLiveBoundary.SupervisorBootId != _supervisorBootId)
+        {
+            throw new ArgumentException(
+                "The exclusive live-segment boundary belongs to another spool chain.",
+                nameof(exclusiveLiveBoundary));
+        }
+        if (exclusiveLiveBoundary.Index > MaximumClosedChainSegments)
+        {
+            throw new ArgumentOutOfRangeException(
+                nameof(exclusiveLiveBoundary),
+                "The closed audit spool prefix exceeds its recovery segment bound.");
+        }
+
+        return ResolveCheckpointCore(exclusiveLiveBoundary);
+    }
+
+    private AuditClosedSpoolRecovery ResolveCheckpointCore(
+        AuditSpoolSegmentIdentity? exclusiveLiveBoundary)
+    {
         lock (_gate)
         {
             ThrowIfDisposed();
@@ -107,7 +144,9 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
             {
                 _checkpointLease.WithOwnedCheckpoint(checkpoint =>
                 {
-                    pending = ResolveOwnedCheckpoint(checkpoint);
+                    pending = ResolveOwnedCheckpoint(
+                        checkpoint,
+                        exclusiveLiveBoundary);
                     return true;
                 });
                 var resolved = pending ?? throw new IOException(
@@ -125,7 +164,8 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     }
 
     private PendingResolution ResolveOwnedCheckpoint(
-        AuditExportCheckpoint checkpoint)
+        AuditExportCheckpoint checkpoint,
+        AuditSpoolSegmentIdentity? exclusiveLiveBoundary)
     {
         AuditExportCheckpointCodec.Validate(checkpoint);
         if (checkpoint.SupervisorBootId != _supervisorBootId)
@@ -134,7 +174,13 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                 "The owned audit export checkpoint belongs to a different spool chain.");
         }
 
-        var inventory = InventoryClosedChain();
+        if (exclusiveLiveBoundary is not null && checkpoint.ChainComplete)
+        {
+            throw new IOException(
+                "A complete audit export checkpoint cannot be resolved as a live prefix.");
+        }
+
+        var inventory = InventoryClosedChain(exclusiveLiveBoundary);
         var acquired = AcquireClosedChain(inventory);
         try
         {
@@ -142,7 +188,7 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                 // This second inventory rejects a name-set race before any
                 // checkpoint decision is based on the retained inodes.
                 _handlesAcquiredForTests?.Invoke();
-                VerifyStableInventory(inventory);
+                VerifyStableInventory(inventory, exclusiveLiveBoundary);
                 VerifyRetainedIdentities(acquired);
 
                 var snapshotToken = new object();
@@ -226,18 +272,29 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                         "A complete audit export checkpoint still has an unacknowledged record.");
                 }
 
-                var recovery = nextRecord is null
-                    ? new AuditClosedSpoolRecovery(
-                        null,
-                        new EndPosition(
+                AuditClosedSpoolRecovery recovery;
+                if (nextRecord is not null)
+                {
+                    recovery = new AuditClosedSpoolRecovery.Record(
+                        nextRecord,
+                        checkpoint.BlockedRecord);
+                }
+                else if (exclusiveLiveBoundary is { } boundary)
+                {
+                    recovery = new AuditClosedSpoolRecovery.PrefixEnd(
+                        new PrefixEndPosition(
                             this,
                             snapshotToken,
-                            checkpoint),
-                        blockedRecord: null)
-                    : new AuditClosedSpoolRecovery(
-                        nextRecord,
-                        endPosition: null,
-                        blockedRecord: checkpoint.BlockedRecord);
+                            boundary));
+                }
+                else
+                {
+                    recovery = new AuditClosedSpoolRecovery.ChainEnd(
+                        new ChainEndPosition(
+                            this,
+                            snapshotToken,
+                            checkpoint));
+                }
                 var resolution = new PendingResolution(
                     acquired,
                     snapshotToken,
@@ -353,13 +410,13 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     /// <summary>
     /// Persists completion only from this reader's live opaque end proof.
     /// </summary>
-    internal void MarkChainComplete(IAuditClosedSpoolEndPosition endPosition)
+    internal void MarkChainComplete(IAuditClosedSpoolChainEndPosition endPosition)
     {
         ArgumentNullException.ThrowIfNull(endPosition);
         lock (_gate)
         {
             ThrowIfDisposed();
-            if (endPosition is not EndPosition ownedEnd ||
+            if (endPosition is not ChainEndPosition ownedEnd ||
                 !ReferenceEquals(ownedEnd.Owner, this) ||
                 _snapshotToken is null ||
                 !ReferenceEquals(ownedEnd.SnapshotToken, _snapshotToken))
@@ -407,12 +464,14 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     }
 
     private SegmentDescriptor[] InventoryClosedChain(
+        AuditSpoolSegmentIdentity? exclusiveLiveBoundary,
         bool verifySegmentProtection = true)
     {
         SecureAuditStorage.VerifyExternalProtectedDirectory(_spoolRoot);
         var segments = new List<SegmentDescriptor>();
         var inventoryEntries = 0;
         var chainBytes = 0L;
+        var boundaryObserved = false;
         foreach (var entry in new DirectoryInfo(_spoolRoot)
                      .EnumerateFileSystemInfos("*", SearchOption.TopDirectoryOnly))
         {
@@ -439,10 +498,25 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                 throw new IOException("The audit spool contains an unknown entry.");
             }
 
+            var isSelected = identity.SupervisorBootId == _supervisorBootId &&
+                             (exclusiveLiveBoundary is null ||
+                              identity.Index < exclusiveLiveBoundary.Value.Index);
+            if (exclusiveLiveBoundary is { } boundary && identity == boundary)
+                boundaryObserved = true;
+
+            // A live boundary is intentionally held FileShare.None by its
+            // writer. Do not open it, or any suffix segment, from this path.
+            if (!isSelected &&
+                exclusiveLiveBoundary is not null &&
+                identity.SupervisorBootId == _supervisorBootId)
+            {
+                continue;
+            }
+
             if (verifySegmentProtection)
                 SecureAuditStorage.VerifyExternalProtectedFile(file.FullName);
             file.Refresh();
-            if (identity.SupervisorBootId == _supervisorBootId)
+            if (isSelected)
             {
                 if (segments.Count == MaximumClosedChainSegments)
                 {
@@ -468,16 +542,35 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
         }
 
         var ordered = segments.OrderBy(segment => segment.Identity.Index).ToArray();
-        if (ordered.Length == 0 || ordered[0].Identity.Index != 0)
+        if (exclusiveLiveBoundary is { } liveBoundary && !boundaryObserved)
+        {
+            throw new IOException(
+                "The exclusive live audit segment boundary is absent from the spool inventory.");
+        }
+        if (ordered.Length == 0 &&
+            (exclusiveLiveBoundary is null || exclusiveLiveBoundary.Value.Index != 0))
+        {
             throw new IOException("A closed audit spool chain must begin at segment zero.");
+        }
+        if (ordered.Length > 0 && ordered[0].Identity.Index != 0)
+            throw new IOException("A closed audit spool chain must begin at segment zero.");
+        if (exclusiveLiveBoundary is { } prefixBoundary &&
+            ordered.Length != prefixBoundary.Index)
+        {
+            throw new IOException(
+                "The closed audit spool prefix has a missing segment.");
+        }
         for (var index = 0; index < ordered.Length; index++)
         {
             if (ordered[index].Identity.Index != index)
                 throw new IOException("A closed audit spool chain has a missing segment.");
-            if (ordered[index].Length == 0 && index != ordered.Length - 1)
+            if (ordered[index].Length == 0 &&
+                (exclusiveLiveBoundary is not null || index != ordered.Length - 1))
             {
                 throw new IOException(
-                    "Only the trailing closed audit segment may be empty.");
+                    exclusiveLiveBoundary is null
+                        ? "Only the trailing closed audit segment may be empty."
+                        : "A closed audit spool prefix contains an empty segment.");
             }
         }
         return ordered;
@@ -619,12 +712,15 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
         throw new IOException("A closed audit segment has a torn record.");
     }
 
-    private void VerifyStableInventory(SegmentDescriptor[] expected)
+    private void VerifyStableInventory(
+        SegmentDescriptor[] expected,
+        AuditSpoolSegmentIdentity? exclusiveLiveBoundary)
     {
         // Windows no-share handles pin each segment name but may also prevent
         // a second ACL open. The initial inventory verified the ACL before
         // acquisition; retained handle metadata verifies the pinned file.
         var observed = InventoryClosedChain(
+            exclusiveLiveBoundary,
             verifySegmentProtection: !OperatingSystem.IsWindows());
         if (expected.Length != observed.Length)
             throw new IOException("The closed audit spool inventory changed while it was acquired.");
@@ -755,9 +851,9 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
         public ReadOnlyMemory<byte> ExactJsonlBytes => _exactJsonlBytes;
     }
 
-    private sealed class EndPosition : IAuditClosedSpoolEndPosition
+    private sealed class ChainEndPosition : IAuditClosedSpoolChainEndPosition
     {
-        internal EndPosition(
+        internal ChainEndPosition(
             AuditClosedSpoolChainReader owner,
             object snapshotToken,
             AuditExportCheckpoint checkpoint)
@@ -784,27 +880,68 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
             Interlocked.Exchange(ref _owner, null)?.ReleaseExportPump();
         }
     }
+
+    private sealed class PrefixEndPosition : IAuditClosedSpoolPrefixEndPosition
+    {
+        internal PrefixEndPosition(
+            AuditClosedSpoolChainReader owner,
+            object snapshotToken,
+            AuditSpoolSegmentIdentity exclusiveLiveBoundary)
+        {
+            Owner = owner;
+            SnapshotToken = snapshotToken;
+            ExclusiveLiveBoundary = exclusiveLiveBoundary;
+        }
+
+        internal AuditClosedSpoolChainReader Owner { get; }
+
+        internal object SnapshotToken { get; }
+
+        internal AuditSpoolSegmentIdentity ExclusiveLiveBoundary { get; }
+    }
 }
 
-internal sealed class AuditClosedSpoolRecovery
+internal abstract class AuditClosedSpoolRecovery
 {
-    internal AuditClosedSpoolRecovery(
-        IAuditClosedSpoolRecordPosition? nextRecord,
-        IAuditClosedSpoolEndPosition? endPosition,
-        AuditExportBlockedRecord? blockedRecord)
+    private AuditClosedSpoolRecovery()
     {
-        if ((nextRecord is null) == (endPosition is null))
-            throw new ArgumentException("A closed spool recovery must resolve to one exact position.");
-        if (nextRecord is null && blockedRecord is not null)
-            throw new ArgumentException("A closed spool end cannot remain blocked.");
-        NextRecord = nextRecord;
-        EndPosition = endPosition;
-        BlockedRecord = blockedRecord;
     }
 
-    internal IAuditClosedSpoolRecordPosition? NextRecord { get; }
+    internal sealed class Record : AuditClosedSpoolRecovery
+    {
+        internal Record(
+            IAuditClosedSpoolRecordPosition position,
+            AuditExportBlockedRecord? blockedRecord)
+        {
+            ArgumentNullException.ThrowIfNull(position);
+            Position = position;
+            BlockedRecord = blockedRecord;
+        }
 
-    internal IAuditClosedSpoolEndPosition? EndPosition { get; }
+        internal IAuditClosedSpoolRecordPosition Position { get; }
 
-    internal AuditExportBlockedRecord? BlockedRecord { get; }
+        internal AuditExportBlockedRecord? BlockedRecord { get; }
+    }
+
+    internal sealed class PrefixEnd : AuditClosedSpoolRecovery
+    {
+        internal PrefixEnd(IAuditClosedSpoolPrefixEndPosition position)
+        {
+            ArgumentNullException.ThrowIfNull(position);
+            Position = position;
+        }
+
+        internal IAuditClosedSpoolPrefixEndPosition Position { get; }
+    }
+
+    internal sealed class ChainEnd : AuditClosedSpoolRecovery
+    {
+        internal ChainEnd(IAuditClosedSpoolChainEndPosition position)
+        {
+            ArgumentNullException.ThrowIfNull(position);
+            Position = position;
+        }
+
+        internal IAuditClosedSpoolChainEndPosition Position { get; }
+    }
 }
