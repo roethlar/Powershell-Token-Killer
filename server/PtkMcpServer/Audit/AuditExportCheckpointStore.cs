@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Diagnostics.CodeAnalysis;
 using System.Runtime.ExceptionServices;
 
@@ -14,6 +15,10 @@ internal sealed class AuditExportCheckpointStore : IDisposable
     private const string CheckpointSuffix = ".json";
     private const string LockSuffix = ".lock";
     private const string TemporarySuffix = ".tmp";
+    private static readonly TimeSpan WindowsReplacementReadRetryWindow =
+        TimeSpan.FromSeconds(1);
+    private const int InitialWindowsReplacementReadDelayMilliseconds = 1;
+    private const int MaximumWindowsReplacementReadDelayMilliseconds = 8;
     private readonly Guid _supervisorBootId;
     private readonly string _root;
     private readonly string _checkpointPath;
@@ -259,7 +264,8 @@ internal sealed class AuditExportCheckpointStore : IDisposable
     /// </summary>
     internal static AuditExportCheckpoint ReadSnapshot(
         AuditOptions options,
-        Guid supervisorBootId)
+        Guid supervisorBootId,
+        Action? windowsSharingViolationForTests = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         AuditSpoolSegmentIdentity.RequireUuidV4(
@@ -280,7 +286,8 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         return ReadSnapshotWithBytes(
             root,
             Path.Combine(root, CheckpointFileName(supervisorBootId)),
-            supervisorBootId).Checkpoint;
+            supervisorBootId,
+            windowsSharingViolationForTests).Checkpoint;
     }
 
     /// <summary>
@@ -1201,20 +1208,51 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         byte[] Bytes) ReadSnapshotWithBytes(
         string root,
         string checkpointPath,
-        Guid supervisorBootId)
+        Guid supervisorBootId,
+        Action? windowsSharingViolationForTests = null)
     {
         SecureAuditStorage.VerifyExternalProtectedDirectory(root);
-        var bytes = SecureAuditStorage.ReadProtectedFile(
+        var bytes = ReadProtectedCheckpointBytes(
             checkpointPath,
-            AuditExportCheckpointCodec.MaximumBytes,
-            requireProtectedParent: true,
-            verifyWithoutMutation: true,
-            share: FileShare.Read | FileShare.Delete);
+            windowsSharingViolationForTests);
         var checkpoint = AuditExportCheckpointCodec.Parse(bytes);
         if (checkpoint.SupervisorBootId != supervisorBootId)
             throw new IOException("The audit export checkpoint boot identity is invalid.");
         return (checkpoint, bytes);
     }
+
+    private static byte[] ReadProtectedCheckpointBytes(
+        string checkpointPath,
+        Action? windowsSharingViolationForTests)
+    {
+        var elapsed = Stopwatch.StartNew();
+        var delayMilliseconds = InitialWindowsReplacementReadDelayMilliseconds;
+        while (true)
+        {
+            try
+            {
+                return SecureAuditStorage.ReadProtectedFile(
+                    checkpointPath,
+                    AuditExportCheckpointCodec.MaximumBytes,
+                    requireProtectedParent: true,
+                    verifyWithoutMutation: true,
+                    share: FileShare.Read | FileShare.Delete);
+            }
+            catch (IOException exception) when (
+                IsWindowsReplacementSharingViolation(exception) &&
+                elapsed.Elapsed < WindowsReplacementReadRetryWindow)
+            {
+                windowsSharingViolationForTests?.Invoke();
+                Thread.Sleep(delayMilliseconds);
+                delayMilliseconds = Math.Min(
+                    delayMilliseconds * 2,
+                    MaximumWindowsReplacementReadDelayMilliseconds);
+            }
+        }
+    }
+
+    private static bool IsWindowsReplacementSharingViolation(IOException exception) =>
+        OperatingSystem.IsWindows() && (exception.HResult & 0xffff) == 32;
 
     private static bool HasSameBootSegment(string spoolPath, Guid supervisorBootId)
     {

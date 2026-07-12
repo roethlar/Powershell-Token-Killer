@@ -5,7 +5,7 @@ to authorize retention, causing duplicate export or permanent chain-adoption
 failure after acknowledged data was deleted.
 **Status**: Verified
 **Branch**: `fix/s2-windows-checkpoint-durability`
-**Commit**: `e56d9f2d1b5efc7366be5809d4355b6c3ba6c47f`
+**Commit**: `e4e5a697d3f65731bdf5356c814525e50214e181`
 
 ## Evidence
 
@@ -41,11 +41,18 @@ required by `FlushFileBuffers`. After `SetFileInformationByHandle` publishes
 that exact file, flush through the same retained handle before returning to the
 existing destination-replaced commit callback. A post-flush test seam proves
 the ordering without reopening the published path or adding a TOCTOU gap.
+Checkpoint snapshots keep their strict `FileShare.Read | FileShare.Delete`
+boundary and retry only Windows `ERROR_SHARING_VIOLATION` for a bounded
+one-second window with capped backoff. Every attempt repeats the protected
+root/file checks; all other storage, protection, and parse failures remain
+immediate and fail closed.
 
 ## Files changed
 
 - `server/PtkMcpServer/Audit/SecureAuditStorage.cs`
 - `server/PtkMcpServer.Tests/SecureAuditStorageTests.cs`
+- `server/PtkMcpServer/Audit/AuditExportCheckpointStore.cs`
+- `server/PtkMcpServer.Tests/AuditExportCheckpointStoreTests.cs`
 
 ## Guard proof
 
@@ -57,9 +64,16 @@ the ordering without reopening the published path or adding a TOCTOU gap.
 - The Windows ordering/held-reader guard and concurrent no-gap reader guard
   passed together 2/2. They exercise the real `FlushFileBuffers` P/Invoke and
   `GENERIC_WRITE` access combination.
-- The full macOS .NET suite passed 926/926; the Windows-only guard compiles but
-  returns early there, so the exact Windows proof is authoritative for the new
-  behavior.
+- Final integrated validation exposed the retained write-handle sharing race.
+  The deterministic correction guard holds that exact post-flush handle open,
+  observes the strict reader's retry, releases it, and requires the complete
+  intended checkpoint. Disabling only the error-32 classifier made the guard
+  fail immediately with the reader task faulted instead of a retry.
+- At `e4e5a697d3f65731bdf5356c814525e50214e181`, the Windows focused durability,
+  held-reader, concurrent no-gap, and snapshot-retry suite passed 4/4, and the
+  full Windows .NET suite passed 927/927. The full macOS suite also passed
+  927/927; one unrelated anchored-runtime timing failure passed in isolation
+  and on the complete rerun.
 
 ## Coder dispute (if any)
 
@@ -72,7 +86,9 @@ correction removes the missing durability barrier or rollback risk.
 
 The test cannot simulate power loss directly. It proves the documented
 durability primitive and its pre-commit ordering while retaining the separate
-open-reader and concurrent no-gap replacement guards.
+open-reader and concurrent no-gap replacement guards. A foreign same-identity
+writer can delay a checkpoint read for at most the one-second retry window;
+expiry rethrows the exact sharing violation and remains fail closed.
 
 ## Reviewer comments
 
@@ -94,3 +110,26 @@ fail, restored byte-exact source, and passed 2/2 again. It also passed local
 handshake. Static review confirmed write access, retained-handle ordering, and
 fail-closed checkpoint recovery before retention authorization; all local and
 remote review artifacts were removed.
+
+Post-merge exact-head Windows validation at
+`32cd67e236260a064389ed21de6dc642f84e5628` reopened this finding after the
+accepted review. The full suite failed
+`Concurrent_readers_observe_only_complete_atomic_checkpoints`: a reader opening
+the newly published checkpoint with `FileShare.Read | FileShare.Delete` raced
+the retained `GENERIC_WRITE` flush handle and received
+`ERROR_SHARING_VIOLATION`. This is a product integration regression, not a
+fixture failure; the durability barrier must coexist with the checkpoint's
+strict read-sharing contract.
+
+Claude Code 2.1.207 re-reviewed fixed head
+`70dff0246c78b752f2c1dc700d0f7a0b3bdc6fc9` against
+`0c9f430b71f14ac40c89aad6ad7da712aa2fc47e`, `guard_confirmed=true`, verdict
+`accepted`, recorded 2026-07-12T16:46:25Z. In a disposable `netwatch-01`
+checkout it independently removed the flush call and observed the ordering
+guard fail, then disabled error-32 retry and observed the deterministic reader
+guard fault before its retry observer. Byte-exact restoration passed focused
+4/4 plus ten additional race iterations. The local review tree passed .NET
+927/927, Pester 134 with two platform skips, and the zero-warning handshake;
+all local and remote artifacts were removed. The only non-material observation
+was that a theoretical non-Win32 `IOException` with low word 32 could be
+delayed up to one second before propagating unchanged.
