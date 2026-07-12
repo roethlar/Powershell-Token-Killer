@@ -136,13 +136,15 @@ internal sealed class AuditAdminOperations
     private readonly AuditJournal _journal;
     private readonly Func<ScriptEvidenceStore> _evidenceFactory;
     private readonly Action? _beforeEvidenceExportPublishForTests;
+    private readonly Action? _beforeEvidenceOutcomeAppendForTests;
     private readonly string _effectiveIdentity;
 
     internal AuditAdminOperations(
         AuditOptions options,
         AuditJournal journal,
         Func<ScriptEvidenceStore>? evidenceFactory = null,
-        Action? beforeEvidenceExportPublishForTests = null)
+        Action? beforeEvidenceExportPublishForTests = null,
+        Action? beforeEvidenceOutcomeAppendForTests = null)
     {
         _options = options ?? throw new ArgumentNullException(nameof(options));
         _journal = journal ?? throw new ArgumentNullException(nameof(journal));
@@ -160,6 +162,7 @@ internal sealed class AuditAdminOperations
         }
         _evidenceFactory = evidenceFactory ?? (() => new ScriptEvidenceStore(options));
         _beforeEvidenceExportPublishForTests = beforeEvidenceExportPublishForTests;
+        _beforeEvidenceOutcomeAppendForTests = beforeEvidenceOutcomeAppendForTests;
         _effectiveIdentity = AuditEffectiveIdentity.Capture();
     }
 
@@ -188,8 +191,11 @@ internal sealed class AuditAdminOperations
         var auditedDestinationPath = TryCanonicalDestinationPath(outputPath);
         EvidenceExportPublication? exportPublication = null;
         var readWriteStarted = false;
+        var readWriteReturned = false;
+        var readFlushReturned = false;
         long? readBytesReleased = null;
         string? readScriptDigest = null;
+        ScriptEvidenceReference? effectReference = null;
         using var reservation = ReserveOperation();
         var intent = AppendEvent(
             reservation,
@@ -229,8 +235,10 @@ internal sealed class AuditAdminOperations
                     destination.Write(bytes.Span);
                     // Stream.Write either returns after accepting the full
                     // span or throws with an unknowable partial effect.
+                    readWriteReturned = true;
                     readBytesReleased = bytes.Length;
                     destination.Flush();
+                    readFlushReturned = true;
                 });
             }
             else
@@ -242,6 +250,8 @@ internal sealed class AuditAdminOperations
                 reference = exportPublication.Reference;
             }
 
+            effectReference = reference;
+            _beforeEvidenceOutcomeAppendForTests?.Invoke();
             AppendEvent(
                 reservation,
                 $"evidence.{action}_completed",
@@ -270,17 +280,25 @@ internal sealed class AuditAdminOperations
                 reservation,
                 destinationKind,
                 auditedDestinationPath,
-                failureDetailCode: destination is null
-                    ? "operation.failed"
-                    : readBytesReleased.HasValue
-                        ? "operation.flush_failed_after_disclosure"
-                        : readWriteStarted
-                            ? "operation.disclosure_unknown"
-                            : "operation.failed_before_disclosure",
-                failureScriptDigest: readScriptDigest,
-                failureBytesReturned: destination is not null && !readWriteStarted
-                    ? 0
-                    : readBytesReleased);
+                failureDetailCode: AuditAdminFailureDetailCode.From(
+                    ClassifyEvidenceFailure(
+                        exception,
+                        parsedEvidenceId,
+                        outputPath,
+                        auditedDestinationPath,
+                        destination is not null,
+                        readWriteStarted,
+                        readWriteReturned,
+                        readFlushReturned,
+                        exportPublication is not null)),
+                failureScriptDigest: effectReference?.ScriptDigest ?? readScriptDigest,
+                failureBytesReturned: destination is not null
+                    ? readWriteStarted
+                        ? readBytesReleased
+                        : 0
+                    : exportPublication is not null
+                        ? effectReference?.ByteLength
+                        : null);
             throw;
         }
         finally
@@ -294,34 +312,106 @@ internal sealed class AuditAdminOperations
         string evidenceId,
         string outputPath)
     {
-        var fullPath = Path.GetFullPath(outputPath);
-        var parent = Path.GetDirectoryName(fullPath)
-            ?? throw new IOException("The evidence export parent is unavailable.");
-        SecureAuditStorage.VerifyExternalProtectedDirectory(parent);
+        string fullPath;
+        string parent;
+        try
+        {
+            fullPath = Path.GetFullPath(outputPath);
+            parent = Path.GetDirectoryName(fullPath)
+                ?? throw new ArgumentException("The evidence export parent is unavailable.");
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            throw new AuditEvidenceDestinationException(
+                AuditEvidenceDestinationFailureKind.InvalidPath,
+                exception);
+        }
+        try
+        {
+            SecureAuditStorage.VerifyExternalProtectedDirectory(parent);
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            throw new AuditEvidenceDestinationException(
+                AuditEvidenceDestinationFailureKind.Refused,
+                exception);
+        }
 
         var temporaryPath = Path.Combine(
             parent,
             $".ptk-evidence-export-{Guid.NewGuid():N}.tmp");
-        var output = SecureAuditStorage.CreateExclusiveFile(
-            temporaryPath,
-            share: FileShare.Delete,
-            access: FileAccess.ReadWrite);
+        FileStream output;
+        try
+        {
+            output = SecureAuditStorage.CreateExclusiveFile(
+                temporaryPath,
+                share: FileShare.Delete,
+                access: FileAccess.ReadWrite);
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            throw new AuditEvidenceDestinationException(
+                IsDestinationRefusal(exception)
+                    ? AuditEvidenceDestinationFailureKind.Refused
+                    : AuditEvidenceDestinationFailureKind.Storage,
+                exception);
+        }
         try
         {
             var reference = store.ReadExact(evidenceId, bytes =>
             {
-                output.Write(bytes.Span);
-                output.Flush(flushToDisk: true);
+                try
+                {
+                    output.Write(bytes.Span);
+                    output.Flush(flushToDisk: true);
+                }
+                catch (Exception exception) when (!IsFatal(exception))
+                {
+                    throw new AuditEvidenceDestinationException(
+                        IsDestinationRefusal(exception)
+                            ? AuditEvidenceDestinationFailureKind.Refused
+                            : AuditEvidenceDestinationFailureKind.Storage,
+                        exception);
+                }
             });
             _beforeEvidenceExportPublishForTests?.Invoke();
-            SecureAuditStorage.PublishAtomically(
-                temporaryPath,
-                fullPath,
-                parent);
-            SecureAuditStorage.ConfirmRetainedCreatedFileDurability(
-                parent,
-                fullPath,
-                output.SafeFileHandle);
+            try
+            {
+                SecureAuditStorage.PublishAtomically(
+                    temporaryPath,
+                    fullPath,
+                    parent);
+            }
+            catch (Exception exception) when (
+                !IsFatal(exception) &&
+                AuditJournalFactory.IsConcurrentPublishCollision(exception) &&
+                DestinationEntryExists(fullPath))
+            {
+                throw new AuditEvidenceDestinationException(
+                    AuditEvidenceDestinationFailureKind.Exists,
+                    exception);
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                throw new AuditEvidenceDestinationException(
+                    IsDestinationRefusal(exception)
+                        ? AuditEvidenceDestinationFailureKind.Refused
+                        : AuditEvidenceDestinationFailureKind.Storage,
+                    exception);
+            }
+            try
+            {
+                SecureAuditStorage.ConfirmRetainedCreatedFileDurability(
+                    parent,
+                    fullPath,
+                    output.SafeFileHandle);
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                throw new AuditEvidenceDestinationException(
+                    AuditEvidenceDestinationFailureKind.Storage,
+                    exception);
+            }
             return new EvidenceExportPublication(
                 parent,
                 fullPath,
@@ -334,6 +424,22 @@ internal sealed class AuditAdminOperations
             TryDeleteRetainedExport(parent, temporaryPath, output);
             output.Dispose();
             throw;
+        }
+    }
+
+    private static bool IsDestinationRefusal(Exception exception) =>
+        exception is UnauthorizedAccessException or System.Security.SecurityException;
+
+    private static bool DestinationEntryExists(string path)
+    {
+        if (File.Exists(path) || Directory.Exists(path)) return true;
+        try
+        {
+            return new FileInfo(path).LinkTarget is not null;
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            return false;
         }
     }
 
@@ -741,6 +847,71 @@ internal sealed class AuditAdminOperations
             throw new AuditUnavailableException();
         }
         return reservation;
+    }
+
+    private static AuditAdminFailureKind ClassifyEvidenceFailure(
+        Exception failure,
+        Guid? parsedEvidenceId,
+        string? outputPath,
+        string? auditedDestinationPath,
+        bool isRead,
+        bool readWriteStarted,
+        bool readWriteReturned,
+        bool readFlushReturned,
+        bool exportPublished)
+    {
+        if (parsedEvidenceId is null)
+            return AuditAdminFailureKind.EvidenceIdInvalid;
+        if (outputPath is not null && auditedDestinationPath is null)
+            return AuditAdminFailureKind.EvidencePathInvalid;
+
+        if (isRead)
+        {
+            if (readFlushReturned)
+                return AuditAdminFailureKind.AuditOutcomeFailedAfterDisclosure;
+            if (readWriteReturned)
+                return AuditAdminFailureKind.OperationFlushFailedAfterDisclosure;
+            if (readWriteStarted)
+                return AuditAdminFailureKind.OperationDisclosureUnknown;
+        }
+        else if (exportPublished)
+        {
+            return AuditAdminFailureKind.AuditOutcomeFailedAfterPublish;
+        }
+
+        return failure switch
+        {
+            ScriptEvidenceStorageException
+            {
+                FailureKind: ScriptEvidenceStorageFailureKind.Absent,
+            } => AuditAdminFailureKind.EvidenceAbsent,
+            ScriptEvidenceStorageException
+            {
+                FailureKind: ScriptEvidenceStorageFailureKind.ControlInvalid,
+            } => AuditAdminFailureKind.EvidenceControlInvalid,
+            ScriptEvidenceStorageException
+            {
+                FailureKind: ScriptEvidenceStorageFailureKind.Storage,
+            } => AuditAdminFailureKind.EvidenceStorageFailed,
+            AuditEvidenceDestinationException
+            {
+                FailureKind: AuditEvidenceDestinationFailureKind.InvalidPath,
+            } => AuditAdminFailureKind.EvidencePathInvalid,
+            AuditEvidenceDestinationException
+            {
+                FailureKind: AuditEvidenceDestinationFailureKind.Exists,
+            } => AuditAdminFailureKind.EvidenceDestinationExists,
+            AuditEvidenceDestinationException
+            {
+                FailureKind: AuditEvidenceDestinationFailureKind.Refused,
+            } => AuditAdminFailureKind.EvidenceDestinationRefused,
+            AuditEvidenceDestinationException
+            {
+                FailureKind: AuditEvidenceDestinationFailureKind.Storage,
+            } => AuditAdminFailureKind.EvidenceStorageFailed,
+            _ when isRead => AuditAdminFailureKind.OperationFailedBeforeDisclosure,
+            _ => AuditAdminFailureKind.EvidenceStorageFailed,
+        };
     }
 
     private static Guid? TryParseEvidenceId(string evidenceId)

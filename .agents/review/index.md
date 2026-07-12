@@ -1265,3 +1265,17 @@ acceptance-record commit `286b171`; `git diff
 feat/audited-harness-slice1 master --` was empty before the feature branch was
 deleted. The disposable Claude worktree was clean and removed. No push was
 performed.
+
+---
+
+**SLICE 2 EVIDENCE-ADMIN FAILURE CLASSIFICATION — CLAUDE ACCEPTED** (Claude
+Code 2.1.207, model `claude-fable-5`, isolated disposable worktree), reviewed
+head `adb8b4b0f02118ce20c7f75a36fe4341e28e2646` against base
+`b87922189eb4c7b068c4bd9b5390d6700c040a28`, `guard_confirmed=true`,
+2026-07-12T09:24:35Z. Claude independently made the absent-evidence and
+post-disclosure classifiers wrong, observed the intended focused guards fail,
+restored production byte-exactly, and passed focused 16/16 plus full 873/873.
+No material finding remained. Detail and the non-blocking concurrent-destination
+classification caveat are recorded in
+`.agents/review/findings/s2-admin-evidence-failures.md`. Acceptance authorizes
+local landing under the owner's delegated branch authority, not push.

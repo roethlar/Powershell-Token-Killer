@@ -74,11 +74,68 @@ public sealed class AuditAdminEvidenceAccessTests : IDisposable
             fixture.Sink.Lines.Select(EventType).ToArray());
         using var failure = JsonDocument.Parse(fixture.Sink.Lines[1]);
         Assert.Equal(
-            "operation.failed_before_disclosure",
+            "evidence.absent",
             failure.RootElement.GetProperty("outcome").GetProperty("detail_code").GetString());
         Assert.Equal(
             0,
             failure.RootElement.GetProperty("outcome").GetProperty("bytes_returned").GetInt64());
+    }
+
+    [Fact]
+    public void Invalid_evidence_id_records_specific_failure_after_intent()
+    {
+        var options = Options();
+        using var fixture = Journal(options);
+        var operations = new AuditAdminOperations(options, fixture.Journal);
+        using var output = new MemoryStream();
+
+        Assert.Throws<AuditAdminOperationException>(() =>
+            operations.ReadEvidence("NOT-A-CANONICAL-ID", output));
+
+        Assert.Equal(
+            ["evidence.read_intent", "evidence.read_failed"],
+            fixture.Sink.Lines.Select(EventType).ToArray());
+        Assert.Equal("evidence.id_invalid", DetailCode(fixture.Sink.Lines[1]));
+        Assert.Empty(output.ToArray());
+    }
+
+    [Fact]
+    public void Invalid_evidence_control_records_specific_failure_without_disclosure()
+    {
+        var options = Options();
+        var stored = new ScriptEvidenceStore(options).Store("Get-ControlledSecret");
+        var artifact = Directory.GetFiles(
+            options.EvidenceDirectory,
+            $"{stored.EvidenceId}.*.script").Single();
+        File.WriteAllText(artifact, "tampered");
+        using var fixture = Journal(options);
+        var operations = new AuditAdminOperations(options, fixture.Journal);
+        using var output = new MemoryStream();
+
+        Assert.Throws<AuditAdminOperationException>(() =>
+            operations.ReadEvidence(stored.EvidenceId, output));
+
+        Assert.Equal("evidence.control_invalid", DetailCode(fixture.Sink.Lines[1]));
+        Assert.Empty(output.ToArray());
+    }
+
+    [Fact]
+    public void Evidence_storage_failure_records_specific_failure_without_disclosure()
+    {
+        var options = Options();
+        using var fixture = Journal(options);
+        var operations = new AuditAdminOperations(
+            options,
+            fixture.Journal,
+            () => throw new ScriptEvidenceStorageException(
+                ScriptEvidenceStorageFailureKind.Storage));
+        using var output = new MemoryStream();
+
+        Assert.Throws<AuditAdminOperationException>(() =>
+            operations.ReadEvidence(Guid.NewGuid().ToString("D"), output));
+
+        Assert.Equal("evidence.storage_failed", DetailCode(fixture.Sink.Lines[1]));
+        Assert.Empty(output.ToArray());
     }
 
     [Fact]
@@ -125,6 +182,32 @@ public sealed class AuditAdminEvidenceAccessTests : IDisposable
             "operation.disclosure_unknown",
             outcome.GetProperty("detail_code").GetString());
         Assert.Equal(JsonValueKind.Null, outcome.GetProperty("bytes_returned").ValueKind);
+    }
+
+    [Fact]
+    public void Read_failure_after_flush_records_failed_audit_outcome_after_disclosure()
+    {
+        var options = Options();
+        var stored = new ScriptEvidenceStore(options).Store("Get-DisclosedSecret");
+        using var fixture = Journal(options);
+        var operations = new AuditAdminOperations(
+            options,
+            fixture.Journal,
+            beforeEvidenceOutcomeAppendForTests: () =>
+                throw new IOException("injected post-disclosure failure"));
+        using var output = new MemoryStream();
+
+        Assert.Throws<AuditAdminOperationException>(() =>
+            operations.ReadEvidence(stored.EvidenceId, output));
+
+        Assert.Equal("Get-DisclosedSecret", Encoding.UTF8.GetString(output.ToArray()));
+        Assert.Equal(
+            "audit.outcome_failed_after_disclosure",
+            DetailCode(fixture.Sink.Lines[1]));
+        using var failure = JsonDocument.Parse(fixture.Sink.Lines[1]);
+        Assert.Equal(
+            stored.ByteLength,
+            failure.RootElement.GetProperty("outcome").GetProperty("bytes_returned").GetInt64());
     }
 
     [Fact]
@@ -179,6 +262,92 @@ public sealed class AuditAdminEvidenceAccessTests : IDisposable
         Assert.Equal(
             ["evidence.export_intent", "evidence.export_failed"],
             fixture.Sink.Lines.Select(EventType).ToArray());
+        Assert.Equal("evidence.destination_exists", DetailCode(fixture.Sink.Lines[1]));
+    }
+
+    [Fact]
+    public void Export_refuses_relative_path_with_specific_failure()
+    {
+        var options = Options();
+        var stored = new ScriptEvidenceStore(options).Store("Get-RelativeSecret");
+        using var fixture = Journal(options);
+        var operations = new AuditAdminOperations(options, fixture.Journal);
+
+        Assert.Throws<AuditAdminOperationException>(() =>
+            operations.ExportEvidence(stored.EvidenceId, "relative-evidence.bin"));
+
+        Assert.Equal("evidence.path_invalid", DetailCode(fixture.Sink.Lines[1]));
+    }
+
+    [Fact]
+    public void Export_refuses_unprotected_parent_with_specific_failure()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var options = Options();
+        var stored = new ScriptEvidenceStore(options).Store("Get-RefusedSecret");
+        var outputRoot = Path.Combine(_root, "unprotected-output");
+        Directory.CreateDirectory(outputRoot);
+        File.SetUnixFileMode(
+            outputRoot,
+            UnixFileMode.UserRead | UnixFileMode.UserWrite | UnixFileMode.UserExecute |
+            UnixFileMode.GroupRead | UnixFileMode.GroupExecute);
+        using var fixture = Journal(options);
+        var operations = new AuditAdminOperations(options, fixture.Journal);
+
+        Assert.Throws<AuditAdminOperationException>(() =>
+            operations.ExportEvidence(stored.EvidenceId, Path.Combine(outputRoot, "evidence.bin")));
+
+        Assert.Equal("evidence.destination_refused", DetailCode(fixture.Sink.Lines[1]));
+    }
+
+    [Fact]
+    public void Export_refuses_existing_file_with_specific_failure()
+    {
+        var options = Options();
+        var stored = new ScriptEvidenceStore(options).Store("Get-ExistingSecret");
+        var outputRoot = SecureAuditStorage.PrepareRoot(Path.Combine(_root, "existing-output"));
+        var outputPath = Path.Combine(outputRoot, "evidence.bin");
+        File.WriteAllText(outputPath, "unchanged");
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(outputPath, SecureAuditStorage.OwnerFileMode);
+        using var fixture = Journal(options);
+        var operations = new AuditAdminOperations(options, fixture.Journal);
+
+        Assert.Throws<AuditAdminOperationException>(() =>
+            operations.ExportEvidence(stored.EvidenceId, outputPath));
+
+        Assert.Equal("unchanged", File.ReadAllText(outputPath));
+        Assert.Equal("evidence.destination_exists", DetailCode(fixture.Sink.Lines[1]));
+    }
+
+    [Fact]
+    public void Export_failure_after_publish_records_failed_audit_outcome_and_retracts_file()
+    {
+        var options = Options();
+        var stored = new ScriptEvidenceStore(options).Store("Get-PublishedSecret");
+        var outputRoot = SecureAuditStorage.PrepareRoot(Path.Combine(_root, "published-output"));
+        var outputPath = Path.Combine(outputRoot, "evidence.bin");
+        using var fixture = Journal(options);
+        var operations = new AuditAdminOperations(
+            options,
+            fixture.Journal,
+            beforeEvidenceOutcomeAppendForTests: () =>
+                throw new IOException("injected post-publication failure"));
+
+        Assert.Throws<AuditAdminOperationException>(() =>
+            operations.ExportEvidence(stored.EvidenceId, outputPath));
+
+        Assert.False(File.Exists(outputPath));
+        Assert.Equal(
+            "audit.outcome_failed_after_publish",
+            DetailCode(fixture.Sink.Lines[1]));
+        using var failure = JsonDocument.Parse(fixture.Sink.Lines[1]);
+        Assert.Equal(
+            stored.ScriptDigest,
+            failure.RootElement.GetProperty("request").GetProperty("original_script_digest").GetString());
+        Assert.Equal(
+            stored.ByteLength,
+            failure.RootElement.GetProperty("outcome").GetProperty("bytes_returned").GetInt64());
     }
 
     [Fact]
@@ -277,6 +446,12 @@ public sealed class AuditAdminEvidenceAccessTests : IDisposable
     {
         using var document = JsonDocument.Parse(line);
         return document.RootElement.GetProperty("event_type").GetString()!;
+    }
+
+    private static string DetailCode(byte[] line)
+    {
+        using var document = JsonDocument.Parse(line);
+        return document.RootElement.GetProperty("outcome").GetProperty("detail_code").GetString()!;
     }
 
     private static void AssertEffectiveAdminIdentity(JsonElement root)

@@ -49,12 +49,29 @@ internal readonly record struct AuditEvidenceAcknowledgmentPosition(
     string EvidenceId,
     string ScriptDigest);
 
+internal enum ScriptEvidenceStorageFailureKind
+{
+    Absent,
+    ControlInvalid,
+    Storage,
+}
+
 public sealed class ScriptEvidenceStorageException : IOException
 {
     internal ScriptEvidenceStorageException()
-        : base("Protected script evidence storage failed.")
+        : this(ScriptEvidenceStorageFailureKind.Storage)
     {
     }
+
+    internal ScriptEvidenceStorageException(
+        ScriptEvidenceStorageFailureKind failureKind,
+        Exception? innerException = null)
+        : base("Protected script evidence storage failed.", innerException)
+    {
+        FailureKind = failureKind;
+    }
+
+    internal ScriptEvidenceStorageFailureKind FailureKind { get; }
 }
 
 /// <summary>
@@ -153,9 +170,17 @@ public sealed class ScriptEvidenceStore
         {
             throw;
         }
+        catch (ScriptEvidenceControlException exception)
+        {
+            throw new ScriptEvidenceStorageException(
+                ScriptEvidenceStorageFailureKind.ControlInvalid,
+                exception);
+        }
         catch (Exception exception) when (!IsFatal(exception))
         {
-            throw new ScriptEvidenceStorageException();
+            throw new ScriptEvidenceStorageException(
+                ScriptEvidenceStorageFailureKind.Storage,
+                exception);
         }
     }
 
@@ -513,40 +538,89 @@ public sealed class ScriptEvidenceStore
         ScriptEvidenceReference? reference = null;
         try
         {
-            lock (_gate)
-            using (AcquireQuotaLock())
-            using (var inventory = InventoryArtifacts())
+            try
             {
-                var matches = inventory.Artifacts
-                    .Where(artifact => string.Equals(
+                lock (_gate)
+                using (AcquireQuotaLock())
+                using (var inventory = InventoryArtifacts())
+                {
+                    var matches = inventory.Artifacts
+                        .Where(artifact => string.Equals(
+                            artifact.EvidenceId,
+                            evidenceId,
+                            StringComparison.Ordinal))
+                        .ToArray();
+                    if (matches.Length == 0)
+                    {
+                        throw new ScriptEvidenceStorageException(
+                            ScriptEvidenceStorageFailureKind.Absent);
+                    }
+                    if (matches.Length != 1)
+                    {
+                        throw new ScriptEvidenceStorageException(
+                            ScriptEvidenceStorageFailureKind.ControlInvalid);
+                    }
+
+                    var artifact = matches[0];
+                    var stream = artifact.RequireHandle();
+                    if (stream.Length < 0 || stream.Length > _maximumBytes)
+                    {
+                        throw new ScriptEvidenceStorageException(
+                            ScriptEvidenceStorageFailureKind.ControlInvalid);
+                    }
+
+                    bytes = new byte[checked((int)stream.Length)];
+                    stream.Position = 0;
+                    stream.ReadExactly(bytes);
+                    if (stream.Position != stream.Length)
+                    {
+                        throw new ScriptEvidenceStorageException(
+                            ScriptEvidenceStorageFailureKind.ControlInvalid);
+                    }
+
+                    var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
+                    if (!string.Equals(digest, artifact.Digest, StringComparison.Ordinal))
+                    {
+                        throw new ScriptEvidenceStorageException(
+                            ScriptEvidenceStorageFailureKind.ControlInvalid);
+                    }
+                    try
+                    {
+                        _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+                            artifact.Path,
+                            stream.SafeFileHandle);
+                    }
+                    catch (Exception exception) when (!IsFatal(exception))
+                    {
+                        throw new ScriptEvidenceStorageException(
+                            ScriptEvidenceStorageFailureKind.ControlInvalid,
+                            exception);
+                    }
+                    reference = new ScriptEvidenceReference(
                         artifact.EvidenceId,
-                        evidenceId,
-                        StringComparison.Ordinal))
-                    .ToArray();
-                if (matches.Length != 1)
-                    throw new IOException("The requested evidence artifact state is ambiguous.");
-
-                var artifact = matches[0];
-                var stream = artifact.RequireHandle();
-                if (stream.Length < 0 || stream.Length > _maximumBytes)
-                    throw new IOException("The evidence artifact exceeds its configured bound.");
-
-                bytes = new byte[checked((int)stream.Length)];
-                stream.Position = 0;
-                stream.ReadExactly(bytes);
-                if (stream.Position != stream.Length)
-                    throw new IOException("The evidence artifact length changed while it was read.");
-
-                var digest = Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
-                if (!string.Equals(digest, artifact.Digest, StringComparison.Ordinal))
-                    throw new IOException("The evidence artifact digest changed while it was read.");
-                _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
-                    artifact.Path,
-                    stream.SafeFileHandle);
-                reference = new ScriptEvidenceReference(
-                    artifact.EvidenceId,
-                    artifact.Digest,
-                    bytes.Length);
+                        artifact.Digest,
+                        bytes.Length);
+                }
+            }
+            catch (ScriptEvidenceStorageException)
+            {
+                throw;
+            }
+            catch (ScriptEvidenceControlException exception)
+            {
+                throw new ScriptEvidenceStorageException(
+                    ScriptEvidenceStorageFailureKind.ControlInvalid,
+                    exception);
+            }
+            catch (ArgumentException)
+            {
+                throw;
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                throw new ScriptEvidenceStorageException(
+                    ScriptEvidenceStorageFailureKind.Storage,
+                    exception);
             }
 
             // The verified snapshot is private to this call. Do not retain the
@@ -555,14 +629,6 @@ public sealed class ScriptEvidenceStore
             consume(bytes);
             return reference ?? throw new IOException(
                 "The requested evidence artifact was not resolved.");
-        }
-        catch (ArgumentException)
-        {
-            throw;
-        }
-        catch (Exception exception) when (!IsFatal(exception))
-        {
-            throw new ScriptEvidenceStorageException();
         }
         finally
         {
@@ -695,7 +761,14 @@ public sealed class ScriptEvidenceStore
 
     private EvidenceInventory InventoryArtifacts()
     {
-        SecureAuditStorage.VerifyProtectedDirectory(_root);
+        try
+        {
+            SecureAuditStorage.VerifyProtectedDirectory(_root);
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            throw new ScriptEvidenceControlException(exception);
+        }
         var artifacts = new List<EvidenceArtifact>();
         var identities = new HashSet<ProtectedFileIdentity>();
         var maximumEntries = checked(_aggregateBytes / _maximumBytes + 2L);
@@ -707,12 +780,20 @@ public sealed class ScriptEvidenceStore
                 entryCount = checked(entryCount + 1);
                 if (entryCount > maximumEntries)
                 {
-                    throw new IOException(
+                    throw new ScriptEvidenceControlException(
                         "The evidence inventory exceeds its configured entry bound.");
                 }
                 if (Directory.Exists(path))
-                    throw new IOException("The evidence root contains an unexpected directory.");
-                SecureAuditStorage.VerifyProtectedFile(path);
+                    throw new ScriptEvidenceControlException(
+                        "The evidence root contains an unexpected directory.");
+                try
+                {
+                    SecureAuditStorage.VerifyProtectedFile(path);
+                }
+                catch (Exception exception) when (!IsFatal(exception))
+                {
+                    throw new ScriptEvidenceControlException(exception);
+                }
                 var file = new FileInfo(path);
                 if (string.Equals(file.Name, QuotaLockFileName, StringComparison.Ordinal))
                     continue;
@@ -737,7 +818,8 @@ public sealed class ScriptEvidenceStore
                 }
                 if (file.Length > _maximumBytes)
                 {
-                    throw new IOException("The evidence root contains an invalid artifact.");
+                    throw new ScriptEvidenceControlException(
+                        "The evidence root contains an invalid artifact.");
                 }
 
                 var stream = new FileStream(
@@ -749,13 +831,23 @@ public sealed class ScriptEvidenceStore
                     FileOptions.SequentialScan);
                 try
                 {
-                    var identity = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
-                        file.FullName,
-                        stream.SafeFileHandle);
+                    ProtectedFileIdentity identity;
+                    try
+                    {
+                        identity = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+                            file.FullName,
+                            stream.SafeFileHandle);
+                    }
+                    catch (Exception exception) when (!IsFatal(exception))
+                    {
+                        throw new ScriptEvidenceControlException(exception);
+                    }
                     if (!identities.Add(identity))
-                        throw new IOException("Two evidence names identify the same protected file.");
+                        throw new ScriptEvidenceControlException(
+                            "Two evidence names identify the same protected file.");
                     if (stream.Length > _maximumBytes)
-                        throw new IOException("An evidence artifact exceeds its configured bound.");
+                        throw new ScriptEvidenceControlException(
+                            "An evidence artifact exceeds its configured bound.");
                     var actualDigest = Convert.ToHexString(SHA256.HashData(stream)).ToLowerInvariant();
                     if (state == ArtifactState.Temporary)
                     {
@@ -763,7 +855,7 @@ public sealed class ScriptEvidenceStore
                     }
                     else if (!string.Equals(actualDigest, expectedDigest, StringComparison.Ordinal))
                     {
-                        throw new IOException(
+                        throw new ScriptEvidenceControlException(
                             "The evidence artifact digest does not match its protected name.");
                     }
                     artifacts.Add(new EvidenceArtifact(
@@ -781,7 +873,14 @@ public sealed class ScriptEvidenceStore
                     stream?.Dispose();
                 }
             }
-            SecureAuditStorage.VerifyProtectedDirectory(_root);
+            try
+            {
+                SecureAuditStorage.VerifyProtectedDirectory(_root);
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                throw new ScriptEvidenceControlException(exception);
+            }
             return new EvidenceInventory(artifacts);
         }
         catch
@@ -1154,6 +1253,19 @@ public sealed class ScriptEvidenceStore
     {
         var text = value.ToString("D");
         return text[14] == '7' && text[19] is '8' or '9' or 'a' or 'b';
+    }
+
+    private sealed class ScriptEvidenceControlException : IOException
+    {
+        internal ScriptEvidenceControlException(string message)
+            : base(message)
+        {
+        }
+
+        internal ScriptEvidenceControlException(Exception innerException)
+            : base("Protected script evidence control state is invalid.", innerException)
+        {
+        }
     }
 
     private sealed class EvidenceInventory(List<EvidenceArtifact> artifacts) : IDisposable
