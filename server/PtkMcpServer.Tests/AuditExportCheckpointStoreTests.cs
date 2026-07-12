@@ -32,13 +32,13 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     }
 
     [Fact]
-    public void Acquire_publishes_exact_initial_checkpoint_and_persistent_lock()
+    public void CreateForWriter_publishes_exact_initial_checkpoint_and_persistent_lock()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
         string checkpointPath;
         string lockPath;
 
-        using (var store = AuditExportCheckpointStore.Acquire(options, BootId))
+        using (var store = AuditExportCheckpointStore.CreateForWriter(options, BootId))
         {
             checkpointPath = store.CheckpointPath;
             lockPath = store.LockPath;
@@ -55,10 +55,11 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             Assert.Equal(0, new FileInfo(lockPath).Length);
             SecureAuditStorage.VerifyExternalProtectedFile(checkpointPath);
             SecureAuditStorage.VerifyExternalProtectedFile(lockPath);
+            CreateSameBootSegment(options, store);
         }
 
         Assert.True(File.Exists(lockPath));
-        using var restarted = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var restarted = ReopenExisting(options);
         AssertCheckpoint(restarted.Current, sequence: 0, chainComplete: false);
         Assert.True(File.Exists(lockPath));
         Assert.DoesNotContain(
@@ -70,12 +71,16 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Competing_lease_fails_until_owner_disposes_without_deleting_lock()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        var first = AuditExportCheckpointStore.Acquire(options, BootId);
+        var first = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var lockPath = first.LockPath;
+        CreateSameBootSegment(options, first);
         try
         {
-            Assert.ThrowsAny<IOException>(() =>
-                AuditExportCheckpointStore.Acquire(options, BootId));
+            Assert.False(AuditExportCheckpointStore.TryAcquireExisting(
+                options,
+                BootId,
+                out var competing));
+            Assert.Null(competing);
             Assert.True(File.Exists(lockPath));
         }
         finally
@@ -83,7 +88,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             first.Dispose();
         }
 
-        using var restarted = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var restarted = ReopenExisting(options);
         Assert.True(File.Exists(lockPath));
         AssertCheckpoint(restarted.Current, sequence: 0, chainComplete: false);
     }
@@ -216,7 +221,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             new FileAuditJournalSink(options, BootId));
         Assert.Empty(Directory.EnumerateFiles(options.SpoolDirectory, "*.jsonl"));
 
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         Assert.True(File.Exists(store.CheckpointPath));
         Assert.Throws<InvalidOperationException>(() =>
             new FileAuditJournalSink(options, BootId));
@@ -233,7 +238,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Anchored_sink_retains_checkpoint_ownership_until_writer_closes()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var sink = new FileAuditJournalSink(
             options,
             BootId,
@@ -242,8 +247,11 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         {
             store.Dispose();
             Assert.Throws<ObjectDisposedException>(() => _ = store.Current);
-            Assert.ThrowsAny<IOException>(() =>
-                AuditExportCheckpointStore.Acquire(options, BootId));
+            Assert.False(AuditExportCheckpointStore.TryAcquireExisting(
+                options,
+                BootId,
+                out var competing));
+            Assert.Null(competing);
         }
         finally
         {
@@ -251,7 +259,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             store.Dispose();
         }
 
-        using var adopted = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var adopted = ReopenExisting(options);
         Assert.Equal(BootId, adopted.SupervisorBootId);
     }
 
@@ -259,7 +267,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Disposed_checkpoint_owner_cannot_authorize_an_anchored_writer()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         store.Dispose();
 
         Assert.Throws<ObjectDisposedException>(() =>
@@ -275,7 +283,8 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public async Task Save_holds_the_instance_and_cross_process_lease_through_transition()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
+        CreateSameBootSegment(options, store);
         using var transitionReached = new ManualResetEventSlim();
         using var releaseTransition = new ManualResetEventSlim();
         var save = Task.Run(() => store.SaveForTests(
@@ -300,15 +309,11 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             observeCompletedEarly = ReferenceEquals(
                 observe,
                 await Task.WhenAny(observe, Task.Delay(TimeSpan.FromMilliseconds(250))));
-            try
-            {
-                using var competing = AuditExportCheckpointStore.Acquire(options, BootId);
-                competingOwnerAcquired = true;
-            }
-            catch (IOException)
-            {
-                // Expected while Save owns both the instance and file lease.
-            }
+            competingOwnerAcquired = AuditExportCheckpointStore.TryAcquireExisting(
+                options,
+                BootId,
+                out var competing);
+            competing?.Dispose();
         }
         finally
         {
@@ -329,7 +334,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         Assert.False(observeCompletedEarly);
         Assert.False(competingOwnerAcquired);
 
-        using var successor = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var successor = ReopenExisting(options);
         Assert.Equal(1, successor.Current.Sequence);
         successor.SaveForTests(Checkpoint(BootId, sequence: 2, byteOffset: 256));
         Assert.Equal(2, successor.Current.Sequence);
@@ -349,11 +354,14 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             AuditExportCheckpointStore.CheckpointFileName(BootId));
 
         Assert.Throws<IOException>(() =>
-            AuditExportCheckpointStore.Acquire(anchoredOptions, BootId));
+            AuditExportCheckpointStore.TryAcquireExisting(
+                anchoredOptions,
+                BootId,
+                out _));
 
         Assert.False(File.Exists(checkpointPath));
         Assert.True(File.Exists(segmentPath));
-        Assert.True(File.Exists(Path.Combine(
+        Assert.False(File.Exists(Path.Combine(
             root,
             AuditExportCheckpointStore.LockFileName(BootId))));
     }
@@ -363,15 +371,18 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
         string checkpointPath;
-        using (var store = AuditExportCheckpointStore.Acquire(options, BootId))
+        using (var store = AuditExportCheckpointStore.CreateForWriter(options, BootId))
+        {
             checkpointPath = store.CheckpointPath;
+            CreateSameBootSegment(options, store);
+        }
         var tampered = "{\"not\":\"a checkpoint\"}\n"u8.ToArray();
         File.WriteAllBytes(checkpointPath, tampered);
 
         Assert.Throws<IOException>(() =>
             AuditExportCheckpointStore.ReadSnapshot(options, BootId));
         Assert.Throws<IOException>(() =>
-            AuditExportCheckpointStore.Acquire(options, BootId));
+            AuditExportCheckpointStore.TryAcquireExisting(options, BootId, out _));
 
         Assert.Equal(tampered, File.ReadAllBytes(checkpointPath));
     }
@@ -380,7 +391,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Live_store_never_overwrites_checkpoint_tampering()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var tampered = AuditExportCheckpointCodec.Serialize(
             Checkpoint(BootId, sequence: 2, byteOffset: 256));
         File.WriteAllBytes(store.CheckpointPath, tampered);
@@ -398,7 +409,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Live_store_faults_after_a_strict_checkpoint_read_failure(bool deleteCheckpoint)
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var malformed = "{\"not\":\"a checkpoint\"}\n"u8.ToArray();
         if (deleteCheckpoint)
             File.Delete(store.CheckpointPath);
@@ -420,7 +431,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     {
         if (OperatingSystem.IsWindows()) return;
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         File.Delete(store.LockPath);
 
         Assert.Throws<IOException>(() => store.SaveForTests(
@@ -434,7 +445,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Post_replace_strict_reload_failure_faults_the_live_store()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var malformed = "{\"not\":\"a checkpoint\"}\n"u8.ToArray();
 
         Assert.Throws<IOException>(() => store.SaveForTests(
@@ -454,7 +465,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
         string checkpointPath;
-        using (var store = AuditExportCheckpointStore.Acquire(options, BootId))
+        using (var store = AuditExportCheckpointStore.CreateForWriter(options, BootId))
             checkpointPath = store.CheckpointPath;
         var sabotagedPath = sabotageParent ? options.RootDirectory : checkpointPath;
         AddUnprotectedAccess(sabotagedPath, sabotageParent);
@@ -475,7 +486,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
         string checkpointPath;
         byte[] bytes;
-        using (var store = AuditExportCheckpointStore.Acquire(options, BootId))
+        using (var store = AuditExportCheckpointStore.CreateForWriter(options, BootId))
         {
             checkpointPath = store.CheckpointPath;
             bytes = File.ReadAllBytes(checkpointPath);
@@ -495,7 +506,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Save_rejects_cursor_regression_rewrite_and_cross_boot_transition()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var acknowledged = Checkpoint(BootId, sequence: 1, byteOffset: 128);
         store.SaveForTests(acknowledged);
         var exactBytes = File.ReadAllBytes(store.CheckpointPath);
@@ -525,7 +536,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Save_advances_exactly_one_record_without_skipping_segments()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         Assert.Throws<ArgumentException>(() =>
             store.SaveForTests(Checkpoint(BootId, sequence: 2, byteOffset: 256)));
 
@@ -561,7 +572,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Save_clears_a_block_only_by_advancing_its_exact_record()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var acknowledged = Checkpoint(BootId, sequence: 1, byteOffset: 128);
         store.SaveForTests(acknowledged);
         var blockedEventId = Guid.CreateVersion7();
@@ -614,7 +625,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Configuration_block_reclassifies_after_each_changed_identity_then_freezes()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var blockedEventId = Guid.CreateVersion7();
         var first = new AuditExportBlockedRecord(
             AuditSpoolSegmentIdentity.Create(BootId, 0),
@@ -708,7 +719,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Failed_replace_that_left_exact_prior_state_rethrows_exact_failure()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var priorBytes = File.ReadAllBytes(store.CheckpointPath);
         var injected = new InjectedCheckpointException("before replace");
 
@@ -726,7 +737,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Post_replace_uncertainty_accepts_the_exact_intended_state()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
 
         store.SaveForTests(
@@ -744,7 +755,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Intended_bytes_without_a_confirmed_replace_fault_the_store()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
         var intendedBytes = AuditExportCheckpointCodec.Serialize(intended);
         var injected = new InjectedCheckpointException("before replace");
@@ -766,7 +777,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Confirmed_replace_that_reloads_prior_bytes_faults_the_store()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var priorBytes = File.ReadAllBytes(store.CheckpointPath);
         var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
         var injected = new InjectedCheckpointException("after replace");
@@ -788,7 +799,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Failed_post_replace_durability_confirmation_faults_the_store()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
 
         var exception = Assert.Throws<IOException>(() => store.SaveForTests(
@@ -808,7 +819,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     {
         if (OperatingSystem.IsWindows()) return;
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
         var intendedBytes = AuditExportCheckpointCodec.Serialize(intended);
 
@@ -826,7 +837,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public void Uncertain_replace_with_neither_prior_nor_intended_state_faults_store()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var unexpected = Checkpoint(BootId, sequence: 2, byteOffset: 256);
 
         Assert.Throws<IOException>(() => store.SaveForTests(
@@ -849,7 +860,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     public async Task Concurrent_readers_observe_only_complete_atomic_checkpoints()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
-        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         var failures = new ConcurrentQueue<Exception>();
         var observations = 0;
         var firstObservation = new TaskCompletionSource(
@@ -900,8 +911,11 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
         byte[] originalBytes;
-        using (var first = AuditExportCheckpointStore.Acquire(options, BootId))
+        using (var first = AuditExportCheckpointStore.CreateForWriter(options, BootId))
+        {
             originalBytes = File.ReadAllBytes(first.CheckpointPath);
+            CreateSameBootSegment(options, first);
+        }
         var staleName = AuditExportCheckpointStore.TemporaryFileName(
             BootId,
             Guid.Parse("42345678-1234-4abc-8def-0123456789ab"));
@@ -911,7 +925,7 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             AuditExportCheckpointCodec.Serialize(
                 Checkpoint(BootId, sequence: 1, byteOffset: 128)));
 
-        using var restarted = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var restarted = ReopenExisting(options);
 
         Assert.False(File.Exists(stalePath));
         Assert.Equal(originalBytes, File.ReadAllBytes(restarted.CheckpointPath));
@@ -923,13 +937,16 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
         string lockPath;
-        using (var store = AuditExportCheckpointStore.Acquire(options, BootId))
+        using (var store = AuditExportCheckpointStore.CreateForWriter(options, BootId))
+        {
             lockPath = store.LockPath;
+            CreateSameBootSegment(options, store);
+        }
         AddUnprotectedAccess(lockPath, isDirectory: false);
         var protectionBefore = ProtectionFingerprint(lockPath, isDirectory: false);
 
         Assert.Throws<IOException>(() =>
-            AuditExportCheckpointStore.Acquire(options, BootId));
+            AuditExportCheckpointStore.TryAcquireExisting(options, BootId, out _));
         Assert.Throws<IOException>(() =>
             AuditExportCheckpointStore.ReadSnapshot(options, BootId));
 
@@ -937,6 +954,25 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             protectionBefore,
             ProtectionFingerprint(lockPath, isDirectory: false));
         Assert.True(File.Exists(lockPath));
+    }
+
+    private static void CreateSameBootSegment(
+        AuditOptions options,
+        AuditExportCheckpointStore owner)
+    {
+        using var sink = new FileAuditJournalSink(
+            options,
+            BootId,
+            checkpointStore: owner);
+    }
+
+    private static AuditExportCheckpointStore ReopenExisting(AuditOptions options)
+    {
+        Assert.True(AuditExportCheckpointStore.TryAcquireExisting(
+            options,
+            BootId,
+            out var store));
+        return Assert.IsType<AuditExportCheckpointStore>(store);
     }
 
     private AuditOptions Options(string root, AuditProtectionMode protectionMode)
