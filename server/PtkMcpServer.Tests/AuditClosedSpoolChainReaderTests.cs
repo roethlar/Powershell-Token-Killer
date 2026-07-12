@@ -581,13 +581,21 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
     public void Reader_retains_the_checkpoint_lease_until_it_is_disposed()
     {
         var (options, store) = OwnedFixture();
+        WriteSegment(options, 0);
         var reader = new AuditClosedSpoolChainReader(options, store);
         store.Dispose();
 
-        Assert.Throws<IOException>(() =>
-            AuditExportCheckpointStore.Acquire(options, BootId));
+        Assert.False(AuditExportCheckpointStore.TryAcquireExisting(
+            options,
+            BootId,
+            out var competing));
+        Assert.Null(competing);
         reader.Dispose();
-        using var successor = AuditExportCheckpointStore.Acquire(options, BootId);
+        Assert.True(AuditExportCheckpointStore.TryAcquireExisting(
+            options,
+            BootId,
+            out var successor));
+        using var successorOwner = Assert.IsType<AuditExportCheckpointStore>(successor);
     }
 
     [Fact]
@@ -681,7 +689,7 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
     private (AuditOptions Options, AuditExportCheckpointStore Store) OwnedFixture()
     {
         var options = Options(NewRoot());
-        var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
         SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
         return (options, store);
     }
