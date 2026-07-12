@@ -267,6 +267,23 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         AuditExportCheckpointCodec.Validate(next);
         ValidateTransition(_current, next, _supervisorBootId);
 
+        PersistValidatedCheckpointLocked(
+            next,
+            beforeAtomicReplaceForTests,
+            destinationReplacedForTests,
+            afterAtomicReplaceForTests,
+            beforeDurabilityConfirmationForTests,
+            directoryFlushStartingForTests);
+    }
+
+    private void PersistValidatedCheckpointLocked(
+        AuditExportCheckpoint next,
+        Action? beforeAtomicReplaceForTests,
+        Action? destinationReplacedForTests,
+        Action? afterAtomicReplaceForTests,
+        Action? beforeDurabilityConfirmationForTests,
+        Action? directoryFlushStartingForTests)
+    {
         var intendedBytes = AuditExportCheckpointCodec.Serialize(next);
         VerifyLeasePath();
         VerifyCurrentPersistedState();
@@ -432,15 +449,10 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         {
             EnsureClosedReaderLease(reader);
             RequireExportConfigurationIdentity(exportConfigurationIdentity);
-            if (_current.BlockedRecord is { } blocked &&
-                (blocked.FailureClass != AuditExportFailureClass.Configuration ||
-                 string.Equals(
-                     blocked.ExportConfigurationIdentity,
-                     exportConfigurationIdentity,
-                     StringComparison.Ordinal)))
+            if (_current.BlockedRecord is not null)
             {
                 throw new InvalidOperationException(
-                    "The persisted audit export block does not permit an automatic acknowledgment attempt.");
+                    "A persisted audit export block requires its exact disposition capability.");
             }
             SaveLocked(
                 new AuditExportCheckpoint(
@@ -457,6 +469,160 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                 null,
                 null);
         }
+    }
+
+    private ClosedConfigurationRetryAuthorization AuthorizeConfigurationRetry(
+        ClosedChainReaderLease reader,
+        AuditSpoolSegmentIdentity spool,
+        long startOffset,
+        long nextOffset,
+        long sequence,
+        Guid eventId,
+        string exportConfigurationIdentity)
+    {
+        lock (_lifetimeGate)
+        {
+            EnsureClosedReaderLease(reader);
+            RequireExportConfigurationIdentity(exportConfigurationIdentity);
+            var blocked = _current.BlockedRecord;
+            if (blocked is null ||
+                blocked.Spool != spool ||
+                blocked.ByteOffset != startOffset ||
+                blocked.Sequence != sequence ||
+                blocked.EventId != eventId)
+            {
+                throw new ArgumentException(
+                    "The configuration retry proof does not identify the exact blocked record.",
+                    nameof(spool));
+            }
+            if (blocked.FailureClass != AuditExportFailureClass.Configuration ||
+                string.Equals(
+                    blocked.ExportConfigurationIdentity,
+                    exportConfigurationIdentity,
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException(
+                    "The persisted audit export block does not authorize this configuration retry.");
+            }
+
+            var authorizedBlock = new AuditExportBlockedRecord(
+                blocked.Spool,
+                blocked.ByteOffset,
+                blocked.Sequence,
+                blocked.EventId,
+                blocked.FailureClass,
+                blocked.DetailCode,
+                blocked.ResponseDigest,
+                blocked.FirstFailureUtc,
+                exportConfigurationIdentity);
+            SaveLocked(
+                new AuditExportCheckpoint(
+                    _supervisorBootId,
+                    _current.ChainComplete,
+                    _current.Spool,
+                    _current.ByteOffset,
+                    _current.Sequence,
+                    _current.AcknowledgedEventId,
+                    authorizedBlock),
+                null,
+                null,
+                null,
+                null,
+                null);
+            return new ClosedConfigurationRetryAuthorization(
+                this,
+                reader,
+                _currentBytes.ToArray(),
+                spool,
+                startOffset,
+                nextOffset,
+                sequence,
+                eventId);
+        }
+    }
+
+    private void AcknowledgeAuthorizedConfigurationRetry(
+        ClosedChainReaderLease reader,
+        ClosedConfigurationRetryAuthorization authorization)
+    {
+        lock (_lifetimeGate)
+        {
+            EnsureClosedReaderLease(reader);
+            authorization.Consume(this, reader);
+            VerifyAuthorizedConfigurationRetry(authorization);
+            SaveLocked(
+                new AuditExportCheckpoint(
+                    _supervisorBootId,
+                    chainComplete: false,
+                    authorization.Spool,
+                    authorization.NextOffset,
+                    authorization.Sequence,
+                    authorization.EventId,
+                    blockedRecord: null),
+                null,
+                null,
+                null,
+                null,
+                null);
+        }
+    }
+
+    private void BlockAuthorizedConfigurationRetry(
+        ClosedChainReaderLease reader,
+        ClosedConfigurationRetryAuthorization authorization,
+        AuditExportFailureClass failureClass,
+        string detailCode,
+        string? responseDigest)
+    {
+        lock (_lifetimeGate)
+        {
+            EnsureClosedReaderLease(reader);
+            authorization.Consume(this, reader);
+            var authorizedBlock = VerifyAuthorizedConfigurationRetry(authorization);
+            var blocked = new AuditExportBlockedRecord(
+                authorizedBlock.Spool,
+                authorizedBlock.ByteOffset,
+                authorizedBlock.Sequence,
+                authorizedBlock.EventId,
+                failureClass,
+                detailCode,
+                responseDigest,
+                authorizedBlock.FirstFailureUtc,
+                authorizedBlock.ExportConfigurationIdentity);
+            var next = new AuditExportCheckpoint(
+                _supervisorBootId,
+                _current.ChainComplete,
+                _current.Spool,
+                _current.ByteOffset,
+                _current.Sequence,
+                _current.AcknowledgedEventId,
+                blocked);
+            AuditExportCheckpointCodec.Validate(next);
+            PersistValidatedCheckpointLocked(
+                next,
+                null,
+                null,
+                null,
+                null,
+                null);
+        }
+    }
+
+    private AuditExportBlockedRecord VerifyAuthorizedConfigurationRetry(
+        ClosedConfigurationRetryAuthorization authorization)
+    {
+        if (!authorization.MatchesCheckpoint(_currentBytes) ||
+            _current.BlockedRecord is not { } blocked ||
+            blocked.Spool != authorization.Spool ||
+            blocked.ByteOffset != authorization.StartOffset ||
+            blocked.Sequence != authorization.Sequence ||
+            blocked.EventId != authorization.EventId ||
+            blocked.FailureClass != AuditExportFailureClass.Configuration)
+        {
+            throw new InvalidOperationException(
+                "The configuration retry authorization is stale or belongs to another record.");
+        }
+        return blocked;
     }
 
     private void BlockClosedRecord(
@@ -1155,6 +1321,52 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                 exportConfigurationIdentity);
         }
 
+        internal ClosedConfigurationRetryAuthorization AuthorizeConfigurationRetry(
+            AuditSpoolSegmentIdentity spool,
+            long startOffset,
+            long nextOffset,
+            long sequence,
+            Guid eventId,
+            string exportConfigurationIdentity)
+        {
+            var currentOwner = Volatile.Read(ref _owner)
+                ?? throw new ObjectDisposedException(nameof(ClosedChainReaderLease));
+            return currentOwner.AuthorizeConfigurationRetry(
+                this,
+                spool,
+                startOffset,
+                nextOffset,
+                sequence,
+                eventId,
+                exportConfigurationIdentity);
+        }
+
+        internal void AcknowledgeConfigurationRetry(
+            ClosedConfigurationRetryAuthorization authorization)
+        {
+            var currentOwner = Volatile.Read(ref _owner)
+                ?? throw new ObjectDisposedException(nameof(ClosedChainReaderLease));
+            currentOwner.AcknowledgeAuthorizedConfigurationRetry(
+                this,
+                authorization);
+        }
+
+        internal void PersistConfigurationRetryBlock(
+            ClosedConfigurationRetryAuthorization authorization,
+            AuditExportFailureClass failureClass,
+            string detailCode,
+            string? responseDigest)
+        {
+            var currentOwner = Volatile.Read(ref _owner)
+                ?? throw new ObjectDisposedException(nameof(ClosedChainReaderLease));
+            currentOwner.BlockAuthorizedConfigurationRetry(
+                this,
+                authorization,
+                failureClass,
+                detailCode,
+                responseDigest);
+        }
+
         internal void PersistBlock(
             AuditSpoolSegmentIdentity spool,
             long startOffset,
@@ -1191,6 +1403,63 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         public void Dispose()
         {
             Interlocked.Exchange(ref _owner, null)?.ReleaseClosedReader();
+        }
+    }
+
+    internal sealed class ClosedConfigurationRetryAuthorization
+    {
+        private readonly AuditExportCheckpointStore _owner;
+        private readonly ClosedChainReaderLease _reader;
+        private readonly byte[] _expectedCheckpointBytes;
+        private int _consumed;
+
+        internal ClosedConfigurationRetryAuthorization(
+            AuditExportCheckpointStore owner,
+            ClosedChainReaderLease reader,
+            byte[] expectedCheckpointBytes,
+            AuditSpoolSegmentIdentity spool,
+            long startOffset,
+            long nextOffset,
+            long sequence,
+            Guid eventId)
+        {
+            _owner = owner;
+            _reader = reader;
+            _expectedCheckpointBytes = expectedCheckpointBytes;
+            Spool = spool;
+            StartOffset = startOffset;
+            NextOffset = nextOffset;
+            Sequence = sequence;
+            EventId = eventId;
+        }
+
+        internal AuditSpoolSegmentIdentity Spool { get; }
+
+        internal long StartOffset { get; }
+
+        internal long NextOffset { get; }
+
+        internal long Sequence { get; }
+
+        internal Guid EventId { get; }
+
+        internal bool MatchesCheckpoint(ReadOnlySpan<byte> checkpointBytes) =>
+            _expectedCheckpointBytes.AsSpan().SequenceEqual(checkpointBytes);
+
+        internal void Consume(
+            AuditExportCheckpointStore owner,
+            ClosedChainReaderLease reader)
+        {
+            if (!ReferenceEquals(_owner, owner) || !ReferenceEquals(_reader, reader))
+            {
+                throw new ArgumentException(
+                    "The configuration retry authorization belongs to another checkpoint owner.");
+            }
+            if (Interlocked.Exchange(ref _consumed, 1) != 0)
+            {
+                throw new InvalidOperationException(
+                    "The configuration retry authorization has already been consumed.");
+            }
         }
     }
 }

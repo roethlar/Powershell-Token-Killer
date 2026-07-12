@@ -33,6 +33,12 @@ internal interface IAuditClosedSpoolChainEndPosition;
 internal interface IAuditClosedSpoolPrefixEndPosition;
 
 /// <summary>
+/// Opaque, one-use proof that a changed export configuration durably consumed
+/// its single retry attempt for one exact blocked record.
+/// </summary>
+internal interface IAuditClosedSpoolConfigurationRetryAuthorization;
+
+/// <summary>
 /// Reads one immutable, closed anchored spool chain. This reader does not
 /// discover live writer state or acquire an orphan lease; its caller must hold
 /// the boot's exporter lease before selecting the chain.
@@ -390,6 +396,69 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     }
 
     /// <summary>
+    /// Durably consumes the one retry granted by a changed configuration and
+    /// returns the only capability that may settle that exact attempt.
+    /// </summary>
+    internal IAuditClosedSpoolConfigurationRetryAuthorization AuthorizeConfigurationRetry(
+        IAuditClosedSpoolRecordPosition position)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var owned = RequireRecordPositionLocked(position, nameof(position));
+            var storeAuthorization = _checkpointLease.AuthorizeConfigurationRetry(
+                owned.Spool,
+                owned.StartOffset,
+                owned.NextOffset,
+                owned.Sequence,
+                owned.EventId,
+                ExportConfigurationIdentity);
+            return new ConfigurationRetryAuthorization(
+                this,
+                owned.SnapshotToken,
+                owned,
+                storeAuthorization);
+        }
+    }
+
+    internal void AcknowledgeConfigurationRetry(
+        IAuditClosedSpoolConfigurationRetryAuthorization authorization)
+    {
+        ArgumentNullException.ThrowIfNull(authorization);
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var owned = RequireConfigurationRetryAuthorizationLocked(
+                authorization,
+                nameof(authorization));
+            _checkpointLease.AcknowledgeConfigurationRetry(
+                owned.ConsumeStoreAuthorization());
+        }
+    }
+
+    internal void PersistConfigurationRetryBlock(
+        IAuditClosedSpoolConfigurationRetryAuthorization authorization,
+        AuditExportFailureClass failureClass,
+        string detailCode,
+        string? responseDigest)
+    {
+        ArgumentNullException.ThrowIfNull(authorization);
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var owned = RequireConfigurationRetryAuthorizationLocked(
+                authorization,
+                nameof(authorization));
+            _checkpointLease.PersistConfigurationRetryBlock(
+                owned.ConsumeStoreAuthorization(),
+                failureClass,
+                detailCode,
+                responseDigest);
+        }
+    }
+
+    /// <summary>
     /// Persists a non-retryable transport outcome against only the exact next
     /// record represented by this reader's current snapshot.
     /// </summary>
@@ -456,6 +525,24 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
                 parameterName);
         }
         return ownedPosition;
+    }
+
+    private ConfigurationRetryAuthorization RequireConfigurationRetryAuthorizationLocked(
+        IAuditClosedSpoolConfigurationRetryAuthorization authorization,
+        string parameterName)
+    {
+        if (authorization is not ConfigurationRetryAuthorization owned ||
+            !ReferenceEquals(owned.Owner, this) ||
+            _snapshotToken is null ||
+            !ReferenceEquals(owned.SnapshotToken, _snapshotToken) ||
+            !ReferenceEquals(owned.Position.Owner, this) ||
+            !ReferenceEquals(owned.Position.SnapshotToken, _snapshotToken))
+        {
+            throw new ArgumentException(
+                "The configuration retry authorization does not belong to this reader snapshot.",
+                parameterName);
+        }
+        return owned;
     }
 
     public void Dispose()
@@ -880,6 +967,37 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
         internal object SnapshotToken { get; }
 
         internal AuditExportCheckpoint Checkpoint { get; }
+    }
+
+    private sealed class ConfigurationRetryAuthorization :
+        IAuditClosedSpoolConfigurationRetryAuthorization
+    {
+        private AuditExportCheckpointStore.ClosedConfigurationRetryAuthorization?
+            _storeAuthorization;
+
+        internal ConfigurationRetryAuthorization(
+            AuditClosedSpoolChainReader owner,
+            object snapshotToken,
+            RecordPosition position,
+            AuditExportCheckpointStore.ClosedConfigurationRetryAuthorization storeAuthorization)
+        {
+            Owner = owner;
+            SnapshotToken = snapshotToken;
+            Position = position;
+            _storeAuthorization = storeAuthorization;
+        }
+
+        internal AuditClosedSpoolChainReader Owner { get; }
+
+        internal object SnapshotToken { get; }
+
+        internal RecordPosition Position { get; }
+
+        internal AuditExportCheckpointStore.ClosedConfigurationRetryAuthorization
+            ConsumeStoreAuthorization() =>
+            Interlocked.Exchange(ref _storeAuthorization, null)
+            ?? throw new InvalidOperationException(
+                "The configuration retry authorization has already been consumed.");
     }
 
     private sealed class ExportPumpLease(

@@ -150,6 +150,19 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
                     responseDigest: null);
             }
 
+            IAuditClosedSpoolConfigurationRetryAuthorization? configurationRetry = null;
+            if (_blocked is
+                {
+                    FailureClass: AuditExportFailureClass.Configuration,
+                } changedConfigurationBlock)
+            {
+                cancellationToken.ThrowIfCancellationRequested();
+                configurationRetry = _reader.AuthorizeConfigurationRetry(position);
+                _blocked = ReidentifyConfigurationBlock(
+                    changedConfigurationBlock,
+                    _configurationIdentity);
+            }
+
             var attempt = await _transport.ExportAsync(mapped, cancellationToken)
                 .ConfigureAwait(false);
             try
@@ -160,20 +173,29 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
                         Acknowledge(
                             position,
                             attempt.DetailCode,
-                            attempt.HasHealthWarning),
+                            attempt.HasHealthWarning,
+                            configurationRetry),
                     AuditExportAttemptKind.Retry =>
-                        new AuditClosedSpoolExportStep(
-                            AuditClosedSpoolExportStepKind.Retry,
-                            position.EventId,
-                            attempt.DetailCode,
-                            RetryAfter: attempt.RetryAfter),
+                        configurationRetry is null
+                            ? new AuditClosedSpoolExportStep(
+                                AuditClosedSpoolExportStepKind.Retry,
+                                position.EventId,
+                                attempt.DetailCode,
+                                RetryAfter: attempt.RetryAfter)
+                            : PersistBlock(
+                                position,
+                                AuditExportFailureClass.Configuration,
+                                "retry." + attempt.DetailCode,
+                                attempt.ResponseDigest,
+                                configurationRetry),
                     AuditExportAttemptKind.Blocked =>
                         PersistBlock(
                             position,
                             attempt.FailureClass ?? throw new InvalidOperationException(
                                 "A blocked audit export result has no failure class."),
                             attempt.DetailCode,
-                            attempt.ResponseDigest),
+                            attempt.ResponseDigest,
+                            configurationRetry),
                     _ => throw new InvalidOperationException(
                         "The audit export transport returned an unknown result."),
                 };
@@ -209,9 +231,13 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
     private AuditClosedSpoolExportStep Acknowledge(
         IAuditClosedSpoolRecordPosition position,
         string detailCode,
-        bool hasHealthWarning)
+        bool hasHealthWarning,
+        IAuditClosedSpoolConfigurationRetryAuthorization? configurationRetry = null)
     {
-        _reader.Acknowledge(position, _configurationIdentity);
+        if (configurationRetry is null)
+            _reader.Acknowledge(position, _configurationIdentity);
+        else
+            _reader.AcknowledgeConfigurationRetry(configurationRetry);
         _initialized = false;
         _next = null;
         _blocked = null;
@@ -243,18 +269,48 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
         IAuditClosedSpoolRecordPosition position,
         AuditExportFailureClass failureClass,
         string detailCode,
-        string? responseDigest)
+        string? responseDigest,
+        IAuditClosedSpoolConfigurationRetryAuthorization? configurationRetry = null)
     {
         try
         {
-            var firstFailureUtc = _timeProvider.GetUtcNow().ToUniversalTime();
-            _reader.PersistBlock(
-                position,
-                failureClass,
-                detailCode,
-                responseDigest,
-                firstFailureUtc,
-                _configurationIdentity);
+            DateTimeOffset firstFailureUtc;
+            if (configurationRetry is null)
+            {
+                firstFailureUtc = _timeProvider.GetUtcNow().ToUniversalTime();
+                _reader.PersistBlock(
+                    position,
+                    failureClass,
+                    detailCode,
+                    responseDigest,
+                    firstFailureUtc,
+                    _configurationIdentity);
+            }
+            else
+            {
+                var authorizedBlock = _blocked;
+                if (authorizedBlock is null ||
+                    authorizedBlock.Spool != position.Spool ||
+                    authorizedBlock.ByteOffset != position.StartOffset ||
+                    authorizedBlock.Sequence != position.Sequence ||
+                    authorizedBlock.EventId != position.EventId ||
+                    authorizedBlock.FailureClass != AuditExportFailureClass.Configuration ||
+                    !string.Equals(
+                        authorizedBlock.ExportConfigurationIdentity,
+                        _configurationIdentity,
+                        StringComparison.Ordinal))
+                {
+                    throw new InvalidOperationException(
+                        "The configuration retry lost its exact durable block.");
+                }
+
+                firstFailureUtc = authorizedBlock.FirstFailureUtc;
+                _reader.PersistConfigurationRetryBlock(
+                    configurationRetry,
+                    failureClass,
+                    detailCode,
+                    responseDigest);
+            }
             _blocked = new AuditExportBlockedRecord(
                 position.Spool,
                 position.StartOffset,
@@ -277,6 +333,20 @@ internal sealed class AuditClosedSpoolExportPump : IDisposable
             throw;
         }
     }
+
+    private static AuditExportBlockedRecord ReidentifyConfigurationBlock(
+        AuditExportBlockedRecord blocked,
+        string configurationIdentity) =>
+        new(
+            blocked.Spool,
+            blocked.ByteOffset,
+            blocked.Sequence,
+            blocked.EventId,
+            AuditExportFailureClass.Configuration,
+            blocked.DetailCode,
+            blocked.ResponseDigest,
+            blocked.FirstFailureUtc,
+            configurationIdentity);
 
     private static AuditClosedSpoolExportStep ChainComplete(
         Guid? eventId,

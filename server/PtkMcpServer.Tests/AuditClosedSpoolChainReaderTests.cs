@@ -15,6 +15,8 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private const string ChangedConfigurationIdentity =
         "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    private const string ThirdConfigurationIdentity =
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     private readonly List<string> _roots = [];
 
     public void Dispose()
@@ -337,31 +339,168 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
     }
 
     [Fact]
-    public void Configuration_block_acknowledges_only_after_configuration_identity_changes()
+    public void Configuration_block_requires_a_one_use_authorization_to_acknowledge()
     {
         var (options, store) = OwnedFixture();
         using (store)
         {
             var record = Records(1)[0];
             WriteSegment(options, 0, record);
-            using var reader = new AuditClosedSpoolChainReader(options, store);
+            using (var initialReader = new AuditClosedSpoolChainReader(options, store))
+            {
+                var initial = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                    initialReader.ResolveCheckpoint()).Position;
+                initialReader.PersistBlock(
+                    initial,
+                    AuditExportFailureClass.Configuration,
+                    "http.401",
+                    responseDigest: null,
+                    BaseTime,
+                    ConfigurationIdentity);
+            }
+
+            using var reader = new AuditClosedSpoolChainReader(
+                OptionsWithIdentity(options, ChangedConfigurationIdentity),
+                store);
             var position = Assert.IsType<AuditClosedSpoolRecovery.Record>(
                 reader.ResolveCheckpoint()).Position;
-            reader.PersistBlock(
-                position,
-                AuditExportFailureClass.Configuration,
-                "http.401",
-                responseDigest: null,
-                BaseTime,
-                ConfigurationIdentity);
-
             Assert.Throws<InvalidOperationException>(() =>
-                reader.Acknowledge(position, ConfigurationIdentity));
+                reader.Acknowledge(position, ChangedConfigurationIdentity));
 
-            reader.Acknowledge(position, ChangedConfigurationIdentity);
+            var authorization = reader.AuthorizeConfigurationRetry(position);
+            var authorizedBlock = Assert.IsType<AuditExportBlockedRecord>(
+                store.Current.BlockedRecord);
+            Assert.Equal(ChangedConfigurationIdentity, authorizedBlock.ExportConfigurationIdentity);
+            Assert.Equal(BaseTime, authorizedBlock.FirstFailureUtc);
+
+            reader.AcknowledgeConfigurationRetry(authorization);
             Assert.Null(store.Current.BlockedRecord);
             Assert.Equal(position.Sequence, store.Current.Sequence);
             Assert.Equal(position.EventId, store.Current.AcknowledgedEventId);
+            Assert.Throws<InvalidOperationException>(() =>
+                reader.AcknowledgeConfigurationRetry(authorization));
+        }
+    }
+
+    [Fact]
+    public void Configuration_retry_authorization_rejects_forged_stale_and_cross_record_proofs()
+    {
+        var (options, store) = OwnedFixture();
+        using (store)
+        {
+            var records = Records(2);
+            WriteSegment(options, 0, records);
+            using (var initialReader = new AuditClosedSpoolChainReader(options, store))
+            {
+                var initial = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                    initialReader.ResolveCheckpoint()).Position;
+                initialReader.PersistBlock(
+                    initial,
+                    AuditExportFailureClass.Configuration,
+                    "http.401",
+                    responseDigest: null,
+                    BaseTime,
+                    ConfigurationIdentity);
+            }
+
+            using (var changedReader = new AuditClosedSpoolChainReader(
+                       OptionsWithIdentity(options, ChangedConfigurationIdentity),
+                       store))
+            {
+                var first = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                    changedReader.ResolveCheckpoint()).Position;
+                var second = Assert.IsAssignableFrom<IAuditClosedSpoolRecordPosition>(
+                    changedReader.ReadNext(first));
+
+                Assert.Throws<ArgumentException>(() =>
+                    changedReader.AuthorizeConfigurationRetry(second));
+                Assert.Equal(
+                    ConfigurationIdentity,
+                    store.Current.BlockedRecord?.ExportConfigurationIdentity);
+                Assert.Throws<ArgumentException>(() =>
+                    changedReader.AcknowledgeConfigurationRetry(
+                        new FakeConfigurationRetryAuthorization()));
+
+                var stale = changedReader.AuthorizeConfigurationRetry(first);
+                _ = changedReader.ResolveCheckpoint();
+                Assert.Throws<ArgumentException>(() =>
+                    changedReader.PersistConfigurationRetryBlock(
+                        stale,
+                        AuditExportFailureClass.Data,
+                        "http.400",
+                        responseDigest: null));
+            }
+
+            using var thirdReader = new AuditClosedSpoolChainReader(
+                OptionsWithIdentity(options, ThirdConfigurationIdentity),
+                store);
+            var retried = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                thirdReader.ResolveCheckpoint()).Position;
+            var authorization = thirdReader.AuthorizeConfigurationRetry(retried);
+            thirdReader.PersistConfigurationRetryBlock(
+                authorization,
+                AuditExportFailureClass.Configuration,
+                "retry.http.503",
+                responseDigest: null);
+
+            var blocked = Assert.IsType<AuditExportBlockedRecord>(store.Current.BlockedRecord);
+            Assert.Equal(ThirdConfigurationIdentity, blocked.ExportConfigurationIdentity);
+            Assert.Equal("retry.http.503", blocked.DetailCode);
+            Assert.Equal(BaseTime, blocked.FirstFailureUtc);
+            Assert.Throws<InvalidOperationException>(() =>
+                thirdReader.PersistConfigurationRetryBlock(
+                    authorization,
+                    AuditExportFailureClass.Data,
+                    "http.400",
+                    responseDigest: null));
+        }
+    }
+
+    [Fact]
+    public void Configuration_retry_authorization_is_consumed_before_a_failed_settlement()
+    {
+        var (options, store) = OwnedFixture();
+        using (store)
+        {
+            var record = Records(1)[0];
+            WriteSegment(options, 0, record);
+            using (var initialReader = new AuditClosedSpoolChainReader(options, store))
+            {
+                var initial = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                    initialReader.ResolveCheckpoint()).Position;
+                initialReader.PersistBlock(
+                    initial,
+                    AuditExportFailureClass.Configuration,
+                    "http.401",
+                    responseDigest: null,
+                    BaseTime,
+                    ConfigurationIdentity);
+            }
+
+            using var reader = new AuditClosedSpoolChainReader(
+                OptionsWithIdentity(options, ChangedConfigurationIdentity),
+                store);
+            var position = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+                reader.ResolveCheckpoint()).Position;
+            var authorization = reader.AuthorizeConfigurationRetry(position);
+
+            Assert.Throws<ArgumentException>(() =>
+                reader.PersistConfigurationRetryBlock(
+                    authorization,
+                    AuditExportFailureClass.Configuration,
+                    "INVALID",
+                    responseDigest: null));
+            Assert.Throws<InvalidOperationException>(() =>
+                reader.PersistConfigurationRetryBlock(
+                    authorization,
+                    AuditExportFailureClass.Configuration,
+                    "retry.http.503",
+                    responseDigest: null));
+
+            var blocked = Assert.IsType<AuditExportBlockedRecord>(store.Current.BlockedRecord);
+            Assert.Equal(ChangedConfigurationIdentity, blocked.ExportConfigurationIdentity);
+            Assert.Equal("http.401", blocked.DetailCode);
+            Assert.Equal(BaseTime, blocked.FirstFailureUtc);
         }
     }
 
@@ -890,6 +1029,21 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
         evidenceAggregateBytes: 4096,
         evidenceRetentionAge: TimeSpan.FromMinutes(10));
 
+    private static AuditOptions OptionsWithIdentity(
+        AuditOptions source,
+        string configurationIdentity) => AuditOptions.Create(
+        source.RootDirectory,
+        AuditProtectionMode.Anchored,
+        configurationIdentity,
+        source.MaxRecordBytes,
+        source.SegmentBytes,
+        source.AggregateBytes,
+        source.EmergencyReserveBytes,
+        source.RetentionAge,
+        source.MaxEvidenceBytes,
+        source.EvidenceAggregateBytes,
+        source.EvidenceRetentionAge);
+
     private string NewRoot()
     {
         var root = Path.Combine(
@@ -1143,6 +1297,9 @@ public sealed class AuditClosedSpoolChainReaderTests : IDisposable
         {
         }
     }
+
+    private sealed class FakeConfigurationRetryAuthorization :
+        IAuditClosedSpoolConfigurationRetryAuthorization;
 
     private sealed class InjectedAcquisitionException : Exception;
 }
