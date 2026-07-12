@@ -17,10 +17,13 @@ internal sealed class AuditExportCheckpointStore : IDisposable
     private readonly string _root;
     private readonly string _checkpointPath;
     private readonly string _lockPath;
+    private readonly object _lifetimeGate = new();
     private FileStream? _lease;
     private AuditExportCheckpoint _current;
     private byte[] _currentBytes;
     private bool _faulted;
+    private bool _disposeRequested;
+    private int _journalWriterLeases;
 
     private AuditExportCheckpointStore(
         Guid supervisorBootId,
@@ -52,6 +55,8 @@ internal sealed class AuditExportCheckpointStore : IDisposable
     internal string CheckpointPath => _checkpointPath;
 
     internal string LockPath => _lockPath;
+
+    internal Guid SupervisorBootId => _supervisorBootId;
 
     internal static AuditExportCheckpointStore Acquire(
         AuditOptions options,
@@ -213,9 +218,68 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         }
     }
 
+    internal IDisposable RetainInitialJournalWriter(
+        AuditOptions options,
+        Guid supervisorBootId)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        lock (_lifetimeGate)
+        {
+            ThrowIfUnavailable();
+            if (options.ProtectionMode != AuditProtectionMode.Anchored ||
+                supervisorBootId != _supervisorBootId ||
+                !PathsEqual(options.RootDirectory, _root))
+            {
+                throw new ArgumentException(
+                    "The audit checkpoint owner does not match this journal writer.",
+                    nameof(options));
+            }
+
+            VerifyLeasePath();
+            VerifyCurrentPersistedState();
+            var initial = AuditExportCheckpointCodec.Serialize(
+                AuditExportCheckpoint.Initial(supervisorBootId));
+            if (!_currentBytes.AsSpan().SequenceEqual(initial))
+            {
+                throw new IOException(
+                    "A journal writer requires its exact initial export checkpoint.");
+            }
+
+            _journalWriterLeases = checked(_journalWriterLeases + 1);
+            return new JournalWriterLease(this);
+        }
+    }
+
     public void Dispose()
     {
-        var lease = Interlocked.Exchange(ref _lease, null);
+        FileStream? lease = null;
+        lock (_lifetimeGate)
+        {
+            if (_disposeRequested) return;
+            _disposeRequested = true;
+            if (_journalWriterLeases == 0)
+            {
+                lease = _lease;
+                _lease = null;
+            }
+        }
+        lease?.Dispose();
+    }
+
+    private void ReleaseJournalWriter()
+    {
+        FileStream? lease = null;
+        lock (_lifetimeGate)
+        {
+            if (_journalWriterLeases < 1)
+                throw new InvalidOperationException("The audit journal writer lease is unbalanced.");
+            _journalWriterLeases--;
+            if (_disposeRequested && _journalWriterLeases == 0)
+            {
+                lease = _lease;
+                _lease = null;
+            }
+        }
         lease?.Dispose();
     }
 
@@ -621,7 +685,7 @@ internal sealed class AuditExportCheckpointStore : IDisposable
 
     private void ThrowIfUnavailable()
     {
-        if (_lease is null)
+        if (_disposeRequested || _lease is null)
             throw new ObjectDisposedException(nameof(AuditExportCheckpointStore));
         if (_faulted)
             throw new IOException("The audit export checkpoint store is faulted.");
@@ -637,4 +701,19 @@ internal sealed class AuditExportCheckpointStore : IDisposable
     private static bool IsFatal(Exception exception) =>
         exception is OutOfMemoryException or StackOverflowException or
             AccessViolationException or AppDomainUnloadedException;
+
+    private static bool PathsEqual(string left, string right) => string.Equals(
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(left)),
+        Path.TrimEndingDirectorySeparator(Path.GetFullPath(right)),
+        OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal);
+
+    private sealed class JournalWriterLease(AuditExportCheckpointStore owner) : IDisposable
+    {
+        private AuditExportCheckpointStore? _owner = owner;
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _owner, null)?.ReleaseJournalWriter();
+        }
+    }
 }

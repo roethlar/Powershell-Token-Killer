@@ -57,6 +57,7 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
     private readonly Func<FileAuditSinkFaultPoint, int, bool>? _faultInjector;
     private readonly string _spoolRoot;
     private readonly string _quotaLockPath;
+    private IDisposable? _exportWriterLease;
     private FileStream _stream;
     private string _currentSegmentPath;
     private AuditSpoolSegmentIdentity _currentSegmentIdentity;
@@ -70,7 +71,8 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         AuditOptions options,
         Guid supervisorBootId,
         Func<DateTimeOffset>? utcNow = null,
-        Func<FileAuditSinkFaultPoint, int, bool>? faultInjector = null)
+        Func<FileAuditSinkFaultPoint, int, bool>? faultInjector = null,
+        AuditExportCheckpointStore? checkpointStore = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         AuditSpoolSegmentIdentity.RequireUuidV4(supervisorBootId, nameof(supervisorBootId));
@@ -80,22 +82,47 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         _faultInjector = faultInjector;
         _spoolRoot = SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
         _quotaLockPath = Path.Combine(_spoolRoot, QuotaLockFileName);
+        IDisposable? exportWriterLease = null;
         if (options.ProtectionMode == AuditProtectionMode.Anchored)
         {
-            _ = AuditExportCheckpointStore.ReadSnapshot(options, supervisorBootId);
+            exportWriterLease = checkpointStore?.RetainInitialJournalWriter(
+                options,
+                supervisorBootId) ?? throw new InvalidOperationException(
+                "Anchored audit requires an active matching checkpoint owner.");
         }
-        EnsureQuotaLockFile();
-        using (AcquireQuotaLock())
+        else if (checkpointStore is not null)
         {
-            RecoverCrashAllocationsAndValidateSpool();
-            ValidateRetainedSegments();
-            // A hard-killed prior supervisor could not trim the keep-EOF
-            // allocation on its last segment. Reclaim that invisible physical
-            // slack before charging the new supervisor's full live segment.
-            ReclaimClosedAllocations();
-            EnsurePhysicalAllocationAvailable();
-            (_stream, _currentSegmentPath, _currentSegmentIdentity) = CreateSegment(0);
-            SweepClosedSegments(GetUtcNow(), options.EmergencyReserveBytes);
+            throw new ArgumentException(
+                "Local-only audit cannot retain an export checkpoint owner.",
+                nameof(checkpointStore));
+        }
+
+        try
+        {
+            EnsureQuotaLockFile();
+            using (AcquireQuotaLock())
+            {
+                RecoverCrashAllocationsAndValidateSpool();
+                ValidateRetainedSegments();
+                // A hard-killed prior supervisor could not trim the keep-EOF
+                // allocation on its last segment. Reclaim that invisible physical
+                // slack before charging the new supervisor's full live segment.
+                ReclaimClosedAllocations();
+                EnsurePhysicalAllocationAvailable();
+                (_stream, _currentSegmentPath, _currentSegmentIdentity) = CreateSegment(0);
+                SweepClosedSegments(GetUtcNow(), options.EmergencyReserveBytes);
+            }
+            _exportWriterLease = exportWriterLease;
+            exportWriterLease = null;
+        }
+        catch
+        {
+            _stream?.Dispose();
+            throw;
+        }
+        finally
+        {
+            exportWriterLease?.Dispose();
         }
     }
 
@@ -257,6 +284,7 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
         finally
         {
             _disposed = true;
+            Interlocked.Exchange(ref _exportWriterLease, null)?.Dispose();
         }
     }
 

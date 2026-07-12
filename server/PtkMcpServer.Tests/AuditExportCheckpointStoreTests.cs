@@ -93,16 +93,63 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
 
-        Assert.ThrowsAny<IOException>(() =>
+        Assert.Throws<InvalidOperationException>(() =>
             new FileAuditJournalSink(options, BootId));
         Assert.Empty(Directory.EnumerateFiles(options.SpoolDirectory, "*.jsonl"));
 
         using var store = AuditExportCheckpointStore.Acquire(options, BootId);
         Assert.True(File.Exists(store.CheckpointPath));
-        using var sink = new FileAuditJournalSink(options, BootId);
+        Assert.Throws<InvalidOperationException>(() =>
+            new FileAuditJournalSink(options, BootId));
+        using var sink = new FileAuditJournalSink(
+            options,
+            BootId,
+            checkpointStore: store);
         Assert.Equal(
             AuditSpoolSegmentIdentity.Create(BootId, 0).FileName,
             Path.GetFileName(sink.CurrentSegmentPath));
+    }
+
+    [Fact]
+    public void Anchored_sink_retains_checkpoint_ownership_until_writer_closes()
+    {
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var sink = new FileAuditJournalSink(
+            options,
+            BootId,
+            checkpointStore: store);
+        try
+        {
+            store.Dispose();
+            Assert.Throws<ObjectDisposedException>(() => _ = store.Current);
+            Assert.ThrowsAny<IOException>(() =>
+                AuditExportCheckpointStore.Acquire(options, BootId));
+        }
+        finally
+        {
+            sink.Dispose();
+            store.Dispose();
+        }
+
+        using var adopted = AuditExportCheckpointStore.Acquire(options, BootId);
+        Assert.Equal(BootId, adopted.SupervisorBootId);
+    }
+
+    [Fact]
+    public void Disposed_checkpoint_owner_cannot_authorize_an_anchored_writer()
+    {
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        store.Dispose();
+
+        Assert.Throws<ObjectDisposedException>(() =>
+            new FileAuditJournalSink(
+                options,
+                BootId,
+                checkpointStore: store));
+
+        Assert.Empty(Directory.EnumerateFiles(options.SpoolDirectory, "*.jsonl"));
     }
 
     [Fact]
