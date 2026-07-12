@@ -1,0 +1,78 @@
+// Derived from opentelemetry-proto v1.10.0.
+// Copyright 2020 OpenTelemetry Authors
+// Licensed under the Apache License, Version 2.0:
+// https://www.apache.org/licenses/LICENSE-2.0
+//
+// Binary-compatible subset of the stable OTLP logs protocol used by the
+// one-record PTK audit exporter. Message and package names do not appear on
+// the protobuf wire.
+syntax = "proto3";
+
+package ptk.audit.otlp;
+option csharp_namespace = "PtkMcpServer.Audit.OtlpWire";
+
+message AnyValue {
+  oneof value {
+    string string_value = 1;
+    bool bool_value = 2;
+    int64 int_value = 3;
+    double double_value = 4;
+    bytes bytes_value = 7;
+  }
+}
+
+message KeyValue {
+  string key = 1;
+  AnyValue value = 2;
+}
+
+message InstrumentationScope {
+  string name = 1;
+  string version = 2;
+  repeated KeyValue attributes = 3;
+  uint32 dropped_attributes_count = 4;
+}
+
+message OtlpResource {
+  repeated KeyValue attributes = 1;
+  uint32 dropped_attributes_count = 2;
+}
+
+message LogRecord {
+  fixed64 time_unix_nano = 1;
+  int32 severity_number = 2;
+  string severity_text = 3;
+  AnyValue body = 5;
+  repeated KeyValue attributes = 6;
+  uint32 dropped_attributes_count = 7;
+  fixed32 flags = 8;
+  bytes trace_id = 9;
+  bytes span_id = 10;
+  fixed64 observed_time_unix_nano = 11;
+  string event_name = 12;
+}
+
+message ScopeLogs {
+  InstrumentationScope scope = 1;
+  repeated LogRecord log_records = 2;
+  string schema_url = 3;
+}
+
+message ResourceLogs {
+  OtlpResource resource = 1;
+  repeated ScopeLogs scope_logs = 2;
+  string schema_url = 3;
+}
+
+message ExportLogsServiceRequest {
+  repeated ResourceLogs resource_logs = 1;
+}
+
+message ExportLogsServiceResponse {
+  ExportLogsPartialSuccess partial_success = 1;
+}
+
+message ExportLogsPartialSuccess {
+  int64 rejected_log_records = 1;
+  string error_message = 2;
+}
