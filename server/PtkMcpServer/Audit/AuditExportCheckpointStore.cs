@@ -47,8 +47,11 @@ internal sealed class AuditExportCheckpointStore : IDisposable
     {
         get
         {
-            ThrowIfUnavailable();
-            return _current;
+            lock (_lifetimeGate)
+            {
+                ThrowIfUnavailable();
+                return _current;
+            }
         }
     }
 
@@ -165,6 +168,20 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         AuditExportCheckpoint next,
         Action? beforeAtomicReplaceForTests = null,
         Action? destinationReplacedForTests = null)
+    {
+        lock (_lifetimeGate)
+        {
+            SaveLocked(
+                next,
+                beforeAtomicReplaceForTests,
+                destinationReplacedForTests);
+        }
+    }
+
+    private void SaveLocked(
+        AuditExportCheckpoint next,
+        Action? beforeAtomicReplaceForTests,
+        Action? destinationReplacedForTests)
     {
         ThrowIfUnavailable();
         ArgumentNullException.ThrowIfNull(next);

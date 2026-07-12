@@ -153,6 +153,70 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Save_holds_the_instance_and_cross_process_lease_through_transition()
+    {
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        using var transitionReached = new ManualResetEventSlim();
+        using var releaseTransition = new ManualResetEventSlim();
+        var save = Task.Run(() => store.Save(
+            Checkpoint(BootId, sequence: 1, byteOffset: 128),
+            beforeAtomicReplaceForTests: () =>
+            {
+                transitionReached.Set();
+                if (!releaseTransition.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("The checkpoint transition test was not released.");
+            }));
+        Assert.True(transitionReached.Wait(TimeSpan.FromSeconds(10)));
+        var dispose = Task.Run(store.Dispose);
+        var observe = Task.Run(() => store.Current);
+        var disposeCompletedEarly = false;
+        var observeCompletedEarly = false;
+        var competingOwnerAcquired = false;
+        try
+        {
+            disposeCompletedEarly = ReferenceEquals(
+                dispose,
+                await Task.WhenAny(dispose, Task.Delay(TimeSpan.FromMilliseconds(250))));
+            observeCompletedEarly = ReferenceEquals(
+                observe,
+                await Task.WhenAny(observe, Task.Delay(TimeSpan.FromMilliseconds(250))));
+            try
+            {
+                using var competing = AuditExportCheckpointStore.Acquire(options, BootId);
+                competingOwnerAcquired = true;
+            }
+            catch (IOException)
+            {
+                // Expected while Save owns both the instance and file lease.
+            }
+        }
+        finally
+        {
+            releaseTransition.Set();
+        }
+
+        await save.WaitAsync(TimeSpan.FromSeconds(10));
+        await dispose.WaitAsync(TimeSpan.FromSeconds(10));
+        try
+        {
+            _ = await observe.WaitAsync(TimeSpan.FromSeconds(10));
+        }
+        catch (ObjectDisposedException)
+        {
+            // Dispose may acquire the gate before the queued observer.
+        }
+        Assert.False(disposeCompletedEarly);
+        Assert.False(observeCompletedEarly);
+        Assert.False(competingOwnerAcquired);
+
+        using var successor = AuditExportCheckpointStore.Acquire(options, BootId);
+        Assert.Equal(1, successor.Current.Sequence);
+        successor.Save(Checkpoint(BootId, sequence: 2, byteOffset: 256));
+        Assert.Equal(2, successor.Current.Sequence);
+    }
+
+    [Fact]
     public void Missing_checkpoint_beside_same_boot_segments_fails_closed()
     {
         var root = NewRoot();
