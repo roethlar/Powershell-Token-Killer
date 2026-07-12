@@ -46,6 +46,7 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     private readonly AuditExportCheckpointStore.ClosedChainReaderLease _checkpointLease;
     private SegmentHandle[] _segments = [];
     private object? _snapshotToken;
+    private bool _exportPumpRetained;
     private bool _disposed;
 
     internal AuditClosedSpoolChainReader(
@@ -73,6 +74,21 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
     internal string ExportConfigurationIdentity =>
         _options.ExportConfigurationIdentity ?? throw new IOException(
             "The anchored audit reader has no export configuration identity.");
+
+    internal IDisposable RetainExportPump()
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (_exportPumpRetained)
+            {
+                throw new InvalidOperationException(
+                    "The closed audit spool reader already has an export pump.");
+            }
+            _exportPumpRetained = true;
+            return new ExportPumpLease(this);
+        }
+    }
 
     /// <summary>
     /// Acquires every selected segment exclusively, validates the complete
@@ -382,6 +398,12 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
             ReleaseSnapshot();
             _checkpointLease.Dispose();
         }
+    }
+
+    private void ReleaseExportPump()
+    {
+        lock (_gate)
+            _exportPumpRetained = false;
     }
 
     private SegmentDescriptor[] InventoryClosedChain(
@@ -750,6 +772,17 @@ internal sealed class AuditClosedSpoolChainReader : IDisposable
         internal object SnapshotToken { get; }
 
         internal AuditExportCheckpoint Checkpoint { get; }
+    }
+
+    private sealed class ExportPumpLease(
+        AuditClosedSpoolChainReader owner) : IDisposable
+    {
+        private AuditClosedSpoolChainReader? _owner = owner;
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _owner, null)?.ReleaseExportPump();
+        }
     }
 }
 

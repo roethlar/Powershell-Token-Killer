@@ -21,9 +21,10 @@ internal sealed record AuditClosedSpoolExportStep(
 /// Each call performs at most one remote attempt. Only opaque positions issued
 /// by the reader can advance or block the durable checkpoint.
 /// </summary>
-internal sealed class AuditClosedSpoolExportPump
+internal sealed class AuditClosedSpoolExportPump : IDisposable
 {
     private readonly AuditClosedSpoolChainReader _reader;
+    private readonly IDisposable _readerLease;
     private readonly IAuditOtlpExportTransport _transport;
     private readonly string _configurationIdentity;
     private readonly TimeProvider _timeProvider;
@@ -32,7 +33,7 @@ internal sealed class AuditClosedSpoolExportPump
     private bool _initialized;
     private bool _complete;
     private bool _faulted;
-    private int _active;
+    private int _lifecycle;
 
     internal AuditClosedSpoolExportPump(
         AuditClosedSpoolChainReader reader,
@@ -53,6 +54,7 @@ internal sealed class AuditClosedSpoolExportPump
                 nameof(transport));
         }
         _reader = reader;
+        _readerLease = reader.RetainExportPump();
         _transport = transport;
         _configurationIdentity = configurationIdentity;
         _timeProvider = timeProvider ?? TimeProvider.System;
@@ -61,7 +63,10 @@ internal sealed class AuditClosedSpoolExportPump
     internal async Task<AuditClosedSpoolExportStep> ExportNextAsync(
         CancellationToken cancellationToken)
     {
-        if (Interlocked.CompareExchange(ref _active, 1, 0) != 0)
+        var prior = Interlocked.CompareExchange(ref _lifecycle, 1, 0);
+        if (prior == 2)
+            throw new ObjectDisposedException(nameof(AuditClosedSpoolExportPump));
+        if (prior != 0)
         {
             throw new InvalidOperationException(
                 "A closed audit spool export step is already running.");
@@ -178,8 +183,24 @@ internal sealed class AuditClosedSpoolExportPump
         }
         finally
         {
-            Volatile.Write(ref _active, 0);
+            if (Interlocked.CompareExchange(ref _lifecycle, 0, 1) != 1)
+            {
+                throw new InvalidOperationException(
+                    "The closed audit spool export pump lifecycle is invalid.");
+            }
         }
+    }
+
+    public void Dispose()
+    {
+        var prior = Interlocked.CompareExchange(ref _lifecycle, 2, 0);
+        if (prior == 2) return;
+        if (prior == 1)
+        {
+            throw new InvalidOperationException(
+                "A running closed audit spool export step must finish before disposal.");
+        }
+        _readerLease.Dispose();
     }
 
     private AuditClosedSpoolExportStep Acknowledge(

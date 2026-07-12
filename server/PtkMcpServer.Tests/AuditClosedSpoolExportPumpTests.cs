@@ -25,7 +25,7 @@ public sealed class AuditClosedSpoolExportPumpTests
         var transport = new ScriptedTransport(
             AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: true),
             AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false));
-        var pump = new AuditClosedSpoolExportPump(
+        using var pump = new AuditClosedSpoolExportPump(
             reader,
             transport);
 
@@ -67,7 +67,7 @@ public sealed class AuditClosedSpoolExportPumpTests
             ConfigurationIdentity);
         using var transport = AuditOtlpHttpExporter.Create(exportOptions, "9.8.7");
         using var reader = new AuditClosedSpoolChainReader(fixture.Options, fixture.Store);
-        var pump = new AuditClosedSpoolExportPump(
+        using var pump = new AuditClosedSpoolExportPump(
             reader,
             transport);
         using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(15));
@@ -102,7 +102,7 @@ public sealed class AuditClosedSpoolExportPumpTests
         using var fixture = new ClosedFixture(recordCount: 0);
         using var reader = new AuditClosedSpoolChainReader(fixture.Options, fixture.Store);
         var transport = new ScriptedTransport();
-        var pump = new AuditClosedSpoolExportPump(
+        using var pump = new AuditClosedSpoolExportPump(
             reader,
             transport);
 
@@ -132,6 +132,44 @@ public sealed class AuditClosedSpoolExportPumpTests
     }
 
     [Fact]
+    public async Task Reader_grants_exactly_one_disposable_export_pump_lease()
+    {
+        using var fixture = new ClosedFixture(recordCount: 1);
+        using var reader = new AuditClosedSpoolChainReader(fixture.Options, fixture.Store);
+        var firstTransport = new ScriptedTransport();
+        using var first = new AuditClosedSpoolExportPump(reader, firstTransport);
+
+        Assert.Throws<InvalidOperationException>(() =>
+            new AuditClosedSpoolExportPump(reader, new ScriptedTransport()));
+
+        first.Dispose();
+        await Assert.ThrowsAsync<ObjectDisposedException>(() =>
+            first.ExportNextAsync(CancellationToken.None));
+        using var successor = new AuditClosedSpoolExportPump(
+            reader,
+            new ScriptedTransport());
+    }
+
+    [Fact]
+    public async Task Pump_disposal_cannot_release_reader_ownership_during_a_remote_attempt()
+    {
+        using var fixture = new ClosedFixture(recordCount: 1);
+        using var reader = new AuditClosedSpoolChainReader(fixture.Options, fixture.Store);
+        var transport = new BlockingTransport();
+        using var pump = new AuditClosedSpoolExportPump(reader, transport);
+        var export = pump.ExportNextAsync(CancellationToken.None);
+        await transport.Started.WaitAsync(TimeSpan.FromSeconds(10));
+
+        Assert.Throws<InvalidOperationException>(pump.Dispose);
+
+        transport.Release();
+        Assert.Equal(
+            AuditClosedSpoolExportStepKind.ChainComplete,
+            (await export.WaitAsync(TimeSpan.FromSeconds(10))).Kind);
+        pump.Dispose();
+    }
+
+    [Fact]
     public async Task Retry_preserves_the_cursor_and_reuses_the_stable_event_body()
     {
         using var fixture = new ClosedFixture(recordCount: 1);
@@ -140,7 +178,7 @@ public sealed class AuditClosedSpoolExportPumpTests
         var transport = new ScriptedTransport(
             AuditExportAttemptResult.Retry("http.503", retryAfter: retryAfter),
             AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false));
-        var pump = new AuditClosedSpoolExportPump(
+        using var pump = new AuditClosedSpoolExportPump(
             reader,
             transport);
 
@@ -169,7 +207,7 @@ public sealed class AuditClosedSpoolExportPumpTests
                 AuditExportFailureClass.Data,
                 "http.400",
                 ResponseDigest));
-        var pump = new AuditClosedSpoolExportPump(
+        using var pump = new AuditClosedSpoolExportPump(
             reader,
             transport,
             new FixedTimeProvider(BaseTime));
@@ -193,7 +231,7 @@ public sealed class AuditClosedSpoolExportPumpTests
             fixture.Store);
         var restartedTransport = new ScriptedTransport(
             AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false));
-        var restartedPump = new AuditClosedSpoolExportPump(
+        using var restartedPump = new AuditClosedSpoolExportPump(
             restartedReader,
             restartedTransport);
         var afterRestart = await restartedPump.ExportNextAsync(CancellationToken.None);
@@ -225,7 +263,7 @@ public sealed class AuditClosedSpoolExportPumpTests
                 }
             },
         };
-        var pump = new AuditClosedSpoolExportPump(reader, transport);
+        using var pump = new AuditClosedSpoolExportPump(reader, transport);
 
         await Assert.ThrowsAsync<IOException>(() =>
             pump.ExportNextAsync(CancellationToken.None));
@@ -244,7 +282,7 @@ public sealed class AuditClosedSpoolExportPumpTests
             AuditExportAttemptResult.Blocked(
                 AuditExportFailureClass.Configuration,
                 "http.401"));
-        var initialPump = new AuditClosedSpoolExportPump(
+        using var initialPump = new AuditClosedSpoolExportPump(
             reader,
             rejectedTransport,
             new FixedTimeProvider(BaseTime));
@@ -256,7 +294,7 @@ public sealed class AuditClosedSpoolExportPumpTests
         using var sameReader = new AuditClosedSpoolChainReader(fixture.Options, fixture.Store);
         var sameTransport = new ScriptedTransport(
             AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false));
-        var samePump = new AuditClosedSpoolExportPump(
+        using var samePump = new AuditClosedSpoolExportPump(
             sameReader,
             sameTransport);
         Assert.Equal(
@@ -276,7 +314,7 @@ public sealed class AuditClosedSpoolExportPumpTests
         {
             ConfigurationIdentity = ChangedConfigurationIdentity,
         };
-        var changedPump = new AuditClosedSpoolExportPump(
+        using var changedPump = new AuditClosedSpoolExportPump(
             changedReader,
             changedTransport);
         Assert.Equal(
@@ -311,6 +349,32 @@ public sealed class AuditClosedSpoolExportPumpTests
             if (!_results.TryDequeue(out var result))
                 throw new InvalidOperationException("The scripted audit transport has no result.");
             return Task.FromResult(result);
+        }
+    }
+
+    private sealed class BlockingTransport : IAuditOtlpExportTransport
+    {
+        private readonly TaskCompletionSource _started =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public string ConfigurationIdentity =>
+            AuditClosedSpoolExportPumpTests.ConfigurationIdentity;
+
+        internal Task Started => _started.Task;
+
+        internal void Release() => _release.TrySetResult();
+
+        public async Task<AuditExportAttemptResult> ExportAsync(
+            AuditOtlpRecord record,
+            CancellationToken cancellationToken)
+        {
+            _started.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            return AuditExportAttemptResult.Acknowledged(
+                ResponseDigest,
+                warning: false);
         }
     }
 
