@@ -24,6 +24,7 @@ internal sealed class AuditExportCheckpointStore : IDisposable
     private bool _faulted;
     private bool _disposeRequested;
     private int _journalWriterLeases;
+    private int _closedReaderLeases;
 
     private AuditExportCheckpointStore(
         Guid supervisorBootId,
@@ -288,6 +289,77 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         }
     }
 
+    internal ClosedChainReaderLease RetainClosedChainReader(AuditOptions options)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        lock (_lifetimeGate)
+        {
+            ThrowIfUnavailable();
+            if (options.ProtectionMode != AuditProtectionMode.Anchored ||
+                !PathsEqual(options.RootDirectory, _root))
+            {
+                throw new ArgumentException(
+                    "The audit checkpoint owner does not match this closed spool reader.",
+                    nameof(options));
+            }
+
+            VerifyLeasePath();
+            VerifyCurrentPersistedState();
+            _closedReaderLeases = checked(_closedReaderLeases + 1);
+            return new ClosedChainReaderLease(this);
+        }
+    }
+
+    private T WithOwnedCheckpoint<T>(
+        ClosedChainReaderLease reader,
+        Func<AuditExportCheckpoint, T> action)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
+        ArgumentNullException.ThrowIfNull(action);
+        lock (_lifetimeGate)
+        {
+            ThrowIfUnavailable();
+            if (!reader.IsOwnedBy(this) || _closedReaderLeases < 1)
+                throw new ObjectDisposedException(nameof(ClosedChainReaderLease));
+            VerifyLeasePath();
+            VerifyCurrentPersistedState();
+            var expectedBytes = _currentBytes.ToArray();
+            try
+            {
+                var result = action(_current);
+                VerifyUnchangedOwnedCheckpoint(expectedBytes);
+                return result;
+            }
+            catch (Exception acquisitionException) when (!IsFatal(acquisitionException))
+            {
+                try
+                {
+                    VerifyUnchangedOwnedCheckpoint(expectedBytes);
+                }
+                catch (Exception verificationException) when (!IsFatal(verificationException))
+                {
+                    _faulted = true;
+                    throw new IOException(
+                        "Audit checkpoint ownership changed while closed spool acquisition failed.",
+                        new AggregateException(
+                            acquisitionException,
+                            verificationException));
+                }
+                throw;
+            }
+        }
+    }
+
+    private void VerifyUnchangedOwnedCheckpoint(ReadOnlySpan<byte> expectedBytes)
+    {
+        VerifyLeasePath();
+        VerifyCurrentPersistedState();
+        if (expectedBytes.SequenceEqual(_currentBytes)) return;
+        _faulted = true;
+        throw new IOException(
+            "The audit export checkpoint changed during closed spool acquisition.");
+    }
+
     public void Dispose()
     {
         FileStream? lease = null;
@@ -295,7 +367,7 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         {
             if (_disposeRequested) return;
             _disposeRequested = true;
-            if (_journalWriterLeases == 0)
+            if (_journalWriterLeases == 0 && _closedReaderLeases == 0)
             {
                 lease = _lease;
                 _lease = null;
@@ -312,7 +384,28 @@ internal sealed class AuditExportCheckpointStore : IDisposable
             if (_journalWriterLeases < 1)
                 throw new InvalidOperationException("The audit journal writer lease is unbalanced.");
             _journalWriterLeases--;
-            if (_disposeRequested && _journalWriterLeases == 0)
+            if (_disposeRequested &&
+                _journalWriterLeases == 0 &&
+                _closedReaderLeases == 0)
+            {
+                lease = _lease;
+                _lease = null;
+            }
+        }
+        lease?.Dispose();
+    }
+
+    private void ReleaseClosedReader()
+    {
+        FileStream? lease = null;
+        lock (_lifetimeGate)
+        {
+            if (_closedReaderLeases < 1)
+                throw new InvalidOperationException("The closed spool reader lease is unbalanced.");
+            _closedReaderLeases--;
+            if (_disposeRequested &&
+                _journalWriterLeases == 0 &&
+                _closedReaderLeases == 0)
             {
                 lease = _lease;
                 _lease = null;
@@ -816,6 +909,27 @@ internal sealed class AuditExportCheckpointStore : IDisposable
         public void Dispose()
         {
             Interlocked.Exchange(ref _owner, null)?.ReleaseJournalWriter();
+        }
+    }
+
+    internal sealed class ClosedChainReaderLease(
+        AuditExportCheckpointStore owner) : IDisposable
+    {
+        private AuditExportCheckpointStore? _owner = owner;
+
+        internal T WithOwnedCheckpoint<T>(Func<AuditExportCheckpoint, T> action)
+        {
+            var currentOwner = Volatile.Read(ref _owner)
+                ?? throw new ObjectDisposedException(nameof(ClosedChainReaderLease));
+            return currentOwner.WithOwnedCheckpoint(this, action);
+        }
+
+        internal bool IsOwnedBy(AuditExportCheckpointStore owner) =>
+            ReferenceEquals(Volatile.Read(ref _owner), owner);
+
+        public void Dispose()
+        {
+            Interlocked.Exchange(ref _owner, null)?.ReleaseClosedReader();
         }
     }
 }

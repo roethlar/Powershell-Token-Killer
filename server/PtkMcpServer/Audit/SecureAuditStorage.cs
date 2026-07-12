@@ -4,9 +4,15 @@ using System.Runtime.Versioning;
 using System.Security.AccessControl;
 using System.Security.Cryptography;
 using System.Security.Principal;
+using System.Text;
 using Microsoft.Win32.SafeHandles;
 
 namespace PtkMcpServer.Audit;
+
+internal readonly record struct ProtectedFileIdentity(
+    ulong Device,
+    ulong InodeHigh,
+    ulong InodeLow);
 
 /// <summary>
 /// Named fault boundaries used by the audit-storage tests. The callback is
@@ -394,6 +400,24 @@ internal static class SecureAuditStorage
         VerifyUnixProtection(path, OwnerDirectoryMode, "directory");
     }
 
+    /// <summary>
+    /// Proves that a retained no-share handle still names the protected path
+    /// that was inventoried. A single link is required so two segment names
+    /// cannot alias one inode/file ID.
+    /// </summary>
+    internal static ProtectedFileIdentity VerifyRetainedProtectedFileIdentity(
+        string path,
+        SafeFileHandle handle)
+    {
+        ArgumentNullException.ThrowIfNull(handle);
+        if (handle.IsInvalid || handle.IsClosed)
+            throw new IOException("The protected file identity handle is unavailable.");
+        if (OperatingSystem.IsWindows())
+            return WindowsNative.GetProtectedFileIdentity(path, handle);
+        VerifyExternalProtectedFile(path);
+        return UnixNative.GetProtectedFileIdentity(path, handle);
+    }
+
     [SupportedOSPlatform("windows")]
     private static void VerifyWindowsOwnerOnlyAcl(string path, bool isDirectory)
     {
@@ -680,7 +704,18 @@ internal static class SecureAuditStorage
     {
         private const int AtCurrentWorkingDirectory = -100;
         private const int AtSymlinkNoFollow = 0x100;
+        private const int AtEmptyPath = 0x1000;
         private const uint StatxBasicStats = 0x000007ff;
+        private const uint RequiredRetainedStatxFields =
+            0x00000001 | // STATX_TYPE
+            0x00000002 | // STATX_MODE
+            0x00000004 | // STATX_NLINK
+            0x00000008 | // STATX_UID
+            0x00000100;  // STATX_INO
+        private const ushort FileTypeMask = 0xf000;
+        private const ushort RegularFile = 0x8000;
+        private const ushort PermissionMask = 0x01ff;
+        private const ushort OwnerReadWrite = 0x0180;
 
         // Linux preserves legacy open(2) flag values on ARM/ARM64 and
         // PowerPC. The other .NET-supported Linux architectures use the
@@ -701,8 +736,20 @@ internal static class SecureAuditStorage
         [StructLayout(LayoutKind.Explicit, Size = 256)]
         private struct LinuxStatx
         {
+            [FieldOffset(0)]
+            internal uint Mask;
+            [FieldOffset(16)]
+            internal uint LinkCount;
             [FieldOffset(20)]
             internal uint UserId;
+            [FieldOffset(28)]
+            internal ushort Mode;
+            [FieldOffset(32)]
+            internal ulong Inode;
+            [FieldOffset(136)]
+            internal uint DeviceMajor;
+            [FieldOffset(140)]
+            internal uint DeviceMinor;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -785,6 +832,98 @@ internal static class SecureAuditStorage
 
             throw new PlatformNotSupportedException(
                 "Protected storage ownership verification is not implemented on this Unix platform.");
+        }
+
+        internal static ProtectedFileIdentity GetProtectedFileIdentity(
+            string path,
+            SafeFileHandle handle)
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                if (statx(
+                        AtCurrentWorkingDirectory,
+                        path,
+                        AtSymlinkNoFollow,
+                        StatxBasicStats,
+                        out var pathStatus) != 0 ||
+                    statx(
+                        handle.DangerousGetHandle().ToInt32(),
+                        string.Empty,
+                        AtEmptyPath | AtSymlinkNoFollow,
+                        StatxBasicStats,
+                        out var handleStatus) != 0)
+                {
+                    throw new Win32Exception(Marshal.GetLastPInvokeError());
+                }
+
+                ValidateLinuxRetainedFile(pathStatus);
+                ValidateLinuxRetainedFile(handleStatus);
+                var pathDevice = ((ulong)pathStatus.DeviceMajor << 32) |
+                                 pathStatus.DeviceMinor;
+                var handleDevice = ((ulong)handleStatus.DeviceMajor << 32) |
+                                   handleStatus.DeviceMinor;
+                if (pathDevice != handleDevice || pathStatus.Inode != handleStatus.Inode)
+                {
+                    throw new IOException(
+                        "The protected path no longer names its retained file handle.");
+                }
+                return new ProtectedFileIdentity(pathDevice, 0, pathStatus.Inode);
+            }
+
+            if (OperatingSystem.IsMacOS())
+            {
+                MacStat pathStatus;
+                MacStat handleStatus;
+                var pathResult = RuntimeInformation.ProcessArchitecture == Architecture.X64
+                    ? lstat_inode64(path, out pathStatus)
+                    : lstat(path, out pathStatus);
+                var handleResult = RuntimeInformation.ProcessArchitecture == Architecture.X64
+                    ? fstat_inode64(handle, out handleStatus)
+                    : fstat(handle, out handleStatus);
+                if (pathResult != 0 || handleResult != 0)
+                    throw new Win32Exception(Marshal.GetLastPInvokeError());
+
+                ValidateMacRetainedFile(pathStatus);
+                ValidateMacRetainedFile(handleStatus);
+                if (pathStatus.Device != handleStatus.Device ||
+                    pathStatus.Inode != handleStatus.Inode)
+                {
+                    throw new IOException(
+                        "The protected path no longer names its retained file handle.");
+                }
+                return new ProtectedFileIdentity(
+                    unchecked((uint)pathStatus.Device),
+                    0,
+                    pathStatus.Inode);
+            }
+
+            throw new PlatformNotSupportedException(
+                "Protected file identity verification is not implemented on this Unix platform.");
+        }
+
+        private static void ValidateLinuxRetainedFile(LinuxStatx status)
+        {
+            if ((status.Mask & RequiredRetainedStatxFields) != RequiredRetainedStatxFields ||
+                (status.Mode & FileTypeMask) != RegularFile ||
+                (status.Mode & PermissionMask) != OwnerReadWrite ||
+                status.UserId != geteuid() ||
+                status.LinkCount != 1)
+            {
+                throw new IOException(
+                    "The retained audit segment type, owner, mode, or link count is invalid.");
+            }
+        }
+
+        private static void ValidateMacRetainedFile(MacStat status)
+        {
+            if ((status.Mode & FileTypeMask) != RegularFile ||
+                (status.Mode & PermissionMask) != OwnerReadWrite ||
+                status.UserId != geteuid() ||
+                status.LinkCount != 1)
+            {
+                throw new IOException(
+                    "The retained audit segment type, owner, mode, or link count is invalid.");
+            }
         }
 
         internal static (
@@ -937,6 +1076,8 @@ internal static class SecureAuditStorage
         private const int TrusteeIsSid = 0;
         private const int TrusteeIsUser = 1;
         private const int SeFileObject = 1;
+        private const uint FileAttributeDirectory = 0x00000010;
+        private const uint FileAttributeReparsePoint = 0x00000400;
 
         [Flags]
         internal enum MoveFileFlags : uint
@@ -962,6 +1103,77 @@ internal static class SecureAuditStorage
             internal int AccessMode;
             internal uint Inheritance;
             internal Trustee Trustee;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct NativeFileTime
+        {
+            internal uint Low;
+            internal uint High;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct ByHandleFileInformation
+        {
+            internal uint FileAttributes;
+            internal NativeFileTime CreationTime;
+            internal NativeFileTime LastAccessTime;
+            internal NativeFileTime LastWriteTime;
+            internal uint VolumeSerialNumber;
+            internal uint FileSizeHigh;
+            internal uint FileSizeLow;
+            internal uint NumberOfLinks;
+            internal uint FileIndexHigh;
+            internal uint FileIndexLow;
+        }
+
+        internal static ProtectedFileIdentity GetProtectedFileIdentity(
+            string expectedPath,
+            SafeFileHandle handle)
+        {
+            if (!GetFileInformationByHandle(handle, out var information))
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            if ((information.FileAttributes &
+                    (FileAttributeDirectory | FileAttributeReparsePoint)) != 0 ||
+                information.NumberOfLinks != 1)
+            {
+                throw new IOException(
+                    "The retained audit segment type or link count is invalid.");
+            }
+
+            var pathBuffer = new StringBuilder(32_768);
+            var length = GetFinalPathNameByHandle(
+                handle,
+                pathBuffer,
+                pathBuffer.Capacity,
+                flags: 0);
+            if (length == 0 || length >= pathBuffer.Capacity)
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            var finalPath = NormalizeFinalPath(pathBuffer.ToString());
+            if (!string.Equals(
+                    Path.GetFullPath(expectedPath),
+                    Path.GetFullPath(finalPath),
+                    StringComparison.OrdinalIgnoreCase))
+            {
+                throw new IOException(
+                    "The protected path no longer names its retained file handle.");
+            }
+
+            return new ProtectedFileIdentity(
+                information.VolumeSerialNumber,
+                information.FileIndexHigh,
+                information.FileIndexLow);
+        }
+
+        private static string NormalizeFinalPath(string path)
+        {
+            const string uncPrefix = @"\\?\UNC\";
+            const string localPrefix = @"\\?\";
+            if (path.StartsWith(uncPrefix, StringComparison.OrdinalIgnoreCase))
+                return @"\\" + path[uncPrefix.Length..];
+            return path.StartsWith(localPrefix, StringComparison.OrdinalIgnoreCase)
+                ? path[localPrefix.Length..]
+                : path;
         }
 
         [StructLayout(LayoutKind.Sequential)]
@@ -1087,6 +1299,23 @@ internal static class SecureAuditStorage
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]
         internal static extern bool MoveFileEx(string existingFileName, string newFileName, MoveFileFlags flags);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandle(
+            SafeFileHandle file,
+            out ByHandleFileInformation information);
+
+        [DllImport(
+            "kernel32.dll",
+            EntryPoint = "GetFinalPathNameByHandleW",
+            CharSet = CharSet.Unicode,
+            SetLastError = true)]
+        private static extern uint GetFinalPathNameByHandle(
+            SafeFileHandle file,
+            StringBuilder path,
+            int pathCharacters,
+            uint flags);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         [return: MarshalAs(UnmanagedType.Bool)]

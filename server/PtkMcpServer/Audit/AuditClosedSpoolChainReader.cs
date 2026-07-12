@@ -1,0 +1,689 @@
+namespace PtkMcpServer.Audit;
+
+internal interface IAuditClosedSpoolRecordPosition
+{
+    AuditSpoolSegmentIdentity Spool { get; }
+
+    long StartOffset { get; }
+
+    long NextOffset { get; }
+
+    long Sequence { get; }
+
+    Guid EventId { get; }
+
+    string? PreviousEventHash { get; }
+
+    string EventHash { get; }
+
+    ReadOnlyMemory<byte> ExactJsonlBytes { get; }
+}
+
+/// <summary>
+/// Opaque proof that one exact checkpoint was observed at the end of a
+/// retained, validated closed-chain snapshot.
+/// </summary>
+internal interface IAuditClosedSpoolEndPosition;
+
+/// <summary>
+/// Reads one immutable, closed anchored spool chain. This reader does not
+/// discover live writer state or acquire an orphan lease; its caller must hold
+/// the boot's exporter lease before selecting the chain.
+/// </summary>
+internal sealed class AuditClosedSpoolChainReader : IDisposable
+{
+    private const string QuotaLockFileName = ".ptk-audit-quota.lock";
+    private readonly AuditOptions _options;
+    private readonly Guid _supervisorBootId;
+    private readonly string _spoolRoot;
+    private readonly object _gate = new();
+    private readonly Action? _handlesAcquiredForTests;
+    private readonly AuditExportCheckpointStore.ClosedChainReaderLease _checkpointLease;
+    private SegmentHandle[] _segments = [];
+    private object? _snapshotToken;
+    private bool _disposed;
+
+    internal AuditClosedSpoolChainReader(
+        AuditOptions options,
+        AuditExportCheckpointStore checkpointStore,
+        Action? handlesAcquiredForTests = null)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        ArgumentNullException.ThrowIfNull(checkpointStore);
+        if (options.ProtectionMode != AuditProtectionMode.Anchored)
+        {
+            throw new ArgumentException(
+                "A closed export spool reader requires anchored audit protection.",
+                nameof(options));
+        }
+
+        _options = options;
+        _supervisorBootId = checkpointStore.SupervisorBootId;
+        _spoolRoot = Path.TrimEndingDirectorySeparator(
+            Path.GetFullPath(options.SpoolDirectory));
+        _handlesAcquiredForTests = handlesAcquiredForTests;
+        _checkpointLease = checkpointStore.RetainClosedChainReader(options);
+    }
+
+    /// <summary>
+    /// Acquires every selected segment exclusively, validates the complete
+    /// chain through those handles, and resolves the durable cursor to its
+    /// exact following record. A null next record is a verified closed-chain
+    /// end candidate; the caller may then persist chain_complete.
+    /// </summary>
+    internal AuditClosedSpoolRecovery ResolveCheckpoint()
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            ReleaseSnapshot();
+            PendingResolution? pending = null;
+            try
+            {
+                _checkpointLease.WithOwnedCheckpoint(checkpoint =>
+                {
+                    pending = ResolveOwnedCheckpoint(checkpoint);
+                    return true;
+                });
+                var resolved = pending ?? throw new IOException(
+                    "The owned checkpoint did not produce a closed spool resolution.");
+                _segments = resolved.Segments;
+                _snapshotToken = resolved.SnapshotToken;
+                pending = null;
+                return resolved.Recovery;
+            }
+            finally
+            {
+                pending?.Dispose();
+            }
+        }
+    }
+
+    private PendingResolution ResolveOwnedCheckpoint(
+        AuditExportCheckpoint checkpoint)
+    {
+        AuditExportCheckpointCodec.Validate(checkpoint);
+        if (checkpoint.SupervisorBootId != _supervisorBootId)
+        {
+            throw new IOException(
+                "The owned audit export checkpoint belongs to a different spool chain.");
+        }
+
+        var inventory = InventoryClosedChain();
+        var acquired = AcquireClosedChain(inventory);
+        try
+        {
+                // The complete handle set is already held FileShare.None.
+                // This second inventory rejects a name-set race before any
+                // checkpoint decision is based on the retained inodes.
+                _handlesAcquiredForTests?.Invoke();
+                VerifyStableInventory(inventory);
+                VerifyRetainedIdentities(acquired);
+
+                var snapshotToken = new object();
+                RecordPosition? nextRecord = null;
+                var acknowledged = checkpoint.Sequence == 0;
+                var captureNext = acknowledged;
+                long? previousSequence = null;
+                string? previousHash = null;
+
+                foreach (var segment in acquired)
+                {
+                    var offset = 0L;
+                    while (offset < segment.Descriptor.Length)
+                    {
+                        var record = ReadRecord(
+                            segment,
+                            offset,
+                            snapshotToken,
+                            previousSequence is null
+                                ? 1
+                                : CheckedNext(previousSequence.Value),
+                            previousHash);
+                        offset = record.NextOffset;
+
+                        if (captureNext && nextRecord is null)
+                        {
+                            nextRecord = record;
+                            captureNext = false;
+                        }
+
+                        if (checkpoint.Sequence != 0 &&
+                            checkpoint.Spool == record.Spool &&
+                            checkpoint.ByteOffset == record.NextOffset)
+                        {
+                            if (acknowledged ||
+                                checkpoint.Sequence != record.Sequence ||
+                                checkpoint.AcknowledgedEventId != record.EventId)
+                            {
+                                throw new IOException(
+                                    "The audit export checkpoint does not identify an exact spool record.");
+                            }
+
+                            acknowledged = true;
+                            captureNext = true;
+                        }
+
+                        previousSequence = record.Sequence;
+                        previousHash = record.EventHash;
+                    }
+
+                    if (offset != segment.Descriptor.Length ||
+                        segment.Stream.Length != segment.Descriptor.Length)
+                    {
+                        throw new IOException(
+                            "A closed audit segment changed while it was read.");
+                    }
+                }
+
+                VerifyRetainedIdentities(acquired);
+
+                if (!acknowledged)
+                {
+                    throw new IOException(
+                        "The audit export checkpoint does not identify an exact spool record end.");
+                }
+
+                if (checkpoint.BlockedRecord is { } blocked &&
+                    (nextRecord is null ||
+                     blocked.Spool != nextRecord.Spool ||
+                     blocked.ByteOffset != nextRecord.StartOffset ||
+                     blocked.Sequence != nextRecord.Sequence ||
+                     blocked.EventId != nextRecord.EventId))
+                {
+                    throw new IOException(
+                        "The blocked audit export checkpoint does not identify the exact next record.");
+                }
+
+                if (checkpoint.ChainComplete && nextRecord is not null)
+                {
+                    throw new IOException(
+                        "A complete audit export checkpoint still has an unacknowledged record.");
+                }
+
+                var recovery = nextRecord is null
+                    ? new AuditClosedSpoolRecovery(
+                        null,
+                        new EndPosition(
+                            this,
+                            snapshotToken,
+                            checkpoint))
+                    : new AuditClosedSpoolRecovery(nextRecord, null);
+                var resolution = new PendingResolution(
+                    acquired,
+                    snapshotToken,
+                    recovery);
+                acquired = [];
+                return resolution;
+        }
+        finally
+        {
+            DisposeSegments(acquired);
+        }
+    }
+
+    /// <summary>
+    /// Returns the record immediately following a position created by this
+    /// reader's current validated snapshot. No pathname is reopened.
+    /// </summary>
+    internal IAuditClosedSpoolRecordPosition? ReadNext(
+        IAuditClosedSpoolRecordPosition position)
+    {
+        ArgumentNullException.ThrowIfNull(position);
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (position is not RecordPosition ownedPosition ||
+                !ReferenceEquals(ownedPosition.Owner, this) ||
+                _snapshotToken is null ||
+                !ReferenceEquals(ownedPosition.SnapshotToken, _snapshotToken))
+            {
+                throw new ArgumentException(
+                    "The audit spool position does not belong to this reader snapshot.",
+                    nameof(position));
+            }
+
+            var segmentNumber = position.Spool.Index;
+            if (segmentNumber < 0 || segmentNumber >= _segments.Length ||
+                _segments[segmentNumber].Descriptor.Identity != position.Spool)
+            {
+                throw new IOException(
+                    "The audit spool position has no segment in this snapshot.");
+            }
+
+            var segment = _segments[segmentNumber];
+            var offset = position.NextOffset;
+            if (offset > segment.Descriptor.Length)
+                throw new IOException("The audit spool position exceeds its closed segment.");
+            if (offset == segment.Descriptor.Length)
+            {
+                segmentNumber++;
+                if (segmentNumber == _segments.Length)
+                    return null;
+                segment = _segments[segmentNumber];
+                offset = 0;
+                if (segment.Descriptor.Length == 0)
+                    return null;
+            }
+
+            return ReadRecord(
+                segment,
+                offset,
+                _snapshotToken,
+                CheckedNext(position.Sequence),
+                position.EventHash);
+        }
+    }
+
+    /// <summary>
+    /// Converts only this reader's live opaque end proof into the exact
+    /// chain-complete checkpoint the store may persist.
+    /// </summary>
+    internal AuditExportCheckpoint CreateChainCompleteCheckpoint(
+        IAuditClosedSpoolEndPosition endPosition)
+    {
+        ArgumentNullException.ThrowIfNull(endPosition);
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            if (endPosition is not EndPosition ownedEnd ||
+                !ReferenceEquals(ownedEnd.Owner, this) ||
+                _snapshotToken is null ||
+                !ReferenceEquals(ownedEnd.SnapshotToken, _snapshotToken))
+            {
+                throw new ArgumentException(
+                    "The closed-chain end proof does not belong to this reader snapshot.",
+                    nameof(endPosition));
+            }
+
+            var checkpoint = ownedEnd.Checkpoint;
+            return checkpoint.ChainComplete
+                ? checkpoint
+                : new AuditExportCheckpoint(
+                    checkpoint.SupervisorBootId,
+                    chainComplete: true,
+                    checkpoint.Spool,
+                    checkpoint.ByteOffset,
+                    checkpoint.Sequence,
+                    checkpoint.AcknowledgedEventId,
+                    blockedRecord: null);
+        }
+    }
+
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            if (_disposed) return;
+            _disposed = true;
+            ReleaseSnapshot();
+            _checkpointLease.Dispose();
+        }
+    }
+
+    private SegmentDescriptor[] InventoryClosedChain(
+        bool verifySegmentProtection = true)
+    {
+        SecureAuditStorage.VerifyExternalProtectedDirectory(_spoolRoot);
+        var segments = new List<SegmentDescriptor>();
+        foreach (var entry in new DirectoryInfo(_spoolRoot)
+                     .EnumerateFileSystemInfos("*", SearchOption.TopDirectoryOnly)
+                     .ToArray())
+        {
+            if (entry is FileInfo quotaLock &&
+                string.Equals(
+                    quotaLock.Name,
+                    QuotaLockFileName,
+                    StringComparison.Ordinal))
+            {
+                SecureAuditStorage.VerifyExternalProtectedFile(quotaLock.FullName);
+                continue;
+            }
+
+            if (entry is not FileInfo file ||
+                !AuditSpoolSegmentIdentity.TryParse(file.Name, out var identity))
+            {
+                throw new IOException("The audit spool contains an unknown entry.");
+            }
+
+            if (verifySegmentProtection)
+                SecureAuditStorage.VerifyExternalProtectedFile(file.FullName);
+            file.Refresh();
+            if (identity.SupervisorBootId == _supervisorBootId)
+            {
+                if (file.Length < 0 || file.Length > _options.SegmentBytes)
+                {
+                    throw new IOException(
+                        "A closed audit segment exceeds its configured bound.");
+                }
+                segments.Add(new SegmentDescriptor(
+                    identity,
+                    file.FullName,
+                    file.Length));
+            }
+        }
+
+        var ordered = segments.OrderBy(segment => segment.Identity.Index).ToArray();
+        if (ordered.Length == 0 || ordered[0].Identity.Index != 0)
+            throw new IOException("A closed audit spool chain must begin at segment zero.");
+        for (var index = 0; index < ordered.Length; index++)
+        {
+            if (ordered[index].Identity.Index != index)
+                throw new IOException("A closed audit spool chain has a missing segment.");
+            if (ordered[index].Length == 0 && index != ordered.Length - 1)
+            {
+                throw new IOException(
+                    "Only the trailing closed audit segment may be empty.");
+            }
+        }
+        return ordered;
+    }
+
+    private SegmentHandle[] AcquireClosedChain(SegmentDescriptor[] inventory)
+    {
+        var acquired = new List<SegmentHandle>(inventory.Length);
+        var identities = new HashSet<ProtectedFileIdentity>();
+        try
+        {
+            foreach (var segment in inventory)
+            {
+                FileStream stream;
+                try
+                {
+                    stream = new FileStream(
+                        segment.Path,
+                        FileMode.Open,
+                        FileAccess.Read,
+                        FileShare.None,
+                        bufferSize: 1,
+                        FileOptions.RandomAccess);
+                }
+                catch (IOException exception)
+                {
+                    throw new IOException(
+                        "The selected audit spool chain has a live or unavailable segment.",
+                        exception);
+                }
+
+                try
+                {
+                    if (stream.Length != segment.Length)
+                        throw new IOException("A closed audit segment changed length.");
+                    var identity = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+                        segment.Path,
+                        stream.SafeFileHandle);
+                    if (!identities.Add(identity))
+                    {
+                        throw new IOException(
+                            "Two closed audit segment names identify the same file.");
+                    }
+                    acquired.Add(new SegmentHandle(segment, stream, identity));
+                }
+                catch
+                {
+                    stream.Dispose();
+                    throw;
+                }
+            }
+            return acquired.ToArray();
+        }
+        catch
+        {
+            DisposeSegments(acquired);
+            throw;
+        }
+    }
+
+    private static void VerifyRetainedIdentities(SegmentHandle[] segments)
+    {
+        var identities = new HashSet<ProtectedFileIdentity>();
+        foreach (var segment in segments)
+        {
+            var observed = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+                segment.Descriptor.Path,
+                segment.Stream.SafeFileHandle);
+            if (observed != segment.Identity || !identities.Add(observed))
+            {
+                throw new IOException(
+                    "A closed audit segment path changed identity while it was acquired.");
+            }
+        }
+    }
+
+    private RecordPosition ReadRecord(
+        SegmentHandle segment,
+        long startOffset,
+        object snapshotToken,
+        long expectedSequence,
+        string? expectedPreviousHash)
+    {
+        if (startOffset < 0 || startOffset >= segment.Descriptor.Length)
+            throw new IOException("The audit spool record offset is invalid.");
+        if (segment.Stream.Length != segment.Descriptor.Length)
+            throw new IOException("A closed audit segment changed length.");
+
+        var available = checked((int)Math.Min(
+            _options.MaxRecordBytes,
+            segment.Descriptor.Length - startOffset));
+        var buffer = new byte[_options.MaxRecordBytes];
+        var length = 0;
+        while (length < available)
+        {
+            var read = RandomAccess.Read(
+                segment.Stream.SafeFileHandle,
+                buffer.AsSpan(length, available - length),
+                startOffset + length);
+            if (read == 0)
+                break;
+
+            var lfIndex = buffer.AsSpan(length, read).IndexOf((byte)'\n');
+            if (lfIndex >= 0)
+            {
+                length += lfIndex + 1;
+                var parsed = AuditSpoolRecordCodec.Parse(
+                    buffer.AsSpan(0, length - 1),
+                    _supervisorBootId);
+                if (parsed.Sequence != expectedSequence ||
+                    !string.Equals(
+                        parsed.PreviousEventHash,
+                        expectedPreviousHash,
+                        StringComparison.Ordinal))
+                {
+                    throw new IOException(
+                        "The closed audit spool hash chain is discontinuous.");
+                }
+
+                var exactLine = new byte[length];
+                buffer.AsSpan(0, length).CopyTo(exactLine);
+                return new RecordPosition(
+                    this,
+                    snapshotToken,
+                    segment.Descriptor.Identity,
+                    startOffset,
+                    checked(startOffset + length),
+                    parsed,
+                    exactLine);
+            }
+            length += read;
+        }
+
+        if (length == _options.MaxRecordBytes)
+        {
+            throw new IOException(
+                "A closed audit record has no LF within its configured bound.");
+        }
+        throw new IOException("A closed audit segment has a torn record.");
+    }
+
+    private void VerifyStableInventory(SegmentDescriptor[] expected)
+    {
+        // Windows no-share handles pin each segment name but may also prevent
+        // a second ACL open. The initial inventory verified the ACL before
+        // acquisition; retained handle metadata verifies the pinned file.
+        var observed = InventoryClosedChain(
+            verifySegmentProtection: !OperatingSystem.IsWindows());
+        if (expected.Length != observed.Length)
+            throw new IOException("The closed audit spool inventory changed while it was acquired.");
+        for (var index = 0; index < expected.Length; index++)
+        {
+            if (expected[index].Identity != observed[index].Identity ||
+                expected[index].Length != observed[index].Length ||
+                !PathsEqual(expected[index].Path, observed[index].Path))
+            {
+                throw new IOException(
+                    "The closed audit spool inventory changed while it was acquired.");
+            }
+        }
+    }
+
+    private void ReleaseSnapshot()
+    {
+        _snapshotToken = null;
+        var segments = _segments;
+        _segments = [];
+        DisposeSegments(segments);
+    }
+
+    private static void DisposeSegments(IEnumerable<SegmentHandle> segments)
+    {
+        foreach (var segment in segments)
+            segment.Stream.Dispose();
+    }
+
+    private void ThrowIfDisposed()
+    {
+        if (_disposed)
+            throw new ObjectDisposedException(nameof(AuditClosedSpoolChainReader));
+    }
+
+    private static long CheckedNext(long sequence)
+    {
+        if (sequence == long.MaxValue)
+            throw new IOException("The closed audit spool sequence overflows.");
+        return sequence + 1;
+    }
+
+    private static bool PathsEqual(string left, string right) => string.Equals(
+        Path.GetFullPath(left),
+        Path.GetFullPath(right),
+        OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal);
+
+    private readonly record struct SegmentDescriptor(
+        AuditSpoolSegmentIdentity Identity,
+        string Path,
+        long Length);
+
+    private sealed record SegmentHandle(
+        SegmentDescriptor Descriptor,
+        FileStream Stream,
+        ProtectedFileIdentity Identity);
+
+    private sealed class PendingResolution(
+        SegmentHandle[] segments,
+        object snapshotToken,
+        AuditClosedSpoolRecovery recovery) : IDisposable
+    {
+        private SegmentHandle[] _segments = segments;
+
+        internal SegmentHandle[] Segments => _segments;
+
+        internal object SnapshotToken { get; } = snapshotToken;
+
+        internal AuditClosedSpoolRecovery Recovery { get; } = recovery;
+
+        public void Dispose()
+        {
+            var current = _segments;
+            _segments = [];
+            DisposeSegments(current);
+        }
+    }
+
+    /// <summary>
+    /// An opaque position in the reader's current validated snapshot.
+    /// ExactJsonlBytes includes the authoritative trailing LF.
+    /// </summary>
+    private sealed class RecordPosition : IAuditClosedSpoolRecordPosition
+    {
+        private readonly byte[] _exactJsonlBytes;
+
+        internal RecordPosition(
+            AuditClosedSpoolChainReader owner,
+            object snapshotToken,
+            AuditSpoolSegmentIdentity spool,
+            long startOffset,
+            long nextOffset,
+            AuditSpoolRecord record,
+            byte[] exactJsonlBytes)
+        {
+            Owner = owner;
+            SnapshotToken = snapshotToken;
+            _exactJsonlBytes = exactJsonlBytes;
+            Spool = spool;
+            StartOffset = startOffset;
+            NextOffset = nextOffset;
+            Sequence = record.Sequence;
+            EventId = record.EventId;
+            PreviousEventHash = record.PreviousEventHash;
+            EventHash = record.EventHash;
+        }
+
+        internal AuditClosedSpoolChainReader Owner { get; }
+
+        internal object SnapshotToken { get; }
+
+        public AuditSpoolSegmentIdentity Spool { get; }
+
+        public long StartOffset { get; }
+
+        public long NextOffset { get; }
+
+        public long Sequence { get; }
+
+        public Guid EventId { get; }
+
+        public string? PreviousEventHash { get; }
+
+        public string EventHash { get; }
+
+        public ReadOnlyMemory<byte> ExactJsonlBytes => _exactJsonlBytes;
+    }
+
+    private sealed class EndPosition : IAuditClosedSpoolEndPosition
+    {
+        internal EndPosition(
+            AuditClosedSpoolChainReader owner,
+            object snapshotToken,
+            AuditExportCheckpoint checkpoint)
+        {
+            Owner = owner;
+            SnapshotToken = snapshotToken;
+            Checkpoint = checkpoint;
+        }
+
+        internal AuditClosedSpoolChainReader Owner { get; }
+
+        internal object SnapshotToken { get; }
+
+        internal AuditExportCheckpoint Checkpoint { get; }
+    }
+}
+
+internal sealed class AuditClosedSpoolRecovery
+{
+    internal AuditClosedSpoolRecovery(
+        IAuditClosedSpoolRecordPosition? nextRecord,
+        IAuditClosedSpoolEndPosition? endPosition)
+    {
+        if ((nextRecord is null) == (endPosition is null))
+            throw new ArgumentException("A closed spool recovery must resolve to one exact position.");
+        NextRecord = nextRecord;
+        EndPosition = endPosition;
+    }
+
+    internal IAuditClosedSpoolRecordPosition? NextRecord { get; }
+
+    internal IAuditClosedSpoolEndPosition? EndPosition { get; }
+}
