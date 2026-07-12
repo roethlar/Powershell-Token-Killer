@@ -344,7 +344,9 @@ internal sealed class AuditAdminOperations
         Guid blockedEventId,
         AuditOperatorDispositionProof proof,
         Action? afterDurableIntentForTests = null,
-        Action? afterCheckpointAdvanceForTests = null)
+        Action? afterCheckpointAdvanceForTests = null,
+        Action? afterCompletedAuditAppendForTests = null,
+        Action? afterOutcomePublishedForTests = null)
     {
         ArgumentNullException.ThrowIfNull(proof);
         AuditSpoolSegmentIdentity.RequireUuidV4(supervisorBootId, nameof(supervisorBootId));
@@ -353,7 +355,9 @@ internal sealed class AuditAdminOperations
         if (_options.ProtectionMode != AuditProtectionMode.Anchored)
             throw new InvalidOperationException("Export-block disposition requires anchored audit mode.");
 
-        using var reservation = ReserveOperation();
+        // A completion-receipt failure happens after the completed event is
+        // durable and must still have one reserved slot for its failure fact.
+        using var reservation = ReserveOperation(maxRecordSlots: 3);
         AuditSpoolQuotaLease? quota = null;
         AuditExportCheckpointStore? checkpointStore = null;
         AuditClosedSpoolChainReader? reader = null;
@@ -373,6 +377,23 @@ internal sealed class AuditAdminOperations
                 blockedEventId,
                 proof);
 
+            if (durableIntent is not null &&
+                AuditOperatorDispositionOutcome.TryOpenCommitted(
+                    _options,
+                    durableIntent) is not null)
+            {
+                afterDurableIntentForTests?.Invoke();
+                AppendDispositionEvent(
+                    reservation,
+                    "export.disposition_completed",
+                    "completed",
+                    "disposition.previously_completed",
+                    supervisorBootId,
+                    blockedEventId,
+                    auditIntent.EventId);
+                return durableIntent.DispositionId;
+            }
+
             quota = AuditSpoolQuotaLease.AcquireExisting(_options.SpoolDirectory);
             if (!AuditExportCheckpointStore.TryAcquireExisting(
                     _options,
@@ -385,7 +406,7 @@ internal sealed class AuditAdminOperations
             if (durableIntent is not null && durableIntent.IsAlreadyApplied(checkpointStore.Current))
             {
                 afterDurableIntentForTests?.Invoke();
-                AppendDispositionEvent(
+                var completed = AppendDispositionEvent(
                     reservation,
                     "export.disposition_completed",
                     "completed",
@@ -393,6 +414,13 @@ internal sealed class AuditAdminOperations
                     supervisorBootId,
                     blockedEventId,
                     auditIntent.EventId);
+                afterCompletedAuditAppendForTests?.Invoke();
+                _ = AuditOperatorDispositionOutcome.Commit(
+                    _options,
+                    durableIntent,
+                    _journal.SupervisorBootId,
+                    completed,
+                    afterOutcomePublishedForTests);
                 return durableIntent.DispositionId;
             }
 
@@ -414,7 +442,7 @@ internal sealed class AuditAdminOperations
             afterDurableIntentForTests?.Invoke();
             reader.ApplyPermanentBlockDisposition(record.Position, durableIntent);
             afterCheckpointAdvanceForTests?.Invoke();
-            AppendDispositionEvent(
+            var applied = AppendDispositionEvent(
                 reservation,
                 "export.disposition_completed",
                 "completed",
@@ -422,6 +450,13 @@ internal sealed class AuditAdminOperations
                 supervisorBootId,
                 blockedEventId,
                 auditIntent.EventId);
+            afterCompletedAuditAppendForTests?.Invoke();
+            _ = AuditOperatorDispositionOutcome.Commit(
+                _options,
+                durableIntent,
+                _journal.SupervisorBootId,
+                applied,
+                afterOutcomePublishedForTests);
             return durableIntent.DispositionId;
         }
         catch (Exception exception) when (!IsFatal(exception))
@@ -554,10 +589,10 @@ internal sealed class AuditAdminOperations
         });
     }
 
-    private AuditReservation ReserveOperation()
+    private AuditReservation ReserveOperation(int maxRecordSlots = 2)
     {
         if (!_journal.TryReserve(
-                maxRecordSlots: 2,
+                maxRecordSlots,
                 out var reservation,
                 out var failureClass) || reservation is null)
         {

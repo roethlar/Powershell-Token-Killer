@@ -88,7 +88,9 @@ internal static class AuditCompletedChainRetirement
             if (acceptFullyAbsentObservedBoot &&
                 IsFullyAbsent(options, supervisorBootId))
             {
-                return true;
+                return AuditOperatorDispositionOutcome.AllowsRetirement(
+                    options,
+                    supervisorBootId);
             }
 
             if (!AuditExportCheckpointStore.TryAcquireExisting(
@@ -116,7 +118,12 @@ internal static class AuditCompletedChainRetirement
                 var pressureEligible = totalBytes > maximumRetainedBytes;
                 if (!ageEligible && !pressureEligible)
                     return false;
-
+                if (!AuditOperatorDispositionOutcome.AllowsRetirement(
+                        options,
+                        supervisorBootId))
+                {
+                    return false;
+                }
                 var checkpointBytes = AuditExportCheckpointCodec.Serialize(checkpoint);
                 var intent = new RetirementIntent(
                     supervisorBootId,

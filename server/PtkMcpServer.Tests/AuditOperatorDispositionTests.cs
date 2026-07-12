@@ -50,6 +50,24 @@ public sealed class AuditOperatorDispositionTests : IDisposable
             Assert.Equal(
                 ["export.disposition_intent", "export.disposition_completed"],
                 admin.Sink.Lines.Select(EventType).ToArray());
+            var outcomePath = Assert.Single(
+                DispositionOutcomes(options),
+                path => Path.GetFileName(path).Contains(
+                    target.BootId.ToString("N"),
+                    StringComparison.Ordinal));
+            using var outcome = JsonDocument.Parse(File.ReadAllBytes(outcomePath));
+            Assert.Equal(
+                dispositionId.ToString("D"),
+                outcome.RootElement.GetProperty("disposition_id").GetString());
+            Assert.Equal(
+                target.BootId.ToString("D"),
+                outcome.RootElement.GetProperty("supervisor_boot_id").GetString());
+            Assert.Equal(
+                target.EventId.ToString("D"),
+                outcome.RootElement.GetProperty("blocked_event_id").GetString());
+            Assert.Equal(
+                admin.Journal.SupervisorBootId.ToString("D"),
+                outcome.RootElement.GetProperty("completed_audit_supervisor_boot_id").GetString());
             using var intentEvent = JsonDocument.Parse(admin.Sink.Lines[0]);
             Assert.Equal(
                 target.EventId.ToString("D"),
@@ -108,25 +126,174 @@ public sealed class AuditOperatorDispositionTests : IDisposable
                     proof,
                     afterCheckpointAdvanceForTests: () => throw new IOException("crash seam")));
             Assert.Null(Checkpoint(options, target.BootId).BlockedRecord);
+            Assert.Empty(DispositionOutcomes(options));
         }
         var persistedId = ReadDispositionId(options);
 
-        using var secondAdmin = AdminJournal(options);
-        var second = new AuditAdminOperations(options, secondAdmin.Journal);
-        var resumedId = second.ApplyPermanentBlockDisposition(
+        CompleteTarget(options, target.BootId);
+        Assert.False(AuditCompletedChainRetirement.TryRetire(
+            options,
             target.BootId,
-            target.EventId,
-            proof);
+            DateTimeOffset.UtcNow,
+            requiredHeadroomBytes: options.AggregateBytes));
+        Assert.True(TargetControlsExist(options, target.BootId));
 
-        Assert.Equal(persistedId, resumedId);
-        Assert.Null(Checkpoint(options, target.BootId).BlockedRecord);
+        using (var secondAdmin = AdminJournal(options))
+        {
+            var second = new AuditAdminOperations(options, secondAdmin.Journal);
+            var resumedId = second.ApplyPermanentBlockDisposition(
+                target.BootId,
+                target.EventId,
+                proof);
+
+            Assert.Equal(persistedId, resumedId);
+            Assert.Null(Checkpoint(options, target.BootId).BlockedRecord);
+            Assert.Equal(
+                ["export.disposition_intent", "export.disposition_completed"],
+                secondAdmin.Sink.Lines.Select(EventType).ToArray());
+            using var completed = JsonDocument.Parse(secondAdmin.Sink.Lines[1]);
+            Assert.Equal(
+                "disposition.already_applied",
+                completed.RootElement.GetProperty("outcome").GetProperty("detail_code").GetString());
+        }
+        Assert.Single(DispositionOutcomes(options));
+
+        Assert.True(AuditCompletedChainRetirement.TryRetire(
+            options,
+            target.BootId,
+            DateTimeOffset.UtcNow,
+            requiredHeadroomBytes: options.AggregateBytes));
+        Assert.False(TargetControlsExist(options, target.BootId));
+
+        using var replayAdmin = AdminJournal(options);
+        var replay = new AuditAdminOperations(options, replayAdmin.Journal);
+        Assert.Equal(
+            persistedId,
+            replay.ApplyPermanentBlockDisposition(target.BootId, target.EventId, proof));
         Assert.Equal(
             ["export.disposition_intent", "export.disposition_completed"],
-            secondAdmin.Sink.Lines.Select(EventType).ToArray());
-        using var completed = JsonDocument.Parse(secondAdmin.Sink.Lines[1]);
+            replayAdmin.Sink.Lines.Select(EventType).ToArray());
+        using var replayed = JsonDocument.Parse(replayAdmin.Sink.Lines[1]);
         Assert.Equal(
-            "disposition.already_applied",
-            completed.RootElement.GetProperty("outcome").GetProperty("detail_code").GetString());
+            "disposition.previously_completed",
+            replayed.RootElement.GetProperty("outcome").GetProperty("detail_code").GetString());
+    }
+
+    [Fact]
+    public void Failure_after_completed_append_is_audited_and_retry_commits_the_receipt()
+    {
+        var options = Options();
+        var target = CreateBlockedTarget(options, AuditExportFailureClass.Data);
+        var proof = AuditOperatorDispositionProof.AcknowledgedGap("operator.accepted");
+        Guid persistedId;
+        using (var firstAdmin = AdminJournal(options))
+        {
+            var first = new AuditAdminOperations(options, firstAdmin.Journal);
+            Assert.Throws<AuditAdminOperationException>(() =>
+                first.ApplyPermanentBlockDisposition(
+                    target.BootId,
+                    target.EventId,
+                    proof,
+                    afterCompletedAuditAppendForTests: () =>
+                        throw new IOException("completion receipt crash seam")));
+
+            persistedId = ReadDispositionId(options);
+            Assert.Empty(DispositionOutcomes(options));
+            Assert.Equal(
+                [
+                    "export.disposition_intent",
+                    "export.disposition_completed",
+                    "export.disposition_failed",
+                ],
+                firstAdmin.Sink.Lines.Select(EventType).ToArray());
+        }
+
+        using var secondAdmin = AdminJournal(options);
+        var second = new AuditAdminOperations(options, secondAdmin.Journal);
+        Assert.Equal(
+            persistedId,
+            second.ApplyPermanentBlockDisposition(target.BootId, target.EventId, proof));
+        Assert.Single(DispositionOutcomes(options));
+    }
+
+    [Fact]
+    public async Task Retirement_cannot_race_the_completion_receipt_window()
+    {
+        var options = Options();
+        var target = CreateBlockedTarget(options, AuditExportFailureClass.Data);
+        var proof = AuditOperatorDispositionProof.AcknowledgedGap("operator.accepted");
+        using var admin = AdminJournal(options);
+        var operations = new AuditAdminOperations(options, admin.Journal);
+        using var checkpointAdvanced = new ManualResetEventSlim();
+        using var releaseCompletion = new ManualResetEventSlim();
+        var operation = Task.Run(() => operations.ApplyPermanentBlockDisposition(
+            target.BootId,
+            target.EventId,
+            proof,
+            afterCheckpointAdvanceForTests: () =>
+            {
+                checkpointAdvanced.Set();
+                if (!releaseCompletion.Wait(TimeSpan.FromSeconds(10)))
+                    throw new TimeoutException("The retirement race test did not release completion.");
+            }));
+
+        try
+        {
+            Assert.True(checkpointAdvanced.Wait(TimeSpan.FromSeconds(10)));
+            Assert.Empty(DispositionOutcomes(options));
+            Assert.False(AuditCompletedChainRetirement.TryRetire(
+                options,
+                target.BootId,
+                DateTimeOffset.UtcNow,
+                requiredHeadroomBytes: options.AggregateBytes));
+            Assert.True(TargetControlsExist(options, target.BootId));
+        }
+        finally
+        {
+            releaseCompletion.Set();
+        }
+
+        Assert.True(AuditSpoolSegmentIdentity.IsUuidV4(await operation));
+        Assert.Single(DispositionOutcomes(options));
+    }
+
+    [Fact]
+    public void Published_completion_receipt_survives_an_ambiguous_return()
+    {
+        var options = Options();
+        var target = CreateBlockedTarget(options, AuditExportFailureClass.Protocol);
+        var proof = AuditOperatorDispositionProof.VerifiedReceipt(new string('9', 64));
+        Guid persistedId;
+        using (var firstAdmin = AdminJournal(options))
+        {
+            var first = new AuditAdminOperations(options, firstAdmin.Journal);
+            Assert.Throws<AuditAdminOperationException>(() =>
+                first.ApplyPermanentBlockDisposition(
+                    target.BootId,
+                    target.EventId,
+                    proof,
+                    afterOutcomePublishedForTests: () =>
+                        throw new IOException("ambiguous receipt publication")));
+            persistedId = ReadDispositionId(options);
+            Assert.Single(DispositionOutcomes(options));
+            Assert.Equal(
+                [
+                    "export.disposition_intent",
+                    "export.disposition_completed",
+                    "export.disposition_failed",
+                ],
+                firstAdmin.Sink.Lines.Select(EventType).ToArray());
+        }
+
+        using var secondAdmin = AdminJournal(options);
+        var second = new AuditAdminOperations(options, secondAdmin.Journal);
+        Assert.Equal(
+            persistedId,
+            second.ApplyPermanentBlockDisposition(target.BootId, target.EventId, proof));
+        using var replayed = JsonDocument.Parse(secondAdmin.Sink.Lines[1]);
+        Assert.Equal(
+            "disposition.previously_completed",
+            replayed.RootElement.GetProperty("outcome").GetProperty("detail_code").GetString());
     }
 
     [Fact]
@@ -377,9 +544,12 @@ public sealed class AuditOperatorDispositionTests : IDisposable
 
     private static Guid ReadDispositionId(AuditOptions options)
     {
-        var path = Assert.Single(Directory.GetFiles(
-            options.RootDirectory,
-            "operator.disposition-*.json"));
+        var path = Assert.Single(
+            Directory.GetFiles(options.RootDirectory),
+            path => AuditOperatorDispositionIntent.TryParseFileName(
+                Path.GetFileName(path),
+                out _,
+                out _));
         using var document = JsonDocument.Parse(File.ReadAllBytes(path));
         return Guid.ParseExact(
             document.RootElement.GetProperty("disposition_id").GetString()!,
@@ -391,6 +561,43 @@ public sealed class AuditOperatorDispositionTests : IDisposable
         using var document = JsonDocument.Parse(line);
         return document.RootElement.GetProperty("event_type").GetString()!;
     }
+
+    private static string[] DispositionOutcomes(AuditOptions options) =>
+        Directory.GetFiles(
+            options.RootDirectory,
+            "operator.disposition-completed-*.json");
+
+    private static void CompleteTarget(AuditOptions options, Guid bootId)
+    {
+        Assert.True(AuditExportCheckpointStore.TryAcquireExisting(
+            options,
+            bootId,
+            out var store));
+        using (store)
+        {
+            var checkpoint = store!.Current;
+            Assert.Null(checkpoint.BlockedRecord);
+            store.SaveForTests(new AuditExportCheckpoint(
+                checkpoint.SupervisorBootId,
+                chainComplete: true,
+                checkpoint.Spool,
+                checkpoint.ByteOffset,
+                checkpoint.Sequence,
+                checkpoint.AcknowledgedEventId,
+                blockedRecord: null));
+        }
+    }
+
+    private static bool TargetControlsExist(AuditOptions options, Guid bootId) =>
+        File.Exists(Path.Combine(
+            options.RootDirectory,
+            AuditExportCheckpointStore.CheckpointFileName(bootId))) ||
+        File.Exists(Path.Combine(
+            options.RootDirectory,
+            AuditExportCheckpointStore.LockFileName(bootId))) ||
+        Directory.GetFiles(options.SpoolDirectory).Any(path =>
+            AuditSpoolSegmentIdentity.TryParse(Path.GetFileName(path), out var identity) &&
+            identity.SupervisorBootId == bootId);
 
     private static AuditExportBlockedRecord Mutate(
         AuditExportBlockedRecord blocked,

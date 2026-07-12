@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text.Encodings.Web;
 using System.Text.Json;
 using System.Text.RegularExpressions;
@@ -75,8 +76,8 @@ internal sealed class AuditOperatorDispositionIntent
     internal const string SchemaVersion = "ptk.operator-disposition/1";
     internal const int MaximumBytes = 8 * 1024;
     private const string TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'";
-    private const string FilePrefix = "operator.disposition-";
-    private const string FileSuffix = ".json";
+    internal const string FilePrefix = "operator.disposition-";
+    internal const string FileSuffix = ".json";
 
     private static readonly HashSet<string> Properties = new(
         [
@@ -168,6 +169,8 @@ internal sealed class AuditOperatorDispositionIntent
     internal AuditOperatorDispositionProof Proof { get; }
 
     internal DateTimeOffset CreatedUtc { get; }
+
+    internal string CanonicalSha256 => LowerSha256(_canonicalBytes);
 
     internal static AuditOperatorDispositionIntent CreateOrOpen(
         AuditOptions options,
@@ -273,6 +276,41 @@ internal sealed class AuditOperatorDispositionIntent
             throw new IOException("A conflicting operator disposition intent already exists.");
         }
         return persisted;
+    }
+
+    internal static IReadOnlyList<AuditOperatorDispositionIntent> OpenForRetirement(
+        AuditOptions options,
+        Guid supervisorBootId)
+    {
+        ArgumentNullException.ThrowIfNull(options);
+        AuditSpoolSegmentIdentity.RequireUuidV4(supervisorBootId, nameof(supervisorBootId));
+        if (options.ProtectionMode != AuditProtectionMode.Anchored)
+            throw new ArgumentException("Operator disposition requires anchored audit mode.", nameof(options));
+
+        var root = Path.TrimEndingDirectorySeparator(Path.GetFullPath(options.RootDirectory));
+        SecureAuditStorage.VerifyExternalProtectedDirectory(root);
+        var prefix = FilePrefix + supervisorBootId.ToString("N") + "-";
+        var intents = new List<AuditOperatorDispositionIntent>();
+        foreach (var entry in new DirectoryInfo(root)
+                     .EnumerateFileSystemInfos("*", SearchOption.TopDirectoryOnly))
+        {
+            if (!entry.Name.StartsWith(prefix, StringComparison.Ordinal))
+                continue;
+            if (entry is not FileInfo file ||
+                !TryParseFileName(file.Name, out var bootId, out var eventId) ||
+                bootId != supervisorBootId)
+            {
+                throw new IOException("The audit root contains malformed operator disposition state.");
+            }
+            var intent = Read(file.FullName);
+            if (intent.SupervisorBootId != bootId || intent.EventId != eventId)
+                throw new IOException("An operator disposition intent names another target.");
+            intents.Add(intent);
+        }
+        SecureAuditStorage.VerifyExternalProtectedDirectory(root);
+        return intents
+            .OrderBy(value => value.EventId.ToString("D"), StringComparer.Ordinal)
+            .ToArray();
     }
 
     internal void ConsumeForCheckpointAdvance(
@@ -583,8 +621,32 @@ internal sealed class AuditOperatorDispositionIntent
         ArgumentNullException.ThrowIfNull(fields.Proof);
     }
 
-    private static string FileName(Guid bootId, Guid eventId) =>
+    internal static string FileName(Guid bootId, Guid eventId) =>
         FilePrefix + bootId.ToString("N") + "-" + eventId.ToString("D") + FileSuffix;
+
+    internal static bool TryParseFileName(
+        string name,
+        out Guid supervisorBootId,
+        out Guid eventId)
+    {
+        supervisorBootId = default;
+        eventId = default;
+        if (!name.StartsWith(FilePrefix, StringComparison.Ordinal) ||
+            !name.EndsWith(FileSuffix, StringComparison.Ordinal))
+        {
+            return false;
+        }
+        var stem = name.AsSpan(
+            FilePrefix.Length,
+            name.Length - FilePrefix.Length - FileSuffix.Length);
+        if (stem.Length != 32 + 1 + 36 || stem[32] != '-')
+            return false;
+        return Guid.TryParseExact(stem[..32], "N", out supervisorBootId) &&
+               AuditSpoolSegmentIdentity.IsUuidV4(supervisorBootId) &&
+               Guid.TryParseExact(stem[33..], "D", out eventId) &&
+               string.Equals(stem[33..].ToString(), eventId.ToString("D"), StringComparison.Ordinal) &&
+               IsUuidVersion(eventId, 7);
+    }
 
     private static bool EntryExists(string path)
     {
@@ -682,6 +744,9 @@ internal sealed class AuditOperatorDispositionIntent
         var text = value.ToString("D");
         return text[14] == (char)('0' + version) && text[19] is '8' or '9' or 'a' or 'b';
     }
+
+    private static string LowerSha256(ReadOnlySpan<byte> bytes) =>
+        Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
     private sealed record IntentFields(
         Guid DispositionId,
