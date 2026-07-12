@@ -442,6 +442,40 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     }
 
     [Fact]
+    public void Live_store_rejects_same_name_lease_replacement_before_checkpoint_mutation()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
+        var checkpointBefore = File.ReadAllBytes(store.CheckpointPath);
+        ReplaceLeaseName(store);
+
+        Assert.Throws<IOException>(() => store.SaveForTests(
+            Checkpoint(BootId, sequence: 1, byteOffset: 128)));
+
+        Assert.Equal(checkpointBefore, File.ReadAllBytes(store.CheckpointPath));
+        Assert.Throws<IOException>(() => _ = store.Current);
+    }
+
+    [Fact]
+    public void Lease_replacement_during_checkpoint_transition_faults_the_store()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
+        var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
+
+        Assert.Throws<IOException>(() => store.SaveForTests(
+            intended,
+            beforeAtomicReplaceForTests: () => ReplaceLeaseName(store)));
+
+        Assert.Equal(
+            AuditExportCheckpointCodec.Serialize(intended),
+            File.ReadAllBytes(store.CheckpointPath));
+        Assert.Throws<IOException>(() => _ = store.Current);
+    }
+
+    [Fact]
     public void Post_replace_strict_reload_failure_faults_the_live_store()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
@@ -752,6 +786,28 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     }
 
     [Fact]
+    public void Lease_replacement_during_uncertain_replace_faults_the_store()
+    {
+        if (OperatingSystem.IsWindows()) return;
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.CreateForWriter(options, BootId);
+        var intended = Checkpoint(BootId, sequence: 1, byteOffset: 128);
+
+        Assert.Throws<IOException>(() => store.SaveForTests(
+            intended,
+            destinationReplacedForTests: () =>
+            {
+                ReplaceLeaseName(store);
+                throw new InjectedCheckpointException("after replace");
+            }));
+
+        Assert.Equal(
+            AuditExportCheckpointCodec.Serialize(intended),
+            File.ReadAllBytes(store.CheckpointPath));
+        Assert.Throws<IOException>(() => _ = store.Current);
+    }
+
+    [Fact]
     public void Intended_bytes_without_a_confirmed_replace_fault_the_store()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
@@ -1041,6 +1097,14 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
         using var stream = SecureAuditStorage.CreateExclusiveFile(path);
         stream.Write(bytes);
         stream.Flush(flushToDisk: true);
+    }
+
+    private static void ReplaceLeaseName(AuditExportCheckpointStore store)
+    {
+        var displaced = store.LockPath + ".displaced-" + Guid.NewGuid().ToString("N");
+        File.Move(store.LockPath, displaced);
+        using var replacement = SecureAuditStorage.CreateExclusiveFile(store.LockPath);
+        replacement.Flush(flushToDisk: true);
     }
 
     private static void AddUnprotectedAccess(string path, bool isDirectory)

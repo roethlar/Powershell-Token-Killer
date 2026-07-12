@@ -317,6 +317,7 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                     "The audit export checkpoint replacement did not persist the intended state.");
             }
 
+            VerifyLeasePath();
             _current = persisted.Checkpoint;
             _currentBytes = persisted.Bytes;
         }
@@ -720,6 +721,9 @@ internal sealed class AuditExportCheckpointStore : IDisposable
             throw new IOException("The audit export lease file is invalid.");
         SecureAuditStorage.VerifyExternalProtectedDirectory(root);
         SecureAuditStorage.VerifyExternalProtectedFile(lockPath);
+        _ = SecureAuditStorage.VerifyRetainedProtectedFileIdentity(
+            lockPath,
+            lease.SafeFileHandle);
     }
 
     private static void VerifyPersistentLeaseFile(string root, string lockPath)
@@ -824,6 +828,7 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                 "The audit export checkpoint replacement outcome could not be established.",
                 reloadException);
         }
+        VerifyLeasePath();
 
         if (persisted.Bytes.AsSpan().SequenceEqual(intendedBytes))
         {
@@ -858,6 +863,7 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                     durabilityException);
             }
 
+            VerifyLeasePath();
             _current = intended;
             _currentBytes = persisted.Bytes;
             return;
