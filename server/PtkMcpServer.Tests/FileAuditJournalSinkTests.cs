@@ -20,6 +20,8 @@ public sealed class FileAuditJournalSinkTests : IDisposable
         Guid.Parse("12345678-1234-4abc-8def-0123456789ab");
     private static readonly Guid BootId =
         Guid.Parse("22345678-1234-4abc-8def-0123456789ab");
+    private const string ConfigurationIdentity =
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
 
     public void Dispose()
     {
@@ -494,6 +496,87 @@ public sealed class FileAuditJournalSinkTests : IDisposable
             options,
             Guid.Parse("42345678-1234-4abc-8def-0123456789ab"),
             () => BaseTime);
+    }
+
+    [Fact]
+    public void Anchored_startup_charges_a_checkpoint_owned_locked_prefix_by_logical_length()
+    {
+        var options = AnchoredOptions(NewRoot(), aggregateBytes: 40_960);
+        using var firstStore = AuditExportCheckpointStore.CreateForWriter(options, BootId);
+        var firstSink = new FileAuditJournalSink(
+            options,
+            BootId,
+            () => BaseTime,
+            checkpointStore: firstStore);
+        using var firstJournal = Journal(options, new AuditHealth(options), firstSink, BootId);
+        var liveReader = new AuditLiveSpoolReader(firstJournal);
+
+        Append(firstJournal, "call.accepted");
+        Assert.True(firstSink.CanReserve(16_000));
+        var firstRotation = Assert.IsAssignableFrom<IAuditLiveSpoolRotationPosition>(
+            liveReader.Poll().Rotation);
+        var prefixPath = Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolSegmentIdentity.Create(BootId, 0).FileName);
+        using var closedReader = new AuditClosedSpoolChainReader(options, firstStore);
+        _ = Assert.IsType<AuditClosedSpoolRecovery.Record>(
+            closedReader.ResolveClosedPrefix(firstRotation));
+
+        Append(firstJournal, "call.completed");
+        Assert.True(firstSink.CanReserve(16_000));
+        var middlePath = Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolSegmentIdentity.Create(BootId, 1).FileName);
+        using (var middle = new FileStream(
+                   middlePath,
+                   FileMode.Open,
+                   FileAccess.Read,
+                   FileShare.None))
+        {
+            Assert.True(middle.Length > 0);
+        }
+
+        var secondBoot = Guid.Parse("32345678-1234-4abc-8def-0123456789ab");
+        using var secondStore = AuditExportCheckpointStore.CreateForWriter(options, secondBoot);
+        using var secondSink = new FileAuditJournalSink(
+            options,
+            secondBoot,
+            () => BaseTime,
+            checkpointStore: secondStore);
+
+        Assert.Equal(secondBoot, secondSink.CurrentSegmentIdentity.SupervisorBootId);
+        Assert.True(File.Exists(prefixPath));
+        Assert.True(File.Exists(secondSink.CurrentSegmentPath));
+    }
+
+    [Fact]
+    public void Anchored_startup_rejects_an_unexplained_locked_nonterminal_prefix()
+    {
+        var options = AnchoredOptions(NewRoot(), aggregateBytes: 65_536);
+        var secondBoot = Guid.Parse("32345678-1234-4abc-8def-0123456789ab");
+        using var secondStore = AuditExportCheckpointStore.CreateForWriter(options, secondBoot);
+        var unexplainedBoot = Guid.Parse("42345678-1234-4abc-8def-0123456789ab");
+        using (AuditExportCheckpointStore.CreateForWriter(options, unexplainedBoot))
+        {
+        }
+        _ = SecureAuditStorage.PrepareRoot(options.SpoolDirectory);
+        using (AuditSpoolQuotaLease.CreateControlAndAcquire(options.SpoolDirectory))
+        {
+        }
+
+        using var unexplainedPrefix = SecureAuditStorage.CreateExclusiveFile(Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolSegmentIdentity.Create(unexplainedBoot, 0).FileName));
+        using var unexplainedTail = SecureAuditStorage.CreateExclusiveFile(Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolSegmentIdentity.Create(unexplainedBoot, 1).FileName));
+
+        var exception = Assert.Throws<IOException>(() => new FileAuditJournalSink(
+            options,
+            secondBoot,
+            () => BaseTime,
+            checkpointStore: secondStore));
+        Assert.Contains("no active checkpoint owner", exception.Message, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -1181,6 +1264,56 @@ public sealed class FileAuditJournalSinkTests : IDisposable
             evidenceAggregateBytes: maxRecordBytes,
             evidenceRetentionAge: TimeSpan.FromMinutes(10));
     }
+
+    private static AuditOptions AnchoredOptions(string root, long aggregateBytes) =>
+        AuditOptions.Create(
+            root,
+            AuditProtectionMode.Anchored,
+            ConfigurationIdentity,
+            maxRecordBytes: 4096,
+            segmentBytes: 16_384,
+            aggregateBytes: aggregateBytes,
+            emergencyReserveBytes: 8192,
+            retentionAge: TimeSpan.FromMinutes(10),
+            maxEvidenceBytes: 4096,
+            evidenceAggregateBytes: 4096,
+            evidenceRetentionAge: TimeSpan.FromMinutes(10));
+
+    private static SerializedAuditEvent Append(AuditJournal journal, string eventType)
+    {
+        Assert.True(journal.TryReserve(1, out var reservation, out var failure));
+        Assert.Null(failure);
+        using (reservation)
+            return journal.Append(reservation!, AnchoredInput(eventType));
+    }
+
+    private static AuditEventInput AnchoredInput(string eventType) => new()
+    {
+        EventType = eventType,
+        Session = new AuditSession(),
+        Actor = new AuditActor
+        {
+            AttributionStrength = "transport_only",
+            Transport = "mcp_stdio",
+        },
+        Correlation = new AuditCorrelation(),
+        Request = new AuditRequest(),
+        Routing = new AuditRouting(),
+        Outcome = new AuditOutcome { TerminationCertainty = "not_applicable" },
+        Coverage = new AuditCoverage
+        {
+            PtkRequest = true,
+            RootProcessObserved = "not_applicable",
+            DescendantsObserved = "not_applicable",
+            RemoteEffectObserved = "not_applicable",
+        },
+        Audit = new AuditEventHealth
+        {
+            ProtectionMode = "anchored",
+            ExportConfigurationIdentity = ConfigurationIdentity,
+            HealthState = "healthy",
+        },
+    };
 
     private string NewRoot(bool create = false)
     {
