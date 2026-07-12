@@ -14,6 +14,8 @@ public sealed class AuditClosedSpoolExportPumpTests
         "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa";
     private const string ChangedConfigurationIdentity =
         "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc";
+    private const string ThirdConfigurationIdentity =
+        "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd";
     private const string ResponseDigest =
         "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
 
@@ -313,6 +315,15 @@ public sealed class AuditClosedSpoolExportPumpTests
             AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false))
         {
             ConfigurationIdentity = ChangedConfigurationIdentity,
+            BeforeResult = (_, _) =>
+            {
+                var authorized = Assert.IsType<AuditExportBlockedRecord>(
+                    fixture.Store.Current.BlockedRecord);
+                Assert.Equal(
+                    ChangedConfigurationIdentity,
+                    authorized.ExportConfigurationIdentity);
+                Assert.Equal(BaseTime, authorized.FirstFailureUtc);
+            },
         };
         using var changedPump = new AuditClosedSpoolExportPump(
             changedReader,
@@ -323,6 +334,166 @@ public sealed class AuditClosedSpoolExportPumpTests
         Assert.Equal(1, changedTransport.Calls);
         Assert.Null(fixture.Store.Current.BlockedRecord);
         Assert.True(fixture.Store.Current.ChainComplete);
+    }
+
+    [Fact]
+    public async Task Changed_configuration_retry_is_consumed_once_and_a_later_identity_gets_one_attempt()
+    {
+        using var fixture = new ClosedFixture(recordCount: 1);
+        await PersistInitialConfigurationBlockAsync(fixture);
+
+        var changedOptions = OptionsWithIdentity(
+            fixture.Options,
+            ChangedConfigurationIdentity);
+        using var changedReader = new AuditClosedSpoolChainReader(
+            changedOptions,
+            fixture.Store);
+        var changedTransport = new ScriptedTransport(
+            AuditExportAttemptResult.Retry(
+                "http.503",
+                ResponseDigest,
+                TimeSpan.FromSeconds(5)))
+        {
+            ConfigurationIdentity = ChangedConfigurationIdentity,
+        };
+        using var changedPump = new AuditClosedSpoolExportPump(
+            changedReader,
+            changedTransport);
+
+        var consumed = await changedPump.ExportNextAsync(CancellationToken.None);
+        Assert.Equal(AuditClosedSpoolExportStepKind.Blocked, consumed.Kind);
+        Assert.Equal(AuditExportFailureClass.Configuration, consumed.FailureClass);
+        Assert.Equal("retry.http.503", consumed.DetailCode);
+        Assert.Equal(1, changedTransport.Calls);
+        var persisted = Assert.IsType<AuditExportBlockedRecord>(
+            fixture.Store.Current.BlockedRecord);
+        Assert.Equal(ChangedConfigurationIdentity, persisted.ExportConfigurationIdentity);
+        Assert.Equal("retry.http.503", persisted.DetailCode);
+        Assert.Equal(ResponseDigest, persisted.ResponseDigest);
+        Assert.Equal(BaseTime, persisted.FirstFailureUtc);
+
+        Assert.Equal(
+            AuditClosedSpoolExportStepKind.Blocked,
+            (await changedPump.ExportNextAsync(CancellationToken.None)).Kind);
+        Assert.Equal(1, changedTransport.Calls);
+
+        changedPump.Dispose();
+        changedReader.Dispose();
+        using var sameReader = new AuditClosedSpoolChainReader(
+            changedOptions,
+            fixture.Store);
+        var sameTransport = new ScriptedTransport(
+            AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false))
+        {
+            ConfigurationIdentity = ChangedConfigurationIdentity,
+        };
+        using var samePump = new AuditClosedSpoolExportPump(sameReader, sameTransport);
+        Assert.Equal(
+            AuditClosedSpoolExportStepKind.Blocked,
+            (await samePump.ExportNextAsync(CancellationToken.None)).Kind);
+        Assert.Equal(0, sameTransport.Calls);
+
+        samePump.Dispose();
+        sameReader.Dispose();
+        var thirdOptions = OptionsWithIdentity(
+            fixture.Options,
+            ThirdConfigurationIdentity);
+        using var thirdReader = new AuditClosedSpoolChainReader(
+            thirdOptions,
+            fixture.Store);
+        var thirdTransport = new ScriptedTransport(
+            AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false))
+        {
+            ConfigurationIdentity = ThirdConfigurationIdentity,
+        };
+        using var thirdPump = new AuditClosedSpoolExportPump(thirdReader, thirdTransport);
+        Assert.Equal(
+            AuditClosedSpoolExportStepKind.ChainComplete,
+            (await thirdPump.ExportNextAsync(CancellationToken.None)).Kind);
+        Assert.Equal(1, thirdTransport.Calls);
+    }
+
+    [Fact]
+    public async Task Canceled_changed_configuration_attempt_stays_durably_consumed()
+    {
+        using var fixture = new ClosedFixture(recordCount: 1);
+        await PersistInitialConfigurationBlockAsync(fixture);
+        var changedOptions = OptionsWithIdentity(
+            fixture.Options,
+            ChangedConfigurationIdentity);
+        using var changedReader = new AuditClosedSpoolChainReader(
+            changedOptions,
+            fixture.Store);
+        var transport = new BlockingTransport
+        {
+            ConfigurationIdentity = ChangedConfigurationIdentity,
+        };
+        using var pump = new AuditClosedSpoolExportPump(changedReader, transport);
+        using var cancellation = new CancellationTokenSource();
+
+        var attempt = pump.ExportNextAsync(cancellation.Token);
+        await transport.Started.WaitAsync(TimeSpan.FromSeconds(10));
+        var authorized = Assert.IsType<AuditExportBlockedRecord>(
+            fixture.Store.Current.BlockedRecord);
+        Assert.Equal(ChangedConfigurationIdentity, authorized.ExportConfigurationIdentity);
+        Assert.Equal(BaseTime, authorized.FirstFailureUtc);
+        cancellation.Cancel();
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() => attempt);
+
+        Assert.Equal(
+            AuditClosedSpoolExportStepKind.Blocked,
+            (await pump.ExportNextAsync(CancellationToken.None)).Kind);
+        Assert.Equal(1, transport.Calls);
+
+        pump.Dispose();
+        changedReader.Dispose();
+        using var restartedReader = new AuditClosedSpoolChainReader(
+            changedOptions,
+            fixture.Store);
+        var restartedTransport = new ScriptedTransport(
+            AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false))
+        {
+            ConfigurationIdentity = ChangedConfigurationIdentity,
+        };
+        using var restartedPump = new AuditClosedSpoolExportPump(
+            restartedReader,
+            restartedTransport);
+        Assert.Equal(
+            AuditClosedSpoolExportStepKind.Blocked,
+            (await restartedPump.ExportNextAsync(CancellationToken.None)).Kind);
+        Assert.Equal(0, restartedTransport.Calls);
+    }
+
+    [Fact]
+    public async Task Thrown_changed_configuration_attempt_stays_durably_consumed()
+    {
+        using var fixture = new ClosedFixture(recordCount: 1);
+        await PersistInitialConfigurationBlockAsync(fixture);
+        var changedOptions = OptionsWithIdentity(
+            fixture.Options,
+            ChangedConfigurationIdentity);
+        using var changedReader = new AuditClosedSpoolChainReader(
+            changedOptions,
+            fixture.Store);
+        var transport = new ScriptedTransport(
+            AuditExportAttemptResult.Acknowledged(ResponseDigest, warning: false))
+        {
+            ConfigurationIdentity = ChangedConfigurationIdentity,
+            BeforeResult = (_, _) => throw new IOException("injected transport failure"),
+        };
+        using var pump = new AuditClosedSpoolExportPump(changedReader, transport);
+
+        await Assert.ThrowsAsync<IOException>(() =>
+            pump.ExportNextAsync(CancellationToken.None));
+        var authorized = Assert.IsType<AuditExportBlockedRecord>(
+            fixture.Store.Current.BlockedRecord);
+        Assert.Equal(ChangedConfigurationIdentity, authorized.ExportConfigurationIdentity);
+        Assert.Equal(BaseTime, authorized.FirstFailureUtc);
+
+        Assert.Equal(
+            AuditClosedSpoolExportStepKind.Blocked,
+            (await pump.ExportNextAsync(CancellationToken.None)).Kind);
+        Assert.Equal(1, transport.Calls);
     }
 
     private sealed class ScriptedTransport(
@@ -358,11 +529,14 @@ public sealed class AuditClosedSpoolExportPumpTests
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource _release =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _calls;
 
-        public string ConfigurationIdentity =>
+        public string ConfigurationIdentity { get; init; } =
             AuditClosedSpoolExportPumpTests.ConfigurationIdentity;
 
         internal Task Started => _started.Task;
+
+        internal int Calls => Volatile.Read(ref _calls);
 
         internal void Release() => _release.TrySetResult();
 
@@ -370,6 +544,7 @@ public sealed class AuditClosedSpoolExportPumpTests
             AuditOtlpRecord record,
             CancellationToken cancellationToken)
         {
+            Interlocked.Increment(ref _calls);
             _started.TrySetResult();
             await _release.Task.WaitAsync(cancellationToken);
             return AuditExportAttemptResult.Acknowledged(
@@ -381,6 +556,23 @@ public sealed class AuditClosedSpoolExportPumpTests
     private sealed class FixedTimeProvider(DateTimeOffset now) : TimeProvider
     {
         public override DateTimeOffset GetUtcNow() => now;
+    }
+
+    private static async Task PersistInitialConfigurationBlockAsync(
+        ClosedFixture fixture)
+    {
+        using var reader = new AuditClosedSpoolChainReader(fixture.Options, fixture.Store);
+        var transport = new ScriptedTransport(
+            AuditExportAttemptResult.Blocked(
+                AuditExportFailureClass.Configuration,
+                "http.401"));
+        using var pump = new AuditClosedSpoolExportPump(
+            reader,
+            transport,
+            new FixedTimeProvider(BaseTime));
+        var blocked = await pump.ExportNextAsync(CancellationToken.None);
+        Assert.Equal(AuditClosedSpoolExportStepKind.Blocked, blocked.Kind);
+        Assert.Equal(1, transport.Calls);
     }
 
     private static AuditOptions OptionsWithIdentity(
