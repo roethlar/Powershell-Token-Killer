@@ -346,6 +346,135 @@ public sealed class AuditLiveSpoolReaderTests
         Assert.True(fixture.Store.Current.ChainComplete);
     }
 
+    [Fact]
+    public async Task Boot_source_exports_live_prefix_and_final_chain_without_gaps()
+    {
+        using var fixture = new LiveFixture();
+        var transport = new ScriptedTransport();
+        using var source = new AuditBootExportSource(
+            fixture.Journal,
+            fixture.Store,
+            transport);
+        var first = fixture.Append("call.accepted");
+
+        Assert.Equal(
+            AuditBootExportStepKind.Advanced,
+            (await source.ExportNextAsync(CancellationToken.None)).Kind);
+        Assert.Equal(
+            AuditBootExportStepKind.Idle,
+            (await source.ExportNextAsync(CancellationToken.None)).Kind);
+
+        var second = fixture.Append("call.completed");
+        Assert.True(fixture.Sink.CanReserve(16_000));
+        Assert.Equal(
+            AuditBootExportStepKind.Advanced,
+            (await source.ExportNextAsync(CancellationToken.None)).Kind);
+
+        var third = fixture.Append("call.failed");
+        Assert.Equal(
+            AuditBootExportStepKind.Advanced,
+            (await source.ExportNextAsync(CancellationToken.None)).Kind);
+        fixture.Journal.Dispose();
+        Assert.Equal(
+            AuditBootExportStepKind.Complete,
+            (await source.ExportNextAsync(CancellationToken.None)).Kind);
+
+        Assert.Equal([first.EventId, second.EventId, third.EventId], transport.EventIds);
+        Assert.Equal(3, transport.Requests.Count);
+        Assert.Equal(3, fixture.Store.Current.Sequence);
+        Assert.True(fixture.Store.Current.ChainComplete);
+    }
+
+    [Fact]
+    public async Task Boot_source_retries_the_identical_live_record_without_cursor_movement()
+    {
+        using var fixture = new LiveFixture();
+        var transport = new ScriptedTransport(
+            AuditExportAttemptResult.Retry(
+                "http.503",
+                responseDigest: null,
+                TimeSpan.FromSeconds(7)),
+            AuditExportAttemptResult.Acknowledged(
+                new string('b', 64),
+                warning: false));
+        using var source = new AuditBootExportSource(
+            fixture.Journal,
+            fixture.Store,
+            transport);
+        _ = fixture.Append("call.accepted");
+
+        var retry = await source.ExportNextAsync(CancellationToken.None);
+        Assert.Equal(AuditBootExportStepKind.Retry, retry.Kind);
+        Assert.Equal(TimeSpan.FromSeconds(7), retry.RetryAfter);
+        Assert.Equal(0, fixture.Store.Current.Sequence);
+        var acknowledged = await source.ExportNextAsync(CancellationToken.None);
+
+        Assert.Equal(AuditBootExportStepKind.Advanced, acknowledged.Kind);
+        Assert.Equal(1, fixture.Store.Current.Sequence);
+        Assert.Equal(2, transport.Requests.Count);
+        Assert.Equal(transport.Requests[0], transport.Requests[1]);
+    }
+
+    [Fact]
+    public async Task Boot_source_persists_live_block_without_same_configuration_retry()
+    {
+        using var fixture = new LiveFixture();
+        var transport = new ScriptedTransport(
+            AuditExportAttemptResult.Blocked(
+                AuditExportFailureClass.Configuration,
+                "http.401"));
+        using var source = new AuditBootExportSource(
+            fixture.Journal,
+            fixture.Store,
+            transport);
+        var record = fixture.Append("call.accepted");
+
+        Assert.Equal(
+            AuditBootExportStepKind.Blocked,
+            (await source.ExportNextAsync(CancellationToken.None)).Kind);
+        Assert.Equal(
+            AuditBootExportStepKind.Blocked,
+            (await source.ExportNextAsync(CancellationToken.None)).Kind);
+
+        var blocked = Assert.IsType<AuditExportBlockedRecord>(
+            fixture.Store.Current.BlockedRecord);
+        Assert.Equal(record.EventId, blocked.EventId);
+        Assert.Equal(ConfigurationIdentity, blocked.ExportConfigurationIdentity);
+        Assert.Single(transport.Requests);
+        Assert.Equal(0, fixture.Store.Current.Sequence);
+    }
+
+    [Fact]
+    public async Task Boot_source_stops_after_remote_ack_checkpoint_reconciliation_failure()
+    {
+        using var fixture = new LiveFixture();
+        var transport = new ScriptedTransport
+        {
+            BeforeResult = () => fixture.Store.SaveForTests(
+                new AuditExportCheckpoint(
+                    BootId,
+                    chainComplete: true,
+                    spool: null,
+                    byteOffset: 0,
+                    sequence: 0,
+                    acknowledgedEventId: null,
+                    blockedRecord: null)),
+        };
+        using var source = new AuditBootExportSource(
+            fixture.Journal,
+            fixture.Store,
+            transport);
+        _ = fixture.Append("call.accepted");
+
+        await Assert.ThrowsAsync<ArgumentException>(() =>
+            source.ExportNextAsync(CancellationToken.None));
+        await Assert.ThrowsAsync<IOException>(() =>
+            source.ExportNextAsync(CancellationToken.None));
+
+        Assert.Single(transport.Requests);
+        Assert.Equal(0, fixture.Store.Current.Sequence);
+    }
+
     private sealed class LiveFixture : IDisposable
     {
         private readonly string _root;
@@ -459,6 +588,41 @@ public sealed class AuditLiveSpoolReaderTests
             return Task.FromResult(AuditExportAttemptResult.Acknowledged(
                 new string('b', 64),
                 warning: false));
+        }
+    }
+
+    private sealed class ScriptedTransport : IAuditOtlpExportTransport
+    {
+        private readonly Queue<AuditExportAttemptResult> _results;
+
+        internal ScriptedTransport(params AuditExportAttemptResult[] results)
+        {
+            _results = new Queue<AuditExportAttemptResult>(results);
+        }
+
+        public string ConfigurationIdentity =>
+            AuditLiveSpoolReaderTests.ConfigurationIdentity;
+
+        internal List<byte[]> Requests { get; } = [];
+
+        internal List<Guid> EventIds { get; } = [];
+
+        internal Action? BeforeResult { get; init; }
+
+        public Task<AuditExportAttemptResult> ExportAsync(
+            AuditOtlpRecord record,
+            CancellationToken cancellationToken)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            Requests.Add(record.RequestBytes.ToArray());
+            EventIds.Add(record.EventId);
+            BeforeResult?.Invoke();
+            var result = _results.Count == 0
+                ? AuditExportAttemptResult.Acknowledged(
+                    new string('b', 64),
+                    warning: false)
+                : _results.Dequeue();
+            return Task.FromResult(result);
         }
     }
 }
