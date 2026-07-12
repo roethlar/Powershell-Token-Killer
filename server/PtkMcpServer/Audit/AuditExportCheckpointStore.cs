@@ -525,24 +525,97 @@ internal sealed class AuditExportCheckpointStore : IDisposable
                     "An audit export checkpoint cannot rewrite an acknowledged position.",
                     nameof(next));
             }
+
+            ValidateBlockedTransition(current.BlockedRecord, next.BlockedRecord, next);
             return;
         }
 
-        if (current.ChainComplete || next.Spool is not { } nextSpool)
+        if (current.ChainComplete ||
+            current.Sequence == long.MaxValue ||
+            next.Sequence != current.Sequence + 1 ||
+            next.Spool is not { } nextSpool)
         {
             throw new ArgumentException(
-                "An audit export checkpoint cannot advance a completed chain.",
+                "An audit export checkpoint must advance exactly one open-chain record.",
                 nameof(next));
         }
 
-        if (current.Spool is { } currentSpool &&
-            (nextSpool.Index < currentSpool.Index ||
-             nextSpool.Index == currentSpool.Index &&
-             next.ByteOffset <= current.ByteOffset))
+        if (current.Spool is not { } currentSpool)
+        {
+            if (nextSpool.Index != 0)
+            {
+                throw new ArgumentException(
+                    "The first acknowledged audit record must be in segment zero.",
+                    nameof(next));
+            }
+        }
+        else if (nextSpool.Index == currentSpool.Index)
+        {
+            if (next.ByteOffset <= current.ByteOffset)
+            {
+                throw new ArgumentException(
+                    "An audit export checkpoint cannot move its spool cursor backward.",
+                    nameof(next));
+            }
+        }
+        else if (currentSpool.Index == AuditSpoolSegmentIdentity.MaximumIndex ||
+                 nextSpool.Index != currentSpool.Index + 1)
         {
             throw new ArgumentException(
-                "An audit export checkpoint cannot move its spool cursor backward.",
+                "An audit export checkpoint cannot skip spool segments.",
                 nameof(next));
+        }
+
+        if (current.BlockedRecord is { } blocked &&
+            (nextSpool != blocked.Spool ||
+             next.AcknowledgedEventId != blocked.EventId ||
+             next.ByteOffset <= blocked.ByteOffset))
+        {
+            throw new ArgumentException(
+                "An audit export checkpoint cannot advance past a different blocked record.",
+                nameof(next));
+        }
+    }
+
+    private static void ValidateBlockedTransition(
+        AuditExportBlockedRecord? current,
+        AuditExportBlockedRecord? next,
+        AuditExportCheckpoint checkpoint)
+    {
+        if (current is null) return;
+        if (next is null)
+        {
+            throw new ArgumentException(
+                "An audit export block can clear only by advancing its exact record.",
+                nameof(checkpoint));
+        }
+
+        var sameRecord = current.Spool == next.Spool &&
+                         current.ByteOffset == next.ByteOffset &&
+                         current.Sequence == next.Sequence &&
+                         current.EventId == next.EventId;
+        var exactBlock = sameRecord &&
+                         current.FailureClass == next.FailureClass &&
+                         string.Equals(current.DetailCode, next.DetailCode, StringComparison.Ordinal) &&
+                         string.Equals(current.ResponseDigest, next.ResponseDigest, StringComparison.Ordinal) &&
+                         current.FirstFailureUtc == next.FirstFailureUtc &&
+                         string.Equals(
+                             current.ExportConfigurationIdentity,
+                             next.ExportConfigurationIdentity,
+                             StringComparison.Ordinal);
+        if (exactBlock) return;
+
+        if (!sameRecord ||
+            current.FailureClass != AuditExportFailureClass.Configuration ||
+            next.FailureClass != AuditExportFailureClass.Configuration ||
+            string.Equals(
+                current.ExportConfigurationIdentity,
+                next.ExportConfigurationIdentity,
+                StringComparison.Ordinal))
+        {
+            throw new ArgumentException(
+                "A persisted audit export block cannot be rewritten.",
+                nameof(checkpoint));
         }
     }
 

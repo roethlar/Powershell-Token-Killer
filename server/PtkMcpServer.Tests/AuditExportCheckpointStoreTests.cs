@@ -238,6 +238,146 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
     }
 
     [Fact]
+    public void Save_advances_exactly_one_record_without_skipping_segments()
+    {
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        Assert.Throws<ArgumentException>(() =>
+            store.Save(Checkpoint(BootId, sequence: 2, byteOffset: 256)));
+
+        var first = Checkpoint(BootId, sequence: 1, byteOffset: 128);
+        store.Save(first);
+        Assert.Throws<ArgumentException>(() =>
+            store.Save(Checkpoint(BootId, sequence: 3, byteOffset: 384)));
+        Assert.Throws<ArgumentException>(() =>
+            store.Save(new AuditExportCheckpoint(
+                BootId,
+                false,
+                AuditSpoolSegmentIdentity.Create(BootId, 2),
+                64,
+                2,
+                Guid.CreateVersion7(),
+                null)));
+
+        var secondSegment = new AuditExportCheckpoint(
+            BootId,
+            false,
+            AuditSpoolSegmentIdentity.Create(BootId, 1),
+            64,
+            2,
+            Guid.CreateVersion7(),
+            null);
+        store.Save(secondSegment);
+
+        Assert.Equal(2, store.Current.Sequence);
+        Assert.Equal(1, store.Current.Spool?.Index);
+    }
+
+    [Fact]
+    public void Save_clears_a_block_only_by_advancing_its_exact_record()
+    {
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var acknowledged = Checkpoint(BootId, sequence: 1, byteOffset: 128);
+        store.Save(acknowledged);
+        var blockedEventId = Guid.CreateVersion7();
+        var blocked = new AuditExportBlockedRecord(
+            AuditSpoolSegmentIdentity.Create(BootId, 0),
+            128,
+            2,
+            blockedEventId,
+            AuditExportFailureClass.Data,
+            "http.400",
+            responseDigest: null,
+            new DateTimeOffset(2026, 7, 11, 12, 34, 56, TimeSpan.Zero),
+            ConfigurationIdentity);
+        var blockedCheckpoint = new AuditExportCheckpoint(
+            BootId,
+            false,
+            acknowledged.Spool,
+            acknowledged.ByteOffset,
+            acknowledged.Sequence,
+            acknowledged.AcknowledgedEventId,
+            blocked);
+        store.Save(blockedCheckpoint);
+
+        Assert.Throws<ArgumentException>(() => store.Save(acknowledged));
+        Assert.Throws<ArgumentException>(() => store.Save(new AuditExportCheckpoint(
+            BootId,
+            false,
+            blocked.Spool,
+            256,
+            2,
+            Guid.CreateVersion7(),
+            null)));
+
+        var disposition = new AuditExportCheckpoint(
+            BootId,
+            false,
+            blocked.Spool,
+            256,
+            2,
+            blocked.EventId,
+            null);
+        store.Save(disposition);
+
+        Assert.Equal(2, store.Current.Sequence);
+        Assert.Equal(blocked.EventId, store.Current.AcknowledgedEventId);
+        Assert.Null(store.Current.BlockedRecord);
+    }
+
+    [Fact]
+    public void Configuration_block_can_be_reclassified_only_for_a_changed_identity()
+    {
+        var options = Options(NewRoot(), AuditProtectionMode.Anchored);
+        using var store = AuditExportCheckpointStore.Acquire(options, BootId);
+        var blockedEventId = Guid.CreateVersion7();
+        var first = new AuditExportBlockedRecord(
+            AuditSpoolSegmentIdentity.Create(BootId, 0),
+            0,
+            1,
+            blockedEventId,
+            AuditExportFailureClass.Configuration,
+            "http.401",
+            responseDigest: null,
+            new DateTimeOffset(2026, 7, 11, 12, 34, 56, TimeSpan.Zero),
+            ConfigurationIdentity);
+        store.Save(new AuditExportCheckpoint(BootId, false, null, 0, 0, null, first));
+
+        var changedIdentity = new string('b', 64);
+        var retried = new AuditExportBlockedRecord(
+            first.Spool,
+            first.ByteOffset,
+            first.Sequence,
+            first.EventId,
+            AuditExportFailureClass.Configuration,
+            "tls.validation",
+            responseDigest: null,
+            first.FirstFailureUtc.AddMinutes(1),
+            changedIdentity);
+        store.Save(new AuditExportCheckpoint(BootId, false, null, 0, 0, null, retried));
+
+        Assert.Equal(changedIdentity, store.Current.BlockedRecord?.ExportConfigurationIdentity);
+        Assert.Throws<ArgumentException>(() => store.Save(new AuditExportCheckpoint(
+            BootId,
+            false,
+            null,
+            0,
+            0,
+            null,
+            new AuditExportBlockedRecord(
+                retried.Spool,
+                retried.ByteOffset,
+                retried.Sequence,
+                retried.EventId,
+                AuditExportFailureClass.Protocol,
+                "http.500",
+                responseDigest: null,
+                retried.FirstFailureUtc,
+                changedIdentity))));
+    }
+
+    [Fact]
     public void Failed_replace_that_left_exact_prior_state_rethrows_exact_failure()
     {
         var options = Options(NewRoot(), AuditProtectionMode.Anchored);
