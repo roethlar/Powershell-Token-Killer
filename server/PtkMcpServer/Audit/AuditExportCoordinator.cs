@@ -121,6 +121,7 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
             {
                 var currentStep = await _current.ExportNextAsync(cancellationToken)
                     .ConfigureAwait(false);
+                SweepCurrentAcknowledgedPrefix();
                 var mapped = MapCurrent(currentStep);
                 if (currentStep.Kind == AuditBootExportStepKind.Idle)
                 {
@@ -206,7 +207,7 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
                     step,
                     AuditExportCoordinatorStepKind.Blocked);
                 _parkedBoots.Add(adopted.SupervisorBootId);
-                ReleaseAdopted(adopted);
+                ReleaseAdopted(adopted, sweepAcknowledgedPrefix: true);
                 return mapped;
             }
             case AuditClosedSpoolExportStepKind.ChainComplete:
@@ -218,7 +219,7 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
                         ? AuditExportCoordinatorStepKind.Complete
                         : AuditExportCoordinatorStepKind.Advanced);
                 _completedBoots.Add(adopted.SupervisorBootId);
-                ReleaseAdopted(adopted);
+                ReleaseAdopted(adopted, sweepAcknowledgedPrefix: true);
                 return mapped;
             }
             case AuditClosedSpoolExportStepKind.PrefixComplete:
@@ -361,12 +362,39 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
             .ToArray();
     }
 
-    private void ReleaseAdopted(AdoptedChain adopted)
+    private void SweepCurrentAcknowledgedPrefix()
+    {
+        _ = _current.SweepAcknowledgedPrefix(
+            _timeProvider.GetUtcNow().ToUniversalTime(),
+            checked(_options.SegmentBytes + _options.EmergencyReserveBytes));
+    }
+
+    private void ReleaseAdopted(
+        AdoptedChain adopted,
+        bool sweepAcknowledgedPrefix = false)
     {
         if (!ReferenceEquals(_adopted, adopted))
             throw new IOException("The audit export coordinator adopted-chain state changed.");
         _adopted = null;
-        adopted.Dispose();
+        if (!sweepAcknowledgedPrefix)
+        {
+            adopted.Dispose();
+            return;
+        }
+
+        adopted.ReleaseReader();
+        try
+        {
+            _ = AuditAnchoredSpoolPrefixRetention.Sweep(
+                _options,
+                adopted.Store,
+                _timeProvider.GetUtcNow().ToUniversalTime(),
+                checked(_options.SegmentBytes + _options.EmergencyReserveBytes));
+        }
+        finally
+        {
+            adopted.Dispose();
+        }
     }
 
     public void Dispose()
@@ -396,28 +424,37 @@ internal sealed class AuditExportCoordinator : IAuditExportStepSource
         AuditClosedSpoolExportPump pump) : IDisposable
     {
         private int _disposed;
+        private int _readerReleased;
 
         internal Guid SupervisorBootId { get; } = supervisorBootId;
 
         internal AuditClosedSpoolExportPump Pump { get; } = pump;
 
-        public void Dispose()
+        internal AuditExportCheckpointStore Store { get; } = store;
+
+        internal void ReleaseReader()
         {
-            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            if (Interlocked.Exchange(ref _readerReleased, 1) != 0) return;
             try
             {
                 Pump.Dispose();
             }
             finally
             {
-                try
-                {
-                    reader.Dispose();
-                }
-                finally
-                {
-                    store.Dispose();
-                }
+                reader.Dispose();
+            }
+        }
+
+        public void Dispose()
+        {
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            try
+            {
+                ReleaseReader();
+            }
+            finally
+            {
+                Store.Dispose();
             }
         }
     }

@@ -108,6 +108,24 @@ internal sealed class AuditBootExportSource : IDisposable
         IAuditExportAcknowledgmentObserver acknowledgmentObserver) =>
         ReferenceEquals(_acknowledgmentObserver, acknowledgmentObserver);
 
+    internal AuditAnchoredSpoolRetentionOutcome SweepAcknowledgedPrefix(
+        DateTimeOffset utcNow,
+        long requiredHeadroomBytes)
+    {
+        if (Volatile.Read(ref _lifecycle) == 2)
+            throw new ObjectDisposedException(nameof(AuditBootExportSource));
+        if (Volatile.Read(ref _lifecycle) != 0)
+        {
+            throw new InvalidOperationException(
+                "The current-boot audit source cannot retain a prefix during an export step.");
+        }
+        return AuditAnchoredSpoolPrefixRetention.Sweep(
+            _options,
+            _checkpointStore,
+            utcNow,
+            requiredHeadroomBytes);
+    }
+
     internal async Task<AuditBootExportStep> ExportNextAsync(
         CancellationToken cancellationToken)
     {

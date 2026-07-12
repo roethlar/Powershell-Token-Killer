@@ -70,6 +70,36 @@ public sealed class AuditExportCoordinatorTests : IDisposable
     }
 
     [Fact]
+    public async Task Completed_orphan_releases_its_reader_before_sweeping_aged_acknowledged_prefix()
+    {
+        var options = Options(NewRoot());
+        var records = WriteRotatedClosedBoot(options, OrphanBoot);
+        var firstSegment = Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolSegmentIdentity.Create(OrphanBoot, 0).FileName);
+        var finalSegment = Path.Combine(
+            options.SpoolDirectory,
+            AuditSpoolSegmentIdentity.Create(OrphanBoot, 1).FileName);
+        File.SetLastWriteTimeUtc(firstSegment, DateTime.UtcNow - TimeSpan.FromHours(1));
+        var transport = new CapturingTransport();
+        using var current = new CurrentFixture(options, transport);
+        using var coordinator = new AuditExportCoordinator(
+            options,
+            current.Source,
+            transport);
+
+        for (var attempt = 0; attempt < 8 && File.Exists(firstSegment); attempt++)
+            _ = await coordinator.ExportNextAsync(CancellationToken.None);
+
+        Assert.Equal(records.Select(record => record.EventId), transport.EventIds);
+        Assert.False(File.Exists(firstSegment));
+        Assert.True(File.Exists(finalSegment));
+        var checkpoint = AuditExportCheckpointStore.ReadSnapshot(options, OrphanBoot);
+        Assert.True(checkpoint.ChainComplete);
+        Assert.Equal(1, checkpoint.Spool?.Index);
+    }
+
+    [Fact]
     public async Task Coordinator_never_creates_missing_orphan_checkpoint_controls()
     {
         var options = Options(NewRoot());
@@ -255,6 +285,41 @@ public sealed class AuditExportCoordinatorTests : IDisposable
         sink.Append(record.Utf8Line);
         sink.FlushToDisk();
         return record;
+    }
+
+    private static SerializedAuditEvent[] WriteRotatedClosedBoot(
+        AuditOptions options,
+        Guid supervisorBootId)
+    {
+        using var store = AuditExportCheckpointStore.CreateForWriter(
+            options,
+            supervisorBootId);
+        using var sink = new FileAuditJournalSink(
+            options,
+            supervisorBootId,
+            checkpointStore: store);
+        var first = Record(supervisorBootId);
+        sink.Append(first.Utf8Line);
+        sink.FlushToDisk();
+        if (!sink.CanReserve(options.SegmentBytes))
+            throw new IOException("The rotated coordinator fixture could not reserve its next segment.");
+        var second = AuditEventSerializer.Serialize(
+            2,
+            first.EventHash,
+            new AuditProducerContext(
+                HostId,
+                supervisorBootId,
+                null,
+                4321,
+                "1.2.3-test",
+                ConfigurationIdentity),
+            Input(),
+            Guid.CreateVersion7(),
+            DateTimeOffset.Parse("2026-07-11T12:34:57Z"),
+            DateTimeOffset.Parse("2026-07-11T12:34:57Z"));
+        sink.Append(second.Utf8Line);
+        sink.FlushToDisk();
+        return [first, second];
     }
 
     private static SerializedAuditEvent Record(Guid supervisorBootId) =>
