@@ -26,10 +26,12 @@ short and update it when important repo facts change.
   and the stdio handshake on macOS. A SHA-verified Windows archive of the same
   code head passed 1,010/1,010 .NET tests, 140 Pester tests (1 skip), and the
   zero-warning handshake in a disposable checkout. The final integrated Slice
-  3 fixed-SHA review reopened; all admitted findings are now individually
-  corrected and accepted through code head `4092378`. Canonical finding and
-  review evidence is in `.agents/review/index.md`; exact-head cross-platform
-  verification and the repeated integrated review remain.
+  3 fixed-SHA review reopened. Its individual corrections were accepted on
+  macOS through code head `4092378`, but the first exact-archive Windows
+  validation reopened `s3-rtk-preference-isolation` with ten .NET failures.
+  Canonical finding and review evidence is in `.agents/review/index.md`;
+  correction/re-review, exact-head cross-platform verification, and the
+  repeated integrated review remain.
 - **Audited-harness Slice 2 is complete locally.** The final
   integrated code head `3d3739a` completes job/control audit, local-only and
   anchored OTLP export, evidence administration and retention, permanent
@@ -75,9 +77,10 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Run exact-head cross-platform verification for audited-harness Slice 3,
-   record the platform evidence in `.agents/machines.md`, then repeat the
-   integrated fixed-SHA Claude reviewloop. Canonical finding dispositions:
+1. Correct and re-review the Windows-reopened
+   `s3-rtk-preference-isolation` finding, then run exact-head cross-platform
+   verification, record platform evidence in `.agents/machines.md`, and repeat
+   the integrated fixed-SHA Claude reviewloop. Canonical finding dispositions:
    `.agents/review/index.md`.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present

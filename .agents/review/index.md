@@ -1412,7 +1412,7 @@ clean and removed.
 | s3-rtk-output-bounds | HIGH | Default RTK output bypasses ANSI cleanup and all passthrough bounds | `[x]` | `fix/s3-rtk-output-bounds` |
 | s3-block-fidelity | MEDIUM | Clean/dynamicparam blocks can be silently dropped by RTK routing | `[x]` | `fix/s3-block-fidelity` |
 | s3-background-operator | MEDIUM | A trailing background operator becomes synchronous RTK execution | `[x]` | `fix/s3-background-operator` |
-| s3-rtk-preference-isolation | HIGH | Warm native preferences can discard routed stdout and pollute `$Error` | `[x]` | `fix/s3-rtk-preference-isolation` |
+| s3-rtk-preference-isolation | HIGH | Warm native preferences can discard routed stdout and pollute `$Error` | `[~]` | `fix/s3-rtk-preference-isolation` |
 | s3-wrapper-context | MEDIUM | Context-changing wrappers are routed despite the exact-original contract | `[x]` | `fix/s3-wrapper-context` |
 | s3-using-statement-fidelity | MEDIUM | A top-level using statement can be omitted from routed execution | `[x]` | `fix/s3-using-statement-fidelity` |
 | s3-background-bash-parity | MEDIUM | Background Bash parity is assigned to later Slice 5 | `[-]` | |
@@ -1489,3 +1489,14 @@ restored exact head passed 1,030/1,030 .NET tests, 139 Pester tests with two
 platform skips, and the zero-warning handshake. The clean disposable
 worktree was removed and the coder tree remained clean. Windows execution of
 the new fixture remains the next slice-level validation gate.
+
+**s3-rtk-preference-isolation WINDOWS EXACT-ARCHIVE VALIDATION — REOPENED**
+(PowerShell 7.6.3/.NET 10.0.301 on `NETWATCH-01`), validated code head
+`40923784601bf8063d9461188b04be3940374c7d` from local/uploaded SHA-256
+`CE5707231353BABCBA096E90076513B9532A7C0B1FE9C64F337A474D8110FF2E`,
+2026-07-13T05:03:51Z. The .NET battery passed 1,020/1,030; two direct-runner
+guards exposed Windows stderr/timeout-marker defects and eight RTK-route
+integration guards returned empty/no routed output. Pester and handshake were
+correctly skipped after the required .NET gate failed. All owned local and
+remote disposable artifacts were removed. The earlier macOS fixed-SHA Claude
+acceptance remains historical evidence, not current branch readiness.

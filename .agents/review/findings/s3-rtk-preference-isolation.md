@@ -2,9 +2,10 @@
 
 **Severity**: HIGH — ambient warm-session native error preferences can discard
 valid routed stdout and pollute persistent `$Error` state.
-**Status**: Verified
+**Status**: In progress
 **Branch**: `fix/s3-rtk-preference-isolation`
-**Commit**: `40923784601bf8063d9461188b04be3940374c7d`
+**Commit**: `40923784601bf8063d9461188b04be3940374c7d` (reopened;
+Windows correction pending)
 
 ## Evidence
 
@@ -104,8 +105,9 @@ native wildcards literally, so those submissions retain exact behavior but
 skip RTK compression. Raw RTK shaping is safe because the planner cannot
 produce an RTK plan when `raw=true`; that coupling remains implicit. The new
 Windows fixture and Windows/Legacy argument branches were statically reviewed
-on macOS, with exact-archive Windows checkout validation still required before
-the repeated integrated review.
+on macOS. The first exact-archive Windows checkout validation reopened the
+finding with ten focused/integration failures; the correction and a fresh
+exact-head Windows proof are required before the repeated integrated review.
 
 ## Reviewer comments
 
@@ -131,3 +133,18 @@ tests under load; the same clean tree passed 1,030/1,030 immediately before
 and after. Claude classified this as existing timing flakiness rather than a
 diff defect. Its conservative-wildcard and implicit-raw-coupling observations
 remain recorded above as non-blocking residuals.
+
+Windows exact-archive validation of code head
+`40923784601bf8063d9461188b04be3940374c7d` reopened this finding, recorded
+2026-07-13T05:03:51Z. The local archive and uploaded copy matched SHA-256
+`CE5707231353BABCBA096E90076513B9532A7C0B1FE9C64F337A474D8110FF2E` before
+expansion in a disposable `NETWATCH-01` checkout. The .NET battery passed
+1,020/1,030: `Direct_capture_preserves_stdout_stderr_and_nonzero_exit` observed
+two trailing spaces in captured stderr,
+`Deadline_stops_the_started_root_without_retrying_it` found no start marker,
+and eight `InvokeToolTests` RTK-route guards returned empty/no routed output.
+Pester and handshake did not run after the required .NET gate failed. The
+remote checkout, uploaded archive, and local archive were all confirmed
+removed; installed payloads and persistent configuration were untouched. This
+platform result supersedes branch readiness but does not erase the historical
+macOS Claude acceptance above.
