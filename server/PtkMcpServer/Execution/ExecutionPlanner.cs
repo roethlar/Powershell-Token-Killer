@@ -10,6 +10,10 @@ namespace PtkMcpServer;
 /// </summary>
 internal static class ExecutionPlanner
 {
+    private static readonly HashSet<string> ContextChangingContainerWrappers = new(
+        ["docker", "podman", "kubectl", "oc"],
+        StringComparer.OrdinalIgnoreCase);
+
     internal static ExecutionPlan Create(
         string script,
         string? route,
@@ -125,6 +129,22 @@ internal static class ExecutionPlanner
         var extension = Path.GetExtension(resolved.Source ?? string.Empty);
         if (extension.Equals(".cmd", StringComparison.OrdinalIgnoreCase) ||
             extension.Equals(".bat", StringComparison.OrdinalIgnoreCase))
+        {
+            return Direct(
+                script,
+                raw,
+                compressAvailable,
+                resolutionContext,
+                requestedRoute,
+                domain,
+                noFallbacks,
+                requestedRoute == RequestedExecutionRoute.Rtk
+                    ? ExecutionFallbackReason.RtkFidelityExclusion
+                    : null,
+                effectiveRtkIdentity,
+                postSuccessGuidance);
+        }
+        if (IsContextChangingWrapper(command))
         {
             return Direct(
                 script,
@@ -283,6 +303,23 @@ internal static class ExecutionPlanner
         }
 
         return command;
+    }
+
+    private static bool IsContextChangingWrapper(CommandAst command)
+    {
+        if (command.CommandElements.FirstOrDefault() is not
+                StringConstantExpressionAst executable)
+        {
+            return false;
+        }
+
+        var executableName = Path.GetFileNameWithoutExtension(executable.Value);
+        return ContextChangingContainerWrappers.Contains(executableName) &&
+               command.CommandElements.Skip(1)
+                   .OfType<StringConstantExpressionAst>()
+                   .Any(element => element.Value.Equals(
+                       "exec",
+                       StringComparison.OrdinalIgnoreCase));
     }
 
     private static PostSuccessGuidance? TryCreateMixedDataflowGuidance(

@@ -105,6 +105,26 @@ public sealed class ExecutionPlannerTests
     }
 
     [Theory]
+    [InlineData("docker")]
+    [InlineData("podman")]
+    [InlineData("kubectl")]
+    [InlineData("oc")]
+    public void Keeps_container_exec_wrappers_on_the_exact_PowerShell_path(string executable)
+    {
+        var script = $"{executable} exec target git status";
+        var commands = Application(executable, $"/usr/bin/{executable}");
+
+        var automatic = Plan(script, "auto", RtkPath, commands);
+        var forced = Plan(script, "rtk", RtkPath, commands);
+
+        AssertDirect(automatic, script, RequestedExecutionRoute.Auto);
+        Assert.Equal(ExecutionDomain.NativeTerminal, automatic.Domain);
+        AssertDirect(forced, script, RequestedExecutionRoute.Rtk);
+        Assert.Equal(ExecutionDomain.NativeTerminal, forced.Domain);
+        Assert.Equal(ExecutionFallbackReason.RtkFidelityExclusion, forced.FallbackReason);
+    }
+
+    [Theory]
     [InlineData(CommandTypes.Alias, null, null)]
     [InlineData(CommandTypes.Function, null, null)]
     [InlineData(CommandTypes.Cmdlet, null, null)]
