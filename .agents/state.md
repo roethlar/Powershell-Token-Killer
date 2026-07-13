@@ -19,7 +19,12 @@ short and update it when important repo facts change.
   and zero-warning stdio handshake pass on macOS. OS-protected installation
   remains required for the final check/start race, Windows ACL/macOS xattr
   changes, dynamic dependencies, and other facts a byte/mode snapshot cannot
-  bind. Post-success mixed-domain guidance is the only Slice 3 behavior left.
+  bind. Commits `dd945cf` and `669ce6e` add post-success mixed-domain guidance
+  and bind it to the canonical built-in `Set-Content`. Claude accepted fixed
+  scope `f311fe2..669ce6e` with both mutation guards confirmed; the restored
+  exact head passed 1,010/1,010 .NET tests, 139 Pester tests (2 platform skips),
+  and the stdio handshake on macOS. Cross-platform verification and the final
+  integrated Slice 3 fixed-SHA review remain.
 - **Audited-harness Slice 2 is complete locally.** The final
   integrated code head `3d3739a` completes job/control audit, local-only and
   anchored OTLP export, evidence administration and retention, permanent
@@ -65,8 +70,8 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Complete audited-harness Slice 3 with post-success mixed-dataflow guidance,
-   then run cross-platform verification and the fixed-SHA Claude reviewloop.
+1. Run exact-head cross-platform verification for audited-harness Slice 3,
+   then the integrated fixed-SHA Claude reviewloop.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.

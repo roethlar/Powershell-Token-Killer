@@ -1371,3 +1371,23 @@ authority, not push.
 the accepted Slice 2 feature history after the fixed-head verdict. Content
 arrival is verified separately from ancestry before branch cleanup. No push
 was performed or authorized.
+
+---
+
+**SLICE 3 MIXED-GUIDANCE SUB-SLICE CLAUDE REVIEW — ACCEPTED** (Claude Code
+2.1.207, model `claude-opus-4-8`, isolated disposable worktree), reviewed head
+`669ce6ea47c520a9c3bb73411192630d56ed519b` against base
+`f311fe2a65d1c0ec5515af0e1bb93ccd128b22a1`, `guard_confirmed=true`,
+2026-07-13T00:47:57Z. The first Fable dispatch returned API status 429 before
+any repository action; the playbook's single fail-closed retry used Opus. Its
+one-shot JSON envelope exited zero, the result and structured payload matched,
+and both fixed SHAs matched the dispatch. No material finding was returned.
+
+Claude independently made safe mixed capture produce no guidance and observed
+the two positive guards fail, then restored byte-exactly and passed the focused
+9/9. It separately removed the canonical `Set-Content` identity/source checks
+and observed the noncanonical-sink guard fail, then restored byte-exactly and
+passed focused 9/9. The restored exact head passed 1,010/1,010 .NET tests, 139
+Pester tests with two platform skips, and the stdio handshake. The detached
+worktree was clean and removed. Acceptance authorizes the remaining Slice 3
+verification/review work under the approved plan, not push or history rewrite.

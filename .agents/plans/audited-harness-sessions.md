@@ -14,8 +14,12 @@ separate durable plan/dispatch barriers, enforce strict RTK eligibility and
 exact-original pre-start fallback, and prevent second-pass RTK shaping. The
 `412ce60` adds the audited parse-fatal/detector/syntax gate,
 startup-frozen executable identities, bounded direct process lifecycle, and
-pre-authorized RTK log shaping. Post-success mixed-domain guidance remains.
-No push was performed or authorized.
+pre-authorized RTK log shaping. Commits `dd945cf` and `669ce6e` add the
+post-success mixed-domain guidance and bind it to the canonical built-in
+`Set-Content`; Claude accepted that fixed sub-slice at `669ce6e` with both
+independent mutation guards and the restored macOS battery passing. Final
+cross-platform verification and the integrated Slice 3 fixed-SHA review
+remain. No push was performed or authorized.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
