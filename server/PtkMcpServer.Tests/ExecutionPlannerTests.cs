@@ -88,6 +88,22 @@ public sealed class ExecutionPlannerTests
         Assert.Equal(ExecutionDomain.MixedDataflow, plan.Domain);
     }
 
+    [Fact]
+    public void Keeps_a_background_native_pipeline_on_the_exact_PowerShell_path()
+    {
+        const string script = "git status &";
+        var commands = Application("git", "/usr/bin/git");
+
+        var automatic = Plan(script, "auto", RtkPath, commands);
+        var forced = Plan(script, "rtk", RtkPath, commands);
+
+        AssertDirect(automatic, script, RequestedExecutionRoute.Auto);
+        Assert.Equal(ExecutionDomain.MixedDataflow, automatic.Domain);
+        AssertDirect(forced, script, RequestedExecutionRoute.Rtk);
+        Assert.Equal(ExecutionDomain.MixedDataflow, forced.Domain);
+        Assert.Equal(ExecutionFallbackReason.RtkIneligibleShape, forced.FallbackReason);
+    }
+
     [Theory]
     [InlineData(CommandTypes.Alias, null, null)]
     [InlineData(CommandTypes.Function, null, null)]

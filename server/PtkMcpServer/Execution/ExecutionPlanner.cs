@@ -264,6 +264,7 @@ internal static class ExecutionPlanner
             return null;
         if (ast.EndBlock is null || ast.EndBlock.Statements.Count != 1) return null;
         if (ast.EndBlock.Statements[0] is not PipelineAst pipeline) return null;
+        if (pipeline.Background) return null;
         if (pipeline.PipelineElements.Count != 1) return null;
         if (pipeline.PipelineElements[0] is not CommandAst command) return null;
         if (command.InvocationOperator != TokenKind.Unknown || command.Redirections.Count > 0)
@@ -426,6 +427,8 @@ internal static class ExecutionPlanner
         if (ast.EndBlock.Statements.Count != 1)
             return ExecutionDomain.MixedDataflow;
         if (ast.EndBlock.Statements[0] is not PipelineAst pipeline)
+            return ExecutionDomain.MixedDataflow;
+        if (pipeline.Background)
             return ExecutionDomain.MixedDataflow;
         if (pipeline.PipelineElements.Count != 1)
             return ExecutionDomain.MixedDataflow;
