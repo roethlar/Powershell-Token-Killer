@@ -1654,3 +1654,47 @@ actual no-shaper setup. Neither changes production behavior or weakens the
 fixtures, so no material finding was admitted. Acceptance authorizes the
 final fixed-SHA integrated Slice 4 review, not Slice 5 implementation, push,
 or history rewriting.
+
+---
+
+**SLICE 4 FINAL INTEGRATED CLAUDE REVIEW — ACCEPTED** (Claude Code 2.1.207,
+model `claude-opus-4-8`, isolated disposable worktree), reviewed product head
+`76d4f0c85252b65d20b7ecb41c3d605835a767d1` against Slice 4 base
+`9c89abf1d7c45435dd48b56b1fde1fec3b87c9fa`, `guard_confirmed=true`,
+2026-07-13T19:34:22Z. The one-shot JSON envelope exited zero; its result and
+structured payload matched exactly, both fixed SHAs matched the dispatch, and
+Claude found no material defect across the integrated 4a output store, 4b
+same-invocation capture/recovery, and 4c legacy-`raw` retirement.
+
+Claude independently proved eight cross-slice guards red then green:
+supervisor-lifetime handle retrieval across MCP requests; durable
+`output.read_accessed` before disclosure; anonymous artifact safety against a
+later pathname substitute; raw-invariant foreground capture; exactly one
+submitted user invocation; caller-supplied recovery hints composed inside the
+module's elision marker; honest no-handle `RtkUnknown` behavior when the RTK
+capture seam is absent; and foreground/background dialect routing independent
+of `raw`. Each production sabotage failed for the intended observable reason,
+was restored byte-exactly, and passed its focused guard afterward.
+
+The exact restored tree passed 1,085/1,085 .NET tests, 141 Pester tests with
+two platform skips, and the stdio handshake. Claude also confirmed statically
+that reservation precedes user execution, the unshaped artifact seals before
+private shaping, ptk_output audit protection discloses no secret material,
+the state-probe exception is narrow, and the ephemeral background
+`PowerShellDirect` fact does not cross into Slice 5 persistence. The detached
+worktree was clean at the reviewed SHA and removed.
+
+One explicitly non-blocking test observation remains: the new private-output
+stop/join test missed its fixed two-second `stopStarting` scheduling wait once
+inside a parallel full suite after its production timeout assertions had
+passed; the later post-shutdown assertions stayed green in repeated isolated
+runs. It passed 8/8 isolated runs and 3/3 isolated runs under CPU load; four
+full-suite confirmations were clean. Claude classified this as a test
+timing/CI-flake risk rather than a production concurrency defect and did not
+reopen Slice 4. Host-specific runner-stall evidence is recorded in
+`.agents/machines.md`.
+
+The reviewer kept cold background planning/recovery and persisted metadata in
+Slice 5, and installer/README/decisions reconciliation in Slice 10. Acceptance
+authorizes the delegated local fast-forward of the feature branch, not Slice 5
+implementation, push, or history rewriting.

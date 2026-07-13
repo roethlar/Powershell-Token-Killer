@@ -92,6 +92,34 @@ worktree; this was checkout validation, not an installed-payload update._
   validation needed for executable check/start races, dynamic dependencies,
   ACL/xattr mutation, and other properties a source snapshot cannot bind.
 
+### Audited-harness Slice 4 checkout validation
+
+_Verified 2026-07-13 at final integrated product head `76d4f0c` in Claude's
+disposable worktree; this was checkout validation, not an installed-payload
+update._
+
+- The exact restored head passed 1,085/1,085 .NET tests, 141 PowerShell module
+  tests with two platform skips, and the stdio handshake.
+- Claude independently proved eight integrated guard classes load-bearing:
+  supervisor-lifetime handles, audited pre-disclosure reads, anonymous
+  path-substitute safety, raw-invariant capture, exactly-once execution,
+  in-marker recovery hints, honest seam-absent RTK output, and raw-independent
+  foreground/background dialect routing. Every mutation failed for its
+  intended reason, restored byte-exactly, and passed afterward.
+- The private-output stop/join test missed its fixed two-second scheduling wait
+  once in a parallel full suite after its timeout assertions had passed. Its
+  later post-shutdown assertions stayed green in 8/8 isolated runs and 3/3
+  isolated runs under deliberate CPU load; four full-suite confirmations were
+  clean. This is recorded as a non-blocking test timing/CI-flake risk, not a
+  production failure.
+- Two additional full-suite processes parked idle in managed waits beyond five
+  minutes and were terminated; immediate exact-tree retries completed green.
+  This host-specific runner instability is not a passing result and does not
+  replace the clean batteries above.
+- The clean review worktree and temporary prompt were removed; no installed
+  payload or persistent host configuration changed. Live Windows validation
+  of Slice 4 remains a later platform gate.
+
 ## `NETWATCH-01` — Michael's Windows machine
 
 _Verified 2026-07-11 for audited-session slice 0 at repo base `2a83723`._
