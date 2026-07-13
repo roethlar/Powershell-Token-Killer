@@ -1391,3 +1391,36 @@ passed focused 9/9. The restored exact head passed 1,010/1,010 .NET tests, 139
 Pester tests with two platform skips, and the stdio handshake. The detached
 worktree was clean and removed. Acceptance authorizes the remaining Slice 3
 verification/review work under the approved plan, not push or history rewrite.
+
+---
+
+**SLICE 3 FINAL INTEGRATED CLAUDE REVIEW — REOPENED** (Claude Code 2.1.207,
+model `claude-opus-4-8`, isolated disposable worktree), reviewed head
+`669ce6ea47c520a9c3bb73411192630d56ed519b` against base
+`0c08379a02c796b8ea0e1779c196840c6a9b1269`, `guard_confirmed=true`,
+2026-07-13T01:48:24Z. The structured result and payload matched, both SHAs
+matched the dispatch, and the restored exact head passed 1,010/1,010 .NET,
+139 Pester with two platform skips, and the zero-warning handshake. Claude's
+three independent barrier/RTK/Bash mutations each failed the intended focused
+guards and passed after byte-exact restoration. The detached worktree was
+clean and removed.
+
+## Findings (audited-harness Slice 3 integrated review)
+
+| ID | Severity | Impact (one line) | Status | Branch |
+|----|----------|-------------------|--------|--------|
+| s3-rtk-output-bounds | HIGH | Default RTK output bypasses ANSI cleanup and all passthrough bounds | `[ ]` | `fix/s3-rtk-output-bounds` |
+| s3-block-fidelity | MEDIUM | Clean/dynamicparam blocks can be silently dropped by RTK routing | `[ ]` | `fix/s3-block-fidelity` |
+| s3-background-operator | MEDIUM | A trailing background operator becomes synchronous RTK execution | `[ ]` | `fix/s3-background-operator` |
+| s3-rtk-preference-isolation | HIGH | Warm native preferences can discard routed stdout and pollute `$Error` | `[ ]` | `fix/s3-rtk-preference-isolation` |
+| s3-wrapper-context | MEDIUM | Context-changing wrappers are routed despite the exact-original contract | `[ ]` | `fix/s3-wrapper-context` |
+| s3-background-bash-parity | MEDIUM | Background Bash parity is assigned to later Slice 5 | `[-]` | |
+
+Claude returned the first two material findings. Separate coder audits
+reproduced and admitted three additional non-duplicate findings before any fix
+began. The background-Bash parity candidate was declined because the approved
+sequence assigns that work to Slice 5. Canonical evidence, predicted failures,
+and required guards are in the finding files. The remaining integrated
+contracts were accepted, and the recorded installed/OS-protected and live
+Windows/Bash caveats remain honest later validation obligations rather than
+Slice 3 blockers. No finding authorizes push or history rewrite.
