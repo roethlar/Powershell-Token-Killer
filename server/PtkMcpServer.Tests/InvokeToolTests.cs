@@ -363,22 +363,20 @@ public sealed class InvokeToolTests : IDisposable
               "  echo SECOND_RTK_LOG_PASS\n" +
               "  exit /b 0\n" +
               ")\n" +
-              "echo 2026-07-12 12:00:01 ERROR worker: first\n" +
-              "echo 2026-07-12 12:00:02 ERROR worker: second\n" +
-              "echo 2026-07-12 12:00:03 ERROR worker: third\n" +
-              "echo 2026-07-12 12:00:04 ERROR worker: fourth\n" +
-              "echo 2026-07-12 12:00:05 ERROR worker: fifth\n" +
+              "echo \u001b[31m2026-07-12 12:00:00 ERROR worker: colored\u001b[0m\n" +
+              "for /L %%i in (1,1,1000) do echo 2026-07-12 12:00:01 ERROR worker: line %%i\n" +
               "exit /b 0"
             : "printf '%s\\n' \"$*\" >> \"$PTK_RTK_TEST_LOG\"\n" +
               "if [ \"$1\" = \"log\" ]; then\n" +
               "  echo SECOND_RTK_LOG_PASS\n" +
               "  exit 0\n" +
               "fi\n" +
-              "echo '2026-07-12 12:00:01 ERROR worker: first'\n" +
-              "echo '2026-07-12 12:00:02 ERROR worker: second'\n" +
-              "echo '2026-07-12 12:00:03 ERROR worker: third'\n" +
-              "echo '2026-07-12 12:00:04 ERROR worker: fourth'\n" +
-              "echo '2026-07-12 12:00:05 ERROR worker: fifth'\n" +
+              "printf '\\033[31m2026-07-12 12:00:00 ERROR worker: colored\\033[0m\\n'\n" +
+              "i=1\n" +
+              "while [ \"$i\" -le 1000 ]; do\n" +
+              "  printf '2026-07-12 12:00:01 ERROR worker: line %s\\n' \"$i\"\n" +
+              "  i=$((i + 1))\n" +
+              "done\n" +
               "exit 0";
         var (dir, stub) = CreateRtkStub(body);
         var invocationLog = Path.Combine(dir.FullName, "invocations.log");
@@ -405,6 +403,12 @@ public sealed class InvokeToolTests : IDisposable
             Assert.Equal(OutputProvenance.RtkUnknown, observed.OutputProvenance);
             Assert.DoesNotContain("SECOND_RTK_LOG_PASS", result.Output);
             Assert.DoesNotContain("[ptk:log via rtk]", result.Output);
+            Assert.DoesNotContain('\u001b', result.Output);
+            Assert.Contains("lines elided", result.Output, StringComparison.Ordinal);
+            Assert.InRange(
+                result.Output.Split(Environment.NewLine).Length,
+                1,
+                402);
             Assert.Equal(["git status"], File.ReadAllLines(invocationLog));
         }
         finally

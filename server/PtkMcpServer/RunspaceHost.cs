@@ -2005,15 +2005,14 @@ public sealed class RunspaceHost : IDisposable
             // state and survive into the next call; that persistence is the point.
             ps.AddScript(dispatch.ExecutionScript!, useLocalScope: false);
             RtkExecutableIdentity? authorizedShapingRtk = null;
-            if (!raw &&
-                dispatch.OutputProvenance == OutputProvenance.PowerShellObjects &&
-                primed.CompressCommand is not null)
+            if (!raw && primed.CompressCommand is not null)
             {
                 authorizedShapingRtk = dispatch.OutputShapingRtkIdentity;
                 ps.AddScript(
-                        "$input | & $args[0] -PinnedRtkPath $args[1] -PinnedRtkDigest $args[2] -PinnedRtkUnixMode $args[3] -EmitRoutingEnvelope",
+                        "$input | & $args[0] -InputProvenance $args[1] -PinnedRtkPath $args[2] -PinnedRtkDigest $args[3] -PinnedRtkUnixMode $args[4] -EmitRoutingEnvelope",
                         useLocalScope: true)
                   .AddArgument(primed.CompressCommand)
+                  .AddArgument(dispatch.OutputProvenance.ToMachineCode())
                   .AddArgument(authorizedShapingRtk?.ExecutablePath)
                   .AddArgument(authorizedShapingRtk?.AuditBinaryDigest)
                   .AddArgument(authorizedShapingRtk?.CapturedUnixFileMode);

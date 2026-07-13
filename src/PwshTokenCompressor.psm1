@@ -1099,8 +1099,8 @@ function Limit-PtcPassthrough {
 }
 
 # Shapes ptk_invoke output for the MCP server (Phase 2 plan): objects compress via
-# Compress-PtcObject; log-shaped text goes to rtk when available; all other text
-# (strings and primitive scalars) passes through verbatim and is NEVER truncated.
+# Compress-PtcObject; log-shaped direct text goes to rtk when available; all
+# text is ANSI-cleaned and bounded by the adopted labeled head+tail window.
 # Contract: never throws - any internal failure returns labeled unshaped output,
 # because shaping must not be able to fail a ptk_invoke call.
 function Compress-PtcOutput {
@@ -1110,6 +1110,11 @@ function Compress-PtcOutput {
         [AllowNull()]
         [object]$InputObject,
         [int]$MaxItems = $script:DefaultMaxItems,
+        # Execution provenance lets the host retain ANSI cleanup and bounds
+        # while suppressing only the lossy second rtk-log pass for output that
+        # already came from RTK.
+        [ValidateSet('powershell_objects', 'direct_text', 'rtk_unknown', 'rtk_filtered', 'rtk_passthrough')]
+        [string]$InputProvenance,
         # Overrides the elision markers' recovery advice for callers whose
         # recovery path is not raw=true (see Limit-PtcPassthrough).
         [string]$ElisionHint,
@@ -1124,6 +1129,10 @@ function Compress-PtcOutput {
     begin {
         $items = [System.Collections.Generic.List[object]]::new()
         $rtkRoutingAttempted = $false
+        $skipRtkLog = $InputProvenance -in @(
+            'rtk_unknown',
+            'rtk_filtered',
+            'rtk_passthrough')
         $limitArgs = @{}
         if ($ElisionHint) { $limitArgs['ElisionHint'] = $ElisionHint }
     }
@@ -1150,7 +1159,7 @@ function Compress-PtcOutput {
                 # colored log would dodge the rtk dedup leg. raw=true calls
                 # never reach shaping (they return complete Out-String text).
                 $text = Remove-PtcAnsi (@($array | Microsoft.PowerShell.Core\ForEach-Object { "$_" }) -join [Environment]::NewLine)
-                if (Test-PtcLogShaped -Text $text) {
+                if (-not $skipRtkLog -and (Test-PtcLogShaped -Text $text)) {
                     $rtkArgs = @{ Text = $text }
                     if ($PSBoundParameters.ContainsKey('PinnedRtkPath')) {
                         $rtkArgs['PinnedRtkPath'] = $PinnedRtkPath
