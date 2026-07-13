@@ -257,7 +257,8 @@ internal static class ExecutionPlanner
     {
         var ast = Parser.ParseInput(script, out _, out var parseErrors);
         if (parseErrors.Length > 0) return null;
-        if (ast.ParamBlock is not null || ast.DynamicParamBlock is not null ||
+        if (ast.UsingStatements.Count > 0 ||
+            ast.ParamBlock is not null || ast.DynamicParamBlock is not null ||
             ast.BeginBlock is not null || ast.ProcessBlock is not null ||
             ast.CleanBlock is not null)
             return null;
@@ -415,7 +416,8 @@ internal static class ExecutionPlanner
     {
         var ast = Parser.ParseInput(script, out _, out var parseErrors);
         if (parseErrors.Length > 0) return null;
-        if (ast.ParamBlock is not null || ast.DynamicParamBlock is not null ||
+        if (ast.UsingStatements.Count > 0 ||
+            ast.ParamBlock is not null || ast.DynamicParamBlock is not null ||
             ast.BeginBlock is not null || ast.ProcessBlock is not null ||
             ast.CleanBlock is not null)
             return ExecutionDomain.MixedDataflow;

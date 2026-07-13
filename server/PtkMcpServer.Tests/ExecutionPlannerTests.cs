@@ -77,6 +77,17 @@ public sealed class ExecutionPlannerTests
         Assert.Equal(ExecutionDomain.MixedDataflow, plan.Domain);
     }
 
+    [Fact]
+    public void Keeps_top_level_using_statements_on_the_exact_PowerShell_path()
+    {
+        const string script = "using module './Example.psm1'; git status";
+
+        var plan = Plan(script, "auto", RtkPath, Application("git", "/usr/bin/git"));
+
+        AssertDirect(plan, script, RequestedExecutionRoute.Auto);
+        Assert.Equal(ExecutionDomain.MixedDataflow, plan.Domain);
+    }
+
     [Theory]
     [InlineData(CommandTypes.Alias, null, null)]
     [InlineData(CommandTypes.Function, null, null)]
