@@ -1584,3 +1584,39 @@ more precise `offset_past_end`. The machine state remains correctly
 affected, so the reviewer did not reopen the sub-slice and no material
 finding was admitted. Acceptance authorizes the next approved Slice 4
 sub-slice, not push or history rewriting.
+
+---
+
+**SLICE 4B SAME-INVOCATION CAPTURE CLAUDE REVIEW — ACCEPTED** (Claude Code
+2.1.207, model `claude-opus-4-8`, isolated disposable worktree), reviewed
+head `347d85c2dede7241e037fe7a538b7e726952cd27` against base
+`76005eb4d78cee84369bd5f475292fde7c0b544a`, `guard_confirmed=true`,
+2026-07-13T18:10:50Z. The one-shot JSON envelope exited zero; its result and
+structured payload matched exactly, and both fixed SHAs matched the dispatch.
+Claude found no material defect in two-stage same-invocation capture,
+anonymous recovery publication, passive no-user-code freezing, exact nonce
+stripping, or the private renderer lifecycle.
+
+Claude independently proved eight representative guards red then green:
+duplicating the submitted user script broke the one-execution identity;
+rendering before unlink broke both namespace and substitution guards; allowing
+cancel to win after `Publishing` stranded the coordinator; ambient-culture
+scalar conversion invoked hostile culture getters; accepting general
+`PSPropertyInfo` invoked an active script property; unconditional detached-name
+stripping removed a mismatched user nonce; skipping the stop join disposed the
+private pipeline too early; and removing the final pre-invoke cancellation
+gate started work after cancellation. Byte-exact restoration passed all 1,081
+.NET tests, 141 Pester tests with two platform skips, and the stdio
+handshake. The detached worktree was clean at the reviewed SHA and removed.
+
+One explicitly non-blocking observation remains: under repeated full-suite
+load on Unix, the unchanged anchored-runtime test can observe the brief window
+where atomic publication has created the destination hard link but has not yet
+removed the temporary hard-link name. The reviewer observed the assertion in
+2 of 9 reviewed-head battery runs, proved the test and `PublishAtomically`
+path are outside and byte-identical across this diff, and did not reopen Slice
+4b. A separate test-stabilization slice may wait for destination-present and
+temporary-absent in one eventual assertion. Windows delete-pending/link-count
+proof was reviewed statically on macOS; live Windows execution remains a later
+platform gate. Acceptance authorizes the remaining approved Slice 4 work, not
+push or history rewriting.

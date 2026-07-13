@@ -5,14 +5,15 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **Audited-harness Slice 4 is in progress; reviewed sub-slice 4a is
+- **Audited-harness Slice 4 is in progress; reviewed sub-slices 4a and 4b are
   complete.** Commit `bee983d` adds the supervisor-owned output artifact
-  store, bounded protected retention, opaque handles, stable UTF-8
-  read/search/status, explicit incomplete/expired/evicted states, and
-  fail-closed audited `ptk_output` disclosure. The full local battery passed;
-  Claude accepted exact head `bee983d` against base `9c89abf` with
-  `guard_confirmed=true`. Canonical review evidence is in
-  `.agents/review/index.md`. No push was performed or authorized.
+  store and audited `ptk_output`. Commit `347d85c` adds bounded two-stage
+  foreground capture, same-invocation recovery/shaping, anonymous retained
+  artifacts, exact detached type nonces, and truthful recovery hints. The full
+  local battery passed; Claude accepted exact head `347d85c` against base
+  `76005eb` with `guard_confirmed=true` after eight independent mutation
+  proofs. Canonical review evidence is in `.agents/review/index.md`. No push
+  was performed or authorized.
 - **Audited-harness Slice 3 is complete locally.** Final
   integrated code head `b78d9c6` completes structured foreground routing,
   audited RTK/Bash dispatch, bounded preference-independent RTK capture,
@@ -68,8 +69,8 @@ short and update it when important repo facts change.
 ## Next
 
 1. Continue audited-harness Slice 4 with the next independently reviewed
-   sub-slice: two-stage foreground capture and shaping from the same
-   invocation, under `.agents/plans/audited-harness-sessions.md`.
+   sub-slice: make legacy `raw=true` non-routing and non-bypass behavior and
+   land the plan's intentional raw-guard amendments.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before release-distribution slice 4.
@@ -115,10 +116,11 @@ short and update it when important repo facts change.
 - Automated verification entry point: `.agents/repo-guidance.md`
   (Verification). Review-loop evidence lives in `.agents/review/index.md`;
   do not duplicate volatile counts here.
-- Audited-session slices 0-3 are complete locally; Slice 4a is complete on its
-  implementation branch. Exact fixed-head Claude acceptance and verification
-  records live in `.agents/review/index.md`; prior cross-platform evidence
-  lives in `.agents/machines.md`.
+- Audited-session slices 0-3 are complete locally; reviewed Slice 4a and 4b
+  sub-slices are complete on the implementation branch. Exact fixed-head
+  Claude acceptance and verification records live in
+  `.agents/review/index.md`; prior cross-platform evidence lives in
+  `.agents/machines.md`.
 
 ## Active Sources
 
