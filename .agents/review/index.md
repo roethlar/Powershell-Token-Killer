@@ -1413,7 +1413,7 @@ clean and removed.
 | s3-block-fidelity | MEDIUM | Clean/dynamicparam blocks can be silently dropped by RTK routing | `[x]` | `fix/s3-block-fidelity` |
 | s3-background-operator | MEDIUM | A trailing background operator becomes synchronous RTK execution | `[x]` | `fix/s3-background-operator` |
 | s3-rtk-preference-isolation | HIGH | Warm native preferences can discard routed stdout and pollute `$Error` | `[ ]` | `fix/s3-rtk-preference-isolation` |
-| s3-wrapper-context | MEDIUM | Context-changing wrappers are routed despite the exact-original contract | `[ ]` | `fix/s3-wrapper-context` |
+| s3-wrapper-context | MEDIUM | Context-changing wrappers are routed despite the exact-original contract | `[x]` | `fix/s3-wrapper-context` |
 | s3-using-statement-fidelity | MEDIUM | A top-level using statement can be omitted from routed execution | `[x]` | `fix/s3-using-statement-fidelity` |
 | s3-background-bash-parity | MEDIUM | Background Bash parity is assigned to later Slice 5 | `[-]` | |
 
@@ -1453,3 +1453,13 @@ model `claude-opus-4-8`, isolated disposable worktree), reviewed head
 failed their exact assertions; restoration passed the focused guard and the
 full 1,014-test .NET/Pester/handshake battery. No material issue remained; the
 worktree was clean and removed.
+
+**s3-wrapper-context CLAUDE REVIEW — ACCEPTED** (Claude Code 2.1.207, model
+`claude-opus-4-8`, isolated disposable worktree), reviewed head
+`bad4287b0a102904d0ed626c250c5a3fd8f15194` against base
+`4995bc02b776a90bcce1b268dd0e83078cd62a71`, `guard_confirmed=true`,
+2026-07-13T03:35:21Z. Claude independently reverted the wrapper exclusion and
+observed exactly the four container-exec guard failures, restored focused
+44/44, and confirmed the plan's docker example plus option-prefixed forms.
+The accepted scope is explicitly container `exec`, not universal wrapper
+detection; its worktree was clean and removed.
