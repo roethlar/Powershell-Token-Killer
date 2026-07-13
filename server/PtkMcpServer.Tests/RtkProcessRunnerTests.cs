@@ -125,7 +125,8 @@ public sealed class RtkProcessRunnerTests
             fallbackReason: null,
             identity,
             workingDirectory: workingDirectory,
-            rtkArgumentVector: arguments);
+            rtkArgumentVector: arguments,
+            directFallbackProvenance: OutputProvenance.PowerShellObjects);
         return ExecutionDispatch.FromPlan(plan);
     }
 

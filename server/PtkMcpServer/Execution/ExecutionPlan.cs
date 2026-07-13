@@ -157,7 +157,7 @@ internal sealed record RtkExecutableIdentity(
 }
 
 /// <summary>
-/// Immutable foreground preparation handed unchanged to the audit barrier and
+/// Immutable execution preparation handed unchanged to the audit barrier and
 /// then to dispatch. The planner owns every constructor input; execution code
 /// must not recover routing facts by comparing script strings.
 /// </summary>
@@ -179,7 +179,8 @@ internal sealed record ExecutionPlan
         string? workingDirectory = null,
         RtkExecutableIdentity? outputShapingRtkIdentity = null,
         PostSuccessGuidance? postSuccessGuidance = null,
-        ImmutableArray<string> rtkArgumentVector = default)
+        ImmutableArray<string> rtkArgumentVector = default,
+        OutputProvenance? directFallbackProvenance = null)
     {
         ArgumentNullException.ThrowIfNull(originalScript);
         var isBash = executionPath == ExecutionPath.BashViaRtk;
@@ -242,6 +243,31 @@ internal sealed record ExecutionPlan
             throw new ArgumentException("Fallbacks must be unique.", nameof(permittedFallbacks));
         if (isBash && permittedFallbacks.Length != 0)
             throw new ArgumentException("Bash delegation has no PowerShell fallback.", nameof(permittedFallbacks));
+        var hasPowerShellFallback =
+            permittedFallbacks.Contains(ExecutionPath.PowerShellDirect);
+        if (isRtk && hasPowerShellFallback)
+        {
+            if (directFallbackProvenance is not (
+                    OutputProvenance.PowerShellObjects or OutputProvenance.DirectText))
+            {
+                throw new ArgumentException(
+                    "An RTK PowerShell fallback requires frozen direct-output provenance.",
+                    nameof(directFallbackProvenance));
+            }
+            if (resolutionContext == ResolutionContext.Cold &&
+                directFallbackProvenance != OutputProvenance.DirectText)
+            {
+                throw new ArgumentException(
+                    "A cold PowerShell fallback produces direct text.",
+                    nameof(directFallbackProvenance));
+            }
+        }
+        else if (directFallbackProvenance is not null)
+        {
+            throw new ArgumentException(
+                "Only an RTK plan with a PowerShell fallback may carry direct-fallback provenance.",
+                nameof(directFallbackProvenance));
+        }
         if (executionPath is ExecutionPath.Rtk or ExecutionPath.BashViaRtk &&
             (rtkExecutableIdentity is null ||
              string.IsNullOrWhiteSpace(rtkExecutableIdentity.ExecutablePath) ||
@@ -267,6 +293,14 @@ internal sealed record ExecutionPlan
             throw new ArgumentException(
                 "Only RTK execution may carry RTK identity or provenance.",
                 nameof(rtkExecutableIdentity));
+        }
+        if (resolutionContext == ResolutionContext.Cold &&
+            executionPath == ExecutionPath.PowerShellDirect &&
+            outputProvenance != OutputProvenance.DirectText)
+        {
+            throw new ArgumentException(
+                "Cold direct PowerShell execution produces direct text.",
+                nameof(outputProvenance));
         }
         if (outputShapingRtkIdentity is not null &&
             (executionPath != ExecutionPath.PowerShellDirect ||
@@ -311,6 +345,7 @@ internal sealed record ExecutionPlan
         OutputShapingRtkIdentity = outputShapingRtkIdentity;
         PostSuccessGuidance = postSuccessGuidance;
         RtkArgumentVector = normalizedRtkArguments;
+        DirectFallbackProvenance = directFallbackProvenance;
     }
 
     internal string OriginalScript { get; }
@@ -329,6 +364,7 @@ internal sealed record ExecutionPlan
     internal RtkExecutableIdentity? OutputShapingRtkIdentity { get; }
     internal PostSuccessGuidance? PostSuccessGuidance { get; }
     internal ImmutableArray<string> RtkArgumentVector { get; }
+    internal OutputProvenance? DirectFallbackProvenance { get; }
 
     internal string EffectiveRoute => ExecutionPath.ToMachineCode();
 }
@@ -371,7 +407,7 @@ internal sealed record ExecutionDispatch
             if (!string.Equals(executionScript, plan.OriginalScript, StringComparison.Ordinal))
                 throw new InvalidOperationException("A direct fallback must execute the exact original script.");
             if (executionPath != ExecutionPath.PowerShellDirect ||
-                outputProvenance != OutputProvenance.PowerShellObjects ||
+                outputProvenance != plan.DirectFallbackProvenance ||
                 fallbackReason is null ||
                 rtkExecutableIdentity is not null)
             {
@@ -453,7 +489,8 @@ internal sealed record ExecutionDispatch
             plan,
             plan.OriginalScript,
             ExecutionPath.PowerShellDirect,
-            OutputProvenance.PowerShellObjects,
+            plan.DirectFallbackProvenance ?? throw new InvalidOperationException(
+                "The RTK plan did not freeze direct-fallback provenance."),
             reason,
             rtkExecutableIdentity: null);
     }

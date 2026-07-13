@@ -152,7 +152,8 @@ public sealed class AuditCallContextTests : IDisposable
             fallbackReason: null,
             new RtkExecutableIdentity(rtkPath),
             workingDirectory: Path.GetFullPath(Path.GetTempPath()),
-            rtkArgumentVector: ["git", "status"]);
+            rtkArgumentVector: ["git", "status"],
+            directFallbackProvenance: OutputProvenance.PowerShellObjects);
 
         Assert.True(await fixture.Context.AuthorizePlanAsync(
             plan,
@@ -232,7 +233,8 @@ public sealed class AuditCallContextTests : IDisposable
             new RtkExecutableIdentity(
                 Path.GetFullPath(Path.Combine(Path.GetTempPath(), "audit-rtk"))),
             workingDirectory: Path.GetFullPath(Path.GetTempPath()),
-            rtkArgumentVector: ["git", "status"]);
+            rtkArgumentVector: ["git", "status"],
+            directFallbackProvenance: OutputProvenance.PowerShellObjects);
 
         Assert.True(await fixture.Context.AuthorizePlanAsync(plan, CancellationToken.None));
         Assert.True(await fixture.Context.AuthorizeDispatchAsync(
@@ -532,7 +534,8 @@ public sealed class AuditCallContextTests : IDisposable
             fallbackReason: null,
             new RtkExecutableIdentity(rtkPath),
             workingDirectory: Path.GetFullPath(Path.GetTempPath()),
-            rtkArgumentVector: ["git", "status"]);
+            rtkArgumentVector: ["git", "status"],
+            directFallbackProvenance: OutputProvenance.PowerShellObjects);
 
         Assert.True(await fixture.Context.AuthorizePlanAsync(
             plan,
@@ -663,6 +666,174 @@ public sealed class AuditCallContextTests : IDisposable
 
         fixture.Context.RecordJobNotStarted("dialect_refused", "must be replaced", 17);
         Assert.DoesNotContain("job.not_started", fixture.Events().Select(EventType));
+    }
+
+    [Fact]
+    public async Task Unresolved_process_start_records_one_unknown_start_failure_and_no_job_terminal()
+    {
+        const long jobId = 17;
+        const string response = "start outcome unknown";
+        using var fixture = CreateFixture(
+            Call("ptk_invoke", ("script", "'maybe-ran'"), ("background", true)),
+            exactScript: "'maybe-ran'");
+        Assert.True(fixture.Context.BeginJobStartRequest(jobId));
+        var terminal = Assert.IsType<AuditJobTerminalLease>(
+            fixture.Context.AuthorizeJobStart(jobId, Path.GetFullPath(Path.GetTempPath())));
+
+        fixture.Context.RecordJobStartOutcomeUnknown(jobId, response);
+        terminal.ReleaseWithoutTerminal();
+        await terminal.CompleteAsync(new JobSnapshot(
+            jobId,
+            Pid: 0,
+            Running: false,
+            ExitCode: null,
+            StartedUtc: DateTimeOffset.UtcNow,
+            Script: "'maybe-ran'",
+            OutputPath: Path.Combine(Path.GetTempPath(), "ptk-unresolved-audit.log"))
+        {
+            StartOutcomeUnknown = true,
+            ExecutionOutcomeUnknown = true,
+            ExecutionOutcomeFailureCode = "process_start_outcome_unknown",
+            RootTerminationConfirmed = false,
+            OutputCaptureComplete = false,
+        });
+
+        var events = fixture.Events();
+        Assert.Equal(
+            [
+                "call.accepted",
+                "job.start_requested",
+                "execution.validation_started",
+                "execution.prepare_authorized",
+                "execution.validation_completed",
+                "execution.planned",
+                "execution.dispatched",
+                "job.start_failed",
+                "call.failed",
+            ],
+            events.Select(EventType));
+        var failed = events[^2];
+        AssertOutcome(failed, "outcome_unknown", "unknown", "unknown");
+        Assert.Equal(
+            "process_start_outcome_unknown",
+            failed.GetProperty("outcome").GetProperty("detail_code").GetString());
+        Assert.Equal(
+            "unknown",
+            failed.GetProperty("coverage").GetProperty("descendants_observed").GetString());
+        Assert.Equal(
+            "unknown",
+            failed.GetProperty("coverage").GetProperty("remote_effect_observed").GetString());
+        AssertOutcome(events[^1], "failed", "unknown", "not_applicable");
+        Assert.Equal(
+            System.Text.Encoding.UTF8.GetByteCount(response),
+            events[^1].GetProperty("outcome").GetProperty("bytes_returned").GetInt64());
+    }
+
+    [Fact]
+    public async Task Associated_process_start_failure_records_started_failed_call_then_one_unknown_terminal()
+    {
+        const long jobId = 17;
+        using var fixture = CreateFixture(
+            Call("ptk_invoke", ("script", "'started'"), ("background", true)),
+            exactScript: "'started'");
+        Assert.True(fixture.Context.BeginJobStartRequest(jobId));
+        var terminal = Assert.IsType<AuditJobTerminalLease>(
+            fixture.Context.AuthorizeJobStart(jobId, Path.GetFullPath(Path.GetTempPath())));
+
+        Assert.True(fixture.Context.RecordJobStartedOutcomeUnknown(jobId, "unknown"));
+        await terminal.CompleteAsync(new JobSnapshot(
+            jobId,
+            Pid: 123,
+            Running: false,
+            ExitCode: 137,
+            StartedUtc: DateTimeOffset.UtcNow,
+            Script: "'started'",
+            OutputPath: Path.Combine(Path.GetTempPath(), "ptk-associated-audit.log"))
+        {
+            ExecutionOutcomeUnknown = true,
+            ExecutionOutcomeFailureCode = "process_start_outcome_unknown",
+            RootTerminationConfirmed = true,
+            OutputCaptureComplete = false,
+        });
+        await terminal.CompleteAsync(new JobSnapshot(
+            jobId,
+            Pid: 123,
+            Running: false,
+            ExitCode: 137,
+            StartedUtc: DateTimeOffset.UtcNow,
+            Script: "'started'",
+            OutputPath: Path.Combine(Path.GetTempPath(), "ptk-associated-repeat.log")));
+
+        var events = fixture.Events();
+        Assert.Equal(
+            [
+                "call.accepted",
+                "job.start_requested",
+                "execution.validation_started",
+                "execution.prepare_authorized",
+                "execution.validation_completed",
+                "execution.planned",
+                "execution.dispatched",
+                "job.started",
+                "call.failed",
+                "job.outcome_unknown",
+            ],
+            events.Select(EventType));
+        AssertOutcome(events[^3], "started", "unknown", "unknown");
+        AssertOutcome(events[^2], "failed", "unknown", "not_applicable");
+        var outcomeUnknown = events[^1];
+        AssertOutcome(outcomeUnknown, "outcome_unknown", "confirmed", "complete");
+        Assert.Equal(
+            "process_start_outcome_unknown",
+            outcomeUnknown.GetProperty("outcome").GetProperty("detail_code").GetString());
+        Assert.Equal(
+            events[^3].GetProperty("event_id").GetGuid(),
+            outcomeUnknown.GetProperty("correlation").GetProperty("parent_event_id").GetGuid());
+    }
+
+    [Theory]
+    [InlineData(false, "job.completed", "output_sink_failed")]
+    [InlineData(true, "job.outcome_unknown", "rtk_output_read_failed")]
+    public async Task Started_job_terminal_distinguishes_output_loss_from_execution_uncertainty(
+        bool executionOutcomeUnknown,
+        string expectedEvent,
+        string detailCode)
+    {
+        const long jobId = 17;
+        using var fixture = CreateFixture(
+            Call("ptk_invoke", ("script", "'started'"), ("background", true)),
+            exactScript: "'started'");
+        Assert.True(fixture.Context.BeginJobStartRequest(jobId));
+        var terminal = Assert.IsType<AuditJobTerminalLease>(
+            fixture.Context.AuthorizeJobStart(jobId, Path.GetFullPath(Path.GetTempPath())));
+        Assert.True(fixture.Context.RecordJobStarted(jobId, "started"));
+
+        await terminal.CompleteAsync(new JobSnapshot(
+            jobId,
+            Pid: 123,
+            Running: false,
+            ExitCode: 0,
+            StartedUtc: DateTimeOffset.UtcNow,
+            Script: "'started'",
+            OutputPath: Path.Combine(Path.GetTempPath(), "ptk-terminal-audit.log"))
+        {
+            ExecutionOutcomeUnknown = executionOutcomeUnknown,
+            ExecutionOutcomeFailureCode = executionOutcomeUnknown ? detailCode : null,
+            RootTerminationConfirmed = true,
+            OutputCaptureComplete = false,
+            OutputFailureCode = executionOutcomeUnknown ? "rtk_output_read_failed" : detailCode,
+        });
+
+        var published = fixture.Events()[^1];
+        Assert.Equal(expectedEvent, EventType(published));
+        AssertOutcome(
+            published,
+            executionOutcomeUnknown ? "outcome_unknown" : "completed",
+            "confirmed",
+            "complete");
+        Assert.Equal(
+            detailCode,
+            published.GetProperty("outcome").GetProperty("detail_code").GetString());
     }
 
     [Fact]

@@ -14,8 +14,9 @@ public static class JobTool
         "bounded, and ends with the next offset to pass on the following poll; " +
         "action=status reports run state, exit code, and the log path; kill stops " +
         "a job (and its process tree); list shows all jobs. Jobs are cold child " +
-        "processes with no warm session state; the complete raw output lives in " +
-        "the job's log file. Jobs are killed by ptk_reset and at server shutdown.")]
+        "processes with no warm session state; captured output lives in the job's " +
+        "log file and status reports whether its completeness is known. Jobs are " +
+        "killed by ptk_reset and at server shutdown.")]
     public static async Task<string> Job(
         RunspaceHost host,
         JobManager jobs,
@@ -107,11 +108,18 @@ public static class JobTool
                 // duplicate side-effecting work and the offset has already
                 // moved past the middle. The recovery hint rides INTO
                 // shaping, so the marker itself names the honest recovery
-                // (the raw log) exactly when the module elides;
+                // (the captured log) exactly when the module elides;
                 // two downstream inference heuristics both proved unsound
                 // (ANSI stripping shortens without eliding, near-boundary
                 // elision lengthens).
-                var elisionHint = $"read the complete raw log at {snapshot.OutputPath} if the elided middle matters";
+                var logDescription = snapshot.OutputCaptureComplete switch
+                {
+                    true => "complete captured log",
+                    false => "available partial captured log",
+                    _ => "available captured log (completeness unknown)",
+                };
+                var elisionHint =
+                    $"read the {logDescription} at {snapshot.OutputPath} if the elided middle matters";
                 var shapedResult = text.Length == 0
                     ? new ShapedTextResult("(no new output)", null)
                     : audit is null
@@ -131,8 +139,8 @@ public static class JobTool
                 if (shapedResult.Shaping is { } shaping)
                     audit?.RecordOutputShaping(shaping);
                 var shaped = shapedResult.Text;
-                var state = snapshot.Running ? "running" : $"exited {snapshot.ExitCode}";
-                return $"{shaped}\n[job {id} {state}] next offset: {nextOffset}";
+                var capture = CaptureState(snapshot);
+                return $"{shaped}\n[job {id} {State(snapshot)}{capture}] next offset: {nextOffset}";
             }
             default:
                 return "[unknown action - use status | output | kill | list]";
@@ -141,9 +149,41 @@ public static class JobTool
 
     private static string Describe(JobSnapshot snapshot)
     {
-        var state = snapshot.Running ? $"running (pid {snapshot.Pid})" : $"exited {snapshot.ExitCode}";
         var script = snapshot.Script.Replace('\r', ' ').Replace('\n', ' ');
         if (script.Length > 100) script = script[..97] + "...";
-        return $"job {snapshot.Id}: {state}, started {snapshot.StartedUtc:HH:mm:ss}Z, log: {snapshot.OutputPath}\n  script: {script}";
+        return $"job {snapshot.Id}: {State(snapshot)}{CaptureState(snapshot)}, " +
+               $"started {snapshot.StartedUtc:HH:mm:ss}Z, log: {snapshot.OutputPath}\n  script: {script}";
     }
+
+    private static string State(JobSnapshot snapshot)
+    {
+        if (snapshot.Running)
+        {
+            return snapshot.ExecutionOutcomeUnknown
+                ? $"outcome unknown; containment pending (pid {snapshot.Pid})"
+                : $"running (pid {snapshot.Pid})";
+        }
+        if (snapshot.StartOutcomeUnknown)
+        {
+            return snapshot.RootTerminationConfirmed
+                ? "outcome unknown (start uncertain; root termination confirmed)"
+                : "outcome unknown (start and root termination unconfirmed)";
+        }
+        if (!snapshot.RootTerminationConfirmed)
+            return "outcome unknown (root termination unconfirmed)";
+        if (snapshot.ExecutionOutcomeUnknown)
+        {
+            return $"outcome unknown (root termination confirmed; " +
+                   $"{snapshot.ExecutionOutcomeFailureCode ?? "cause unknown"})";
+        }
+        return $"exited {snapshot.ExitCode}";
+    }
+
+    private static string CaptureState(JobSnapshot snapshot) =>
+        snapshot.OutputCaptureComplete switch
+        {
+            false => $", output incomplete ({snapshot.OutputFailureCode ?? "unknown"})",
+            null when !snapshot.Running => ", output completeness unknown",
+            _ => string.Empty,
+        };
 }

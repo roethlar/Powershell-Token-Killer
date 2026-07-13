@@ -204,6 +204,31 @@ public static class InvokeTool
                         : terminalLease.CompleteAsync;
                     job = jobs.CommitStart(plan, onTerminal);
                 }
+                catch (JobStartException exception) when (exception.ProcessStarted is true)
+                {
+                    var unknown =
+                        $"[job {plan.Id} started; outcome unknown] The host confirmed that the " +
+                        "background process started but its startup path then failed. PTK retained " +
+                        "the job, attempted containment, and will not retry it; inspect " +
+                        $"ptk_job status/output id={plan.Id}.";
+                    var outcomeRecorded =
+                        audit?.RecordJobStartedOutcomeUnknown(plan.Id, unknown) ?? true;
+                    jobs.ConfirmStartRecorded(plan.Id);
+                    return outcomeRecorded
+                        ? unknown
+                        : $"[job {plan.Id} started] Required audit persistence failed after launch; the execution outcome is unknown.";
+                }
+                catch (JobStartException exception) when (exception.ProcessStarted is null)
+                {
+                    var unknown =
+                        $"[job {plan.Id} start outcome unknown] The host could not confirm whether " +
+                        "the background process started. PTK retained the job record but had no " +
+                        "associated process handle with which to confirm containment, and it will " +
+                        $"not retry; inspect ptk_job status/output id={plan.Id}.";
+                    audit?.RecordJobStartOutcomeUnknown(plan.Id, unknown);
+                    terminalLease?.ReleaseWithoutTerminal();
+                    return unknown;
+                }
                 catch (Exception)
                 {
                     terminalLease?.ReleaseWithoutTerminal();

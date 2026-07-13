@@ -615,10 +615,44 @@ internal sealed class AuditCallContext : IInvocationAuthorizer
         }
     }
 
+    internal bool RecordJobStartedOutcomeUnknown(long jobId, string response)
+    {
+        try
+        {
+            Append(
+                "job.started",
+                outcomeState: "started",
+                detailCode: "process_start_outcome_unknown",
+                jobId: jobId,
+                terminationCertainty: "unknown",
+                rootCoverage: "unknown");
+            if (_parentEventId is Guid parent) _jobTerminalLease?.SetParent(parent);
+            CompleteCall("failed", response, terminationCertainty: "unknown");
+            return true;
+        }
+        catch (AuditUnavailableException)
+        {
+            _reservation?.Release();
+            return false;
+        }
+    }
+
     internal void RecordJobStartFailed(long jobId, string detailCode, string response)
     {
         TryAppend("job.start_failed", "failed", detailCode, jobId);
         CompleteCall("failed", response);
+    }
+
+    internal void RecordJobStartOutcomeUnknown(long jobId, string response)
+    {
+        TryAppend(
+            "job.start_failed",
+            "outcome_unknown",
+            "process_start_outcome_unknown",
+            jobId,
+            terminationCertainty: "unknown",
+            rootCoverage: "unknown");
+        CompleteCall("failed", response, terminationCertainty: "unknown");
     }
 
     internal void RecordJobNotStarted(string detailCode, string response, long? jobId = null)
@@ -1112,13 +1146,25 @@ internal sealed class AuditJobTerminalLease
         if (Interlocked.Exchange(ref _completed, 1) != 0) return Task.CompletedTask;
         try
         {
-            var eventType = snapshot.KillRequested ? "job.killed" : "job.completed";
-            var detailCode = snapshot.TerminationReason switch
+            var outcomeUnknown = snapshot.ExecutionOutcomeUnknown ||
+                                 !snapshot.RootTerminationConfirmed;
+            var eventType = outcomeUnknown
+                ? "job.outcome_unknown"
+                : snapshot.KillRequested ? "job.killed" : "job.completed";
+            var detailCode = snapshot.StartOutcomeUnknown
+                ? "process_start_outcome_unknown"
+                : !snapshot.RootTerminationConfirmed
+                ? "root_termination_unconfirmed"
+                : snapshot.ExecutionOutcomeUnknown
+                ? snapshot.ExecutionOutcomeFailureCode ?? "execution_outcome_unknown"
+                : snapshot.TerminationReason switch
             {
                 JobTerminationReason.ExplicitKill => "explicit_kill",
                 JobTerminationReason.Reset => "reset",
                 JobTerminationReason.Shutdown => "shutdown",
-                _ => null,
+                _ => snapshot.OutputCaptureComplete == false
+                    ? snapshot.OutputFailureCode ?? "output_capture_incomplete"
+                    : null,
             };
             _journal.Append(
                 _reservation,
@@ -1144,15 +1190,21 @@ internal sealed class AuditJobTerminalLease
                     Routing = _routing,
                     Outcome = new AuditOutcome
                     {
-                        State = snapshot.KillRequested ? "killed" : "completed",
+                        State = outcomeUnknown
+                            ? "outcome_unknown"
+                            : snapshot.KillRequested ? "killed" : "completed",
                         DetailCode = detailCode,
                         ExitCode = snapshot.ExitCode,
-                        TerminationCertainty = "confirmed",
+                        TerminationCertainty = snapshot.RootTerminationConfirmed
+                            ? "confirmed"
+                            : "unknown",
                     },
                     Coverage = new AuditCoverage
                     {
                         PtkRequest = true,
-                        RootProcessObserved = "complete",
+                        RootProcessObserved = snapshot.RootTerminationConfirmed
+                            ? "complete"
+                            : "unknown",
                         DescendantsObserved = "unknown",
                         RemoteEffectObserved = "unknown",
                     },

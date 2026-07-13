@@ -98,8 +98,10 @@ public sealed class RawUsageTests : IDisposable
 
         // The marker itself carries the job-context recovery (sd3-2..sd3-4:
         // the hint rides into shaping; nothing is inferred downstream).
-        Assert.Contains("elided - read the complete raw log at", poll);
-        Assert.Contains("job-", poll); // the raw log path is named
+        Assert.Contains(
+            "elided - read the available captured log (completeness unknown) at",
+            poll);
+        Assert.Contains("job-", poll); // the captured log path is named
         Assert.DoesNotContain("rerun with raw=true", poll);
     }
 
@@ -129,10 +131,10 @@ public sealed class RawUsageTests : IDisposable
         var poll = await JobTool.Job(_host, _jobs, "output", CancellationToken.None, id: 1, offset: 0);
 
         Assert.Contains("elided", poll); // the job's own text came through
-        // "raw log" catches any form of fabricated log-recovery advice —
+        // "captured log" catches any form of fabricated log-recovery advice —
         // the current hint phrasing and the earlier appended-note phrasing
         // alike; the job's own printed text contains neither.
-        Assert.DoesNotContain("raw log", poll);
+        Assert.DoesNotContain("captured log", poll);
     }
 
     private static string DescriptionOf(ICustomAttributeProvider member) =>

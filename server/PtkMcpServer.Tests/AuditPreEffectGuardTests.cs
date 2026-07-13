@@ -1445,6 +1445,85 @@ public sealed class AuditPreEffectGuardTests : IDisposable
     }
 
     [Fact]
+    public async Task Associated_start_exception_records_started_failed_call_and_one_unknown_terminal()
+    {
+        using var fixture = CreateFixture();
+        var marker = Path.Combine(fixture.Root, "associated-starts.txt");
+        var script =
+            $"Add-Content -LiteralPath {Literal(marker)} -Value x; Start-Sleep -Seconds 300";
+        var processStarts = 0;
+        fixture.Jobs.ProcessStartOverrideForTests = process =>
+        {
+            Assert.True(process.Start());
+            Interlocked.Increment(ref processStarts);
+            Assert.True(
+                SpinWait.SpinUntil(MarkerWasWritten, TimeSpan.FromSeconds(10)),
+                "the associated background process never reached its marker");
+            throw new IOException("injected host failure after Process.Start");
+        };
+
+        var result = await fixture.Filter(
+            Call(
+                "ptk_invoke",
+                ("script", script),
+                ("route", "pwsh"),
+                ("background", true)),
+            async token => Text(await InvokeTool.Invoke(
+                fixture.Host,
+                fixture.Jobs,
+                fixture.RawUsage,
+                script,
+                token,
+                route: "pwsh",
+                background: true,
+                auditContext: fixture.AuditContext)));
+
+        Assert.Contains("started; outcome unknown", ResultText(result), StringComparison.Ordinal);
+        var job = Assert.Single(fixture.Jobs.List());
+        await WaitUntilAsync(() => fixture.Jobs.Snapshot(job.Id)?.Running == false);
+        await WaitUntilAsync(() =>
+            fixture.EventTypes().Count(type => type == "job.outcome_unknown") == 1);
+
+        Assert.Equal(1, processStarts);
+        Assert.Equal(["x"], File.ReadAllLines(marker));
+        var final = fixture.Jobs.Snapshot(job.Id)!;
+        Assert.False(final.StartOutcomeUnknown);
+        Assert.True(final.ExecutionOutcomeUnknown);
+        Assert.True(final.RootTerminationConfirmed);
+        var events = fixture.Events();
+        Assert.Equal(
+            [
+                "call.accepted",
+                "job.start_requested",
+                "execution.validation_started",
+                "execution.prepare_authorized",
+                "execution.validation_completed",
+                "execution.planned",
+                "execution.dispatched",
+                "job.started",
+                "call.failed",
+                "job.outcome_unknown",
+            ],
+            events.Select(value => value.GetProperty("event_type").GetString()));
+        var terminal = events[^1];
+        Assert.Equal(
+            "outcome_unknown",
+            terminal.GetProperty("outcome").GetProperty("state").GetString());
+        Assert.Equal(
+            "confirmed",
+            terminal.GetProperty("outcome").GetProperty("termination_certainty").GetString());
+        Assert.Equal(
+            "complete",
+            terminal.GetProperty("coverage").GetProperty("root_process_observed").GetString());
+
+        bool MarkerWasWritten()
+        {
+            try { return File.Exists(marker) && File.ReadAllLines(marker).Length == 1; }
+            catch (IOException) { return false; }
+        }
+    }
+
+    [Fact]
     public async Task Explicit_kill_dispatch_is_unconfirmed_and_terminal_carries_explicit_reason()
     {
         using var fixture = CreateFixture();

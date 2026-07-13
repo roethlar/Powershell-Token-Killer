@@ -1,4 +1,6 @@
+using System.Buffers;
 using System.Collections.Concurrent;
+using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Text;
 
@@ -92,6 +94,54 @@ public readonly record struct JobKillResult(
     public bool KillRequested => Disposition == JobKillDisposition.Requested;
 }
 
+/// <summary>
+/// Immutable execution facts retained with a job. The dispatch is the one
+/// authorized descriptor; every exposed fact is projected from that same
+/// object so route and provenance cannot drift independently.
+/// </summary>
+internal sealed class JobExecutionMetadata
+{
+    internal JobExecutionMetadata(ExecutionDispatch dispatch)
+    {
+        ArgumentNullException.ThrowIfNull(dispatch);
+        Dispatch = dispatch;
+    }
+
+    internal ExecutionDispatch Dispatch { get; }
+    internal ExecutionDomain? Domain => Dispatch.Domain;
+    internal ExecutionPath ExecutionPath => Dispatch.ExecutionPath;
+    internal ResolutionContext ResolutionContext => Dispatch.ResolutionContext;
+    internal RequestedExecutionRoute RequestedRoute => Dispatch.RequestedRoute;
+    internal OutputProvenance OutputProvenance => Dispatch.OutputProvenance;
+    internal ImmutableArray<ExecutionPath> PermittedFallbacks => Dispatch.PermittedFallbacks;
+    internal ExecutionFallbackReason? FallbackReason => Dispatch.FallbackReason;
+    internal RtkExecutableIdentity? RtkExecutableIdentity => Dispatch.RtkExecutableIdentity;
+}
+
+/// <summary>
+/// A classified process-start failure. Only <see cref="ProcessStarted"/> false
+/// proves that an authorized pre-start fallback may still be considered.
+/// </summary>
+internal sealed class JobStartException : InvalidOperationException
+{
+    internal JobStartException(
+        string detailCode,
+        string message,
+        bool? processStarted,
+        ExecutionFallbackReason? provenPreStartFallbackReason = null,
+        Exception? innerException = null)
+        : base(message, innerException)
+    {
+        DetailCode = detailCode;
+        ProcessStarted = processStarted;
+        ProvenPreStartFallbackReason = provenPreStartFallbackReason;
+    }
+
+    internal string DetailCode { get; }
+    internal bool? ProcessStarted { get; }
+    internal ExecutionFallbackReason? ProvenPreStartFallbackReason { get; }
+}
+
 public sealed record JobSnapshot(
     long Id,
     int Pid,
@@ -103,6 +153,14 @@ public sealed record JobSnapshot(
     JobTerminationReason TerminationReason = JobTerminationReason.None)
 {
     public bool KillRequested => TerminationReason != JobTerminationReason.None;
+
+    internal JobExecutionMetadata Execution { get; init; } = null!;
+    internal bool? OutputCaptureComplete { get; init; }
+    internal string? OutputFailureCode { get; init; }
+    internal bool RootTerminationConfirmed { get; init; } = true;
+    internal bool StartOutcomeUnknown { get; init; }
+    internal bool ExecutionOutcomeUnknown { get; init; }
+    internal string? ExecutionOutcomeFailureCode { get; init; }
 }
 
 /// <summary>
@@ -116,29 +174,33 @@ public sealed record JobStartPlan(
     string Script,
     string? WorkingDirectory,
     string OutputPath,
-    string EncodedCommand)
+    string? EncodedCommand)
 {
-    // Ephemeral typed fact for the exact descriptor crossing Process.Start.
-    // Slice 5 will replace this fixed current path with a computed cold plan
-    // and persist its route/provenance in job metadata.
-    internal ExecutionPath ExecutionPath { get; init; } =
-        PtkMcpServer.ExecutionPath.PowerShellDirect;
+    internal ExecutionDispatch Dispatch { get; init; } = null!;
+    internal JobExecutionMetadata Execution { get; init; } = null!;
+    internal bool DispatchBound { get; init; }
+    internal string? AuthorizedWorkingDirectory { get; init; }
+    internal ExecutionPath ExecutionPath =>
+        Dispatch?.ExecutionPath ?? PtkMcpServer.ExecutionPath.PowerShellDirect;
 }
 
 /// <summary>
-/// Owns background jobs (greenfield-design D3): each job is a child pwsh process
-/// that redirects all of its own streams to a log file under the jobs directory.
-/// A job deliberately does NOT see the warm session's state — jobs are for
-/// builds and watchers, native-heavy work that needs no warm state; the pwsh
-/// cold start is noise at job timescales, and a separate process gives robust
-/// kill/cleanup semantics with no thread-safety questions against the runspace.
+/// Owns cold background jobs as direct PowerShell or RTK child processes and
+/// retains one typed route/provenance descriptor through terminal publication.
+/// Jobs deliberately do NOT see the warm session's state; a separate process
+/// gives robust kill/cleanup semantics without runspace thread-safety hazards.
 /// </summary>
 public sealed class JobManager : IDisposable
 {
+    private static readonly TimeSpan PostExitOutputDrainGrace = TimeSpan.FromSeconds(5);
+    private static readonly TimeSpan AbortedOutputDrainGrace = TimeSpan.FromSeconds(2);
     private readonly ConcurrentDictionary<long, JobEntry> _jobs = new();
+    private readonly Dictionary<long, JobStartAttempt> _startAttempts = new();
     private readonly string _jobsDir;
     private readonly JobPwshExecutable _pwshExecutable;
     private readonly bool _allowColdBackground;
+    private readonly TimeSpan _postExitOutputDrainGrace;
+    private readonly TimeSpan _abortedOutputDrainGrace;
     private readonly object _shutdownGate = new();
     private long _nextId;
     private Task? _shutdownTask;
@@ -147,7 +209,27 @@ public sealed class JobManager : IDisposable
     private long _generation;
     internal Func<Task>? ShutdownOverrideForTests { get; set; }
     internal Action<JobStartPlan>? BeforeProcessStartForTests { get; set; }
+    internal Func<Process, bool>? ProcessStartOverrideForTests { get; set; }
     internal Action<Process>? BeforeKillForTests { get; set; }
+    internal Action<Process>? BeforeInternalContainmentForTests { get; set; }
+    internal Action<JobStartPlan>? BeforeOutputWriteForTests { get; set; }
+    internal Func<JobStartPlan, Task>? BeforeOutputReadForTests { get; set; }
+    internal Func<JobStartPlan, Task>? BeforeOutputDrainCompletesForTests { get; set; }
+
+    private enum JobStartAttemptState
+    {
+        InProgress,
+        FallbackAvailable,
+        Consumed,
+    }
+
+    private sealed class JobStartAttempt
+    {
+        public required ExecutionPlan Plan { get; init; }
+        public required bool IsFallbackAttempt { get; set; }
+        public ExecutionFallbackReason? ProvenFallbackReason { get; set; }
+        public JobStartAttemptState State { get; set; }
+    }
 
     private sealed class JobEntry
     {
@@ -155,13 +237,174 @@ public sealed class JobManager : IDisposable
         public required string Script { get; init; }
         public required string OutputPath { get; init; }
         public required DateTimeOffset StartedUtc { get; init; }
+        public required JobStartPlan StartPlan { get; init; }
+        public required JobExecutionMetadata Execution { get; init; }
         public Func<JobSnapshot, Task>? OnTerminal { get; init; }
         public TaskCompletionSource<bool> StartRecordPublished { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
         public TaskCompletionSource<bool> TerminalCompleted { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
+        public TaskCompletionSource<bool> InternalContainmentRequiredSignal { get; } =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         public int TerminalPublished;
         public int TerminationReason;
+        public int ProcessId;
+        public int RootExited;
+        public int RootTerminationConfirmed;
+        public int StartOutcomeUnknown;
+        public int ExecutionOutcomeUnknown;
+        public int InternalContainmentRequired;
+        public int? ExitCode;
+        public int OutputCaptureState;
+        public int OutputFinalized;
+        public string? OutputFailureCode;
+        public string? ExecutionOutcomeFailureCode;
+        public Task OutputTask { get; set; } = Task.CompletedTask;
+        public Stream? StandardOutputStream { get; set; }
+        public Stream? StandardErrorStream { get; set; }
+        public JobOutputWriter? OutputWriter { get; init; }
+    }
+
+    private sealed class JobOutputWriter : IDisposable
+    {
+        private readonly FileStream _stream;
+        private readonly SemaphoreSlim _gate = new(1, 1);
+        private readonly Action? _beforeWrite;
+        private readonly Action<string> _recordFailure;
+        private readonly TimeSpan _operationTimeout;
+        private int _writesDisabled;
+        private int _disposed;
+
+        internal JobOutputWriter(
+            string path,
+            Action? beforeWrite,
+            Action<string> recordFailure,
+            TimeSpan operationTimeout)
+        {
+            _beforeWrite = beforeWrite;
+            _recordFailure = recordFailure;
+            _operationTimeout = operationTimeout;
+            _stream = new FileStream(
+                path,
+                FileMode.CreateNew,
+                FileAccess.Write,
+                FileShare.ReadWrite | FileShare.Delete,
+                bufferSize: 64 * 1024,
+                FileOptions.Asynchronous | FileOptions.SequentialScan);
+        }
+
+        internal async Task AppendAsync(ReadOnlyMemory<byte> bytes)
+        {
+            if (Volatile.Read(ref _writesDisabled) != 0) return;
+            // A timed-out append may outlive its pump call. Own the bytes so
+            // the ArrayPool buffer can be reused without mutating a late write
+            // or leaking another stream/job's later data into this log.
+            var ownedBytes = bytes.ToArray();
+            var append = AppendCoreAsync(ownedBytes);
+            if (await Task.WhenAny(append, Task.Delay(_operationTimeout)).ConfigureAwait(false) !=
+                append)
+            {
+                Volatile.Write(ref _writesDisabled, 1);
+                _recordFailure("rtk_output_write_unconfirmed");
+                ObserveLateFailure(append);
+                return;
+            }
+            await append.ConfigureAwait(false);
+        }
+
+        private async Task AppendCoreAsync(ReadOnlyMemory<byte> bytes)
+        {
+            await _gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_writesDisabled != 0 || _disposed != 0) return;
+                try
+                {
+                    // Ensure the bounded caller receives the Task before a
+                    // synchronous filesystem/hook stall can hold this method.
+                    await Task.Yield();
+                    _beforeWrite?.Invoke();
+                    await _stream.WriteAsync(bytes).ConfigureAwait(false);
+                    await _stream.FlushAsync().ConfigureAwait(false);
+                }
+                catch (Exception exception) when (!IsFatal(exception))
+                {
+                    Volatile.Write(ref _writesDisabled, 1);
+                    _recordFailure("rtk_output_write_failed");
+                }
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
+        internal async Task CompleteAsync(TimeSpan timeout)
+        {
+            if (timeout <= TimeSpan.Zero)
+            {
+                Abort();
+                _recordFailure("rtk_output_close_unconfirmed");
+                return;
+            }
+            var completion = CompleteCoreAsync();
+            if (await Task.WhenAny(completion, Task.Delay(timeout)).ConfigureAwait(false) !=
+                completion)
+            {
+                Abort();
+                _recordFailure("rtk_output_close_unconfirmed");
+                ObserveLateFailure(completion);
+                return;
+            }
+            await completion.ConfigureAwait(false);
+        }
+
+        private async Task CompleteCoreAsync()
+        {
+            await _gate.WaitAsync().ConfigureAwait(false);
+            try
+            {
+                if (_disposed != 0) return;
+                Volatile.Write(ref _writesDisabled, 1);
+                try { await _stream.FlushAsync().ConfigureAwait(false); }
+                catch (Exception exception) when (!IsFatal(exception))
+                {
+                    _recordFailure("rtk_output_flush_failed");
+                }
+                if (Interlocked.Exchange(ref _disposed, 1) == 0)
+                {
+                    try { await _stream.DisposeAsync().ConfigureAwait(false); }
+                    catch (Exception exception) when (!IsFatal(exception))
+                    {
+                        _recordFailure("rtk_output_close_failed");
+                    }
+                }
+            }
+            finally
+            {
+                _gate.Release();
+            }
+        }
+
+        internal void Abort()
+        {
+            Volatile.Write(ref _writesDisabled, 1);
+            if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            try { _stream.Dispose(); } catch { }
+        }
+
+        public void Dispose()
+        {
+            Abort();
+        }
+
+        private static void ObserveLateFailure(Task task) =>
+            _ = task.ContinueWith(
+                completed => _ = completed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.OnlyOnFaulted |
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
     }
 
     public JobManager(string? jobsDirOverride = null)
@@ -175,10 +418,18 @@ public sealed class JobManager : IDisposable
     internal JobManager(
         JobPwshExecutable pwshExecutable,
         string? jobsDirOverride = null,
-        bool allowColdBackground = true)
+        bool allowColdBackground = true,
+        TimeSpan? postExitOutputDrainGrace = null,
+        TimeSpan? abortedOutputDrainGrace = null)
     {
+        if (postExitOutputDrainGrace is { } drainGrace && drainGrace <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(postExitOutputDrainGrace));
+        if (abortedOutputDrainGrace is { } abortGrace && abortGrace <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(abortedOutputDrainGrace));
         _pwshExecutable = pwshExecutable;
         _allowColdBackground = allowColdBackground;
+        _postExitOutputDrainGrace = postExitOutputDrainGrace ?? PostExitOutputDrainGrace;
+        _abortedOutputDrainGrace = abortedOutputDrainGrace ?? AbortedOutputDrainGrace;
         _jobsDir = jobsDirOverride ?? Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile), ".ptk", "jobs");
         SweepOldLogs();
@@ -216,6 +467,116 @@ public sealed class JobManager : IDisposable
     /// </summary>
     public JobStartPlan PrepareStart(string script, string? workingDirectory = null)
     {
+        ArgumentNullException.ThrowIfNull(script);
+        var compatibilityPlan = new ExecutionPlan(
+            script,
+            script,
+            ExecutionDomain.PowerShell,
+            ExecutionPath.PowerShellDirect,
+            PreExecutionValidation.None,
+            ResolutionContext.Cold,
+            RequestedExecutionRoute.PowerShell,
+            OutputProvenance.DirectText,
+            ImmutableArray<ExecutionPath>.Empty,
+            fallbackReason: null,
+            rtkExecutableIdentity: null);
+        return PrepareStartCore(
+            ExecutionDispatch.FromPlan(compatibilityPlan),
+            workingDirectory);
+    }
+
+    /// <summary>
+    /// Retains one already-selected cold dispatch without allocating files or
+    /// starting a process. The caller-supplied cwd is authoritative for cold
+    /// direct PowerShell until cold direct plans carry it themselves.
+    /// </summary>
+    internal JobStartPlan PrepareStart(
+        ExecutionDispatch dispatch,
+        string workingDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(dispatch);
+        var reservation = PrepareStart(dispatch.Plan.OriginalScript);
+        return BindDispatch(reservation, dispatch, workingDirectory);
+    }
+
+    /// <summary>
+    /// Binds the final cold dispatch to an already allocated/audited public job
+    /// ID without allocating a second ID or performing filesystem/process work.
+    /// </summary>
+    internal JobStartPlan BindDispatch(
+        JobStartPlan reservation,
+        ExecutionDispatch dispatch,
+        string workingDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentNullException.ThrowIfNull(dispatch);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
+        if (!string.Equals(
+                reservation.Script,
+                dispatch.Plan.OriginalScript,
+                StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "The allocated job intent differs from the authorized dispatch.");
+        }
+        if (reservation.DispatchBound)
+        {
+            if (reservation.AuthorizedWorkingDirectory is null ||
+                !PathsEqual(reservation.AuthorizedWorkingDirectory, workingDirectory))
+            {
+                throw new InvalidOperationException(
+                    "A bound job cannot be rebound to a different working directory.");
+            }
+            if (!ReferenceEquals(reservation.Dispatch.Plan, dispatch.Plan))
+            {
+                throw new InvalidOperationException(
+                    "A bound job can only consume a fallback from its originally authorized plan.");
+            }
+            if (!ReferenceEquals(reservation.Dispatch, dispatch) &&
+                !(reservation.Dispatch.ExecutionPath == ExecutionPath.Rtk &&
+                  dispatch.IsFallback))
+            {
+                throw new InvalidOperationException(
+                    "A bound job dispatch cannot be replanned or retried after fallback.");
+            }
+        }
+        if (!PathsEqual(reservation.OutputPath, ExpectedOutputPath(reservation.Id)))
+            throw new InvalidOperationException("The allocated job output path is invalid.");
+        if (dispatch.ResolutionContext != ResolutionContext.Cold)
+            throw new InvalidOperationException("Background execution requires a cold dispatch.");
+        if (dispatch.ExecutionPath is not (ExecutionPath.PowerShellDirect or ExecutionPath.Rtk))
+            throw new InvalidOperationException("The background runner supports cold PowerShell or RTK dispatches only.");
+        if (!Path.IsPathFullyQualified(workingDirectory))
+            throw new InvalidOperationException("A typed background dispatch requires an absolute filesystem cwd.");
+        if (dispatch.ExecutionPath == ExecutionPath.PowerShellDirect &&
+            dispatch.ExecutionScript is null)
+        {
+            throw new InvalidOperationException("A direct PowerShell dispatch requires an execution script.");
+        }
+        if (dispatch.WorkingDirectory is { } plannedWorkingDirectory &&
+            !PathsEqual(plannedWorkingDirectory, workingDirectory))
+        {
+            throw new InvalidOperationException("The background cwd differs from the authorized dispatch.");
+        }
+
+        var encodedCommand = dispatch.ExecutionPath == ExecutionPath.PowerShellDirect
+            ? BuildEncodedCommand(dispatch.ExecutionScript!, reservation.OutputPath)
+            : null;
+        return reservation with
+        {
+            WorkingDirectory = workingDirectory,
+            EncodedCommand = encodedCommand,
+            Dispatch = dispatch,
+            Execution = new JobExecutionMetadata(dispatch),
+            DispatchBound = true,
+            AuthorizedWorkingDirectory = workingDirectory,
+        };
+    }
+
+    private JobStartPlan PrepareStartCore(
+        ExecutionDispatch dispatch,
+        string? workingDirectory)
+    {
         long generation;
         lock (_shutdownGate)
         {
@@ -225,14 +586,34 @@ public sealed class JobManager : IDisposable
             generation = _stopping || _resetting ? -1 : _generation;
         }
         var id = Interlocked.Increment(ref _nextId);
-        var outputPath = Path.Combine(_jobsDir, $"job-{Environment.ProcessId}-{id}.log");
+        var outputPath = ExpectedOutputPath(id);
+        var encodedCommand = dispatch.ExecutionPath == ExecutionPath.PowerShellDirect
+            ? BuildEncodedCommand(dispatch.ExecutionScript!, outputPath)
+            : null;
+        var execution = new JobExecutionMetadata(dispatch);
 
-        // The child redirects its own streams to the log file, so output streams
-        // and survives regardless of this server's pipes. The user script enters
-        // the wrapper base64-encoded and is compiled INSIDE it: embedding raw
-        // text would let an unparseable script kill the whole encoded command
-        // before the redirection exists, losing the parse error to the child's
-        // (unredirected) stderr. Parse failures land in the log with exit 64.
+        return new JobStartPlan(
+            id,
+            generation,
+            dispatch.Plan.OriginalScript,
+            workingDirectory,
+            outputPath,
+            encodedCommand)
+        {
+            Dispatch = dispatch,
+            Execution = execution,
+            AuthorizedWorkingDirectory = workingDirectory,
+        };
+    }
+
+    private string ExpectedOutputPath(long id) =>
+        Path.Combine(_jobsDir, $"job-{Environment.ProcessId}-{id}.log");
+
+    private static string BuildEncodedCommand(string script, string outputPath)
+    {
+        // The child redirects its own streams to the log file, so output survives
+        // regardless of this server's pipes. The user script is compiled inside
+        // the wrapper so parse failures also land in the log (exit 64).
         var logLiteral = "'" + outputPath.Replace("'", "''") + "'";
         var scriptB64 = Convert.ToBase64String(Encoding.Unicode.GetBytes(script));
         var wrapped =
@@ -242,16 +623,7 @@ public sealed class JobManager : IDisposable
             "catch { $_ | Out-File -LiteralPath $ptkJobLog; exit 64 }\n" +
             "& $ptkJobBlock *> $ptkJobLog\n" +
             "if ($global:LASTEXITCODE -is [int]) { exit $global:LASTEXITCODE } else { exit 0 }";
-
-        var encodedCommand = Convert.ToBase64String(Encoding.Unicode.GetBytes(wrapped));
-
-        return new JobStartPlan(
-            id,
-            generation,
-            script,
-            workingDirectory,
-            outputPath,
-            encodedCommand);
+        return Convert.ToBase64String(Encoding.Unicode.GetBytes(wrapped));
     }
 
     /// <summary>
@@ -270,87 +642,409 @@ public sealed class JobManager : IDisposable
             throw new InvalidOperationException(
                 "Cold background jobs are disabled for this session.");
         }
-        if (plan.ExecutionPath != ExecutionPath.PowerShellDirect)
+        ValidateStartPlan(plan);
+        BeginStartAttempt(plan);
+        try
         {
-            throw new InvalidOperationException(
-                "The current background runner only supports direct PowerShell execution.");
+            var snapshot = CommitAdmittedStart(plan, onTerminal);
+            FinishStartAttempt(plan, provenFallbackReason: null);
+            return snapshot;
         }
-        var pwshExecutablePath = _pwshExecutable.RequireAvailable();
+        catch (JobStartException exception)
+        {
+            FinishStartAttempt(
+                plan,
+                exception.ProcessStarted is false
+                    ? exception.ProvenPreStartFallbackReason
+                    : null);
+            throw;
+        }
+        catch
+        {
+            FinishStartAttempt(plan, provenFallbackReason: null);
+            throw;
+        }
+    }
+
+    private JobSnapshot CommitAdmittedStart(
+        JobStartPlan plan,
+        Func<JobSnapshot, Task>? onTerminal)
+    {
+
+        ProcessStartInfo startInfo;
+        if (plan.ExecutionPath == ExecutionPath.PowerShellDirect)
+        {
+            if (_pwshExecutable.AbsolutePath is not { } pwshExecutablePath)
+            {
+                throw new JobStartException(
+                    "pwsh_executable_unavailable",
+                    "Background jobs are unavailable because pwsh was not found on the server-start PATH.",
+                    processStarted: false);
+            }
+            startInfo = CreatePowerShellStartInfo(plan, pwshExecutablePath);
+        }
+        else
+        {
+            var rtk = plan.Dispatch.RtkExecutableIdentity!;
+            if (!rtk.MatchesCurrentFile())
+                throw RtkIdentityChanged();
+            startInfo = RtkProcessRunner.CreateStartInfo(plan.Dispatch);
+        }
+
         lock (_shutdownGate)
         {
             ThrowIfAdmissionClosedLocked();
         }
         Directory.CreateDirectory(_jobsDir);
 
-        var psi = new ProcessStartInfo
+        JobEntry? entry = null;
+        JobOutputWriter? outputWriter = null;
+        if (plan.ExecutionPath == ExecutionPath.Rtk)
         {
-            FileName = pwshExecutablePath,
-            RedirectStandardInput = true,
-            UseShellExecute = false,
-        };
-        if (plan.WorkingDirectory is not null) psi.WorkingDirectory = plan.WorkingDirectory;
-        psi.ArgumentList.Add("-NoProfile");
-        psi.ArgumentList.Add("-NonInteractive");
-        psi.ArgumentList.Add("-ExecutionPolicy");
-        psi.ArgumentList.Add("Bypass");
-        psi.ArgumentList.Add("-EncodedCommand");
-        psi.ArgumentList.Add(plan.EncodedCommand);
+            outputWriter = new JobOutputWriter(
+                plan.OutputPath,
+                () => BeforeOutputWriteForTests?.Invoke(plan),
+                code =>
+                {
+                    if (entry is not null) MarkOutputIncomplete(entry, code);
+                },
+                _abortedOutputDrainGrace);
+        }
 
         var process = new Process
         {
-            StartInfo = psi,
-            EnableRaisingEvents = true,
+            StartInfo = startInfo,
         };
-        var entry = new JobEntry
+        entry = new JobEntry
         {
             Process = process,
             Script = plan.Script,
             OutputPath = plan.OutputPath,
             StartedUtc = DateTimeOffset.UtcNow,
+            StartPlan = plan,
+            Execution = plan.Execution,
             OnTerminal = onTerminal,
+            OutputWriter = outputWriter,
         };
 
         lock (_shutdownGate)
         {
             if (_stopping || _resetting || plan.Generation != _generation)
             {
-                process.Dispose();
+                CleanupUnstarted(plan, entry);
                 throw new InvalidOperationException(
                     "The background-job start was invalidated by reset or shutdown.");
             }
             if (!_jobs.TryAdd(plan.Id, entry))
             {
-                process.Dispose();
+                CleanupUnstarted(plan, entry);
                 throw new InvalidOperationException($"job id {plan.Id} is already registered");
             }
 
-            process.Exited += (_, _) => _ = PublishTerminalAsync(plan.Id, entry);
-            var processStarted = false;
             try
             {
                 BeforeProcessStartForTests?.Invoke(plan);
-                if (!process.Start()) throw new InvalidOperationException("pwsh did not start");
-                processStarted = true;
-                try { process.StandardInput.Close(); } catch { /* EOF is best effort after a confirmed start */ }
-                return Snapshot(plan.Id)!;
+                if (plan.ExecutionPath == ExecutionPath.Rtk &&
+                    !plan.Dispatch.RtkExecutableIdentity!.MatchesCurrentFile())
+                {
+                    throw RtkIdentityChanged();
+                }
+                StartProcessOrThrow(plan, process);
+            }
+            catch (JobStartException exception) when (exception.ProcessStarted is null)
+            {
+                if (!RetainUnknownStart(entry)) throw;
+                throw new JobStartException(
+                    exception.DetailCode,
+                    exception.Message,
+                    processStarted: true,
+                    innerException: exception);
             }
             catch
             {
-                entry.StartRecordPublished.TrySetResult(false);
-                entry.TerminalCompleted.TrySetResult(true);
-                _jobs.TryRemove(plan.Id, out _);
-                if (processStarted)
-                {
-                    try
-                    {
-                        if (!process.HasExited) process.Kill(entireProcessTree: true);
-                    }
-                    catch { /* Preserve the authoritative start failure. */ }
-                }
-                process.Dispose();
+                CleanupUnstarted(plan, entry);
                 throw;
             }
+
+            // Process.Start returning true is the no-retry boundary. Everything
+            // below retains the entry and converts capture failures into terminal
+            // metadata instead of a fallback-eligible start failure.
+            entry.ProcessId = process.Id;
+            try { process.StandardInput.Close(); } catch { }
+            if (plan.ExecutionPath == ExecutionPath.Rtk)
+                InitializeRtkOutputCapture(entry);
+            _ = ObserveTerminalAsync(plan.Id, entry);
+            return SnapshotLocked(plan.Id, entry);
         }
+    }
+
+    private void BeginStartAttempt(JobStartPlan plan)
+    {
+        lock (_shutdownGate)
+        {
+            ThrowIfAdmissionClosedLocked();
+            if (plan.Generation != _generation)
+            {
+                throw new InvalidOperationException(
+                    "The background-job start was invalidated by reset or shutdown.");
+            }
+
+            if (!_startAttempts.TryGetValue(plan.Id, out var attempt))
+            {
+                if (plan.Dispatch.IsFallback)
+                {
+                    throw new InvalidOperationException(
+                        "A fallback job start requires a proven no-start from its initial RTK attempt.");
+                }
+                _startAttempts.Add(
+                    plan.Id,
+                    new JobStartAttempt
+                    {
+                        Plan = plan.Dispatch.Plan,
+                        IsFallbackAttempt = plan.Dispatch.IsFallback,
+                        State = JobStartAttemptState.InProgress,
+                    });
+                return;
+            }
+
+            if (attempt.State == JobStartAttemptState.FallbackAvailable &&
+                ReferenceEquals(attempt.Plan, plan.Dispatch.Plan) &&
+                plan.Dispatch.IsFallback &&
+                plan.Dispatch.FallbackReason == attempt.ProvenFallbackReason)
+            {
+                attempt.IsFallbackAttempt = true;
+                attempt.State = JobStartAttemptState.InProgress;
+                return;
+            }
+
+            throw new InvalidOperationException(
+                $"job start plan {plan.Id} was already consumed");
+        }
+    }
+
+    private void FinishStartAttempt(
+        JobStartPlan plan,
+        ExecutionFallbackReason? provenFallbackReason)
+    {
+        lock (_shutdownGate)
+        {
+            if (!_startAttempts.TryGetValue(plan.Id, out var attempt) ||
+                !ReferenceEquals(attempt.Plan, plan.Dispatch.Plan))
+            {
+                throw new InvalidOperationException(
+                    "The background start-attempt ledger lost its authorized plan.");
+            }
+
+            var fallbackAvailable = provenFallbackReason is not null &&
+                            !attempt.IsFallbackAttempt &&
+                            plan.Dispatch.ExecutionPath == ExecutionPath.Rtk &&
+                            plan.Dispatch.PermittedFallbacks.Contains(
+                                ExecutionPath.PowerShellDirect);
+            attempt.ProvenFallbackReason = fallbackAvailable
+                ? provenFallbackReason
+                : null;
+            attempt.State = fallbackAvailable
+                ? JobStartAttemptState.FallbackAvailable
+                : JobStartAttemptState.Consumed;
+        }
+    }
+
+    private static ProcessStartInfo CreatePowerShellStartInfo(
+        JobStartPlan plan,
+        string pwshExecutablePath)
+    {
+        var startInfo = new ProcessStartInfo
+        {
+            FileName = pwshExecutablePath,
+            RedirectStandardInput = true,
+            UseShellExecute = false,
+        };
+        if (plan.WorkingDirectory is not null)
+            startInfo.WorkingDirectory = plan.WorkingDirectory;
+        startInfo.ArgumentList.Add("-NoProfile");
+        startInfo.ArgumentList.Add("-NonInteractive");
+        startInfo.ArgumentList.Add("-ExecutionPolicy");
+        startInfo.ArgumentList.Add("Bypass");
+        startInfo.ArgumentList.Add("-EncodedCommand");
+        startInfo.ArgumentList.Add(plan.EncodedCommand!);
+        return startInfo;
+    }
+
+    private void ValidateStartPlan(JobStartPlan plan)
+    {
+        if (plan.Dispatch is null || plan.Execution is null ||
+            !ReferenceEquals(plan.Execution.Dispatch, plan.Dispatch))
+        {
+            throw new InvalidOperationException("The background descriptor has no immutable execution dispatch.");
+        }
+        var dispatch = plan.Dispatch;
+        if (dispatch.ResolutionContext != ResolutionContext.Cold)
+            throw new InvalidOperationException("Background execution requires a cold dispatch.");
+        if (dispatch.ExecutionPath is not (ExecutionPath.PowerShellDirect or ExecutionPath.Rtk))
+            throw new InvalidOperationException("The background runner supports cold PowerShell or RTK dispatches only.");
+        if (!string.Equals(plan.Script, dispatch.Plan.OriginalScript, StringComparison.Ordinal))
+            throw new InvalidOperationException("The background script differs from the authorized dispatch.");
+        if (!PathsEqual(plan.OutputPath, ExpectedOutputPath(plan.Id)))
+            throw new InvalidOperationException("The background output path differs from its allocated job ID.");
+
+        if (dispatch.ExecutionPath == ExecutionPath.PowerShellDirect)
+        {
+            if (dispatch.ExecutionScript is null ||
+                !string.Equals(
+                    plan.EncodedCommand,
+                    BuildEncodedCommand(dispatch.ExecutionScript, plan.OutputPath),
+                    StringComparison.Ordinal))
+            {
+                throw new InvalidOperationException("The PowerShell wrapper differs from the authorized dispatch.");
+            }
+            if (dispatch.WorkingDirectory is { } plannedWorkingDirectory &&
+                (plan.WorkingDirectory is null ||
+                 !PathsEqual(plannedWorkingDirectory, plan.WorkingDirectory)))
+            {
+                throw new InvalidOperationException("The background cwd differs from the authorized dispatch.");
+            }
+            if (plan.DispatchBound &&
+                (plan.WorkingDirectory is null ||
+                 plan.AuthorizedWorkingDirectory is null ||
+                 !PathsEqual(plan.AuthorizedWorkingDirectory, plan.WorkingDirectory)))
+            {
+                throw new InvalidOperationException("The background cwd differs from the bound job dispatch.");
+            }
+            return;
+        }
+
+        if (plan.EncodedCommand is not null ||
+            plan.WorkingDirectory is null ||
+            !Path.IsPathFullyQualified(plan.WorkingDirectory) ||
+            dispatch.WorkingDirectory is null ||
+            !PathsEqual(plan.WorkingDirectory, dispatch.WorkingDirectory))
+        {
+            throw new InvalidOperationException("The RTK descriptor differs from its authorized typed execution facts.");
+        }
+    }
+
+    private static bool PathsEqual(string left, string right)
+    {
+        try
+        {
+            return string.Equals(
+                Path.GetFullPath(left),
+                Path.GetFullPath(right),
+                OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal);
+        }
+        catch (Exception exception) when (exception is
+            ArgumentException or NotSupportedException or PathTooLongException)
+        {
+            return false;
+        }
+    }
+
+    private static JobStartException RtkIdentityChanged() => new(
+        "rtk_identity_changed",
+        "Pinned RTK execution facts changed before the background process started.",
+        processStarted: false,
+        ExecutionFallbackReason.RtkExecutableBecameUnavailable);
+
+    private void StartProcessOrThrow(JobStartPlan plan, Process process)
+    {
+        try
+        {
+            var started = ProcessStartOverrideForTests?.Invoke(process) ?? process.Start();
+            if (started) return;
+            throw new JobStartException(
+                plan.ExecutionPath == ExecutionPath.Rtk
+                    ? "rtk_process_start_failed"
+                    : "pwsh_process_start_failed",
+                "The background process did not start.",
+                processStarted: false,
+                plan.ExecutionPath == ExecutionPath.Rtk
+                    ? ExecutionFallbackReason.RtkExecutionPreparationFailed
+                    : null);
+        }
+        catch (JobStartException)
+        {
+            throw;
+        }
+        catch (Exception exception) when (RtkProcessRunner.IsProvenNoProcessStart(exception))
+        {
+            throw new JobStartException(
+                plan.ExecutionPath == ExecutionPath.Rtk
+                    ? "rtk_process_start_failed"
+                    : "pwsh_process_start_failed",
+                "The background process could not be started.",
+                processStarted: false,
+                plan.ExecutionPath == ExecutionPath.Rtk
+                    ? ExecutionFallbackReason.RtkExecutionPreparationFailed
+                    : null,
+                exception);
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            throw new JobStartException(
+                "background_process_start_outcome_unknown",
+                "Background process startup raised an indeterminate host failure; PTK will not retry it.",
+                processStarted: null,
+                innerException: exception);
+        }
+    }
+
+    private void CleanupUnstarted(JobStartPlan plan, JobEntry entry)
+    {
+        entry.StartRecordPublished.TrySetResult(false);
+        entry.TerminalCompleted.TrySetResult(true);
+        ((ICollection<KeyValuePair<long, JobEntry>>)_jobs).Remove(
+            new KeyValuePair<long, JobEntry>(plan.Id, entry));
+        entry.OutputWriter?.Dispose();
+        entry.Process.Dispose();
+        if (plan.ExecutionPath == ExecutionPath.Rtk)
+        {
+            try { File.Delete(plan.OutputPath); } catch { }
+        }
+    }
+
+    private bool RetainUnknownStart(JobEntry entry)
+    {
+        MarkOutputIncomplete(entry, "background_process_start_outcome_unknown");
+        MarkExecutionOutcomeUnknown(entry, "process_start_outcome_unknown");
+
+        try
+        {
+            // If Process.Start associated a child before raising, retain and
+            // contain that exact process. It is never eligible for fallback.
+            entry.ProcessId = entry.Process.Id;
+            try { entry.Process.StandardInput.Close(); } catch { }
+            if (entry.Execution.ExecutionPath == ExecutionPath.Rtk)
+                InitializeRtkOutputCapture(entry);
+            var containmentRequired = !RootAlreadyExited(entry.Process);
+            if (containmentRequired)
+                RequireInternalContainment(entry);
+            _ = ObserveTerminalAsync(entry.StartPlan.Id, entry);
+            if (containmentRequired)
+                _ = TryRequestContainmentBoundedAsync(entry.Process);
+            return true;
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            // No associated Process object is available. The public record is
+            // retained as an outcome-unknown tombstone instead of claiming a
+            // proven no-start or deleting its evidence spool.
+        }
+
+        Volatile.Write(ref entry.StartOutcomeUnknown, 1);
+        try
+        {
+            entry.OutputWriter?.CompleteAsync(_abortedOutputDrainGrace)
+                .GetAwaiter().GetResult();
+        }
+        catch { }
+        Volatile.Write(ref entry.RootExited, 1);
+        Volatile.Write(ref entry.OutputFinalized, 1);
+        Interlocked.Exchange(ref entry.TerminalPublished, 1);
+        entry.Process.Dispose();
+        entry.TerminalCompleted.TrySetResult(true);
+        return false;
     }
 
     /// <summary>
@@ -364,11 +1058,81 @@ public sealed class JobManager : IDisposable
         return entry.StartRecordPublished.TrySetResult(true);
     }
 
-    private async Task PublishTerminalAsync(long id, JobEntry entry)
+    private void InitializeRtkOutputCapture(JobEntry entry)
+    {
+        try
+        {
+            entry.StandardOutputStream = entry.Process.StandardOutput.BaseStream;
+            entry.StandardErrorStream = entry.Process.StandardError.BaseStream;
+            entry.OutputTask = CaptureRtkOutputAsync(entry);
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            MarkOutputIncomplete(entry, "rtk_output_pump_setup_failed");
+            entry.OutputTask = Task.CompletedTask;
+            MarkExecutionOutcomeUnknownIfContainmentRequired(
+                entry,
+                "rtk_output_pump_setup_failed");
+        }
+    }
+
+    private async Task CaptureRtkOutputAsync(JobEntry entry)
+    {
+        try
+        {
+            await Task.WhenAll(
+                PumpRtkOutputAsync(entry.StandardOutputStream!, entry),
+                PumpRtkOutputAsync(entry.StandardErrorStream!, entry))
+                .ConfigureAwait(false);
+            if (BeforeOutputDrainCompletesForTests is { } beforeComplete)
+                await beforeComplete(entry.StartPlan).ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            MarkOutputIncomplete(entry, "rtk_output_drain_failed");
+        }
+    }
+
+    private async Task PumpRtkOutputAsync(Stream source, JobEntry entry)
+    {
+        var buffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
+        try
+        {
+            while (true)
+            {
+                if (BeforeOutputReadForTests is { } beforeRead)
+                    await beforeRead(entry.StartPlan).ConfigureAwait(false);
+                var read = await source.ReadAsync(buffer.AsMemory()).ConfigureAwait(false);
+                if (read == 0) return;
+                await entry.OutputWriter!.AppendAsync(buffer.AsMemory(0, read)).ConfigureAwait(false);
+            }
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            MarkOutputIncomplete(entry, "rtk_output_read_failed");
+            MarkExecutionOutcomeUnknownIfContainmentRequired(
+                entry,
+                "rtk_output_read_failed");
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
+        }
+    }
+
+    private async Task ObserveTerminalAsync(long id, JobEntry entry)
     {
         if (Interlocked.Exchange(ref entry.TerminalPublished, 1) != 0) return;
         try
         {
+            var rootTerminationConfirmed =
+                await ObserveRootExitAsync(entry).ConfigureAwait(false);
+            if (rootTerminationConfirmed)
+                Volatile.Write(ref entry.RootTerminationConfirmed, 1);
+            Volatile.Write(ref entry.RootExited, 1);
+
+            await FinalizeOutputAsync(entry).ConfigureAwait(false);
+            if (Volatile.Read(ref entry.StartOutcomeUnknown) != 0) return;
             if (!await entry.StartRecordPublished.Task.ConfigureAwait(false)) return;
             var snapshot = Snapshot(id);
             if (snapshot is not null && entry.OnTerminal is not null)
@@ -382,9 +1146,207 @@ public sealed class JobManager : IDisposable
         }
         finally
         {
+            entry.Process.Dispose();
             entry.TerminalCompleted.TrySetResult(true);
         }
     }
+
+    private enum ContainmentRequestDisposition
+    {
+        AlreadyExited,
+        Requested,
+        Indeterminate,
+    }
+
+    private async Task<bool> ObserveRootExitAsync(JobEntry entry)
+    {
+        try
+        {
+            var wait = entry.Process.WaitForExitAsync();
+            if (!wait.IsCompleted &&
+                await Task.WhenAny(
+                    wait,
+                    entry.InternalContainmentRequiredSignal.Task).ConfigureAwait(false) != wait &&
+                await Task.WhenAny(
+                    wait,
+                    Task.Delay(_abortedOutputDrainGrace)).ConfigureAwait(false) != wait)
+            {
+                return await TryContainAndConfirmExitAsync(entry).ConfigureAwait(false);
+            }
+
+            await wait.ConfigureAwait(false);
+            CacheExitCode(entry);
+            return true;
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            return await TryContainAndConfirmExitAsync(entry).ConfigureAwait(false);
+        }
+    }
+
+    private async Task<bool> TryContainAndConfirmExitAsync(JobEntry entry)
+    {
+        var request = await TryRequestContainmentBoundedAsync(entry.Process)
+            .ConfigureAwait(false);
+        if (request == ContainmentRequestDisposition.AlreadyExited)
+        {
+            CacheExitCode(entry);
+            return true;
+        }
+        MarkOutputIncomplete(entry, "job_process_observation_failed");
+        MarkExecutionOutcomeUnknown(entry, "job_process_observation_failed");
+
+        var deadline = DateTimeOffset.UtcNow + _abortedOutputDrainGrace;
+        do
+        {
+            try
+            {
+                if (entry.Process.HasExited)
+                {
+                    CacheExitCode(entry);
+                    return true;
+                }
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+            }
+
+            var remaining = deadline - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero) break;
+            await Task.Delay(
+                remaining < TimeSpan.FromMilliseconds(25)
+                    ? remaining
+                    : TimeSpan.FromMilliseconds(25)).ConfigureAwait(false);
+        }
+        while (true);
+
+        return false;
+    }
+
+    private async Task FinalizeOutputAsync(JobEntry entry)
+    {
+        if (entry.Execution.ExecutionPath == ExecutionPath.Rtk)
+        {
+            if (!entry.OutputTask.IsCompleted &&
+                await Task.WhenAny(
+                    entry.OutputTask,
+                    Task.Delay(_postExitOutputDrainGrace)).ConfigureAwait(false) != entry.OutputTask)
+            {
+                MarkOutputIncomplete(entry, "rtk_output_eof_unconfirmed");
+                try { entry.StandardOutputStream?.Dispose(); } catch { }
+                try { entry.StandardErrorStream?.Dispose(); } catch { }
+                await Task.WhenAny(
+                    entry.OutputTask,
+                    Task.Delay(_abortedOutputDrainGrace)).ConfigureAwait(false);
+            }
+            try
+            {
+                if (entry.OutputTask.IsCompleted)
+                    await entry.OutputTask.ConfigureAwait(false);
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                MarkOutputIncomplete(entry, "rtk_output_drain_failed");
+            }
+            if (entry.OutputWriter is not null)
+            {
+                await entry.OutputWriter.CompleteAsync(_abortedOutputDrainGrace)
+                    .ConfigureAwait(false);
+            }
+        }
+
+        if (entry.Execution.ExecutionPath == ExecutionPath.Rtk &&
+            Interlocked.CompareExchange(ref entry.OutputCaptureState, 1, 0) == 0)
+        {
+            entry.OutputFailureCode = null;
+        }
+        Volatile.Write(ref entry.OutputFinalized, 1);
+    }
+
+    private static void MarkOutputIncomplete(JobEntry entry, string detailCode)
+    {
+        if (Volatile.Read(ref entry.OutputCaptureState) != 0) return;
+        Interlocked.CompareExchange(ref entry.OutputFailureCode, detailCode, null);
+        Interlocked.CompareExchange(ref entry.OutputCaptureState, 2, 0);
+    }
+
+    private static void MarkExecutionOutcomeUnknown(
+        JobEntry entry,
+        string detailCode)
+    {
+        Interlocked.CompareExchange(
+            ref entry.ExecutionOutcomeFailureCode,
+            detailCode,
+            null);
+        Volatile.Write(ref entry.ExecutionOutcomeUnknown, 1);
+    }
+
+    private void MarkExecutionOutcomeUnknownIfContainmentRequired(
+        JobEntry entry,
+        string detailCode)
+    {
+        if (RootAlreadyExited(entry.Process)) return;
+        MarkExecutionOutcomeUnknown(entry, detailCode);
+        RequireInternalContainment(entry);
+        _ = TryRequestContainmentBoundedAsync(entry.Process);
+    }
+
+    private static void RequireInternalContainment(JobEntry entry)
+    {
+        Volatile.Write(ref entry.InternalContainmentRequired, 1);
+        entry.InternalContainmentRequiredSignal.TrySetResult(true);
+    }
+
+    private ContainmentRequestDisposition TryRequestContainment(Process process)
+    {
+        try
+        {
+            if (process.HasExited)
+                return ContainmentRequestDisposition.AlreadyExited;
+            BeforeInternalContainmentForTests?.Invoke(process);
+            process.Kill(entireProcessTree: true);
+            return ContainmentRequestDisposition.Requested;
+        }
+        catch
+        {
+            try
+            {
+                if (process.HasExited)
+                    return ContainmentRequestDisposition.AlreadyExited;
+            }
+            catch { }
+            return ContainmentRequestDisposition.Indeterminate;
+        }
+    }
+
+    private async Task<ContainmentRequestDisposition> TryRequestContainmentBoundedAsync(
+        Process process)
+    {
+        var request = Task.Run(() => TryRequestContainment(process));
+        if (await Task.WhenAny(
+                request,
+                Task.Delay(_abortedOutputDrainGrace)).ConfigureAwait(false) != request)
+        {
+            return ContainmentRequestDisposition.Indeterminate;
+        }
+        return await request.ConfigureAwait(false);
+    }
+
+    private static bool RootAlreadyExited(Process process)
+    {
+        try { return process.HasExited; }
+        catch { return false; }
+    }
+
+    private static void CacheExitCode(JobEntry entry)
+    {
+        try { entry.ExitCode = entry.Process.ExitCode; }
+        catch (Exception exception) when (!IsFatal(exception)) { }
+    }
+
+    private static bool IsFatal(Exception exception) =>
+        exception is OutOfMemoryException or StackOverflowException or
+            AccessViolationException or AppDomainUnloadedException;
 
     /// <summary>Compatibility entry point for direct unit callers.</summary>
     public JobSnapshot Start(string script, string? workingDirectory = null)
@@ -400,17 +1362,40 @@ public sealed class JobManager : IDisposable
         lock (_shutdownGate)
         {
             if (!_jobs.TryGetValue(id, out var entry)) return null;
-            var running = !entry.Process.HasExited;
-            return new JobSnapshot(
-                id,
-                entry.Process.Id,
-                running,
-                running ? null : entry.Process.ExitCode,
-                entry.StartedUtc,
-                entry.Script,
-                entry.OutputPath,
-                (JobTerminationReason)Volatile.Read(ref entry.TerminationReason));
+            return SnapshotLocked(id, entry);
         }
+    }
+
+    private static JobSnapshot SnapshotLocked(long id, JobEntry entry)
+    {
+        var running = Volatile.Read(ref entry.RootExited) == 0 ||
+                      Volatile.Read(ref entry.OutputFinalized) == 0;
+        return new JobSnapshot(
+            id,
+            entry.ProcessId,
+            running,
+            running ? null : entry.ExitCode,
+            entry.StartedUtc,
+            entry.Script,
+            entry.OutputPath,
+            (JobTerminationReason)Volatile.Read(ref entry.TerminationReason))
+        {
+            Execution = entry.Execution,
+            OutputCaptureComplete = Volatile.Read(ref entry.OutputCaptureState) switch
+            {
+                0 => null,
+                1 => true,
+                _ => false,
+            },
+            OutputFailureCode = entry.OutputFailureCode,
+            RootTerminationConfirmed =
+                Volatile.Read(ref entry.RootTerminationConfirmed) != 0,
+            StartOutcomeUnknown =
+                Volatile.Read(ref entry.StartOutcomeUnknown) != 0,
+            ExecutionOutcomeUnknown =
+                Volatile.Read(ref entry.ExecutionOutcomeUnknown) != 0,
+            ExecutionOutcomeFailureCode = entry.ExecutionOutcomeFailureCode,
+        };
     }
 
     public JobSnapshot[] List()
@@ -434,8 +1419,15 @@ public sealed class JobManager : IDisposable
         {
             if (!_jobs.TryGetValue(id, out var entry))
                 return new JobKillResult(id, JobKillDisposition.NotFound, reason);
-            if (entry.Process.HasExited)
-                return new JobKillResult(id, JobKillDisposition.AlreadyExited, reason);
+            if (Volatile.Read(ref entry.RootExited) != 0)
+            {
+                return new JobKillResult(
+                    id,
+                    Volatile.Read(ref entry.RootTerminationConfirmed) != 0
+                        ? JobKillDisposition.AlreadyExited
+                        : JobKillDisposition.Failed,
+                    reason);
+            }
 
             var existingReason = (JobTerminationReason)Volatile.Read(ref entry.TerminationReason);
             if (existingReason != JobTerminationReason.None)
@@ -577,13 +1569,14 @@ public sealed class JobManager : IDisposable
             await shutdownOverride().ConfigureAwait(false);
         var entries = _jobs.Values.ToArray();
         KillAllDetailed(JobTerminationReason.Shutdown);
-        foreach (var entry in entries)
-        {
-            try { await entry.Process.WaitForExitAsync().ConfigureAwait(false); }
-            catch (InvalidOperationException) { /* a failed start was removed */ }
-        }
         await Task.WhenAll(entries.Select(entry => entry.TerminalCompleted.Task))
             .ConfigureAwait(false);
+        if (entries.Any(entry =>
+                Volatile.Read(ref entry.RootTerminationConfirmed) == 0))
+        {
+            throw new InvalidOperationException(
+                "Background-job shutdown could not confirm every tracked root termination.");
+        }
     }
 
     public void Dispose() => ShutdownAsync().GetAwaiter().GetResult();

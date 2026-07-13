@@ -29,6 +29,7 @@ public sealed class ExecutionPlannerTests
         Assert.Collection(
             plan.PermittedFallbacks,
             path => Assert.Equal(ExecutionPath.PowerShellDirect, path));
+        Assert.Equal(OutputProvenance.PowerShellObjects, plan.DirectFallbackProvenance);
         Assert.Null(plan.FallbackReason);
         Assert.Equal(RtkPath, plan.RtkExecutableIdentity?.ExecutablePath);
         Assert.Null(plan.RtkExecutableIdentity?.Verified);
@@ -39,6 +40,53 @@ public sealed class ExecutionPlannerTests
         Assert.Null(apostrophe.ExecutionScript);
         Assert.Equal(["git", "status"], apostrophe.RtkArgumentVector.ToArray());
         Assert.Equal(apostrophePath, apostrophe.RtkExecutableIdentity?.ExecutablePath);
+    }
+
+    [Fact]
+    public void Moduleless_warm_rtk_plan_freezes_a_direct_text_fallback()
+    {
+        var plan = ExecutionPlanner.Create(
+            "git status",
+            "auto",
+            new RtkExecutableIdentity(RtkPath),
+            Application("git", "/usr/bin/git"),
+            compressAvailable: false,
+            ResolutionContext.Warm,
+            workingDirectory: Path.GetFullPath(Path.GetTempPath()),
+            nativeArgumentPassing: "Standard");
+
+        Assert.Equal(ExecutionPath.Rtk, plan.ExecutionPath);
+        Assert.Equal(OutputProvenance.DirectText, plan.DirectFallbackProvenance);
+        var fallback = ExecutionDispatch.RtkUnavailableFallback(plan);
+        Assert.Equal(ExecutionPath.PowerShellDirect, fallback.ExecutionPath);
+        Assert.Equal(OutputProvenance.DirectText, fallback.OutputProvenance);
+    }
+
+    [Fact]
+    public void Cold_plans_freeze_direct_text_even_when_warm_shaping_is_available()
+    {
+        var direct = ExecutionPlanner.CreateDirect(
+            "'cold direct'",
+            "pwsh",
+            compressAvailable: true,
+            ResolutionContext.Cold,
+            outputShapingRtkIdentity: new RtkExecutableIdentity(RtkPath));
+        var rtk = ExecutionPlanner.Create(
+            "git status",
+            "auto",
+            new RtkExecutableIdentity(RtkPath),
+            Application("git", "/usr/bin/git"),
+            compressAvailable: true,
+            ResolutionContext.Cold,
+            workingDirectory: Path.GetFullPath(Path.GetTempPath()),
+            nativeArgumentPassing: "Standard");
+
+        Assert.Equal(OutputProvenance.DirectText, direct.OutputProvenance);
+        Assert.Null(direct.OutputShapingRtkIdentity);
+        Assert.Equal(OutputProvenance.DirectText, rtk.DirectFallbackProvenance);
+        Assert.Equal(
+            OutputProvenance.DirectText,
+            ExecutionDispatch.RtkUnavailableFallback(rtk).OutputProvenance);
     }
 
     [Fact]

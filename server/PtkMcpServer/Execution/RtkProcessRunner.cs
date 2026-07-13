@@ -388,7 +388,7 @@ internal static class RtkProcessRunner
         }
     }
 
-    private static bool IsProvenNoProcessStart(Exception exception) =>
+    internal static bool IsProvenNoProcessStart(Exception exception) =>
         exception is Win32Exception or
             FileNotFoundException or
             DirectoryNotFoundException or

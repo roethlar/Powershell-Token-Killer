@@ -189,7 +189,11 @@ internal static class ExecutionPlanner
             fallbackReason: null,
             effectiveRtkIdentity,
             workingDirectory: workingDirectory,
-            rtkArgumentVector: rtkArgumentVector);
+            rtkArgumentVector: rtkArgumentVector,
+            directFallbackProvenance:
+                resolutionContext == ResolutionContext.Cold || !compressAvailable
+                    ? OutputProvenance.DirectText
+                    : OutputProvenance.PowerShellObjects);
     }
 
     internal static ExecutionPlan CreateDirect(
@@ -265,13 +269,14 @@ internal static class ExecutionPlanner
             PreExecutionValidation.None,
             resolutionContext,
             requestedRoute,
-            !compressAvailable
+            resolutionContext == ResolutionContext.Cold || !compressAvailable
                 ? OutputProvenance.DirectText
                 : OutputProvenance.PowerShellObjects,
             fallbacks,
             fallbackReason,
             rtkExecutableIdentity: null,
-            outputShapingRtkIdentity: !compressAvailable
+            outputShapingRtkIdentity:
+                resolutionContext == ResolutionContext.Cold || !compressAvailable
                 ? null
                 : outputShapingRtkIdentity,
             postSuccessGuidance: postSuccessGuidance);

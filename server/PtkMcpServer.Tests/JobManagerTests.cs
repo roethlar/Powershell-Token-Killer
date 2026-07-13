@@ -1,3 +1,5 @@
+using System.Collections.Immutable;
+
 namespace PtkMcpServer.Tests;
 
 // ProcessEnvironment collection: the execution-policy test mutates
@@ -7,6 +9,8 @@ public sealed class JobManagerTests : IDisposable
 {
     private readonly string _dir =
         Path.Combine(Path.GetTempPath(), "ptk-job-tests-" + Guid.NewGuid().ToString("N"));
+    private readonly string _fixtureDir =
+        Path.Combine(Path.GetTempPath(), "ptk-job-fixture-" + Guid.NewGuid().ToString("N"));
     private readonly JobManager _jobs;
 
     public JobManagerTests() => _jobs = new JobManager(_dir);
@@ -15,6 +19,7 @@ public sealed class JobManagerTests : IDisposable
     {
         _jobs.Dispose();
         try { Directory.Delete(_dir, recursive: true); } catch { /* logs may lag a beat */ }
+        try { Directory.Delete(_fixtureDir, recursive: true); } catch { }
     }
 
     private async Task<JobSnapshot> WaitForExitAsync(long id, int timeoutSeconds = 60)
@@ -47,6 +52,34 @@ public sealed class JobManagerTests : IDisposable
     }
 
     [Fact]
+    public void Typed_cold_dispatch_preparation_is_effect_free_and_preserves_one_metadata_object()
+    {
+        var cwd = Path.GetFullPath(Path.GetTempPath());
+        var dispatch = CreateRtkDispatch(
+            cwd,
+            DirectCommand("echo TYPED_PREPARE"),
+            originalScript: "fixture command");
+        var reservation = _jobs.PrepareStart("fixture command");
+
+        var plan = _jobs.BindDispatch(reservation, dispatch, cwd);
+
+        Assert.Equal(1L, plan.Id);
+        Assert.Equal(reservation.Id, plan.Id);
+        Assert.Equal(reservation.Generation, plan.Generation);
+        Assert.Equal(reservation.OutputPath, plan.OutputPath);
+        Assert.Same(dispatch, plan.Dispatch);
+        Assert.Same(dispatch, plan.Execution.Dispatch);
+        Assert.Equal(ExecutionPath.Rtk, plan.Execution.ExecutionPath);
+        Assert.Equal(OutputProvenance.RtkUnknown, plan.Execution.OutputProvenance);
+        Assert.Equal(ResolutionContext.Cold, plan.Execution.ResolutionContext);
+        Assert.Null(plan.EncodedCommand);
+        Assert.Empty(_jobs.List());
+        Assert.False(Directory.Exists(_dir));
+        Assert.False(File.Exists(plan.OutputPath));
+        Assert.Equal(2L, _jobs.PrepareStart("next intent").Id);
+    }
+
+    [Fact]
     public void Cold_background_policy_cannot_be_bypassed_through_direct_commit()
     {
         var disabledRoot = Path.Combine(_dir, "disabled");
@@ -65,6 +98,31 @@ public sealed class JobManagerTests : IDisposable
         if (unexpectedStart is not null)
             jobs.ConfirmStartRecorded(unexpectedStart.Id);
         var error = Assert.IsType<InvalidOperationException>(exception);
+
+        Assert.Contains("cold background", error.Message, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, processStarts);
+        Assert.Empty(jobs.List());
+        Assert.False(Directory.Exists(disabledRoot));
+        Assert.False(File.Exists(plan.OutputPath));
+    }
+
+    [Fact]
+    public void Cold_background_policy_blocks_typed_rtk_before_spool_or_process()
+    {
+        var disabledRoot = Path.Combine(_dir, "disabled-rtk");
+        var processStarts = 0;
+        using var jobs = new JobManager(
+            JobPwshExecutable.ResolveFromPath(),
+            disabledRoot,
+            allowColdBackground: false)
+        {
+            BeforeProcessStartForTests = _ => Interlocked.Increment(ref processStarts),
+        };
+        var cwd = Path.GetFullPath(Path.GetTempPath());
+        var dispatch = CreateRtkDispatch(cwd, DirectCommand("echo MUST_NOT_RUN"));
+        var plan = jobs.PrepareStart(dispatch, cwd);
+
+        var error = Assert.Throws<InvalidOperationException>(() => jobs.CommitStart(plan));
 
         Assert.Contains("cold background", error.Message, StringComparison.OrdinalIgnoreCase);
         Assert.Equal(0, processStarts);
@@ -125,9 +183,11 @@ public sealed class JobManagerTests : IDisposable
             Environment.SetEnvironmentVariable("PATH", Path.GetDirectoryName(available.AbsolutePath));
 
             var plan = jobs.PrepareStart("'must not run'");
-            var error = Assert.Throws<InvalidOperationException>(() => jobs.CommitStart(plan));
+            var error = Assert.Throws<JobStartException>(() => jobs.CommitStart(plan));
 
             Assert.Contains("server-start PATH", error.Message);
+            Assert.False(error.ProcessStarted);
+            Assert.Null(error.ProvenPreStartFallbackReason);
             Assert.Empty(jobs.List());
         }
         finally
@@ -244,6 +304,891 @@ public sealed class JobManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Rtk_job_uses_typed_identity_cwd_and_arguments_and_retains_metadata()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var command = OperatingSystem.IsWindows()
+            ? "echo RTK_STDOUT&echo RTK_STDERR>&2&cd&exit /b 7"
+            : "printf '%s\n' RTK_STDOUT; printf '%s\n' RTK_STDERR 1>&2; pwd; exit 7";
+        var arguments = DirectCommand(command);
+        var dispatch = CreateRtkDispatch(_fixtureDir, arguments);
+        var observedStarts = 0;
+        _jobs.BeforeProcessStartForTests = observed =>
+        {
+            Assert.Same(dispatch, observed.Dispatch);
+            Assert.Null(observed.EncodedCommand);
+            Interlocked.Increment(ref observedStarts);
+        };
+        _jobs.ProcessStartOverrideForTests = process =>
+        {
+            Assert.True(string.Equals(
+                dispatch.RtkExecutableIdentity!.ExecutablePath,
+                process.StartInfo.FileName,
+                StringComparisonForPaths()));
+            Assert.True(string.Equals(
+                _fixtureDir,
+                process.StartInfo.WorkingDirectory,
+                StringComparisonForPaths()));
+            Assert.Equal(arguments, process.StartInfo.ArgumentList.ToArray());
+            Assert.True(process.StartInfo.RedirectStandardInput);
+            Assert.True(process.StartInfo.RedirectStandardOutput);
+            Assert.True(process.StartInfo.RedirectStandardError);
+            Assert.False(process.StartInfo.UseShellExecute);
+            return process.Start();
+        };
+        var plan = _jobs.PrepareStart(dispatch, _fixtureDir);
+
+        var started = _jobs.CommitStart(plan);
+        Assert.True(_jobs.ConfirmStartRecorded(started.Id));
+        var final = await WaitForExitAsync(started.Id);
+        var output = _jobs.ReadOutput(started.Id, 0)!.Value.Text;
+        var listed = Assert.Single(_jobs.List());
+
+        Assert.Equal(1, observedStarts);
+        Assert.Equal(7, final.ExitCode);
+        Assert.Contains("RTK_STDOUT", output);
+        Assert.Contains("RTK_STDERR", output);
+        Assert.Contains(_fixtureDir, output, StringComparisonForPaths());
+        Assert.Same(plan.Execution, started.Execution);
+        Assert.Same(plan.Execution, listed.Execution);
+        Assert.Same(plan.Execution, final.Execution);
+        Assert.Same(dispatch, final.Execution.Dispatch);
+        Assert.Equal(ExecutionPath.Rtk, final.Execution.ExecutionPath);
+        Assert.Equal(OutputProvenance.RtkUnknown, final.Execution.OutputProvenance);
+        Assert.True(final.OutputCaptureComplete);
+        Assert.Null(final.OutputFailureCode);
+    }
+
+    [Fact]
+    public async Task Cold_rtk_fallback_runs_exact_original_once_as_direct_text_PowerShell()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var marker = Path.Combine(_fixtureDir, "fallback-starts.txt");
+        var markerLiteral = marker.Replace("'", "''", StringComparison.Ordinal);
+        var original =
+            $"Add-Content -LiteralPath '{markerLiteral}' -Value x; 'COLD_FALLBACK_EXACT'";
+        var initial = CreateRtkDispatch(
+            _fixtureDir,
+            DirectCommand("echo WRONG_INITIAL_ROUTE"),
+            originalScript: original);
+        var processStarts = 0;
+        _jobs.ProcessStartOverrideForTests = _ =>
+        {
+            Interlocked.Increment(ref processStarts);
+            return false;
+        };
+        var initialPlan = _jobs.PrepareStart(initial, _fixtureDir);
+        var noStart = Assert.Throws<JobStartException>(() =>
+            _jobs.CommitStart(initialPlan));
+        var fallback = ExecutionDispatch.RtkPreStartFallback(
+            initial.Plan,
+            noStart.ProvenPreStartFallbackReason!.Value);
+        _jobs.BeforeProcessStartForTests = observed =>
+        {
+            Assert.Same(fallback, observed.Dispatch);
+        };
+        _jobs.ProcessStartOverrideForTests = process =>
+        {
+            Interlocked.Increment(ref processStarts);
+            return process.Start();
+        };
+        var plan = _jobs.BindDispatch(initialPlan, fallback, _fixtureDir);
+
+        var started = _jobs.CommitStart(plan);
+        Assert.True(_jobs.ConfirmStartRecorded(started.Id));
+        var final = await WaitForExitAsync(started.Id);
+        var output = _jobs.ReadOutput(started.Id, 0)!.Value.Text;
+
+        Assert.Equal(2, processStarts);
+        Assert.Equal(["x"], File.ReadAllLines(marker));
+        Assert.Equal(0, final.ExitCode);
+        Assert.Contains("COLD_FALLBACK_EXACT", output);
+        Assert.DoesNotContain("WRONG_INITIAL_ROUTE", output);
+        Assert.Equal(ExecutionPath.PowerShellDirect, final.Execution.ExecutionPath);
+        Assert.Equal(OutputProvenance.DirectText, final.Execution.OutputProvenance);
+        Assert.Equal(
+            ExecutionFallbackReason.RtkExecutionPreparationFailed,
+            final.Execution.FallbackReason);
+        Assert.Same(fallback, final.Execution.Dispatch);
+    }
+
+    [Fact]
+    public async Task Rtk_terminal_waits_for_output_drain_after_start_confirmation()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var drainEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseDrain = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var terminal = new TaskCompletionSource<JobSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _jobs.BeforeOutputDrainCompletesForTests = _ =>
+        {
+            drainEntered.TrySetResult();
+            return releaseDrain.Task;
+        };
+        var command = OperatingSystem.IsWindows()
+            ? "echo STDOUT_TAIL&echo STDERR_TAIL>&2&exit /b 0"
+            : "printf '%s\n' STDOUT_TAIL; printf '%s\n' STDERR_TAIL 1>&2";
+        var dispatch = CreateRtkDispatch(_fixtureDir, DirectCommand(command));
+        var plan = _jobs.PrepareStart(dispatch, _fixtureDir);
+        try
+        {
+            var started = _jobs.CommitStart(plan, snapshot =>
+            {
+                terminal.TrySetResult(snapshot);
+                return Task.CompletedTask;
+            });
+            Assert.True(_jobs.ConfirmStartRecorded(started.Id));
+            await drainEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.False(terminal.Task.IsCompleted);
+            var beforeRelease = _jobs.ReadOutput(started.Id, 0)!.Value.Text;
+            Assert.Contains("STDOUT_TAIL", beforeRelease);
+            Assert.Contains("STDERR_TAIL", beforeRelease);
+
+            releaseDrain.TrySetResult();
+            var published = await terminal.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.False(published.Running);
+            Assert.True(published.OutputCaptureComplete);
+            Assert.Same(plan.Execution, published.Execution);
+        }
+        finally
+        {
+            releaseDrain.TrySetResult();
+            _jobs.BeforeOutputDrainCompletesForTests = null;
+        }
+    }
+
+    [Fact]
+    public async Task Rtk_output_finalization_timeout_is_bounded_and_marked_incomplete()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var releaseDrain = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var jobs = new JobManager(
+            JobPwshExecutable.ResolveFromPath(),
+            Path.Combine(_dir, "bounded-drain"),
+            postExitOutputDrainGrace: TimeSpan.FromMilliseconds(100),
+            abortedOutputDrainGrace: TimeSpan.FromMilliseconds(100))
+        {
+            BeforeOutputDrainCompletesForTests = _ => releaseDrain.Task,
+        };
+        var dispatch = CreateRtkDispatch(
+            _fixtureDir,
+            DirectCommand(OperatingSystem.IsWindows()
+                ? "echo BOUNDED_EOF&exit /b 0"
+                : "printf '%s\n' BOUNDED_EOF"));
+        var plan = jobs.PrepareStart(dispatch, _fixtureDir);
+        try
+        {
+            var started = jobs.CommitStart(plan);
+            Assert.True(jobs.ConfirmStartRecorded(started.Id));
+
+            var final = await WaitForExitAsync(jobs, started.Id, timeoutSeconds: 10);
+
+            Assert.False(final.OutputCaptureComplete);
+            Assert.Equal("rtk_output_eof_unconfirmed", final.OutputFailureCode);
+            Assert.Contains("BOUNDED_EOF", jobs.ReadOutput(started.Id, 0)!.Value.Text);
+        }
+        finally
+        {
+            releaseDrain.TrySetResult();
+            jobs.BeforeOutputDrainCompletesForTests = null;
+        }
+    }
+
+    [Fact]
+    public async Task Rtk_drains_large_stdout_and_stderr_concurrently_without_deadlock()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var command = OperatingSystem.IsWindows()
+            ? "for /L %i in (1,1,12000) do (echo OUT_%i&echo ERR_%i 1>&2)&echo STDOUT_FINAL&echo STDERR_FINAL 1>&2"
+            : "i=0; while [ $i -lt 12000 ]; do printf 'OUT_%s\\n' \"$i\"; printf 'ERR_%s\\n' \"$i\" 1>&2; i=$((i+1)); done; printf '%s\\n' STDOUT_FINAL; printf '%s\\n' STDERR_FINAL 1>&2";
+        var dispatch = CreateRtkDispatch(_fixtureDir, DirectCommand(command));
+        var plan = _jobs.PrepareStart(dispatch, _fixtureDir);
+
+        var started = _jobs.CommitStart(plan);
+        Assert.True(_jobs.ConfirmStartRecorded(started.Id));
+        var final = await WaitForExitAsync(started.Id, timeoutSeconds: 20);
+        var output = File.ReadAllText(plan.OutputPath);
+
+        Assert.Equal(0, final.ExitCode);
+        Assert.True(final.OutputCaptureComplete);
+        Assert.Contains("STDOUT_FINAL", output);
+        Assert.Contains("STDERR_FINAL", output);
+    }
+
+    [Fact]
+    public void Rtk_identity_drift_is_a_typed_proven_no_start_without_job_or_log()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var copiedExecutable = CopyCommandProcessor(_fixtureDir);
+        var identity = RtkExecutableIdentity.TryCapture(copiedExecutable);
+        Assert.NotNull(identity);
+        var dispatch = CreateRtkDispatch(
+            _fixtureDir,
+            DirectCommand("echo MUST_NOT_RUN"),
+            identity);
+        var plan = _jobs.PrepareStart(dispatch, _fixtureDir);
+        var finalChecks = 0;
+        var processStarts = 0;
+        _jobs.BeforeProcessStartForTests = _ =>
+        {
+            Interlocked.Increment(ref finalChecks);
+            File.Delete(copiedExecutable);
+        };
+        _jobs.ProcessStartOverrideForTests = process =>
+        {
+            Interlocked.Increment(ref processStarts);
+            return process.Start();
+        };
+
+        var error = Assert.Throws<JobStartException>(() => _jobs.CommitStart(plan));
+
+        Assert.Equal(1, finalChecks);
+        Assert.Equal(0, processStarts);
+        Assert.False(error.ProcessStarted);
+        Assert.Equal("rtk_identity_changed", error.DetailCode);
+        Assert.Equal(
+            ExecutionFallbackReason.RtkExecutableBecameUnavailable,
+            error.ProvenPreStartFallbackReason);
+        Assert.Empty(_jobs.List());
+        Assert.False(File.Exists(plan.OutputPath));
+    }
+
+    [Fact]
+    public void Rtk_known_process_start_failure_is_typed_and_removes_the_spool()
+    {
+        var missingCwd = Path.Combine(_fixtureDir, "missing-cwd");
+        var dispatch = CreateRtkDispatch(missingCwd, DirectCommand("echo MUST_NOT_RUN"));
+        var plan = _jobs.PrepareStart(dispatch, missingCwd);
+
+        var error = Assert.Throws<JobStartException>(() => _jobs.CommitStart(plan));
+
+        Assert.False(error.ProcessStarted);
+        Assert.Equal("rtk_process_start_failed", error.DetailCode);
+        Assert.Equal(
+            ExecutionFallbackReason.RtkExecutionPreparationFailed,
+            error.ProvenPreStartFallbackReason);
+        Assert.Empty(_jobs.List());
+        Assert.False(File.Exists(plan.OutputPath));
+    }
+
+    [Fact]
+    public void Proven_direct_no_start_consumes_the_prepared_attempt()
+    {
+        var processStarts = 0;
+        _jobs.ProcessStartOverrideForTests = _ =>
+        {
+            Interlocked.Increment(ref processStarts);
+            return false;
+        };
+        var plan = _jobs.PrepareStart("'MUST_NOT_RUN'", Path.GetFullPath(Path.GetTempPath()));
+
+        var first = Assert.Throws<JobStartException>(() => _jobs.CommitStart(plan));
+        var second = Assert.Throws<InvalidOperationException>(() => _jobs.CommitStart(plan));
+
+        Assert.False(first.ProcessStarted);
+        Assert.Null(first.ProvenPreStartFallbackReason);
+        Assert.Contains("already consumed", second.Message, StringComparison.Ordinal);
+        Assert.Equal(1, processStarts);
+        Assert.Empty(_jobs.List());
+        Assert.False(File.Exists(plan.OutputPath));
+    }
+
+    [Fact]
+    public async Task Proven_rtk_no_start_allows_its_exact_fallback_once()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var marker = Path.Combine(_fixtureDir, "one-fallback.txt");
+        var original =
+            $"Add-Content -LiteralPath '{marker.Replace("'", "''", StringComparison.Ordinal)}' -Value x";
+        var initial = CreateRtkDispatch(
+            _fixtureDir,
+            DirectCommand("echo INITIAL_MUST_NOT_RUN"),
+            originalScript: original);
+        var plan = _jobs.PrepareStart(initial, _fixtureDir);
+        var processStarts = 0;
+        _jobs.ProcessStartOverrideForTests = _ =>
+        {
+            Interlocked.Increment(ref processStarts);
+            return false;
+        };
+
+        var noStart = Assert.Throws<JobStartException>(() => _jobs.CommitStart(plan));
+        var repeatedInitial = Assert.Throws<InvalidOperationException>(() =>
+            _jobs.CommitStart(plan));
+        Assert.False(noStart.ProcessStarted);
+        Assert.Equal(
+            ExecutionFallbackReason.RtkExecutionPreparationFailed,
+            noStart.ProvenPreStartFallbackReason);
+        Assert.Contains("already consumed", repeatedInitial.Message, StringComparison.Ordinal);
+        Assert.Equal(1, processStarts);
+
+        var mismatched = _jobs.BindDispatch(
+            plan,
+            ExecutionDispatch.RtkUnavailableFallback(initial.Plan),
+            _fixtureDir);
+        var mismatchedReason = Assert.Throws<InvalidOperationException>(() =>
+            _jobs.CommitStart(mismatched));
+        Assert.Contains("already consumed", mismatchedReason.Message, StringComparison.Ordinal);
+        Assert.Equal(1, processStarts);
+
+        var fallbackDispatch = ExecutionDispatch.RtkPreStartFallback(
+            initial.Plan,
+            noStart.ProvenPreStartFallbackReason!.Value);
+        var fallback = _jobs.BindDispatch(plan, fallbackDispatch, _fixtureDir);
+        _jobs.ProcessStartOverrideForTests = process =>
+        {
+            Interlocked.Increment(ref processStarts);
+            return process.Start();
+        };
+        var started = _jobs.CommitStart(fallback);
+        Assert.True(_jobs.ConfirmStartRecorded(started.Id));
+        var final = await WaitForExitAsync(started.Id);
+
+        var repeatedFallback = Assert.Throws<InvalidOperationException>(() =>
+            _jobs.CommitStart(fallback));
+        Assert.Contains("already consumed", repeatedFallback.Message, StringComparison.Ordinal);
+        Assert.Equal(2, processStarts);
+        Assert.Equal(["x"], File.ReadAllLines(marker));
+        Assert.Equal(ExecutionPath.PowerShellDirect, final.Execution.ExecutionPath);
+        Assert.Equal(
+            ExecutionFallbackReason.RtkExecutionPreparationFailed,
+            final.Execution.FallbackReason);
+    }
+
+    [Fact]
+    public async Task Rtk_post_start_output_failure_stays_tracked_and_is_never_a_no_start()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var marker = Path.Combine(_fixtureDir, "starts.txt");
+        var command = OperatingSystem.IsWindows()
+            ? "echo x>>starts.txt&echo CAPTURE_FAIL&exit /b 0"
+            : "printf 'x\n' >> starts.txt; printf '%s\n' CAPTURE_FAIL";
+        var dispatch = CreateRtkDispatch(_fixtureDir, DirectCommand(command));
+        var plan = _jobs.PrepareStart(dispatch, _fixtureDir);
+        var writes = 0;
+        var terminal = new TaskCompletionSource<JobSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _jobs.BeforeOutputWriteForTests = _ =>
+        {
+            Interlocked.Increment(ref writes);
+            throw new IOException("injected output sink failure");
+        };
+        try
+        {
+            var exception = Record.Exception(() =>
+            {
+                var started = _jobs.CommitStart(plan, _ =>
+                {
+                    terminal.TrySetResult(_);
+                    return Task.CompletedTask;
+                });
+                Assert.True(_jobs.ConfirmStartRecorded(started.Id));
+            });
+            Assert.Null(exception);
+
+            var final = await WaitForExitAsync(plan.Id);
+            var published = await terminal.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Single(_jobs.List());
+            Assert.Equal(["x"], File.ReadAllLines(marker));
+            Assert.Equal(1, writes);
+            Assert.Equal(final.Id, published.Id);
+            Assert.False(final.OutputCaptureComplete);
+            Assert.Equal("rtk_output_write_failed", final.OutputFailureCode);
+            Assert.Same(plan.Execution, final.Execution);
+        }
+        finally
+        {
+            _jobs.BeforeOutputWriteForTests = null;
+        }
+    }
+
+    [Fact]
+    public async Task Rtk_start_exception_after_process_association_is_retained_and_never_retried()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var marker = Path.Combine(_fixtureDir, "starts.txt");
+        var command = OperatingSystem.IsWindows()
+            ? "echo x>>starts.txt&ping -n 300 127.0.0.1 >nul"
+            : "printf 'x\n' >> starts.txt; sleep 300";
+        var dispatch = CreateRtkDispatch(_fixtureDir, DirectCommand(command));
+        var plan = _jobs.PrepareStart(dispatch, _fixtureDir);
+        var processStarts = 0;
+        var associatedPid = 0;
+        var terminalCalls = 0;
+        var terminal = new TaskCompletionSource<JobSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        _jobs.ProcessStartOverrideForTests = process =>
+        {
+            Assert.True(process.Start());
+            Interlocked.Increment(ref processStarts);
+            associatedPid = process.Id;
+            Assert.True(
+                SpinWait.SpinUntil(MarkerWasWritten, TimeSpan.FromSeconds(10)),
+                "the associated process never reached its single-execution marker");
+            throw new IOException("injected host failure after Process.Start");
+        };
+
+        var error = Assert.Throws<JobStartException>(() =>
+            _jobs.CommitStart(plan, snapshot =>
+            {
+                Interlocked.Increment(ref terminalCalls);
+                terminal.TrySetResult(snapshot);
+                return Task.CompletedTask;
+            }));
+
+        Assert.True(error.ProcessStarted);
+        Assert.Equal("background_process_start_outcome_unknown", error.DetailCode);
+        Assert.Null(error.ProvenPreStartFallbackReason);
+        var retained = Assert.Single(_jobs.List());
+        Assert.Equal(plan.Id, retained.Id);
+        Assert.Equal(associatedPid, retained.Pid);
+        Assert.False(retained.StartOutcomeUnknown);
+        Assert.True(retained.ExecutionOutcomeUnknown);
+        Assert.Equal("process_start_outcome_unknown", retained.ExecutionOutcomeFailureCode);
+
+        Assert.ThrowsAny<Exception>(() => _jobs.CommitStart(plan));
+        Assert.Equal(1, processStarts);
+
+        Assert.True(_jobs.ConfirmStartRecorded(plan.Id));
+        var final = await terminal.Task.WaitAsync(TimeSpan.FromSeconds(10));
+        Assert.Equal(1, terminalCalls);
+        Assert.False(final.Running);
+        Assert.True(final.RootTerminationConfirmed);
+        Assert.True(final.ExecutionOutcomeUnknown);
+        Assert.False(final.StartOutcomeUnknown);
+        Assert.False(final.OutputCaptureComplete);
+        Assert.Equal("background_process_start_outcome_unknown", final.OutputFailureCode);
+        Assert.Equal(["x"], File.ReadAllLines(marker));
+
+        bool MarkerWasWritten()
+        {
+            try { return File.Exists(marker) && File.ReadAllLines(marker).Length == 1; }
+            catch (IOException) { return false; }
+        }
+    }
+
+    [Fact]
+    public async Task Associated_start_failure_retries_internal_containment_on_a_bounded_observer()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var jobs = new JobManager(
+            JobPwshExecutable.ResolveFromPath(),
+            Path.Combine(_dir, "bounded-internal-containment"),
+            postExitOutputDrainGrace: TimeSpan.FromMilliseconds(100),
+            abortedOutputDrainGrace: TimeSpan.FromMilliseconds(100));
+        var containmentAttempts = 0;
+        using var containmentEntered = new ManualResetEventSlim();
+        using var releaseContainment = new ManualResetEventSlim();
+        jobs.BeforeInternalContainmentForTests = _ =>
+        {
+            if (Interlocked.Increment(ref containmentAttempts) == 1)
+            {
+                containmentEntered.Set();
+                releaseContainment.Wait();
+            }
+        };
+        jobs.ProcessStartOverrideForTests = process =>
+        {
+            Assert.True(process.Start());
+            throw new IOException("injected host failure after Process.Start");
+        };
+        var dispatch = CreateRtkDispatch(
+            _fixtureDir,
+            DirectCommand(OperatingSystem.IsWindows()
+                ? "ping -n 300 127.0.0.1 >nul"
+                : "sleep 300"));
+        var plan = jobs.PrepareStart(dispatch, _fixtureDir);
+        var terminal = new TaskCompletionSource<JobSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var commit = Task.Run(() => Record.Exception(() =>
+                jobs.CommitStart(plan, snapshot =>
+                {
+                    terminal.TrySetResult(snapshot);
+                    return Task.CompletedTask;
+                })));
+            Assert.True(containmentEntered.Wait(TimeSpan.FromSeconds(5)));
+            var error = Assert.IsType<JobStartException>(
+                await commit.WaitAsync(TimeSpan.FromSeconds(5)));
+            Assert.True(error.ProcessStarted);
+            Assert.True(jobs.ConfirmStartRecorded(plan.Id));
+
+            var final = await terminal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(containmentAttempts >= 2);
+            Assert.False(final.Running);
+            Assert.True(final.RootTerminationConfirmed);
+            Assert.True(final.ExecutionOutcomeUnknown);
+            Assert.Equal("process_start_outcome_unknown", final.ExecutionOutcomeFailureCode);
+        }
+        finally
+        {
+            releaseContainment.Set();
+            jobs.BeforeInternalContainmentForTests = null;
+            jobs.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Late_rtk_read_failure_wakes_the_bounded_containment_observer()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var jobs = new JobManager(
+            JobPwshExecutable.ResolveFromPath(),
+            Path.Combine(_dir, "late-read-containment"),
+            postExitOutputDrainGrace: TimeSpan.FromMilliseconds(100),
+            abortedOutputDrainGrace: TimeSpan.FromMilliseconds(100));
+        var readEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseRead = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var readHooks = 0;
+        var containmentAttempts = 0;
+        using var containmentEntered = new ManualResetEventSlim();
+        using var releaseContainment = new ManualResetEventSlim();
+        jobs.BeforeOutputReadForTests = async _ =>
+        {
+            if (Interlocked.Increment(ref readHooks) != 1) return;
+            readEntered.TrySetResult();
+            await releaseRead.Task;
+            throw new IOException("injected late pipe read failure");
+        };
+        jobs.BeforeInternalContainmentForTests = _ =>
+        {
+            if (Interlocked.Increment(ref containmentAttempts) == 1)
+            {
+                containmentEntered.Set();
+                releaseContainment.Wait();
+            }
+        };
+        var dispatch = CreateRtkDispatch(
+            _fixtureDir,
+            DirectCommand(OperatingSystem.IsWindows()
+                ? "ping -n 300 127.0.0.1 >nul"
+                : "sleep 300"));
+        var plan = jobs.PrepareStart(dispatch, _fixtureDir);
+        var terminal = new TaskCompletionSource<JobSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        try
+        {
+            var started = jobs.CommitStart(plan, snapshot =>
+            {
+                terminal.TrySetResult(snapshot);
+                return Task.CompletedTask;
+            });
+            Assert.True(jobs.ConfirmStartRecorded(started.Id));
+            await readEntered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(jobs.Snapshot(started.Id)!.Running);
+
+            releaseRead.TrySetResult();
+            Assert.True(containmentEntered.Wait(TimeSpan.FromSeconds(5)));
+            var final = await terminal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.True(containmentAttempts >= 2);
+            Assert.False(final.Running);
+            Assert.True(final.RootTerminationConfirmed);
+            Assert.True(final.ExecutionOutcomeUnknown);
+            Assert.Equal("rtk_output_read_failed", final.ExecutionOutcomeFailureCode);
+            Assert.False(final.OutputCaptureComplete);
+            Assert.Equal("rtk_output_read_failed", final.OutputFailureCode);
+        }
+        finally
+        {
+            releaseRead.TrySetResult();
+            releaseContainment.Set();
+            jobs.BeforeOutputReadForTests = null;
+            jobs.BeforeInternalContainmentForTests = null;
+            jobs.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Rtk_unresolved_start_is_a_retained_tombstone_without_terminal_callback()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var jobsRoot = Path.Combine(_dir, "unresolved-start");
+        var jobs = new JobManager(
+            JobPwshExecutable.ResolveFromPath(),
+            jobsRoot,
+            abortedOutputDrainGrace: TimeSpan.FromMilliseconds(100));
+        var processStarts = 0;
+        var terminalCalls = 0;
+        jobs.ProcessStartOverrideForTests = _ =>
+        {
+            Interlocked.Increment(ref processStarts);
+            throw new IOException("injected failure without a process association");
+        };
+        var dispatch = CreateRtkDispatch(
+            _fixtureDir,
+            DirectCommand("echo MUST_NOT_RUN"));
+        var plan = jobs.PrepareStart(dispatch, _fixtureDir);
+
+        var error = Assert.Throws<JobStartException>(() =>
+            jobs.CommitStart(plan, _ =>
+            {
+                Interlocked.Increment(ref terminalCalls);
+                return Task.CompletedTask;
+            }));
+
+        Assert.Null(error.ProcessStarted);
+        Assert.Null(error.ProvenPreStartFallbackReason);
+        Assert.Equal(1, processStarts);
+        var tombstone = Assert.Single(jobs.List());
+        Assert.Equal(plan.Id, tombstone.Id);
+        Assert.Equal(0, tombstone.Pid);
+        Assert.False(tombstone.Running);
+        Assert.True(tombstone.StartOutcomeUnknown);
+        Assert.True(tombstone.ExecutionOutcomeUnknown);
+        Assert.False(tombstone.RootTerminationConfirmed);
+        Assert.False(tombstone.OutputCaptureComplete);
+        Assert.Equal("background_process_start_outcome_unknown", tombstone.OutputFailureCode);
+        Assert.Equal(0, terminalCalls);
+        Assert.Equal(
+            JobKillDisposition.Failed,
+            jobs.RequestKill(plan.Id).Disposition);
+        await Assert.ThrowsAsync<InvalidOperationException>(jobs.ShutdownAsync);
+    }
+
+    [Fact]
+    public async Task Blocked_rtk_output_writer_cannot_block_terminal_finalization()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        using var writerEntered = new ManualResetEventSlim();
+        using var releaseWriter = new ManualResetEventSlim();
+        var writerExited = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var jobs = new JobManager(
+            JobPwshExecutable.ResolveFromPath(),
+            Path.Combine(_dir, "blocked-writer"),
+            postExitOutputDrainGrace: TimeSpan.FromMilliseconds(100),
+            abortedOutputDrainGrace: TimeSpan.FromMilliseconds(100));
+        jobs.BeforeOutputWriteForTests = _ =>
+        {
+            writerEntered.Set();
+            try { releaseWriter.Wait(); }
+            finally { writerExited.TrySetResult(); }
+        };
+        var terminal = new TaskCompletionSource<JobSnapshot>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var dispatch = CreateRtkDispatch(
+            _fixtureDir,
+            DirectCommand(OperatingSystem.IsWindows()
+                ? "for /L %i in (1,1,20000) do @echo BLOCKED_WRITER_%i"
+                : "i=0; while [ $i -lt 20000 ]; do printf 'BLOCKED_WRITER_%s\\n' \"$i\"; i=$((i+1)); done"));
+        var plan = jobs.PrepareStart(dispatch, _fixtureDir);
+        try
+        {
+            var started = jobs.CommitStart(plan, snapshot =>
+            {
+                terminal.TrySetResult(snapshot);
+                return Task.CompletedTask;
+            });
+            Assert.True(jobs.ConfirmStartRecorded(started.Id));
+            Assert.True(writerEntered.Wait(TimeSpan.FromSeconds(10)));
+
+            var final = await terminal.Task.WaitAsync(TimeSpan.FromSeconds(5));
+
+            Assert.False(writerExited.Task.IsCompleted);
+            Assert.False(final.Running);
+            Assert.False(final.OutputCaptureComplete);
+            Assert.Equal("rtk_output_write_unconfirmed", final.OutputFailureCode);
+            Assert.False(final.ExecutionOutcomeUnknown);
+        }
+        finally
+        {
+            releaseWriter.Set();
+            if (writerEntered.IsSet)
+                await writerExited.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            jobs.BeforeOutputWriteForTests = null;
+            jobs.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Timed_out_rtk_write_owns_its_bytes_across_pool_buffer_reuse()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        using var writerEntered = new ManualResetEventSlim();
+        using var releaseWriter = new ManualResetEventSlim();
+        var hooks = 0;
+        var jobs = new JobManager(
+            JobPwshExecutable.ResolveFromPath(),
+            Path.Combine(_dir, "owned-write-buffer"),
+            postExitOutputDrainGrace: TimeSpan.FromMilliseconds(200),
+            abortedOutputDrainGrace: TimeSpan.FromMilliseconds(100));
+        jobs.BeforeOutputWriteForTests = _ =>
+        {
+            if (Interlocked.Increment(ref hooks) != 1) return;
+            writerEntered.Set();
+            releaseWriter.Wait();
+        };
+        var command = OperatingSystem.IsWindows()
+            ? "echo FIRST_CANARY&ping -n 2 127.0.0.1 >nul&" +
+              "for /L %i in (1,1,20000) do @echo FOREIGN_CANARY_%i&" +
+              "ping -n 4 127.0.0.1 >nul"
+            : "printf '%s\n' FIRST_CANARY; sleep 0.2; " +
+              "i=0; while [ $i -lt 20000 ]; do printf 'FOREIGN_CANARY_%s\\n' \"$i\"; i=$((i+1)); done; " +
+              "sleep 2";
+        var dispatch = CreateRtkDispatch(_fixtureDir, DirectCommand(command));
+        var plan = jobs.PrepareStart(dispatch, _fixtureDir);
+        try
+        {
+            var started = jobs.CommitStart(plan);
+            Assert.True(jobs.ConfirmStartRecorded(started.Id));
+            Assert.True(writerEntered.Wait(TimeSpan.FromSeconds(10)));
+
+            await Task.Delay(OperatingSystem.IsWindows() ? 1500 : 600);
+            releaseWriter.Set();
+            var final = await WaitForExitAsync(jobs, started.Id, timeoutSeconds: 15);
+            var output = File.ReadAllText(plan.OutputPath);
+
+            Assert.False(final.OutputCaptureComplete);
+            Assert.Equal("rtk_output_write_unconfirmed", final.OutputFailureCode);
+            Assert.Contains("FIRST_CANARY", output);
+            Assert.DoesNotContain("FOREIGN_CANARY", output);
+            Assert.Equal(1, hooks);
+        }
+        finally
+        {
+            releaseWriter.Set();
+            jobs.BeforeOutputWriteForTests = null;
+            jobs.Dispose();
+        }
+    }
+
+    [Fact]
+    public async Task Duplicate_commit_preserves_the_original_registered_job()
+    {
+        var starts = 0;
+        _jobs.BeforeProcessStartForTests = _ => Interlocked.Increment(ref starts);
+        var plan = _jobs.PrepareStart("Start-Sleep -Seconds 300");
+        var started = _jobs.CommitStart(plan);
+        Assert.True(_jobs.ConfirmStartRecorded(started.Id));
+
+        var error = Assert.Throws<InvalidOperationException>(() =>
+            _jobs.CommitStart(plan));
+
+        Assert.Contains("already consumed", error.Message, StringComparison.Ordinal);
+        Assert.Equal(1, starts);
+        var retained = Assert.Single(_jobs.List());
+        Assert.Equal(started.Id, retained.Id);
+        Assert.Equal(started.Pid, retained.Pid);
+        Assert.True(retained.Running);
+        Assert.Equal(JobKillDisposition.Requested, _jobs.RequestKill(started.Id).Disposition);
+        var final = await WaitForExitAsync(started.Id);
+        Assert.True(final.RootTerminationConfirmed);
+    }
+
+    [Fact]
+    public void Bound_descriptor_tamper_is_rejected_before_any_start_effect()
+    {
+        var jobsRoot = Path.Combine(_dir, "tamper-jobs");
+        var processStarts = 0;
+        using var jobs = new JobManager(
+            JobPwshExecutable.ResolveFromPath(),
+            jobsRoot)
+        {
+            ProcessStartOverrideForTests = process =>
+            {
+                Interlocked.Increment(ref processStarts);
+                return process.Start();
+            },
+        };
+        var cwdA = Path.GetFullPath(Path.Combine(_fixtureDir, "cwd-a"));
+        var cwdB = Path.GetFullPath(Path.Combine(_fixtureDir, "cwd-b"));
+        var reservation = jobs.PrepareStart("'MUST_NOT_RUN'");
+        var bound = jobs.BindDispatch(reservation, reservation.Dispatch, cwdA);
+        var alternate = CreateRtkDispatch(cwdA, DirectCommand("echo MUST_NOT_RUN"));
+        var rtk = jobs.PrepareStart(alternate, cwdA);
+        Assert.Throws<InvalidOperationException>(() =>
+            jobs.BindDispatch(bound, bound.Dispatch, cwdB));
+        var attempts = new[]
+        {
+            bound with { WorkingDirectory = cwdB },
+            bound with { Script = "'TAMPERED'" },
+            bound with { OutputPath = Path.Combine(jobsRoot, "wrong.log") },
+            bound with { EncodedCommand = "tampered-wrapper" },
+            bound with { Dispatch = alternate },
+            bound with { Execution = new JobExecutionMetadata(alternate) },
+            rtk with { EncodedCommand = "injected-wrapper" },
+        };
+
+        foreach (var attempt in attempts)
+            Assert.Throws<InvalidOperationException>(() => jobs.CommitStart(attempt));
+
+        Assert.Equal(0, processStarts);
+        Assert.Empty(jobs.List());
+        Assert.False(Directory.Exists(jobsRoot));
+        Assert.False(File.Exists(bound.OutputPath));
+        Assert.False(File.Exists(rtk.OutputPath));
+    }
+
+    [Fact]
+    public void Bound_rtk_reservation_only_accepts_its_own_authorized_fallback_once()
+    {
+        var cwd = Path.GetFullPath(_fixtureDir);
+        var initial = CreateRtkDispatch(
+            cwd,
+            DirectCommand("echo INITIAL"),
+            originalScript: "'EXACT_ORIGINAL'");
+        var bound = _jobs.PrepareStart(initial, cwd);
+        var exactFallback = ExecutionDispatch.RtkUnavailableFallback(initial.Plan);
+        var rebound = _jobs.BindDispatch(bound, exactFallback, cwd);
+
+        Assert.Equal(bound.Id, rebound.Id);
+        Assert.Same(initial.Plan, rebound.Dispatch.Plan);
+        Assert.Same(exactFallback, rebound.Dispatch);
+        Assert.Equal(ExecutionPath.PowerShellDirect, rebound.ExecutionPath);
+        Assert.Equal(OutputProvenance.DirectText, rebound.Execution.OutputProvenance);
+
+        var unrelated = CreateRtkDispatch(
+            cwd,
+            DirectCommand("echo DIFFERENT_PLAN"),
+            originalScript: "'EXACT_ORIGINAL'");
+        var unrelatedFallback = ExecutionDispatch.RtkUnavailableFallback(unrelated.Plan);
+        Assert.Throws<InvalidOperationException>(() =>
+            _jobs.BindDispatch(bound, unrelatedFallback, cwd));
+        Assert.Throws<InvalidOperationException>(() =>
+            _jobs.BindDispatch(rebound, initial, cwd));
+
+        Assert.Empty(_jobs.List());
+        Assert.False(Directory.Exists(_dir));
+        Assert.False(File.Exists(bound.OutputPath));
+    }
+
+    [Fact]
+    public void Unproven_rtk_fallback_cannot_be_the_first_start_attempt()
+    {
+        var cwd = Path.GetFullPath(_fixtureDir);
+        var initial = CreateRtkDispatch(
+            cwd,
+            DirectCommand("echo INITIAL"),
+            originalScript: "'MUST_NOT_RUN'");
+        var fallback = ExecutionDispatch.RtkUnavailableFallback(initial.Plan);
+        var plan = _jobs.PrepareStart(fallback, cwd);
+        var processStarts = 0;
+        _jobs.ProcessStartOverrideForTests = _ =>
+        {
+            Interlocked.Increment(ref processStarts);
+            return false;
+        };
+
+        var error = Record.Exception(() => _jobs.CommitStart(plan));
+
+        var invalid = Assert.IsType<InvalidOperationException>(error);
+        Assert.Contains("requires a proven no-start", invalid.Message, StringComparison.Ordinal);
+        Assert.Equal(0, processStarts);
+        Assert.Empty(_jobs.List());
+        Assert.False(Directory.Exists(_dir));
+        Assert.False(File.Exists(plan.OutputPath));
+    }
+
+    [Fact]
     public void Failed_start_does_not_reuse_its_public_job_id()
     {
         var missingCwd = Path.Combine(_dir, "missing", "cwd");
@@ -330,12 +1275,71 @@ public sealed class JobManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Reset_waits_for_inflight_typed_rtk_commit_then_kills_it()
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        using var commitEntered = new ManualResetEventSlim();
+        using var releaseCommit = new ManualResetEventSlim();
+        _jobs.BeforeProcessStartForTests = _ =>
+        {
+            commitEntered.Set();
+            if (!releaseCommit.Wait(TimeSpan.FromSeconds(10)))
+                throw new TimeoutException("test did not release RTK process start");
+        };
+        var command = OperatingSystem.IsWindows()
+            ? "ping -n 300 127.0.0.1 >nul"
+            : "sleep 300";
+        var dispatch = CreateRtkDispatch(_fixtureDir, DirectCommand(command));
+        var plan = _jobs.PrepareStart(dispatch, _fixtureDir);
+        var commit = Task.Run(() => _jobs.CommitStart(plan));
+        Task<JobManager.JobResetLease>? reset = null;
+        try
+        {
+            Assert.True(commitEntered.Wait(TimeSpan.FromSeconds(5)));
+            var list = Task.Run(_jobs.List);
+            await Task.Delay(100);
+            Assert.False(list.IsCompleted, "list observed typed RTK before start committed");
+
+            reset = Task.Run(_jobs.BeginReset);
+            await Task.Delay(100);
+            Assert.False(reset.IsCompleted, "reset overtook typed RTK start transaction");
+            releaseCommit.Set();
+
+            var started = await commit.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.True(_jobs.ConfirmStartRecorded(started.Id));
+            using var resetLease = await reset.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(1, resetLease.TerminationRequestedCount);
+            var listed = Assert.Single(await list.WaitAsync(TimeSpan.FromSeconds(10)));
+            Assert.Equal(ExecutionPath.Rtk, listed.Execution.ExecutionPath);
+            var final = await WaitForExitAsync(started.Id);
+            Assert.True(final.KillRequested);
+            Assert.Equal(JobTerminationReason.Reset, final.TerminationReason);
+            Assert.Equal(ExecutionPath.Rtk, final.Execution.ExecutionPath);
+        }
+        finally
+        {
+            releaseCommit.Set();
+            _jobs.BeforeProcessStartForTests = null;
+            if (reset is not null)
+            {
+                try
+                {
+                    var resetLease = await reset.WaitAsync(TimeSpan.FromSeconds(10));
+                    resetLease.Dispose();
+                }
+                catch { /* preserve primary failure */ }
+            }
+        }
+    }
+
+    [Fact]
     public async Task Job_runs_to_completion_and_output_is_readable()
     {
         var job = _jobs.Start("'job says hello'");
 
         var final = await WaitForExitAsync(job.Id);
         Assert.Equal(0, final.ExitCode);
+        Assert.Null(final.OutputCaptureComplete);
 
         var read = _jobs.ReadOutput(job.Id, 0)!.Value;
         Assert.Contains("job says hello", read.Text);
@@ -484,6 +1488,63 @@ public sealed class JobManagerTests : IDisposable
         Assert.True(read.Text.Length > 0,
             "the parse error must land in the job log, not vanish on the child's stderr");
     }
+
+    private static ExecutionDispatch CreateRtkDispatch(
+        string workingDirectory,
+        ImmutableArray<string> arguments,
+        RtkExecutableIdentity? identity = null,
+        string originalScript = "fixture command")
+    {
+        identity ??= RtkExecutableIdentity.TryCapture(ResolveCommandProcessor());
+        Assert.NotNull(identity);
+        var plan = new ExecutionPlan(
+            originalScript: originalScript,
+            executionScript: null,
+            ExecutionDomain.NativeTerminal,
+            ExecutionPath.Rtk,
+            PreExecutionValidation.None,
+            ResolutionContext.Cold,
+            RequestedExecutionRoute.Auto,
+            OutputProvenance.RtkUnknown,
+            [ExecutionPath.PowerShellDirect],
+            fallbackReason: null,
+            identity,
+            workingDirectory: workingDirectory,
+            rtkArgumentVector: arguments,
+            directFallbackProvenance: OutputProvenance.DirectText);
+        return ExecutionDispatch.FromPlan(plan);
+    }
+
+    private static ImmutableArray<string> DirectCommand(string command) =>
+        OperatingSystem.IsWindows()
+            ? ["/d", "/s", "/c", command]
+            : ["-c", command];
+
+    private static string ResolveCommandProcessor() =>
+        OperatingSystem.IsWindows()
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.System),
+                "cmd.exe")
+            : File.Exists("/bin/sh")
+                ? "/bin/sh"
+                : "/usr/bin/sh";
+
+    private static string CopyCommandProcessor(string directory)
+    {
+        var source = ResolveCommandProcessor();
+        var destination = Path.Combine(
+            directory,
+            "rtk-fixture" + (OperatingSystem.IsWindows() ? ".exe" : string.Empty));
+        File.Copy(source, destination);
+        if (!OperatingSystem.IsWindows())
+            File.SetUnixFileMode(destination, File.GetUnixFileMode(source));
+        return destination;
+    }
+
+    private static StringComparison StringComparisonForPaths() =>
+        OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
 
     [Fact]
     public void Missing_job_reads_as_null()
