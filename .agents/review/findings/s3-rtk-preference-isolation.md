@@ -4,8 +4,7 @@
 valid routed stdout and pollute persistent `$Error` state.
 **Status**: In progress
 **Branch**: `fix/s3-rtk-preference-isolation`
-**Commit**: `40923784601bf8063d9461188b04be3940374c7d` (reopened;
-Windows correction pending)
+**Commit**: `c100ba199d9854f7171733d9950b26e2a8a397ab`
 
 ## Evidence
 
@@ -85,6 +84,12 @@ without a second RTK pass or ambient `$Error` mutation.
   worktree. The restored head passed 1,030/1,030 .NET tests, 139 Pester tests
   with two platform skips, and the zero-warning stdio handshake; both coder
   and reviewer trees were clean and the review worktree was removed.
+- On Windows at corrective head `c100ba1`, removing only the fixture's explicit
+  stream forwarding failed exactly the eight RTK-route integration guards
+  while 1,022/1,030 passed. Byte-exact restoration passed 1,030/1,030, the two
+  corrected direct-runner guards, 140 Pester tests with one platform skip, and
+  the zero-warning handshake. Canonical platform evidence is in
+  `.agents/machines.md`.
 
 ## Coder dispute (if any)
 
@@ -106,8 +111,9 @@ skip RTK compression. Raw RTK shaping is safe because the planner cannot
 produce an RTK plan when `raw=true`; that coupling remains implicit. The new
 Windows fixture and Windows/Legacy argument branches were statically reviewed
 on macOS. The first exact-archive Windows checkout validation reopened the
-finding with ten focused/integration failures; the correction and a fresh
-exact-head Windows proof are required before the repeated integrated review.
+finding with ten focused/integration failures; the corrective exact-head
+Windows proof now passes. A new fixed-SHA finding review is still required
+before the repeated integrated review.
 
 ## Reviewer comments
 
@@ -149,3 +155,13 @@ removed; installed payloads and persistent configuration were untouched. This
 platform result supersedes branch readiness but does not erase the historical
 macOS Claude acceptance above. Canonical machine-level failure evidence is in
 `.agents/machines.md`.
+
+The correction uses explicit fixture-child stdout/stderr capture and forwarding
+instead of relying on nested Windows handle inheritance. It also removes
+`cmd.exe` whitespace ambiguity from the stderr guards and gives the timeout
+marker a Windows-appropriate startup budget without changing production
+deadline semantics. Exact-archive Windows validation of corrective head
+`c100ba199d9854f7171733d9950b26e2a8a397ab`, archive SHA-256
+`76F027844CC53919B8D2FCEE526940F9196A684337AA3BBFB0E798C5B67BF5A3`, passed
+the load-bearing mutation and restored full battery, recorded
+2026-07-13T05:29:28Z. All disposable artifacts were confirmed removed.

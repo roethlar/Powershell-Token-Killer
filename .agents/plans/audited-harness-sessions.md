@@ -22,10 +22,11 @@ same code head passed the Windows checkout battery on 2026-07-12. The
 integrated Slice 3 fixed-SHA review reopened with material findings. The
 individual corrections were accepted on macOS through code head `4092378`,
 but its first exact-archive Windows validation reopened
-`s3-rtk-preference-isolation`; canonical evidence is in
-`.agents/review/index.md`. Correct and re-review that finding, then repeat
-exact-head cross-platform verification and the integrated fixed-SHA review
-before Slice 3 completion. No push was performed or authorized.
+`s3-rtk-preference-isolation`. Its corrective head `c100ba1` now passes the
+load-bearing Windows exact-archive battery; canonical evidence is in
+`.agents/review/index.md` and `.agents/machines.md`. Re-review that finding,
+then repeat the integrated fixed-SHA review before Slice 3 completion. No push
+was performed or authorized.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the

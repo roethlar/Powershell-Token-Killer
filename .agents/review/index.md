@@ -1501,3 +1501,13 @@ correctly skipped after the required .NET gate failed. All owned local and
 remote disposable artifacts were removed. The earlier macOS fixed-SHA Claude
 acceptance remains historical evidence, not current branch readiness;
 canonical machine-level failure evidence is in `.agents/machines.md`.
+
+**s3-rtk-preference-isolation WINDOWS CORRECTIVE EXACT-ARCHIVE VALIDATION —
+PASSED, REVIEW PENDING** (`NETWATCH-01`), validated corrective head
+`c100ba199d9854f7171733d9950b26e2a8a397ab` from local/uploaded SHA-256
+`76F027844CC53919B8D2FCEE526940F9196A684337AA3BBFB0E798C5B67BF5A3`,
+2026-07-13T05:29:28Z. Removing fixture stream forwarding failed exactly the
+eight RTK-route integration guards; byte-exact restoration passed the full
+.NET/Pester/handshake battery. All disposable artifacts were removed.
+Canonical counts and machine caveats are in `.agents/machines.md`; a new
+fixed-SHA Claude verdict remains required.

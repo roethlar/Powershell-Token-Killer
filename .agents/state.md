@@ -29,9 +29,10 @@ short and update it when important repo facts change.
   3 fixed-SHA review reopened. Its individual corrections were accepted on
   macOS through code head `4092378`, but the first exact-archive Windows
   validation reopened `s3-rtk-preference-isolation` with ten .NET failures.
-  Canonical finding and review evidence is in `.agents/review/index.md`;
-  correction/re-review, exact-head cross-platform verification, and the
-  repeated integrated review remain.
+  Corrective head `c100ba1` passes a load-bearing exact-archive Windows proof.
+  Canonical finding/review and platform evidence is in
+  `.agents/review/index.md` and `.agents/machines.md`; fixed-SHA finding
+  re-review and the repeated integrated review remain.
 - **Audited-harness Slice 2 is complete locally.** The final
   integrated code head `3d3739a` completes job/control audit, local-only and
   anchored OTLP export, evidence administration and retention, permanent
@@ -77,11 +78,10 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Correct and re-review the Windows-reopened
-   `s3-rtk-preference-isolation` finding, then run exact-head cross-platform
-   verification, record platform evidence in `.agents/machines.md`, and repeat
-   the integrated fixed-SHA Claude reviewloop. Canonical finding dispositions:
-   `.agents/review/index.md`.
+1. Run the fixed-SHA Claude re-review of the Windows-corrected
+   `s3-rtk-preference-isolation` finding, then repeat the integrated fixed-SHA
+   Claude reviewloop. Canonical finding and platform evidence is in
+   `.agents/review/index.md` and `.agents/machines.md`.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.

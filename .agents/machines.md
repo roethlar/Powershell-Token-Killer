@@ -216,6 +216,28 @@ expansion.
   archive were confirmed removed. Existing repositories, installed payloads,
   and persistent host configuration were unchanged.
 
+#### Corrective checkout validation — 2026-07-13
+
+_Verified at exact corrective head
+`c100ba199d9854f7171733d9950b26e2a8a397ab` in a disposable copy under
+`F:\dev`; the installed Windows payload and existing repositories were not
+changed._
+
+- A `git archive` ZIP of the exact head was transferred after collision checks;
+  the local and Windows copies matched SHA-256
+  `76F027844CC53919B8D2FCEE526940F9196A684337AA3BBFB0E798C5B67BF5A3`.
+- Removing only the fixture's explicit stdout/stderr forwarding made exactly
+  the eight RTK-route integration guards fail: 1,022/1,030 passed. The script
+  required three named failures, restored `Program.cs` byte-exactly, verified
+  its SHA-256, and reran the same full suite successfully at 1,030/1,030.
+- The PowerShell module suite passed 140 tests with one platform skip. The
+  stdio handshake passed with a zero-warning, zero-error build.
+- The GUID-named checkout, uploaded archive, and local transfer archive were
+  confirmed removed. Existing repositories, installed payloads, and
+  persistent configuration were unchanged. The checkout proof still does not
+  replace later installed/OS-protected live validation for the recorded
+  check/start and dependency caveats.
+
 ## Disposable Ubuntu 26.04 ARM64 validation
 
 _Focused verification 2026-07-11 for the Slice 1 secure-storage implementation
