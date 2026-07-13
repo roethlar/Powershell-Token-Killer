@@ -155,25 +155,45 @@ internal static class SecureAuditStorage
     }
 
     /// <summary>
-    /// Deletes only the exact protected direct child retained by the caller
-    /// and durably publishes the removal. The handle remains open so a path
-    /// replacement cannot be mistaken for the file that was inspected.
+    /// Deletes the protected direct child and returns only after the exact file
+    /// retained by the caller is proven unlinked or delete-pending. A path
+    /// replacement therefore fails closed before callers can write through the
+    /// retained handle.
     /// </summary>
     internal static void DeleteRetainedProtectedFile(
         string root,
         string path,
-        SafeFileHandle retainedHandle)
+        SafeFileHandle retainedHandle,
+        Action? identityVerifiedForTests = null)
     {
         var protectedRoot = Path.TrimEndingDirectorySeparator(Path.GetFullPath(root));
         VerifyExternalProtectedDirectory(protectedRoot);
         path = RequireDirectChild(protectedRoot, path);
         _ = VerifyRetainedProtectedFileIdentity(path, retainedHandle);
+        identityVerifiedForTests?.Invoke();
         File.Delete(path);
-        if (PathExistsWithoutFollowing(path))
+        VerifyRetainedProtectedFileUnlinked(retainedHandle);
+        // A classic Windows delete remains pending while this retained handle
+        // is open, so namespace disappearance is not a valid success test.
+        // The handle query above instead proves zero accessible links.
+        if (!OperatingSystem.IsWindows() && PathExistsWithoutFollowing(path))
             throw new IOException("The retained protected file could not be removed.");
         if (!OperatingSystem.IsWindows())
             FlushUnixDirectory(protectedRoot);
         VerifyExternalProtectedDirectory(protectedRoot);
+    }
+
+    private static void VerifyRetainedProtectedFileUnlinked(SafeFileHandle retainedHandle)
+    {
+        ArgumentNullException.ThrowIfNull(retainedHandle);
+        if (retainedHandle.IsInvalid || retainedHandle.IsClosed)
+            throw new IOException("The protected file identity handle is unavailable.");
+        if (OperatingSystem.IsWindows())
+        {
+            WindowsNative.VerifyRetainedFileDeletePending(retainedHandle);
+            return;
+        }
+        UnixNative.VerifyUnlinkedProtectedFile(retainedHandle);
     }
 
     internal static void PublishAtomically(
@@ -1001,6 +1021,40 @@ internal static class SecureAuditStorage
                 "Protected file identity verification is not implemented on this Unix platform.");
         }
 
+        internal static void VerifyUnlinkedProtectedFile(SafeFileHandle handle)
+        {
+            if (OperatingSystem.IsLinux())
+            {
+                if (statx(
+                        handle.DangerousGetHandle().ToInt32(),
+                        string.Empty,
+                        AtEmptyPath | AtSymlinkNoFollow,
+                        StatxBasicStats,
+                        out var status) != 0)
+                {
+                    throw new Win32Exception(Marshal.GetLastPInvokeError());
+                }
+
+                ValidateLinuxRetainedFile(status, requiredLinkCount: 0);
+                return;
+            }
+
+            if (OperatingSystem.IsMacOS())
+            {
+                MacStat status;
+                var result = RuntimeInformation.ProcessArchitecture == Architecture.X64
+                    ? fstat_inode64(handle, out status)
+                    : fstat(handle, out status);
+                if (result != 0)
+                    throw new Win32Exception(Marshal.GetLastPInvokeError());
+                ValidateMacRetainedFile(status, requiredLinkCount: 0);
+                return;
+            }
+
+            throw new PlatformNotSupportedException(
+                "Protected unlinked-file verification is not implemented on this Unix platform.");
+        }
+
         private static void ValidateLinuxRetainedFile(
             LinuxStatx status,
             uint requiredLinkCount)
@@ -1189,6 +1243,7 @@ internal static class SecureAuditStorage
         private const uint ShareReadWriteDelete = 0x00000007;
         private const uint OpenExisting = 3;
         private const uint FileFlagOpenReparsePoint = 0x00200000;
+        private const int FileStandardInfo = 1;
         private const int FileRenameInfoEx = 22;
         private const uint RenameReplaceIfExists = 0x00000001;
         private const uint RenamePosixSemantics = 0x00000002;
@@ -1238,6 +1293,18 @@ internal static class SecureAuditStorage
             internal uint NumberOfLinks;
             internal uint FileIndexHigh;
             internal uint FileIndexLow;
+        }
+
+        [StructLayout(LayoutKind.Sequential)]
+        private struct FileStandardInformation
+        {
+            internal long AllocationSize;
+            internal long EndOfFile;
+            internal uint NumberOfLinks;
+            [MarshalAs(UnmanagedType.U1)]
+            internal bool DeletePending;
+            [MarshalAs(UnmanagedType.U1)]
+            internal bool Directory;
         }
 
         internal static void ReplaceFileAtomically(
@@ -1334,6 +1401,25 @@ internal static class SecureAuditStorage
                 information.VolumeSerialNumber,
                 information.FileIndexHigh,
                 information.FileIndexLow);
+        }
+
+        internal static void VerifyRetainedFileDeletePending(SafeFileHandle handle)
+        {
+            if (!GetFileInformationByHandleEx(
+                    handle,
+                    FileStandardInfo,
+                    out var information,
+                    checked((uint)Marshal.SizeOf<FileStandardInformation>())))
+            {
+                throw new Win32Exception(Marshal.GetLastPInvokeError());
+            }
+            if (information.Directory ||
+                !information.DeletePending ||
+                information.NumberOfLinks != 0)
+            {
+                throw new IOException(
+                    "The retained protected file was not armed for exact deletion.");
+            }
         }
 
         private static string NormalizeFinalPath(string path)
@@ -1503,6 +1589,14 @@ internal static class SecureAuditStorage
         private static extern bool GetFileInformationByHandle(
             SafeFileHandle file,
             out ByHandleFileInformation information);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        private static extern bool GetFileInformationByHandleEx(
+            SafeFileHandle file,
+            int fileInformationClass,
+            out FileStandardInformation information,
+            uint bufferSize);
 
         [DllImport(
             "kernel32.dll",

@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Collections.ObjectModel;
 using System.Management.Automation;
 using System.Management.Automation.Runspaces;
@@ -81,6 +82,7 @@ public sealed record InvokeResult(
     internal ExecutionRouteSummary? Routing { get; init; }
     internal string? AuditDetailCode { get; init; }
     internal OutputShapingSummary? OutputShaping { get; init; }
+    internal OutputRecoverySummary? OutputRecovery { get; init; }
     internal bool PipelineHadErrors { get; init; }
     internal ExecutionFallbackReason? ProvenPreStartFallbackReason { get; init; }
 }
@@ -127,6 +129,30 @@ internal sealed record ShapedTextResult(
     string Text,
     OutputShapingSummary? Shaping);
 
+internal sealed record OutputRecoverySummary(
+    string? Handle,
+    OutputArtifactState State,
+    long Bytes,
+    string? DetailCode,
+    bool Advertise)
+{
+    internal static OutputRecoverySummary FromSeal(OutputSealResult result) => new(
+        result.Handle,
+        result.State,
+        result.Bytes,
+        result.DetailCode,
+        Advertise: result.Success && result.Handle is not null);
+
+    internal static OutputRecoverySummary Unavailable(
+        string detailCode,
+        bool advertise = false) => new(
+            Handle: null,
+            State: OutputArtifactState.NotFound,
+            Bytes: 0,
+            DetailCode: detailCode,
+            Advertise: advertise);
+}
+
 /// <summary>What the session has changed in the process environment since the
 /// post-priming baseline. PATH is additionally reported as an entry-level diff
 /// because prepended tool shims are the recorded warm-state hazard.</summary>
@@ -169,8 +195,22 @@ public sealed class RunspaceHost : IDisposable
     private readonly object _ownedWorkGate = new();
     private readonly HashSet<Task> _ownedBackgroundWork = [];
     private Exception? _ownedBackgroundWorkFailure;
+    private int _outputProcessorUnavailable;
+
+    internal Action? PrivateOutputRunspaceOpeningForTests { get; set; }
+    internal Action? PrivateOutputRunspaceOpenedForTests { get; set; }
+    internal Action? PrivateOutputInvocationStartingForTests { get; set; }
+    internal Action? PrivateOutputInvocationStartedForTests { get; set; }
+    internal Func<PowerShell, PSDataCollection<PSObject>,
+        Task<PSDataCollection<PSObject>>>? PrivateOutputInvocationOverrideForTests { get; set; }
+    internal Action? PrivateOutputStopStartingForTests { get; set; }
+    internal Action? PrivateOutputProcessorDisposingForTests { get; set; }
+    internal bool OutputProcessorUnavailableForTests =>
+        Volatile.Read(ref _outputProcessorUnavailable) != 0;
 
     internal void TrackOwnedBackgroundWorkForTests(Task work) => TrackOwnedBackgroundWork(work);
+    internal void AbandonOwnedOutputPipelineForTests(Task work) =>
+        AbandonOwnedPipeline(PowerShell.Create(), work);
 
     private void TrackOwnedBackgroundWork(Task work)
     {
@@ -239,6 +279,23 @@ public sealed class RunspaceHost : IDisposable
     {
         using var suppressed = ExecutionContext.SuppressFlow();
         return powerShell.InvokeAsync(input);
+    }
+
+    private static Task<PSDataCollection<PSObject>> InvokeAsyncWithoutAmbientAudit(
+        PowerShell powerShell,
+        PSDataCollection<PSObject> input)
+    {
+        using var suppressed = ExecutionContext.SuppressFlow();
+        return powerShell.InvokeAsync(input);
+    }
+
+    private static Task<PSDataCollection<PSObject>> InvokeAsyncWithoutAmbientAudit(
+        PowerShell powerShell,
+        PSDataCollection<object> input,
+        PSDataCollection<PSObject> output)
+    {
+        using var suppressed = ExecutionContext.SuppressFlow();
+        return powerShell.InvokeAsync<object, PSObject>(input, output);
     }
 
     // Background jobs execute in a cold `pwsh -NoProfile` child. Preserve the
@@ -405,10 +462,15 @@ public sealed class RunspaceHost : IDisposable
     // opens in one process can AccessViolation. Serialize creation process-wide.
     private static readonly object CreationLock = new();
 
-    private static Runspace CreateRunspace()
+    private static Runspace CreateRunspace(
+        Action? creationStartingForTests = null,
+        Func<InternalOutputPipelineStatus?>? startBlocked = null)
     {
         lock (CreationLock)
         {
+            creationStartingForTests?.Invoke();
+            if (startBlocked?.Invoke() is { } beforeConstruction)
+                throw new PrivateOutputStartupBlockedException(beforeConstruction);
             var iss = InitialSessionState.CreateDefault();
             if (OperatingSystem.IsWindows())
             {
@@ -423,8 +485,21 @@ public sealed class RunspaceHost : IDisposable
                 iss.ExecutionPolicy = Microsoft.PowerShell.ExecutionPolicy.Bypass;
             }
             var runspace = RunspaceFactory.CreateRunspace(iss);
-            runspace.Open();
-            return runspace;
+            try
+            {
+                // A private opener may have waited behind another host in
+                // CreationLock. Recheck immediately before the unbounded Open
+                // so an expired waiter cannot begin provider initialization.
+                if (startBlocked?.Invoke() is { } beforeOpen)
+                    throw new PrivateOutputStartupBlockedException(beforeOpen);
+                runspace.Open();
+                return runspace;
+            }
+            catch
+            {
+                runspace.Dispose();
+                throw;
+            }
         }
     }
 
@@ -473,6 +548,31 @@ public sealed class RunspaceHost : IDisposable
     /// <summary>Test hook for state-probe error/cache branches without
     /// allowing user functions to shadow module-qualified probe commands.</summary>
     internal Func<string, InvokeResult?>? IdleInvocationOverrideForTests { get; set; }
+
+    /// <summary>Gate-held, pipeline-free test observation of the automatic
+    /// values whose post-user state private output handling must preserve.</summary>
+    internal async Task<(object? LastExitCode, object[] Errors)>
+        CaptureWarmAutomaticStateForTestsAsync()
+    {
+        await _gate.WaitAsync().ConfigureAwait(false);
+        MarkGateAcquired();
+        try
+        {
+            if (!_runspaceReady.IsCompletedSuccessfully)
+                throw new InvalidOperationException("The warm runspace is not ready.");
+            var runspace = _runspaceReady.Result.Runspace;
+            var snapshot = TryCaptureWarmAutomaticState(runspace)
+                ?? throw new InvalidOperationException("Automatic state is unavailable.");
+            var errors = runspace.SessionStateProxy.GetVariable("Error") is IList list
+                ? list.Cast<object>().ToArray()
+                : [];
+            return (snapshot.LastExitCode, errors);
+        }
+        finally
+        {
+            ReleaseGate();
+        }
+    }
 
     /// <summary>Test hook for current-directory failure and timeout branches.
     /// Production reads the provider intrinsic directly.</summary>
@@ -1361,13 +1461,21 @@ public sealed class RunspaceHost : IDisposable
         WarmStateLost: true);
 
     public Task<InvokeResult> InvokeAsync(string script, bool raw = false, CancellationToken cancellationToken = default, string route = "auto", int timeoutSeconds = 0, DateTimeOffset? deadline = null) =>
-        InvokeCoreAsync(script, raw, cancellationToken, route, timeoutSeconds, deadline, authorizer: null);
+        InvokeCoreAsync(
+            script,
+            raw,
+            cancellationToken,
+            route,
+            timeoutSeconds,
+            deadline,
+            authorizer: null,
+            outputCapture: null);
 
-    /// <summary>Production audited invocation path with distinct durable plan
-    /// and dispatch barriers.</summary>
-    internal Task<InvokeResult> InvokeAsync(
+    /// <summary>Supervisor capture path. The reservation is created before the
+    /// user script can be committed and is consumed at most once by this call.</summary>
+    internal Task<InvokeResult> InvokeWithOutputCaptureAsync(
         string script,
-        IInvocationAuthorizer authorizer,
+        ForegroundOutputCapture outputCapture,
         bool raw = false,
         CancellationToken cancellationToken = default,
         string route = "auto",
@@ -1380,7 +1488,29 @@ public sealed class RunspaceHost : IDisposable
             route,
             timeoutSeconds,
             deadline,
-            authorizer ?? throw new ArgumentNullException(nameof(authorizer)));
+            authorizer: null,
+            outputCapture ?? throw new ArgumentNullException(nameof(outputCapture)));
+
+    /// <summary>Production audited invocation path with distinct durable plan
+    /// and dispatch barriers.</summary>
+    internal Task<InvokeResult> InvokeAsync(
+        string script,
+        IInvocationAuthorizer authorizer,
+        bool raw = false,
+        CancellationToken cancellationToken = default,
+        string route = "auto",
+        int timeoutSeconds = 0,
+        DateTimeOffset? deadline = null,
+        ForegroundOutputCapture? outputCapture = null) =>
+        InvokeCoreAsync(
+            script,
+            raw,
+            cancellationToken,
+            route,
+            timeoutSeconds,
+            deadline,
+            authorizer ?? throw new ArgumentNullException(nameof(authorizer)),
+            outputCapture);
 
     private async Task<InvokeResult> InvokeCoreAsync(
         string script,
@@ -1389,7 +1519,8 @@ public sealed class RunspaceHost : IDisposable
         string route,
         int timeoutSeconds,
         DateTimeOffset? deadline,
-        IInvocationAuthorizer? authorizer)
+        IInvocationAuthorizer? authorizer,
+        ForegroundOutputCapture? outputCapture)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var budget = EffectiveBudget(timeoutSeconds);
@@ -1402,7 +1533,14 @@ public sealed class RunspaceHost : IDisposable
             return QueueExpiryResult(budget);
         }
         return await InvokeGateHeldAsync(
-            script, raw, route, callDeadline, budget, cancellationToken, authorizer);
+            script,
+            raw,
+            route,
+            callDeadline,
+            budget,
+            cancellationToken,
+            authorizer,
+            outputCapture);
     }
 
     /// <summary>Runs the script only if the runspace is idle RIGHT NOW; null
@@ -1435,7 +1573,8 @@ public sealed class RunspaceHost : IDisposable
         var budget = _callTimeout;
         return await InvokeGateHeldAsync(
             script, raw, "auto", DateTimeOffset.UtcNow + budget, budget, cancellationToken,
-            authorizer: null);
+            authorizer: null,
+            outputCapture: null);
     }
 
     internal enum ReadyOutcome { Ready, TimedOut, Canceled, Faulted }
@@ -1628,6 +1767,1313 @@ public sealed class RunspaceHost : IDisposable
         };
     }
 
+    private sealed record WarmAutomaticState(object? LastExitCode);
+
+    private sealed record InvocationPrefixSnapshot(
+        string[] Output,
+        string[] StandardError,
+        string[] Errors,
+        string[] Warnings);
+
+    private sealed record PassiveOutputSnapshot(
+        PSObject[] Output,
+        InvocationPrefixSnapshot Prefix,
+        long TotalOutputCount,
+        bool CaptureBoundExceeded,
+        bool ActiveMemberOmitted,
+        bool LossyProjection,
+        bool CaptureFailed,
+        string DetachedTypeNonce)
+    {
+        internal string? IncompleteReason => CaptureFailed
+            ? "passive_capture_failed"
+            : CaptureBoundExceeded
+                ? "capture_bound_exceeded"
+                : ActiveMemberOmitted
+                    ? "active_member_not_evaluated"
+                    : LossyProjection
+                        ? "passive_projection_lossy"
+                        : null;
+
+        internal string? LimitationNote => IncompleteReason is null
+            ? null
+            : $"[ptk:capture incomplete reason={IncompleteReason} " +
+              $"retained={Output.Length} total={TotalOutputCount}]";
+    }
+
+    /// <summary>Drains producer-owned collections as they grow and retains only
+    /// bounded, passive DTOs. Active PowerShell members are executable user
+    /// code, so this collector never reads them merely to display output.</summary>
+    private sealed class BoundedPassiveOutputCapture
+    {
+        internal const string ActiveMemberMarker =
+            "[active member not evaluated]";
+
+        private readonly object _gate = new();
+        private readonly object _drainGate = new();
+        private readonly List<PSObject> _captured = [];
+        private readonly List<string> _output = [];
+        private readonly List<string> _standardError = [];
+        private readonly List<string> _errors = [];
+        private readonly List<string> _warnings = [];
+        private long _remainingProjectionBytes;
+        private long _remainingPrefixBytes;
+        private long _totalOutputCount;
+        private bool _captureBoundExceeded;
+        private bool _activeMemberOmitted;
+        private bool _lossyProjection;
+        private bool _captureFailed;
+        private bool _prefixCapacityMarkerWritten;
+        private readonly string _detachedTypeNonce = Guid.NewGuid().ToString("N");
+        private static readonly System.Reflection.FieldInfo? PsObjectInstanceMembers =
+            typeof(PSObject).GetField(
+                "_instanceMembers",
+                System.Reflection.BindingFlags.Instance |
+                System.Reflection.BindingFlags.NonPublic);
+        private PSDataCollection<PSObject>? _outputSource;
+        private PSDataCollection<ErrorRecord>? _errorSource;
+        private PSDataCollection<WarningRecord>? _warningSource;
+
+        internal BoundedPassiveOutputCapture(long maximumBytes)
+        {
+            _remainingProjectionBytes = Math.Max(0, maximumBytes);
+            _remainingPrefixBytes = Math.Max(0, maximumBytes);
+        }
+
+        internal void Attach(
+            PSDataCollection<PSObject> output,
+            PSDataCollection<ErrorRecord> errors,
+            PSDataCollection<WarningRecord> warnings)
+        {
+            _outputSource = output;
+            _errorSource = errors;
+            _warningSource = warnings;
+            output.DataAdded += (_, _) => DrainOutput(required: false);
+            errors.DataAdded += (_, _) => DrainErrors(required: false);
+            warnings.DataAdded += (_, _) => DrainWarnings(required: false);
+        }
+
+        private Collection<T>? TryReadAll<T>(PSDataCollection<T>? source)
+        {
+            if (!Monitor.TryEnter(_drainGate)) return null;
+            try
+            {
+                try { return source?.ReadAll() ?? []; }
+                catch
+                {
+                    MarkCaptureFailed();
+                    return [];
+                }
+            }
+            finally
+            {
+                Monitor.Exit(_drainGate);
+            }
+        }
+
+        private void MarkCaptureFailed()
+        {
+            if (Monitor.TryEnter(_gate))
+            {
+                try { Volatile.Write(ref _captureFailed, true); }
+                finally { Monitor.Exit(_gate); }
+            }
+            else
+            {
+                // A deadline snapshot never waits for this monitor. The flag
+                // may be observed on the next successful snapshot instead.
+                Volatile.Write(ref _captureFailed, true);
+            }
+        }
+
+        private void DrainOutput(bool required)
+        {
+            var batch = TryReadAll(_outputSource);
+            if (batch is null)
+            {
+                if (required) MarkCaptureFailed();
+                return;
+            }
+
+            try
+            {
+                lock (_gate)
+                {
+                    foreach (var value in batch)
+                    {
+                        Interlocked.Increment(ref _totalOutputCount);
+                        var baseObject = value?.BaseObject;
+                        var text = TryPassiveScalar(baseObject, out _, out var scalarText)
+                            ? scalarText
+                            : "[captured object; canonical rendering is unavailable until the invocation completes]";
+                        AppendPrefixBounded(_output, text);
+                        ProjectOutput(value);
+                    }
+                }
+            }
+            catch
+            {
+                MarkCaptureFailed();
+            }
+        }
+
+        private void DrainErrors(bool required)
+        {
+            var batch = TryReadAll(_errorSource);
+            if (batch is null)
+            {
+                if (required) MarkCaptureFailed();
+                return;
+            }
+
+            try
+            {
+                lock (_gate)
+                {
+                    foreach (var error in batch)
+                    {
+                        var safe = TryFreezeErrorRecord(error, out var text);
+                        if (!safe) _activeMemberOmitted = true;
+                        AppendPrefixBounded(
+                            IsNativeStderrRecord(error) ? _standardError : _errors,
+                            text);
+                    }
+                }
+            }
+            catch { MarkCaptureFailed(); }
+        }
+
+        private void DrainWarnings(bool required)
+        {
+            var batch = TryReadAll(_warningSource);
+            if (batch is null)
+            {
+                if (required) MarkCaptureFailed();
+                return;
+            }
+
+            try
+            {
+                lock (_gate)
+                {
+                    foreach (var warning in batch)
+                        AppendPrefixBounded(_warnings, warning.Message ?? string.Empty);
+                }
+            }
+            catch { MarkCaptureFailed(); }
+        }
+
+        internal static bool TryFreezeErrorRecord(ErrorRecord error, out string text)
+        {
+            const string omitted =
+                "[PowerShell error text omitted because its exception type was not safe to inspect]";
+            try
+            {
+                if (!string.IsNullOrEmpty(error.ErrorDetails?.Message))
+                {
+                    text = error.ErrorDetails.Message;
+                    return true;
+                }
+
+                var exception = error.Exception;
+                if (exception is null || !IsTrustedPowerShellAssembly(exception.GetType().Assembly))
+                {
+                    text = omitted;
+                    return false;
+                }
+
+                text = exception.Message ?? string.Empty;
+                return true;
+            }
+            catch
+            {
+                text = omitted;
+                return false;
+            }
+        }
+
+        private static bool IsTrustedPowerShellAssembly(System.Reflection.Assembly assembly)
+        {
+            var name = assembly.GetName();
+            var token = name.GetPublicKeyToken();
+            return (name.Name == "System.Management.Automation" ||
+                    name.Name == "Microsoft.PowerShell.Commands.Utility") &&
+                   token is [0x31, 0xbf, 0x38, 0x56, 0xad, 0x36, 0x4e, 0x35];
+        }
+
+        private void ProjectOutput(PSObject? source)
+        {
+            if (source is null) return;
+            var baseObject = source.BaseObject;
+            if (TryPassiveScalar(baseObject, out var scalar, out var scalarText))
+            {
+                if (!TryChargeProjection(MeasureRetainedText(scalarText) + 64))
+                    return;
+                _captured.Add(PSObject.AsPSObject(scalar ?? string.Empty));
+                return;
+            }
+
+            const long objectOverheadBytes = 256;
+            if (!TryChargeProjection(objectOverheadBytes)) return;
+
+            var detached = new PSObject();
+            detached.TypeNames.Clear();
+            var category = PassiveCategory(baseObject);
+            var detachedTypeName =
+                $"Ptk.Detached.{category}.{_detachedTypeNonce}";
+            if (!TryChargeProjection(MeasureRetainedText(detachedTypeName) + 64))
+                return;
+            detached.TypeNames.Add(detachedTypeName);
+
+            var runtimeType = baseObject?.GetType();
+            if (runtimeType == typeof(FileInfo) || runtimeType == typeof(DirectoryInfo))
+            {
+                _lossyProjection = true;
+                var fileSystemInfo = (FileSystemInfo)baseObject!;
+                AddPassiveProperty(detached, "PSIsContainer", baseObject is DirectoryInfo);
+                AddTrustedProperty(detached, "Name", () => fileSystemInfo.Name);
+                AddTrustedProperty(
+                    detached,
+                    "LastWriteTime",
+                    () => fileSystemInfo.LastWriteTime);
+                if (baseObject is FileInfo file)
+                    AddTrustedProperty(detached, "Length", () => file.Length);
+            }
+            else if (runtimeType == typeof(Microsoft.PowerShell.Commands.MatchInfo))
+            {
+                _lossyProjection = true;
+                var match = (Microsoft.PowerShell.Commands.MatchInfo)baseObject!;
+                AddPassiveProperty(detached, "LineNumber", match.LineNumber);
+                AddPassiveProperty(detached, "Path", match.Path);
+                AddPassiveProperty(detached, "Line", match.Line);
+            }
+            else if (runtimeType == typeof(System.Diagnostics.Process))
+            {
+                _lossyProjection = true;
+                var process = (System.Diagnostics.Process)baseObject!;
+                AddTrustedProperty(detached, "Id", () => process.Id);
+                AddTrustedProperty(detached, "ProcessName", () => process.ProcessName);
+                AddTrustedProperty(
+                    detached,
+                    "CPU",
+                    () => process.TotalProcessorTime.TotalSeconds);
+                AddTrustedProperty(detached, "WorkingSet64", () => process.WorkingSet64);
+            }
+            else if (baseObject is PSCustomObject)
+            {
+                if (!HasOnlyDefaultCustomObjectTypeNames(source))
+                    _activeMemberOmitted = true;
+                CopyPassiveInstanceNotes(detached, source);
+            }
+            else
+            {
+                CopyPassiveInstanceNotes(detached, source);
+                AddActiveMemberPlaceholder(detached, "Value");
+            }
+
+            _captured.Add(detached);
+        }
+
+        private static string PassiveCategory(object? value) => value switch
+        {
+            FileInfo => "System.IO.FileInfo",
+            DirectoryInfo => "System.IO.DirectoryInfo",
+            Microsoft.PowerShell.Commands.MatchInfo =>
+                "Microsoft.PowerShell.Commands.MatchInfo",
+            System.Diagnostics.Process => "System.Diagnostics.Process",
+            PSCustomObject => "PSCustomObject",
+            _ => "Object",
+        };
+
+        private static bool HasOnlyDefaultCustomObjectTypeNames(PSObject source)
+        {
+            // TypeNames is PSObject's own inert string collection; unlike the
+            // ETS Properties collection it does not consult PSPropertyAdapter.
+            // Index a bounded default set rather than enumerate a user-grown
+            // collection on the producer callback.
+            var typeNames = source.TypeNames;
+            if (typeNames.Count is < 1 or > 2) return false;
+            for (var index = 0; index < typeNames.Count; index++)
+            {
+                if (typeNames[index] is not
+                    ("System.Management.Automation.PSCustomObject" or "System.Object"))
+                {
+                    return false;
+                }
+            }
+            return true;
+        }
+
+        private void CopyPassiveInstanceNotes(PSObject detached, PSObject source)
+        {
+            object? rawMembers;
+            try { rawMembers = PsObjectInstanceMembers?.GetValue(source); }
+            catch
+            {
+                _captureFailed = true;
+                AddActiveMemberPlaceholder(detached, "OmittedMember");
+                return;
+            }
+
+            if (rawMembers is null) return;
+            if (rawMembers is not IEnumerable members)
+            {
+                _captureFailed = true;
+                AddActiveMemberPlaceholder(detached, "OmittedMember");
+                return;
+            }
+
+            var omitted = false;
+            try
+            {
+                foreach (var member in members)
+                {
+                    // Exact type only: a user subclass must not override an
+                    // apparently passive Value/Name getter. Reading the
+                    // internal instance-member bag bypasses ETS adapters.
+                    if (member?.GetType() == typeof(PSNoteProperty))
+                    {
+                        var note = (PSNoteProperty)member;
+                        AddPassiveProperty(
+                            detached,
+                            note.Name,
+                            PassiveNoteValue(note.Value));
+                    }
+                    else
+                    {
+                        omitted = true;
+                    }
+                }
+            }
+            catch
+            {
+                _captureFailed = true;
+                omitted = true;
+            }
+
+            if (omitted) AddActiveMemberPlaceholder(detached, "OmittedMember");
+        }
+
+        private static bool TryPassiveScalar(
+            object? value,
+            out object? scalar,
+            out string text)
+        {
+            scalar = value;
+            switch (value)
+            {
+                case null:
+                    text = string.Empty;
+                    return true;
+                case string valueText:
+                    text = valueText;
+                    return true;
+                case char character:
+                    text = character.ToString();
+                    return true;
+                case bool boolean:
+                    text = boolean ? "True" : "False";
+                    return true;
+                case byte or sbyte or short or ushort or int or uint or long or
+                     ulong or float or double or decimal:
+                    text = Convert.ToString(
+                        value,
+                        System.Globalization.CultureInfo.InvariantCulture) ??
+                        string.Empty;
+                    return true;
+                case DateTime dateTime:
+                    text = dateTime.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture);
+                    return true;
+                case DateTimeOffset dateTimeOffset:
+                    text = dateTimeOffset.ToString(
+                        System.Globalization.CultureInfo.InvariantCulture);
+                    return true;
+                case Guid guid:
+                    text = guid.ToString();
+                    return true;
+                case TimeSpan timeSpan:
+                    text = timeSpan.ToString(
+                        format: null,
+                        System.Globalization.CultureInfo.InvariantCulture);
+                    return true;
+                case Enum enumeration:
+                    text = enumeration.ToString();
+                    return true;
+                default:
+                    scalar = null;
+                    text = string.Empty;
+                    return false;
+            }
+        }
+
+        private object? PassiveNoteValue(object? value)
+        {
+            var baseObject = value is PSObject wrapped ? wrapped.BaseObject : value;
+            if (TryPassiveScalar(baseObject, out var scalar, out _)) return scalar;
+            _activeMemberOmitted = true;
+            return baseObject is null
+                ? null
+                : $"[nested {baseObject.GetType().FullName ?? "object"} not expanded during passive output capture]";
+        }
+
+        private void AddTrustedProperty(
+            PSObject detached,
+            string name,
+            Func<object?> read)
+        {
+            try { AddPassiveProperty(detached, name, PassiveNoteValue(read())); }
+            catch { AddActiveMemberPlaceholder(detached, name); }
+        }
+
+        private void AddActiveMemberPlaceholder(PSObject detached, string name)
+        {
+            _activeMemberOmitted = true;
+            AddPassiveProperty(detached, name, ActiveMemberMarker);
+        }
+
+        private void AddPassiveProperty(
+            PSObject detached,
+            string name,
+            object? value)
+        {
+            var valueText = TryPassiveScalar(value, out _, out var scalarText)
+                ? scalarText
+                : ActiveMemberMarker;
+            if (!TryChargeProjection(
+                MeasureRetainedText(name) +
+                MeasureRetainedText(valueText) +
+                128))
+            {
+                return;
+            }
+            try { detached.Properties.Add(new PSNoteProperty(name, value)); }
+            catch { _captureFailed = true; }
+        }
+
+        private bool TryChargeProjection(long bytes)
+        {
+            if (bytes <= _remainingProjectionBytes)
+            {
+                _remainingProjectionBytes -= bytes;
+                return true;
+            }
+            _captureBoundExceeded = true;
+            return false;
+        }
+
+        private static long MeasureRetainedText(string text) =>
+            Math.Max(
+                (long)Encoding.UTF8.GetByteCount(text),
+                (long)text.Length * sizeof(char));
+
+        private void AppendPrefixBounded(List<string> destination, string text)
+        {
+            // Charge both the retained UTF-16 string/list footprint and the
+            // rendered UTF-8 framing. In particular, empty-string floods must
+            // consume capacity instead of growing the prefix lists forever.
+            const int retainedEntryOverheadBytes = 64;
+            var textBytes = MeasureRetainedText(text);
+            var bytes = textBytes +
+                Encoding.UTF8.GetByteCount(Environment.NewLine) +
+                retainedEntryOverheadBytes;
+            if (bytes <= _remainingPrefixBytes)
+            {
+                destination.Add(text);
+                _remainingPrefixBytes -= bytes;
+                return;
+            }
+            if (_prefixCapacityMarkerWritten) return;
+            _captureBoundExceeded = true;
+            const string marker = "[captured prefix exceeded the output artifact bound]";
+            var markerBytes = Math.Max(
+                    (long)Encoding.UTF8.GetByteCount(marker),
+                    (long)marker.Length * sizeof(char)) +
+                Encoding.UTF8.GetByteCount(Environment.NewLine) +
+                retainedEntryOverheadBytes;
+            if (markerBytes <= _remainingPrefixBytes)
+            {
+                destination.Add(marker);
+                _remainingPrefixBytes -= markerBytes;
+            }
+            _prefixCapacityMarkerWritten = true;
+        }
+
+        private void DrainAllRequired()
+        {
+            DrainOutput(required: true);
+            DrainErrors(required: true);
+            DrainWarnings(required: true);
+        }
+
+        internal PassiveOutputSnapshot CompleteAndSnapshot()
+        {
+            try { _outputSource?.Complete(); }
+            catch { MarkCaptureFailed(); }
+            DrainAllRequired();
+            return SnapshotCore(deadlineFallback: false);
+        }
+
+        /// <summary>Returns only already-frozen data and never waits for a
+        /// producer callback. It is safe after the user deadline even when a
+        /// hostile or wedged object projection is still being abandoned.</summary>
+        internal PassiveOutputSnapshot SnapshotAtDeadline() =>
+            SnapshotCore(deadlineFallback: true);
+
+        private PassiveOutputSnapshot SnapshotCore(bool deadlineFallback)
+        {
+            if (!Monitor.TryEnter(_gate))
+            {
+                return new(
+                    [],
+                    new InvocationPrefixSnapshot([], [], [], []),
+                    Interlocked.Read(ref _totalOutputCount),
+                    CaptureBoundExceeded: false,
+                    ActiveMemberOmitted: false,
+                    LossyProjection: false,
+                    CaptureFailed: true,
+                    _detachedTypeNonce);
+            }
+            try
+            {
+                return new(
+                    [.. _captured],
+                    new InvocationPrefixSnapshot(
+                        [.. _output],
+                        FilterRtkNag(_standardError),
+                        [.. _errors],
+                        [.. _warnings]),
+                    Interlocked.Read(ref _totalOutputCount),
+                    _captureBoundExceeded,
+                    _activeMemberOmitted,
+                    _lossyProjection,
+                    Volatile.Read(ref _captureFailed) || deadlineFallback,
+                    _detachedTypeNonce);
+            }
+            finally
+            {
+                Monitor.Exit(_gate);
+            }
+        }
+    }
+
+    private static string? FreezeTerminatingError(
+        RuntimeException? terminating,
+        out bool safe)
+    {
+        if (terminating is null)
+        {
+            safe = true;
+            return null;
+        }
+
+        safe = BoundedPassiveOutputCapture.TryFreezeErrorRecord(
+            terminating.ErrorRecord,
+            out var text);
+        return text;
+    }
+
+    private static WarmAutomaticState? TryCaptureWarmAutomaticState(Runspace runspace)
+    {
+        try
+        {
+            return new WarmAutomaticState(
+                runspace.SessionStateProxy.GetVariable("LASTEXITCODE"));
+        }
+        catch
+        {
+            return null;
+        }
+    }
+
+    private static bool TryRestoreWarmAutomaticState(
+        Runspace runspace,
+        WarmAutomaticState? snapshot)
+    {
+        if (snapshot is null) return false;
+        try
+        {
+            runspace.SessionStateProxy.SetVariable(
+                "LASTEXITCODE",
+                snapshot.LastExitCode);
+            return true;
+        }
+        catch
+        {
+            return false;
+        }
+    }
+
+    private enum InternalOutputPipelineStatus
+    {
+        Completed,
+        Canceled,
+        TimedOut,
+        Failed,
+        Recycled,
+        Abandoned,
+    }
+
+    private sealed record InternalOutputPipelineResult(
+        InternalOutputPipelineStatus Status,
+        string Output,
+        OutputShapingSummary? Shaping,
+        bool TimedOut = false);
+
+    private sealed record PrivateOutputProcessorStart(
+        InternalOutputPipelineStatus Status,
+        PowerShell? Pipeline,
+        Task<PSDataCollection<PSObject>>? Invocation);
+
+    private sealed class PrivateOutputStartupBlockedException(
+        InternalOutputPipelineStatus status) : Exception
+    {
+        internal InternalOutputPipelineStatus Status { get; } = status;
+    }
+
+    private sealed class PrivateOutputProcessorLease
+    {
+        private readonly Action? _stopStartingForTests;
+        private readonly TaskCompletionSource<PrivateOutputProcessorStart> _startup =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _resultsReleased =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _startAttempted;
+        private int _stopRequested;
+        private int _stopQueued;
+        private PowerShell? _pipeline;
+        private Task? _stopTask;
+
+        internal PrivateOutputProcessorLease(Action? stopStartingForTests) =>
+            _stopStartingForTests = stopStartingForTests;
+
+        internal Task<PrivateOutputProcessorStart> Startup => _startup.Task;
+        internal Task ResultsReleased => _resultsReleased.Task;
+        internal bool StartAttempted => Volatile.Read(ref _startAttempted) != 0;
+        internal Task StopCompleted =>
+            Volatile.Read(ref _stopTask) ?? Task.CompletedTask;
+
+        internal void MarkStartAttempted() =>
+            Volatile.Write(ref _startAttempted, 1);
+
+        internal void PublishStarted(
+            PowerShell pipeline,
+            Task<PSDataCollection<PSObject>> invocation)
+        {
+            Volatile.Write(ref _pipeline, pipeline);
+            _startup.TrySetResult(new(
+                InternalOutputPipelineStatus.Completed,
+                pipeline,
+                invocation));
+            QueueStopIfRequested();
+        }
+
+        internal void PublishNoStart(InternalOutputPipelineStatus status) =>
+            _startup.TrySetResult(new(status, null, null));
+
+        internal void RequestStop()
+        {
+            Volatile.Write(ref _stopRequested, 1);
+            QueueStopIfRequested();
+        }
+
+        private void QueueStopIfRequested()
+        {
+            var pipeline = Volatile.Read(ref _pipeline);
+            if (Volatile.Read(ref _stopRequested) == 0 ||
+                pipeline is null ||
+                Interlocked.Exchange(ref _stopQueued, 1) != 0)
+            {
+                return;
+            }
+
+            Task stop;
+            using (ExecutionContext.SuppressFlow())
+            {
+                stop = Task.Run(() =>
+                {
+                    try { _stopStartingForTests?.Invoke(); }
+                    catch { }
+                    try { pipeline.Stop(); }
+                    catch { }
+                });
+            }
+            Volatile.Write(ref _stopTask, stop);
+            _ = stop.ContinueWith(
+                static completed => _ = completed.Exception,
+                CancellationToken.None,
+                TaskContinuationOptions.ExecuteSynchronously,
+                TaskScheduler.Default);
+        }
+
+        internal void ReleaseResults() => _resultsReleased.TrySetResult();
+    }
+
+    private static InternalOutputPipelineStatus? PrivateOutputStartBlocked(
+        DateTimeOffset callDeadline,
+        CancellationToken cancellationToken)
+    {
+        if (cancellationToken.IsCancellationRequested)
+            return InternalOutputPipelineStatus.Canceled;
+        if (DateTimeOffset.UtcNow >= callDeadline)
+            return InternalOutputPipelineStatus.TimedOut;
+        return null;
+    }
+
+    private Task RunPrivateOutputProcessorLifecycleAsync(
+        PrivateOutputProcessorLease lease,
+        PSDataCollection<PSObject> input,
+        DateTimeOffset callDeadline,
+        CancellationToken cancellationToken,
+        Action<PowerShell> configure)
+    {
+        Task lifecycle;
+        using (ExecutionContext.SuppressFlow())
+        {
+            lifecycle = Task.Run(async () =>
+            {
+                Runspace? ownedRunspace = null;
+                PowerShell? pipeline = null;
+                try
+                {
+                    if (PrivateOutputStartBlocked(callDeadline, cancellationToken) is { } blocked)
+                    {
+                        lease.PublishNoStart(blocked);
+                        return;
+                    }
+
+                    // This is the same process-wide serialized factory used by
+                    // warm runspaces. In particular, private shaping cannot
+                    // race Runspace.Open on macOS outside CreationLock.
+                    ownedRunspace = CreateRunspace(
+                        PrivateOutputRunspaceOpeningForTests,
+                        () => PrivateOutputStartBlocked(
+                            callDeadline,
+                            cancellationToken));
+                    PrivateOutputRunspaceOpenedForTests?.Invoke();
+                    if (PrivateOutputStartBlocked(callDeadline, cancellationToken) is { } afterOpen)
+                    {
+                        lease.PublishNoStart(afterOpen);
+                        return;
+                    }
+
+                    pipeline = PowerShell.Create();
+                    pipeline.Runspace = ownedRunspace;
+                    configure(pipeline);
+                    if (PrivateOutputStartBlocked(callDeadline, cancellationToken) is { } afterConfigure)
+                    {
+                        lease.PublishNoStart(afterConfigure);
+                        return;
+                    }
+
+                    PrivateOutputInvocationStartingForTests?.Invoke();
+                    if (PrivateOutputStartBlocked(callDeadline, cancellationToken) is { } beforeStart)
+                    {
+                        lease.PublishNoStart(beforeStart);
+                        return;
+                    }
+
+                    // InvokeAsync can synchronously open/start providers before
+                    // returning its Task. Keep that work on this private
+                    // lifecycle thread and publish only after the call returns.
+                    lease.MarkStartAttempted();
+                    var invocation = PrivateOutputInvocationOverrideForTests is { } overrideForTests
+                        ? overrideForTests(pipeline, input)
+                        : InvokeAsyncWithoutAmbientAudit(pipeline, input);
+                    lease.PublishStarted(pipeline, invocation);
+                    PrivateOutputInvocationStartedForTests?.Invoke();
+                    try { await invocation.ConfigureAwait(false); }
+                    catch { }
+                    await lease.ResultsReleased.ConfigureAwait(false);
+                }
+                catch (PrivateOutputStartupBlockedException blocked)
+                {
+                    lease.PublishNoStart(blocked.Status);
+                }
+                catch
+                {
+                    lease.PublishNoStart(
+                        lease.StartAttempted
+                            ? InternalOutputPipelineStatus.Abandoned
+                            : InternalOutputPipelineStatus.Failed);
+                }
+                finally
+                {
+                    lease.PublishNoStart(
+                        PrivateOutputStartBlocked(callDeadline, cancellationToken) ??
+                        (lease.StartAttempted
+                            ? InternalOutputPipelineStatus.Abandoned
+                            : InternalOutputPipelineStatus.Failed));
+                    try { await lease.StopCompleted.ConfigureAwait(false); }
+                    catch { }
+                    try { PrivateOutputProcessorDisposingForTests?.Invoke(); }
+                    catch { }
+                    try { pipeline?.Dispose(); }
+                    catch { }
+                    try { ownedRunspace?.Dispose(); }
+                    catch { }
+                    try { input.Dispose(); }
+                    catch { }
+                    Volatile.Write(ref _outputProcessorUnavailable, 0);
+                }
+            });
+        }
+        return lifecycle;
+    }
+
+    private static readonly TimeSpan PrivateOutputCleanupHandoff =
+        TimeSpan.FromMilliseconds(100);
+    private static readonly TimeSpan PrivateOutputFollowupReserve =
+        TimeSpan.FromSeconds(2);
+
+    private static async Task AwaitPrivateOutputCleanupHandoffAsync(
+        Task cleanup,
+        DateTimeOffset callDeadline,
+        bool followupProcessorExpected,
+        CancellationToken cancellationToken)
+    {
+        if (cleanup.IsCompleted)
+        {
+            try { await cleanup.ConfigureAwait(false); }
+            catch { }
+            return;
+        }
+
+        var now = DateTimeOffset.UtcNow;
+        var handoffDeadline = followupProcessorExpected
+            ? callDeadline - PrivateOutputFollowupReserve
+            : now + PrivateOutputCleanupHandoff;
+        if (handoffDeadline > callDeadline) handoffDeadline = callDeadline;
+        if (await WaitForDeadlineAsync(
+                cleanup,
+                handoffDeadline,
+                cancellationToken).ConfigureAwait(false) == WaitOutcome.Completed)
+        {
+            try { await cleanup.ConfigureAwait(false); }
+            catch { }
+        }
+    }
+
+    private async Task<InternalOutputPipelineResult>
+        RunCapturedOutputPrivatePipelineAsync(
+            IReadOnlyCollection<PSObject> captured,
+            DateTimeOffset callDeadline,
+            CancellationToken cancellationToken,
+            Action<PowerShell> configure,
+            RtkExecutableIdentity? authorizedShapingRtk,
+            bool decodeRoutingEnvelope,
+            bool followupProcessorExpected)
+    {
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new(
+                InternalOutputPipelineStatus.Canceled,
+                string.Empty,
+                Shaping: null);
+        }
+        if (DateTimeOffset.UtcNow >= callDeadline)
+        {
+            return new(
+                InternalOutputPipelineStatus.TimedOut,
+                string.Empty,
+                Shaping: null,
+                TimedOut: true);
+        }
+
+        var input = new PSDataCollection<PSObject>();
+        var staged = 0;
+        foreach (var value in captured)
+        {
+            input.Add(value);
+            if ((++staged & 0x7f) != 0) continue;
+            if (cancellationToken.IsCancellationRequested)
+            {
+                input.Dispose();
+                return new(
+                    InternalOutputPipelineStatus.Canceled,
+                    string.Empty,
+                    Shaping: null);
+            }
+            if (DateTimeOffset.UtcNow >= callDeadline)
+            {
+                input.Dispose();
+                return new(
+                    InternalOutputPipelineStatus.TimedOut,
+                    string.Empty,
+                    Shaping: null,
+                    TimedOut: true);
+            }
+        }
+        input.Complete();
+
+        if (Interlocked.CompareExchange(
+                ref _outputProcessorUnavailable,
+                1,
+                0) != 0)
+        {
+            input.Dispose();
+            return new(
+                InternalOutputPipelineStatus.Failed,
+                string.Empty,
+                Shaping: null);
+        }
+
+        var lease = new PrivateOutputProcessorLease(
+            PrivateOutputStopStartingForTests);
+        var followupEligible = false;
+        Task lifecycle;
+        try
+        {
+            lifecycle = RunPrivateOutputProcessorLifecycleAsync(
+                lease,
+                input,
+                callDeadline,
+                cancellationToken,
+                configure);
+        }
+        catch
+        {
+            Volatile.Write(ref _outputProcessorUnavailable, 0);
+            input.Dispose();
+            return new(
+                InternalOutputPipelineStatus.Failed,
+                string.Empty,
+                Shaping: null);
+        }
+
+        try
+        {
+            var startupOutcome = await WaitForDeadlineAsync(
+                lease.Startup,
+                callDeadline,
+                cancellationToken);
+            if (startupOutcome != WaitOutcome.Completed)
+            {
+                lease.RequestStop();
+                var status = lease.StartAttempted
+                    ? InternalOutputPipelineStatus.Abandoned
+                    : startupOutcome == WaitOutcome.Canceled
+                        ? InternalOutputPipelineStatus.Canceled
+                        : InternalOutputPipelineStatus.TimedOut;
+                return new(
+                    status,
+                    string.Empty,
+                    Shaping: null,
+                    TimedOut: startupOutcome == WaitOutcome.TimedOut);
+            }
+
+            var started = await lease.Startup.ConfigureAwait(false);
+            if (started.Status != InternalOutputPipelineStatus.Completed ||
+                started.Pipeline is null ||
+                started.Invocation is null)
+            {
+                return new(
+                    started.Status,
+                    string.Empty,
+                    Shaping: null,
+                    TimedOut: started.Status == InternalOutputPipelineStatus.TimedOut);
+            }
+
+            var outcome = await WaitForDeadlineAsync(
+                started.Invocation,
+                callDeadline,
+                cancellationToken);
+            if (outcome == WaitOutcome.Completed)
+            {
+                try
+                {
+                    var results = await started.Invocation.ConfigureAwait(false);
+                    if (decodeRoutingEnvelope)
+                    {
+                        var (text, shaping) = CaptureInvocationOutput(
+                            results,
+                            authorizedShapingRtk);
+                        return new(
+                            InternalOutputPipelineStatus.Completed,
+                            text,
+                            shaping);
+                    }
+                    followupEligible = true;
+                    return new(
+                        InternalOutputPipelineStatus.Completed,
+                        string.Concat(results.Select(result => result?.ToString())),
+                        Shaping: null);
+                }
+                catch
+                {
+                    return new(
+                        InternalOutputPipelineStatus.Failed,
+                        string.Empty,
+                        Shaping: null);
+                }
+            }
+
+            lease.RequestStop();
+            if (outcome == WaitOutcome.Canceled &&
+                await Task.WhenAny(
+                    started.Invocation,
+                    Task.Delay(StopGrace)).ConfigureAwait(false) == started.Invocation)
+            {
+                try { await started.Invocation.ConfigureAwait(false); }
+                catch { }
+                return new(
+                    InternalOutputPipelineStatus.Canceled,
+                    string.Empty,
+                    Shaping: null);
+            }
+
+            return new(
+                InternalOutputPipelineStatus.Abandoned,
+                string.Empty,
+                Shaping: null,
+                TimedOut: outcome == WaitOutcome.TimedOut);
+        }
+        finally
+        {
+            lease.ReleaseResults();
+            await AwaitPrivateOutputCleanupHandoffAsync(
+                lifecycle,
+                callDeadline,
+                followupProcessorExpected && followupEligible,
+                cancellationToken).ConfigureAwait(false);
+        }
+    }
+
+    /// <summary>Runs formatting/shaping over already-captured objects. The
+    /// original script is never present in this pipeline, so no recovery or
+    /// shaping branch can execute it a second time.</summary>
+    private async Task<InternalOutputPipelineResult> RunCapturedOutputPipelineGateHeldAsync(
+        IReadOnlyCollection<PSObject> captured,
+        Runspace? runspace,
+        DateTimeOffset callDeadline,
+        CancellationToken cancellationToken,
+        Action<PowerShell> configure,
+        RtkExecutableIdentity? authorizedShapingRtk,
+        bool decodeRoutingEnvelope,
+        bool followupProcessorExpected = false)
+    {
+        if (runspace is null)
+        {
+            return await RunCapturedOutputPrivatePipelineAsync(
+                captured,
+                callDeadline,
+                cancellationToken,
+                configure,
+                authorizedShapingRtk,
+                decodeRoutingEnvelope,
+                followupProcessorExpected);
+        }
+
+        // A private processor that ignored Stop remains process-owned cleanup,
+        // but it must neither block audited shutdown nor permit an unbounded
+        // succession of abandoned processors. While that one task is live,
+        // callers fall back to the already-bounded passive capture.
+        if (Volatile.Read(ref _outputProcessorUnavailable) != 0)
+        {
+            return new(
+                InternalOutputPipelineStatus.Failed,
+                string.Empty,
+                Shaping: null);
+        }
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new(
+                InternalOutputPipelineStatus.Canceled,
+                string.Empty,
+                Shaping: null);
+        }
+        if (DateTimeOffset.UtcNow >= callDeadline)
+        {
+            return new(
+                InternalOutputPipelineStatus.TimedOut,
+                string.Empty,
+                Shaping: null,
+                TimedOut: true);
+        }
+
+        var pipeline = PowerShell.Create();
+        var handedOff = false;
+        try
+        {
+            pipeline.Runspace = runspace;
+            configure(pipeline);
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return new(
+                    InternalOutputPipelineStatus.Canceled,
+                    string.Empty,
+                    Shaping: null);
+            }
+            if (DateTimeOffset.UtcNow >= callDeadline)
+            {
+                return new(
+                    InternalOutputPipelineStatus.TimedOut,
+                    string.Empty,
+                    Shaping: null,
+                    TimedOut: true);
+            }
+            var input = new PSDataCollection<PSObject>();
+            var staged = 0;
+            foreach (var value in captured)
+            {
+                input.Add(value);
+                if ((++staged & 0x7f) != 0) continue;
+                if (cancellationToken.IsCancellationRequested)
+                {
+                    return new(
+                        InternalOutputPipelineStatus.Canceled,
+                        string.Empty,
+                        Shaping: null);
+                }
+                if (DateTimeOffset.UtcNow >= callDeadline)
+                {
+                    return new(
+                        InternalOutputPipelineStatus.TimedOut,
+                        string.Empty,
+                        Shaping: null,
+                        TimedOut: true);
+                }
+            }
+            input.Complete();
+            if (cancellationToken.IsCancellationRequested)
+            {
+                return new(
+                    InternalOutputPipelineStatus.Canceled,
+                    string.Empty,
+                    Shaping: null);
+            }
+            if (DateTimeOffset.UtcNow >= callDeadline)
+            {
+                return new(
+                    InternalOutputPipelineStatus.TimedOut,
+                    string.Empty,
+                    Shaping: null,
+                    TimedOut: true);
+            }
+            var invokeTask = InvokeAsyncWithoutAmbientAudit(pipeline, input);
+            var outcome = await WaitForDeadlineAsync(
+                invokeTask,
+                callDeadline,
+                cancellationToken);
+            if (outcome == WaitOutcome.Completed)
+            {
+                try
+                {
+                    var results = await invokeTask;
+                    if (decodeRoutingEnvelope)
+                    {
+                        var (text, shaping) = CaptureInvocationOutput(
+                            results,
+                            authorizedShapingRtk);
+                        return new(
+                            InternalOutputPipelineStatus.Completed,
+                            text,
+                            shaping);
+                    }
+                    return new(
+                        InternalOutputPipelineStatus.Completed,
+                        string.Concat(results.Select(result => result?.ToString())),
+                        Shaping: null);
+                }
+                catch
+                {
+                    return new(
+                        InternalOutputPipelineStatus.Failed,
+                        string.Empty,
+                        Shaping: null);
+                }
+            }
+
+            if (outcome == WaitOutcome.Canceled &&
+                await TryStopPipelineAsync(pipeline, invokeTask))
+            {
+                return new(
+                    InternalOutputPipelineStatus.Canceled,
+                    string.Empty,
+                    Shaping: null);
+            }
+
+            handedOff = true;
+            AbandonAndRecycle(pipeline, invokeTask, runspace);
+            return new(
+                InternalOutputPipelineStatus.Recycled,
+                string.Empty,
+                Shaping: null,
+                TimedOut: outcome == WaitOutcome.TimedOut);
+        }
+        catch
+        {
+            return new(
+                InternalOutputPipelineStatus.Failed,
+                string.Empty,
+                Shaping: null);
+        }
+        finally
+        {
+            if (!handedOff) pipeline.Dispose();
+        }
+    }
+
+    private static string RenderCapturedPrefixWithoutPipeline(
+        IEnumerable<PSObject> captured) =>
+        string.Join(
+            Environment.NewLine,
+            captured.Select(value => value?.ToString()));
+
+    private static OutputArtifactContent CaptureIncompleteArtifactContent(
+        InvocationPrefixSnapshot prefix,
+        OutputProvenance provenance,
+        string? terminatingError = null)
+    {
+        return new OutputArtifactContent(
+            string.Join(Environment.NewLine, prefix.Output),
+            prefix.StandardError,
+            terminatingError is null
+                ? prefix.Errors
+                : [.. prefix.Errors, terminatingError],
+            prefix.Warnings,
+            ExitCode: null,
+            provenance);
+    }
+
+    private static string BoundEmergencyOutput(string text)
+    {
+        const int maximumCharacters = 40 * 1024;
+        if (text.Length <= maximumCharacters) return text;
+        const int tailCharacters = maximumCharacters / 4;
+        var headCharacters = maximumCharacters - tailCharacters;
+        return text[..headCharacters] + Environment.NewLine +
+            "[output truncated after internal bookkeeping failure; use the incomplete ptk_output artifact when available]" +
+            Environment.NewLine + text[^tailCharacters..];
+    }
+
+    private static string? RecoveryElisionHint(OutputRecoverySummary? recovery)
+    {
+        if (recovery is null) return null;
+        return recovery.Handle is { } handle
+            ? $"recovery=available: ptk_output handle={handle}"
+            : "recovery=unavailable: output capture unavailable; command was not rerun";
+    }
+
+    private static OutputArtifactContent CaptureArtifactContent(
+        string output,
+        InvocationPrefixSnapshot streams,
+        int exitCode,
+        OutputProvenance provenance,
+        string? terminatingError = null)
+    {
+        var errors = terminatingError is null
+            ? streams.Errors
+            : [.. streams.Errors, terminatingError];
+        return new OutputArtifactContent(
+            output,
+            streams.StandardError,
+            errors,
+            streams.Warnings,
+            exitCode == 0 ? null : exitCode,
+            provenance);
+    }
+
     private static (string Output, OutputShapingSummary? Shaping)
         CaptureInvocationOutput(
             PSDataCollection<PSObject> results,
@@ -1691,10 +3137,11 @@ public sealed class RunspaceHost : IDisposable
         {
             ps.Runspace = runspace;
             ps.AddScript(
-                    "$input | & $args[0] -InputProvenance $args[1] -EmitRoutingEnvelope",
+                    "$input | & $args[0] -InputProvenance $args[1] -ElisionHint $args[2] -EmitRoutingEnvelope",
                     useLocalScope: true)
               .AddArgument(primed.CompressCommand)
-              .AddArgument(OutputProvenance.RtkUnknown.ToMachineCode());
+              .AddArgument(OutputProvenance.RtkUnknown.ToMachineCode())
+              .AddArgument("recovery=unavailable: rtk capture unsupported");
             var input = new PSDataCollection<object> { processResult.Output };
             input.Complete();
 
@@ -1771,7 +3218,8 @@ public sealed class RunspaceHost : IDisposable
         DateTimeOffset callDeadline,
         TimeSpan budget,
         CancellationToken cancellationToken,
-        IInvocationAuthorizer? authorizer)
+        IInvocationAuthorizer? authorizer,
+        ForegroundOutputCapture? outputCapture)
     {
         var ps = PowerShell.Create();
         var handedOff = false;
@@ -2102,28 +3550,55 @@ public sealed class RunspaceHost : IDisposable
                         dispatch);
                 }
 
-                return WithDispatchRouting(
-                    await BashProcessRunner.ExecuteAsync(
-                        dispatch,
-                        callDeadline,
-                        cancellationToken),
-                    dispatch);
+                var bashResult = await BashProcessRunner.ExecuteAsync(
+                    dispatch,
+                    callDeadline,
+                    cancellationToken);
+                if (outputCapture is not null && bashResult.UserExecutionStarted)
+                {
+                    bashResult = bashResult with
+                    {
+                        OutputRecovery = OutputRecoverySummary.Unavailable(
+                            "rtk_capture_unsupported",
+                            advertise: true),
+                    };
+                }
+                return WithDispatchRouting(bashResult, dispatch);
             }
-
-            // Reset only after the audited barrier authorizes this exact
-            // preparation. A refusal/exception therefore performs no later
-            // session mutation (the stale-LASTEXITCODE guard still precedes
-            // every actual user pipeline).
-            ResetExitCode(runspace);
 
             if (dispatch.ExecutionPath == ExecutionPath.Rtk)
             {
+                var automaticStateBeforeRtkStart =
+                    TryCaptureWarmAutomaticState(runspace);
+                ResetExitCode(runspace);
                 var processResult = await RtkProcessRunner.ExecuteAsync(
                     dispatch,
                     callDeadline,
                     cancellationToken);
                 if (processResult.ProvenPreStartFallbackReason is { } fallbackReason)
                 {
+                    // A machine-proved pre-start failure did not earn a warm
+                    // state mutation. Restore the reset before any fallback
+                    // authorization/capture gate that can still return
+                    // NotStarted.
+                    if (!TryRestoreWarmAutomaticState(
+                            runspace,
+                            automaticStateBeforeRtkStart))
+                    {
+                        RecycleAbandoning(Task.CompletedTask, runspace);
+                        return WithDispatchRouting(new InvokeResult(
+                            Success: false,
+                            Output: string.Empty,
+                            Errors:
+                            [
+                                "RTK proved that the command did not start, but PTK could not restore automatic session state; the runspace was recycled and the original command was not retried.",
+                            ],
+                            Warnings: [],
+                            TimedOut: false,
+                            Disposition: InvokeDisposition.NotStarted,
+                            UserExecutionStarted: false,
+                            WarmStateLost: true), dispatch);
+                    }
                     var fallbackDispatch = ExecutionDispatch.RtkPreStartFallback(
                         plan,
                         fallbackReason);
@@ -2153,31 +3628,66 @@ public sealed class RunspaceHost : IDisposable
                         runspace,
                         callDeadline,
                         cancellationToken);
+                    if (outputCapture is not null && shaped.UserExecutionStarted)
+                    {
+                        shaped = shaped with
+                        {
+                            OutputRecovery = OutputRecoverySummary.Unavailable(
+                                "rtk_capture_unsupported",
+                                advertise: true),
+                        };
+                    }
                     return WithDispatchRouting(shaped, dispatch);
                 }
             }
 
+            // The supervisor waits until the exact dispatch is durable and
+            // known capturable before reserving output capacity. Reservation
+            // failure is diagnostic only: it must never suppress or rerun the
+            // already-authorized user operation.
+            if (outputCapture is not null)
+            {
+                await outputCapture.PrepareAsync(
+                    OutputSealWait(callDeadline),
+                    cancellationToken);
+            }
+            if (cancellationToken.IsCancellationRequested ||
+                DateTimeOffset.UtcNow >= callDeadline)
+            {
+                var timedOutPreparingCapture = !cancellationToken.IsCancellationRequested;
+                return WithDispatchRouting(new InvokeResult(
+                    Success: false,
+                    Output: string.Empty,
+                    Errors:
+                    [
+                        timedOutPreparingCapture
+                            ? "The wall-clock budget expired during output-capture preparation. The script was NOT executed and the reservation will be released."
+                            : "The call was canceled during output-capture preparation. The script was NOT executed and the reservation will be released.",
+                    ],
+                    Warnings: [],
+                    TimedOut: timedOutPreparingCapture,
+                    Disposition: InvokeDisposition.NotStarted,
+                    UserExecutionStarted: false), dispatch);
+            }
+
+            // Capture preparation is diagnostic and may time out or be
+            // canceled. Do not mutate warm automatic state until every
+            // remaining no-start gate has passed; the reset still immediately
+            // precedes the actual user pipeline.
+            ResetExitCode(runspace);
             ps.Runspace = runspace;
             // useLocalScope: false — assignments land in the runspace's session
             // state and survive into the next call; that persistence is the point.
+            // This pipeline contains ONLY the user script. Formatting and
+            // shaping consume its captured objects below and can never replay it.
             ps.AddScript(dispatch.ExecutionScript!, useLocalScope: false);
-            RtkExecutableIdentity? authorizedShapingRtk = null;
-            if (!raw && primed.CompressCommand is not null)
-            {
-                authorizedShapingRtk = dispatch.OutputShapingRtkIdentity;
-                ps.AddScript(
-                        "$input | & $args[0] -InputProvenance $args[1] -PinnedRtkPath $args[2] -PinnedRtkDigest $args[3] -PinnedRtkUnixMode $args[4] -EmitRoutingEnvelope",
-                        useLocalScope: true)
-                  .AddArgument(primed.CompressCommand)
-                  .AddArgument(dispatch.OutputProvenance.ToMachineCode())
-                  .AddArgument(authorizedShapingRtk?.ExecutablePath)
-                  .AddArgument(authorizedShapingRtk?.AuditBinaryDigest)
-                  .AddArgument(authorizedShapingRtk?.CapturedUnixFileMode);
-            }
-            else
-                ps.AddCommand("Microsoft.PowerShell.Utility\\Out-String");
-
-            var invokeTask = InvokeAsyncWithoutAmbientAudit(ps);
+            var captured = new PSDataCollection<PSObject>();
+            var passiveCapture = new BoundedPassiveOutputCapture(
+                outputCapture?.MaximumArtifactBytes ?? 8 * 1024 * 1024);
+            passiveCapture.Attach(captured, ps.Streams.Error, ps.Streams.Warning);
+            var noInput = new PSDataCollection<object>();
+            noInput.Complete();
+            var invokeTask = InvokeAsyncWithoutAmbientAudit(ps, noInput, captured);
             var outcome = await WaitForDeadlineAsync(invokeTask, callDeadline, cancellationToken);
 
             if (outcome == WaitOutcome.Canceled)
@@ -2187,6 +3697,21 @@ public sealed class RunspaceHost : IDisposable
                 // if the pipeline refuses to stop within the grace period.
                 if (await TryStopPipelineAsync(ps, invokeTask))
                 {
+                    var automaticState = TryCaptureWarmAutomaticState(runspace);
+                    var canceledPrefix = passiveCapture.SnapshotAtDeadline().Prefix;
+                    var incomplete = outputCapture is null
+                        ? null
+                        : await outputCapture.SealIncompleteAsync(
+                            CaptureIncompleteArtifactContent(
+                                canceledPrefix,
+                                dispatch.OutputProvenance) with
+                            {
+                                ExitCode = automaticState?.LastExitCode is int code && code != 0
+                                    ? code
+                                    : null,
+                            },
+                            "pipeline_canceled",
+                            OutputSealWait(callDeadline));
                     return WithDispatchRouting(new InvokeResult(
                         Success: false,
                         Output: string.Empty,
@@ -2194,11 +3719,25 @@ public sealed class RunspaceHost : IDisposable
                         Warnings: [],
                         TimedOut: false,
                         Disposition: InvokeDisposition.Canceled,
-                        UserExecutionStarted: true), dispatch);
+                        UserExecutionStarted: true)
+                    {
+                        OutputRecovery = incomplete is null
+                            ? null
+                            : incomplete with { Advertise = true },
+                    }, dispatch);
                 }
 
                 handedOff = true;
                 AbandonAndRecycle(ps, invokeTask, runspace);
+                var wedgedCanceledPrefix = passiveCapture.SnapshotAtDeadline().Prefix;
+                var canceledIncomplete = outputCapture is null
+                    ? null
+                    : await outputCapture.SealIncompleteAsync(
+                        CaptureIncompleteArtifactContent(
+                            wedgedCanceledPrefix,
+                            dispatch.OutputProvenance),
+                        "pipeline_canceled_wedged",
+                        OutputSealWait(callDeadline));
                 return WithDispatchRouting(new InvokeResult(
                     Success: false,
                     Output: string.Empty,
@@ -2207,67 +3746,384 @@ public sealed class RunspaceHost : IDisposable
                     TimedOut: false,
                     Disposition: InvokeDisposition.OutcomeUnknown,
                     UserExecutionStarted: true,
-                    WarmStateLost: true), dispatch);
+                    WarmStateLost: true)
+                {
+                    OutputRecovery = canceledIncomplete is null
+                        ? null
+                        : canceledIncomplete with { Advertise = true },
+                }, dispatch);
             }
 
             if (outcome == WaitOutcome.TimedOut)
             {
                 handedOff = true;
                 AbandonAndRecycle(ps, invokeTask, runspace);
+                var timedOutPrefix = passiveCapture.SnapshotAtDeadline().Prefix;
+                var timedOutIncomplete = outputCapture is null
+                    ? null
+                    : await outputCapture.SealIncompleteAsync(
+                        CaptureIncompleteArtifactContent(
+                            timedOutPrefix,
+                            dispatch.OutputProvenance),
+                        "pipeline_timed_out",
+                        OutputSealWait(callDeadline));
                 // Teach the recovery paths at the moment of failure — the one
                 // place a model reliably reads documentation (design P4).
-                return WithDispatchRouting(
-                    ExecutionTimeoutResult(budget, userExecutionStarted: true),
-                    dispatch);
+                var timedOut = ExecutionTimeoutResult(
+                    budget,
+                    userExecutionStarted: true) with
+                {
+                    OutputRecovery = timedOutIncomplete is null
+                        ? null
+                        : timedOutIncomplete with { Advertise = true },
+                };
+                return WithDispatchRouting(timedOut, dispatch);
             }
 
-            try
+            RuntimeException? terminating = null;
+            try { _ = await invokeTask; }
+            catch (RuntimeException ex) { terminating = ex; }
+            var passive = passiveCapture.CompleteAndSnapshot();
+
+            // Snapshot automatic state immediately after the user pipeline.
+            // The two private pipelines below must leave these values exactly
+            // as the user operation did.
+            var userAutomaticState = TryCaptureWarmAutomaticState(runspace);
+            var (exitCode, wedged) = await ReadExitCodeBoundedAsync(
+                runspace,
+                callDeadline,
+                cancellationToken);
+            var terminatingText = FreezeTerminatingError(
+                terminating,
+                out var terminatingTextSafe);
+
+            if (wedged)
             {
-                var results = await invokeTask;
-                var (output, outputShaping) = CaptureInvocationOutput(
-                    results,
-                    authorizedShapingRtk);
-                var (exitCode, wedged) = await ReadExitCodeBoundedAsync(runspace, callDeadline, cancellationToken);
-                var (stderr, errors) = PartitionErrorStream(ps.Streams.Error);
-                if (wedged) errors = [.. errors, BookkeepingWedgeNote];
+                var wedgedPrefix = passive.Prefix;
+                var prefix = string.Join(Environment.NewLine, wedgedPrefix.Output);
+                var incomplete = outputCapture is null
+                    ? null
+                    : await outputCapture.SealIncompleteAsync(
+                        CaptureIncompleteArtifactContent(
+                            wedgedPrefix,
+                            dispatch.OutputProvenance,
+                            terminatingText),
+                        "exit_code_bookkeeping_wedged",
+                        OutputSealWait(callDeadline));
+                var wedgedStderr = wedgedPrefix.StandardError;
+                var wedgedErrors = terminatingText is null
+                    ? wedgedPrefix.Errors
+                    : [.. wedgedPrefix.Errors, terminatingText];
+                wedgedErrors = [.. wedgedErrors, BookkeepingWedgeNote];
                 return WithDispatchRouting(new InvokeResult(
-                    Success: true,
-                    Output: output,
-                    Errors: errors,
-                    Warnings: [.. ps.Streams.Warning.Select(w => w.ToString())],
+                    Success: terminating is null,
+                    Output: terminating is null
+                        ? BoundEmergencyOutput(prefix)
+                        : string.Empty,
+                    Errors: wedgedErrors,
+                    Warnings: wedgedPrefix.Warnings,
                     TimedOut: false,
-                    Disposition: InvokeDisposition.Completed,
+                    Disposition: terminating is null
+                        ? InvokeDisposition.Completed
+                        : InvokeDisposition.Failed,
                     UserExecutionStarted: true,
                     ExitCode: exitCode == 0 ? null : exitCode,
-                    Stderr: stderr,
-                    WarmStateLost: wedged)
+                    Stderr: wedgedStderr,
+                    WarmStateLost: true)
                 {
-                    OutputShaping = outputShaping,
                     PipelineHadErrors = ps.HadErrors,
+                    OutputRecovery = incomplete is null
+                        ? null
+                        : incomplete with { Advertise = true },
                 }, dispatch);
             }
-            catch (RuntimeException ex)
+
+            var rendered = await RunCapturedOutputPipelineGateHeldAsync(
+                passive.Output,
+                runspace: null,
+                callDeadline,
+                cancellationToken,
+                pipeline => pipeline.AddCommand("Microsoft.PowerShell.Utility\\Out-String"),
+                authorizedShapingRtk: null,
+                decodeRoutingEnvelope: false,
+                followupProcessorExpected: !raw && primed.CompressCommand is not null);
+            var unshaped = rendered.Status == InternalOutputPipelineStatus.Completed
+                ? rendered.Output
+                : RenderCapturedPrefixWithoutPipeline(passive.Output);
+            if (passive.LimitationNote is { } limitationNote)
             {
-                var (stderr, errors) = PartitionErrorStream(
-                    ps.Streams.Error, ex.ErrorRecord?.ToString() ?? ex.Message);
-                // The terminating-native-error configuration
-                // ($PSNativeCommandUseErrorActionPreference) lands nonzero-exit
-                // commands here; without the read their [exit] N silently
-                // dropped beside the preserved stderr (plan finding i56p-6).
-                var (exitCode, wedged) = await ReadExitCodeBoundedAsync(runspace, callDeadline, cancellationToken);
-                if (wedged) errors = [.. errors, BookkeepingWedgeNote];
+                unshaped = string.IsNullOrEmpty(unshaped)
+                    ? limitationNote
+                    : unshaped.TrimEnd() + Environment.NewLine + limitationNote;
+            }
+            var artifact = CaptureArtifactContent(
+                unshaped,
+                passive.Prefix,
+                exitCode,
+                dispatch.OutputProvenance,
+                terminatingText);
+            OutputRecoverySummary? recovery = null;
+            if (outputCapture is not null)
+            {
+                var incompleteReason = passive.IncompleteReason ??
+                    (terminatingTextSafe ? null : "active_member_not_evaluated");
+                recovery = rendered.Status == InternalOutputPipelineStatus.Completed &&
+                           incompleteReason is null
+                    ? await outputCapture.SealAsync(
+                        artifact,
+                        OutputSealWaitBeforeShaping(callDeadline))
+                    : await outputCapture.SealIncompleteAsync(
+                        artifact,
+                        incompleteReason ??
+                        $"output_render_{rendered.Status.ToString().ToLowerInvariant()}",
+                        OutputSealWaitBeforeShaping(callDeadline));
+            }
+
+            if (rendered.Status is InternalOutputPipelineStatus.Canceled or
+                InternalOutputPipelineStatus.TimedOut or
+                InternalOutputPipelineStatus.Recycled or
+                InternalOutputPipelineStatus.Abandoned)
+            {
+                var recycled = rendered.Status == InternalOutputPipelineStatus.Recycled;
+                var processorAbandoned =
+                    rendered.Status == InternalOutputPipelineStatus.Abandoned;
+                var timedOutRendering = rendered.Status == InternalOutputPipelineStatus.TimedOut;
+                var stateLost = recycled;
+                if (!recycled &&
+                    !TryRestoreWarmAutomaticState(runspace, userAutomaticState))
+                {
+                    RecycleAbandoning(Task.CompletedTask, runspace);
+                    stateLost = true;
+                }
                 return WithDispatchRouting(new InvokeResult(
                     Success: false,
-                    Output: string.Empty,
-                    Errors: errors,
-                    Warnings: [.. ps.Streams.Warning.Select(w => w.ToString())],
-                    TimedOut: false,
-                    Disposition: InvokeDisposition.Failed,
+                    Output: timedOutRendering && terminating is null
+                        ? BoundEmergencyOutput(unshaped)
+                        : string.Empty,
+                    Errors:
+                    [
+                        .. artifact.Errors,
+                        recycled
+                            ? "The user script completed, but recovery rendering did not stop within the call budget; the runspace was recycled and PTK did not rerun the script."
+                            : processorAbandoned
+                                ? stateLost
+                                    ? "The user script completed, but the isolated recovery renderer did not stop within the call budget; that processor was discarded, automatic-state restoration failed, the warm runspace was recycled, and PTK did not rerun the script."
+                                    : "The user script completed, but the isolated recovery renderer did not stop within the call budget; that processor was discarded, warm state was preserved, and PTK did not rerun the script."
+                                : timedOutRendering
+                                ? "The user script completed, but the call budget expired before recovery rendering could start; PTK did not rerun the script."
+                            : "The user script completed, but the request was canceled during recovery rendering; PTK did not rerun the script.",
+                    ],
+                    Warnings: artifact.Warnings,
+                    TimedOut: rendered.TimedOut,
+                    Disposition: recycled || processorAbandoned || timedOutRendering
+                        ? InvokeDisposition.Failed
+                        : InvokeDisposition.Canceled,
                     UserExecutionStarted: true,
-                    ExitCode: exitCode == 0 ? null : exitCode,
-                    Stderr: stderr,
-                    WarmStateLost: wedged), dispatch);
+                    ExitCode: artifact.ExitCode,
+                    Stderr: artifact.StandardError,
+                    WarmStateLost: stateLost)
+                {
+                    OutputRecovery = recovery is null
+                        ? null
+                        : recovery with { Advertise = true },
+                }, dispatch);
             }
+
+            var output = unshaped;
+            OutputShapingSummary? outputShaping = null;
+            if (!raw && primed.CompressCommand is not null)
+            {
+                var authorizedShapingRtk = dispatch.OutputShapingRtkIdentity;
+                var hint = RecoveryElisionHint(recovery);
+                var shapingWorkingDirectory =
+                    TryCaptureCurrentFileSystemLocation(runspace);
+                var shaped = await RunCapturedOutputPipelineGateHeldAsync(
+                    passive.Output,
+                    runspace: null,
+                    callDeadline,
+                    cancellationToken,
+                    pipeline =>
+                    {
+                        pipeline.AddScript(
+                                "$module = Microsoft.PowerShell.Core\\New-Module -Name PwshTokenCompressor -ScriptBlock ([scriptblock]::Create($args[0])) -ErrorAction Stop; " +
+                                "Microsoft.PowerShell.Core\\Import-Module -ModuleInfo $module -Force -ErrorAction Stop; " +
+                                "if ($args[5]) { Microsoft.PowerShell.Management\\Set-Location -LiteralPath $args[5] -ErrorAction Stop }; " +
+                                "if ($args.Count -gt 7) { " +
+                                "$input | & 'PwshTokenCompressor\\Compress-PtcOutput' -InputProvenance $args[1] -PinnedRtkPath $args[2] -PinnedRtkDigest $args[3] -PinnedRtkUnixMode $args[4] -DetachedTypeNonce $args[6] -ElisionHint $args[7] -EmitRoutingEnvelope " +
+                                "} else { " +
+                                "$input | & 'PwshTokenCompressor\\Compress-PtcOutput' -InputProvenance $args[1] -PinnedRtkPath $args[2] -PinnedRtkDigest $args[3] -PinnedRtkUnixMode $args[4] -DetachedTypeNonce $args[6] -EmitRoutingEnvelope }",
+                                useLocalScope: true)
+                          .AddArgument(_moduleSource!)
+                          .AddArgument(dispatch.OutputProvenance.ToMachineCode())
+                          .AddArgument(authorizedShapingRtk?.ExecutablePath)
+                          .AddArgument(authorizedShapingRtk?.AuditBinaryDigest)
+                          .AddArgument(authorizedShapingRtk?.CapturedUnixFileMode)
+                          .AddArgument(shapingWorkingDirectory)
+                          .AddArgument(passive.DetachedTypeNonce);
+                        if (hint is not null) pipeline.AddArgument(hint);
+                    },
+                    authorizedShapingRtk,
+                    decodeRoutingEnvelope: true);
+
+                if (shaped.Status == InternalOutputPipelineStatus.Completed)
+                {
+                    output = shaped.Output;
+                    if (passive.LimitationNote is { } shapedLimitationNote)
+                    {
+                        output = string.IsNullOrEmpty(output)
+                            ? shapedLimitationNote
+                            : output.TrimEnd() + Environment.NewLine + shapedLimitationNote;
+                    }
+                    outputShaping = shaped.Shaping;
+                }
+                else if (shaped.Status == InternalOutputPipelineStatus.Canceled)
+                {
+                    var stateLost = false;
+                    if (!TryRestoreWarmAutomaticState(runspace, userAutomaticState))
+                    {
+                        RecycleAbandoning(Task.CompletedTask, runspace);
+                        stateLost = true;
+                    }
+                    return WithDispatchRouting(new InvokeResult(
+                        Success: false,
+                        Output: string.Empty,
+                        Errors: [.. artifact.Errors,
+                            "The user script completed, but the request was canceled during output shaping; PTK did not rerun the script."],
+                        Warnings: artifact.Warnings,
+                        TimedOut: false,
+                        Disposition: InvokeDisposition.Canceled,
+                        UserExecutionStarted: true,
+                        ExitCode: artifact.ExitCode,
+                        Stderr: artifact.StandardError,
+                        WarmStateLost: stateLost)
+                    {
+                        OutputRecovery = recovery is null
+                            ? null
+                            : recovery with { Advertise = true },
+                    }, dispatch);
+                }
+                else if (shaped.Status == InternalOutputPipelineStatus.TimedOut)
+                {
+                    var stateLost = false;
+                    if (!TryRestoreWarmAutomaticState(runspace, userAutomaticState))
+                    {
+                        RecycleAbandoning(Task.CompletedTask, runspace);
+                        stateLost = true;
+                    }
+                    return WithDispatchRouting(new InvokeResult(
+                        Success: false,
+                        Output: terminating is null
+                            ? BoundEmergencyOutput(unshaped)
+                            : string.Empty,
+                        Errors: [.. artifact.Errors,
+                            "The user script completed, but the call budget expired before output shaping could start; PTK did not rerun the script."],
+                        Warnings: artifact.Warnings,
+                        TimedOut: true,
+                        Disposition: InvokeDisposition.Failed,
+                        UserExecutionStarted: true,
+                        ExitCode: artifact.ExitCode,
+                        Stderr: artifact.StandardError,
+                        WarmStateLost: stateLost)
+                    {
+                        OutputRecovery = recovery is null
+                            ? null
+                            : recovery with { Advertise = true },
+                    }, dispatch);
+                }
+                else if (shaped.Status == InternalOutputPipelineStatus.Recycled)
+                {
+                    return WithDispatchRouting(new InvokeResult(
+                        Success: false,
+                        Output: string.Empty,
+                        Errors: [.. artifact.Errors,
+                            "The user script completed, but output shaping did not stop within the call budget; the runspace was recycled and PTK did not rerun the script."],
+                        Warnings: artifact.Warnings,
+                        TimedOut: shaped.TimedOut,
+                        Disposition: InvokeDisposition.Failed,
+                        UserExecutionStarted: true,
+                        ExitCode: artifact.ExitCode,
+                        Stderr: artifact.StandardError,
+                        WarmStateLost: true)
+                    {
+                        OutputRecovery = recovery is null
+                            ? null
+                            : recovery with { Advertise = true },
+                    }, dispatch);
+                }
+                else if (shaped.Status == InternalOutputPipelineStatus.Abandoned)
+                {
+                    var stateLost = false;
+                    if (!TryRestoreWarmAutomaticState(runspace, userAutomaticState))
+                    {
+                        RecycleAbandoning(Task.CompletedTask, runspace);
+                        stateLost = true;
+                    }
+                    return WithDispatchRouting(new InvokeResult(
+                        Success: false,
+                        Output: terminating is null
+                            ? BoundEmergencyOutput(unshaped)
+                            : string.Empty,
+                        Errors: [.. artifact.Errors,
+                            stateLost
+                                ? "The user script completed, but the isolated output processor did not stop within the call budget; that processor was discarded, automatic-state restoration failed, the warm runspace was recycled, and PTK did not rerun the script."
+                                : "The user script completed, but the isolated output processor did not stop within the call budget; that processor was discarded, warm state was preserved, and PTK did not rerun the script."],
+                        Warnings: artifact.Warnings,
+                        TimedOut: shaped.TimedOut,
+                        Disposition: InvokeDisposition.Failed,
+                        UserExecutionStarted: true,
+                        ExitCode: artifact.ExitCode,
+                        Stderr: artifact.StandardError,
+                        WarmStateLost: stateLost)
+                    {
+                        OutputRecovery = recovery is null
+                            ? null
+                            : recovery with { Advertise = true },
+                    }, dispatch);
+                }
+                else
+                {
+                    output = unshaped;
+                    outputShaping = new OutputShapingSummary(
+                        OutputShapingStatus.PipelineFailed,
+                        authorizedShapingRtk?.AuditBinaryDigest);
+                }
+            }
+
+            var automaticStateRestored = TryRestoreWarmAutomaticState(
+                runspace,
+                userAutomaticState);
+            var stderr = passive.Prefix.StandardError;
+            var errors = terminatingText is null
+                ? passive.Prefix.Errors
+                : [.. passive.Prefix.Errors, terminatingText];
+            var warmStateLost = false;
+            if (!automaticStateRestored)
+            {
+                RecycleAbandoning(Task.CompletedTask, runspace);
+                warmStateLost = true;
+                errors = [.. errors,
+                    "Internal output handling could not restore automatic session state; the runspace was recycled and all warm state was lost."];
+            }
+
+            var visibleOutput = terminating is null ? output : string.Empty;
+            return WithDispatchRouting(new InvokeResult(
+                Success: terminating is null,
+                Output: visibleOutput,
+                Errors: errors,
+                Warnings: passive.Prefix.Warnings,
+                TimedOut: false,
+                Disposition: terminating is null
+                    ? InvokeDisposition.Completed
+                    : InvokeDisposition.Failed,
+                UserExecutionStarted: true,
+                ExitCode: exitCode == 0 ? null : exitCode,
+                Stderr: stderr,
+                WarmStateLost: warmStateLost)
+            {
+                OutputShaping = outputShaping,
+                OutputRecovery = recovery,
+                PipelineHadErrors = ps.HadErrors,
+            }, dispatch);
         }
         finally
         {
@@ -2533,6 +4389,44 @@ public sealed class RunspaceHost : IDisposable
     // and the runspace is recycled anyway.
     private static readonly TimeSpan StopGrace = TimeSpan.FromSeconds(5);
 
+    /// <summary>Test seam for deterministic slow-storage containment.</summary>
+    internal TimeSpan OutputSealLimitForTests { get; set; } = StopGrace;
+
+    // Artifact persistence is diagnostic and must never withhold a response
+    // indefinitely. Before the deadline it consumes only the smaller of the
+    // remaining request budget and containment grace; after execution timeout
+    // it gets one bounded grace interval to seal the surviving prefix.
+    private TimeSpan OutputSealWait(DateTimeOffset callDeadline)
+    {
+        var sealLimit = OutputSealLimitForTests > TimeSpan.Zero
+            ? OutputSealLimitForTests
+            : TimeSpan.FromMilliseconds(1);
+        var remaining = callDeadline - DateTimeOffset.UtcNow;
+        if (remaining <= TimeSpan.Zero) return sealLimit;
+        var bounded = remaining < sealLimit ? remaining : sealLimit;
+        return bounded < TimeSpan.FromMilliseconds(1)
+            ? TimeSpan.FromMilliseconds(1)
+            : bounded;
+    }
+
+    // Successful execution still needs an isolated shaping pass after the
+    // diagnostic artifact write. Reserve enough of the caller's remaining
+    // budget that slow storage degrades recovery to unavailable instead of
+    // converting a completed user operation into a shaping timeout.
+    private TimeSpan OutputSealWaitBeforeShaping(DateTimeOffset callDeadline)
+    {
+        var sealLimit = OutputSealLimitForTests > TimeSpan.Zero
+            ? OutputSealLimitForTests
+            : TimeSpan.FromMilliseconds(1);
+        var remaining = callDeadline - DateTimeOffset.UtcNow;
+        var available = remaining - TimeSpan.FromSeconds(2);
+        if (available <= TimeSpan.Zero) return TimeSpan.FromMilliseconds(1);
+        var bounded = available < sealLimit ? available : sealLimit;
+        return bounded < TimeSpan.FromMilliseconds(1)
+            ? TimeSpan.FromMilliseconds(1)
+            : bounded;
+    }
+
     /// <summary>Test hook for the otherwise platform/race-dependent path where
     /// cancellation cannot confirm that an already-started pipeline stopped.</summary>
     internal bool ForcePipelineStopFailureForTests { get; set; }
@@ -2574,6 +4468,29 @@ public sealed class RunspaceHost : IDisposable
             old.Dispose();
         });
         TrackOwnedBackgroundWork(cleanup);
+    }
+
+    // A passive recovery renderer owns its disposable private runspace. A
+    // wedge there must discard only that processor; user warm state is neither
+    // involved nor recycled.
+    private void AbandonOwnedPipeline(PowerShell wedged, Task abandonedInvoke)
+    {
+        Volatile.Write(ref _outputProcessorUnavailable, 1);
+        var cleanup = Task.Run(async () =>
+        {
+            try { wedged.Stop(); } catch { }
+            try { await abandonedInvoke; } catch { }
+            wedged.Dispose();
+        });
+        _ = cleanup.ContinueWith(
+            completed =>
+            {
+                _ = completed.Exception;
+                Volatile.Write(ref _outputProcessorUnavailable, 0);
+            },
+            CancellationToken.None,
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
     }
 
     // Recycle when there is no PowerShell handle to stop (a wedged preflight

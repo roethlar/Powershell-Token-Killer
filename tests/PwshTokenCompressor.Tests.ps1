@@ -1066,6 +1066,31 @@ Describe 'Compress-PtcOutput' {
         $result | Should -Match 'Name'
     }
 
+    It 'preserves detached-looking user type names without the exact capture nonce' {
+        $nonce = '11111111111111111111111111111111'
+        $typeName = "Ptk.Detached.UserSupplied.$nonce"
+        $object = [pscustomobject]@{ Value = 'PASSIVE_VALUE' }
+        $object.PSObject.TypeNames.Insert(0, $typeName)
+
+        $withoutNonce = $object | Compress-PtcOutput
+        $mismatchedNonce = $object | Compress-PtcOutput -DetachedTypeNonce '22222222222222222222222222222222'
+
+        $withoutNonce | Should -Match ([regex]::Escape($typeName))
+        $mismatchedNonce | Should -Match ([regex]::Escape($typeName))
+    }
+
+    It 'strips a detached type wrapper only for the exact capture nonce' {
+        $nonce = '11111111111111111111111111111111'
+        $typeName = "Ptk.Detached.UserSupplied.$nonce"
+        $object = [pscustomobject]@{ Value = 'PASSIVE_VALUE' }
+        $object.PSObject.TypeNames.Insert(0, $typeName)
+
+        $result = $object | Compress-PtcOutput -DetachedTypeNonce $nonce
+
+        $result | Should -Match '^objects: 1 \(UserSupplied\)'
+        $result | Should -Not -Match ([regex]::Escape($typeName))
+    }
+
     # Reconciled 2026-07-08 under the greenfield-design adoption decision
     # (.agents/decisions.md): the Phase 2 never-truncate contract is amended
     # to bounded-with-labeled-elision. Under the bounds, passthrough stays
@@ -1083,7 +1108,7 @@ Describe 'Compress-PtcOutput' {
         $lines = 1..1000 | ForEach-Object { "line $_" }
         $result = $lines | Compress-PtcOutput
 
-        $result | Should -Match '\[600 lines elided - rerun with raw=true only if the elided middle matters\]'
+        $result | Should -Match '\[600 lines elided - recovery=unavailable: output capture unavailable; command was not rerun\]'
         $result | Should -Match 'line 1\b'
         $result | Should -Match 'line 1000'
         $result | Should -Not -Match 'line 500\b'
@@ -1105,7 +1130,7 @@ Describe 'Compress-PtcOutput' {
         $big = ('x' * 20000)
         $result = "$big-A", "$big-B", "$big-C" | Compress-PtcOutput
 
-        $result | Should -Match '\[\d+ chars elided - rerun with raw=true only if the elided middle matters\]'
+        $result | Should -Match '\[\d+ chars elided - recovery=unavailable: output capture unavailable; command was not rerun\]'
         $result.Length | Should -BeLessThan 42000
         $result | Should -Match '^x'
         $result | Should -Match '-C$'
@@ -1115,7 +1140,7 @@ Describe 'Compress-PtcOutput' {
         $lines = 1..1000 | ForEach-Object { "line $_ " + ('y' * 400) }
         $result = $lines | Compress-PtcOutput
 
-        $result | Should -Match '\[\d+ lines and \d+ chars elided - rerun with raw=true only if the elided middle matters\]'
+        $result | Should -Match '\[\d+ lines and \d+ chars elided - recovery=unavailable: output capture unavailable; command was not rerun\]'
     }
 
     It 'bounds the labeled log-leg fallback too' {
@@ -1124,7 +1149,7 @@ Describe 'Compress-PtcOutput' {
         $result = $lines | Compress-PtcOutput
 
         $result | Should -Match '\[ptk:log rtk not found'
-        $result | Should -Match 'lines elided - rerun with raw=true only if the elided middle matters'
+        $result | Should -Match 'lines elided - recovery=unavailable: output capture unavailable; command was not rerun'
     }
 
     It 'passes a single string through exactly' {

@@ -90,7 +90,11 @@ $psi.UseShellExecute = $false
 $auditRoot = Join-Path (
     [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) (
     '.ptk/test-handshake-audit-' + [guid]::NewGuid().ToString('N'))
+$outputParent = Join-Path (
+    [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) (
+    '.ptk/test-handshake-output-' + [guid]::NewGuid().ToString('N'))
 $psi.Environment['PTK_AUDIT_ROOT'] = $auditRoot
+$psi.Environment['PTK_OUTPUT_ROOT'] = $outputParent
 # Pin the child to this script's PowerShell location: Process.Start would
 # otherwise resolve against the process-wide cwd, which an interactive
 # session's Set-Location does not change.
@@ -122,6 +126,89 @@ function Read-RpcResponse {
     }
 }
 
+function Stop-ServerProcess {
+    [OutputType([bool])]
+    param(
+        [Parameter(Mandatory)]
+        [System.Diagnostics.Process]$Process,
+        [Parameter(Mandatory)]
+        [string]$Label
+    )
+
+    if (-not $Process.HasExited) {
+        try {
+            # EOF is the stdio transport's graceful shutdown signal. Closing
+            # the writer also proves that harness-owned resources are disposed
+            # before this smoke test inspects their protected roots.
+            $Process.StandardInput.Close()
+        }
+        catch {
+            if (-not $Process.HasExited) {
+                Write-Host "$Label stdin close failed: $_"
+            }
+        }
+    }
+
+    if ($Process.HasExited -or $Process.WaitForExit($TimeoutSec * 1000)) {
+        return $true
+    }
+
+    Write-Host "$Label did not exit within ${TimeoutSec}s after stdin EOF; killing its process tree."
+    try {
+        $Process.Kill($true)
+    }
+    catch {
+        if (-not $Process.HasExited) { throw }
+    }
+    if (-not $Process.HasExited -and -not $Process.WaitForExit($TimeoutSec * 1000)) {
+        throw "$Label did not exit within ${TimeoutSec}s after the kill fallback."
+    }
+    return $false
+}
+
+function Assert-LiveOutputRoot {
+    param(
+        [Parameter(Mandatory)]
+        [string]$Parent,
+        [Parameter(Mandatory)]
+        [string]$Label
+    )
+
+    if (-not (Test-Path -LiteralPath $Parent -PathType Container)) {
+        throw "$Label did not create its configured PTK_OUTPUT_ROOT parent"
+    }
+    $children = @(Get-ChildItem -LiteralPath $Parent -Force)
+    $serverRoots = @($children | Where-Object {
+        $_.PSIsContainer -and $_.Name -match '^server-\d+-[0-9a-f]{32}$'
+    })
+    if ($children.Count -ne 1 -or $serverRoots.Count -ne 1) {
+        throw "$Label output parent contained $($children.Count) children and $($serverRoots.Count) valid server roots"
+    }
+
+    $serverRoot = $serverRoots[0]
+    if (($serverRoot.Attributes -band [System.IO.FileAttributes]::ReparsePoint) -ne 0) {
+        throw "$Label output server root was a link or reparse point"
+    }
+    if (-not $IsWindows) {
+        $expectedMode = [System.IO.UnixFileMode]::UserRead -bor
+            [System.IO.UnixFileMode]::UserWrite -bor
+            [System.IO.UnixFileMode]::UserExecute
+        $actualMode = [System.IO.File]::GetUnixFileMode($serverRoot.FullName)
+        if ($actualMode -ne $expectedMode) {
+            throw "$Label output server root mode was $actualMode instead of $expectedMode"
+        }
+    }
+    if (@(Get-ChildItem -LiteralPath $serverRoot.FullName -Recurse -Force -File).Count -ne 0) {
+        throw "$Label output server root retained a named artifact while live"
+    }
+}
+
+$outputToken = 'ptk-handshake-' + [guid]::NewGuid().ToString('N')
+$escapedOutputToken = [regex]::Escape($outputToken)
+$quotedOutputToken = "'" + $outputToken.Replace("'", "''") + "'"
+$warmSeedScript = '$warm = ' + $quotedOutputToken
+$warmReadScript = '$warm'
+$mainExitedGracefully = $false
 $failed = $false
 try {
     Send-Rpc @{
@@ -149,8 +236,11 @@ try {
         }
     }
     foreach ($tool in @($tools.result.tools)) {
-        if (@($tool.inputSchema.properties.PSObject.Properties.Name) -contains 'auditContext') {
-            throw "host-only auditContext leaked into the $($tool.name) MCP input schema"
+        $inputFields = @($tool.inputSchema.properties.PSObject.Properties.Name)
+        foreach ($hostOnlyField in @('auditContext', 'outputStore')) {
+            if ($inputFields -contains $hostOnlyField) {
+                throw "host-only $hostOnlyField leaked into the $($tool.name) MCP input schema"
+            }
         }
     }
     $outputTool = @($tools.result.tools | Where-Object name -EQ 'ptk_output')
@@ -199,19 +289,41 @@ try {
     # Two ptk_invoke calls sharing state prove the warm runspace end to end.
     Send-Rpc @{
         jsonrpc = '2.0'; id = 4; method = 'tools/call'
-        params = @{ name = 'ptk_invoke'; arguments = @{ script = '$warm = 41' } }
+        params = @{ name = 'ptk_invoke'; arguments = @{ script = $warmSeedScript } }
     }
     [void](Read-RpcResponse -Id 4)
 
     Send-Rpc @{
         jsonrpc = '2.0'; id = 5; method = 'tools/call'
-        params = @{ name = 'ptk_invoke'; arguments = @{ script = '$warm + 1' } }
+        params = @{ name = 'ptk_invoke'; arguments = @{ script = $warmReadScript } }
     }
     $warmText = (Read-RpcResponse -Id 5).result.content[0].text
-    if ($warmText -notmatch '\b42\b') {
+    if ($warmText -notmatch "(?m)^$escapedOutputToken\r?$") {
         throw "ptk_invoke cross-call state failed; second call returned '$warmText'."
     }
-    Write-Host 'ptk_invoke cross-call state ok: 42'
+    Write-Host 'ptk_invoke cross-call state ok: runtime token survived'
+
+    $handleMatches = [regex]::Matches(
+        $warmText,
+        '(?m)^recovery=available: ptk_output handle=(ptko_[A-Za-z0-9_-]+)\r?$')
+    if ($handleMatches.Count -ne 1) {
+        throw "ptk_invoke returned $($handleMatches.Count) recovery handles; text was '$warmText'."
+    }
+    $recoveryHandle = $handleMatches[0].Groups[1].Value
+    Send-Rpc @{
+        jsonrpc = '2.0'; id = 6; method = 'tools/call'
+        params = @{ name = 'ptk_output'; arguments = @{ handle = $recoveryHandle } }
+    }
+    $outputRead = (Read-RpcResponse -Id 6).result
+    $outputText = $outputRead.content[0].text
+    $outputHeader = ($outputText -split '\r?\n', 2)[0]
+    if ($outputRead.isError -or
+        $outputHeader -notmatch '^\[ptk output\] action=read state=available complete=true bytes=\d+ provenance=powershell_objects offset=0 next_offset=\d+ bytes_returned=\d+$' -or
+        $outputText -notmatch "(?m)^$escapedOutputToken\r?$") {
+        throw "ptk_output did not retrieve the advertised invocation: '$outputText'."
+    }
+    Write-Host 'ptk_output recovery ok: advertised handle returned the runtime token with PowerShell-object provenance'
+    Assert-LiveOutputRoot -Parent $outputParent -Label 'main server'
 
 }
 catch {
@@ -219,9 +331,23 @@ catch {
     $failed = $true
 }
 finally {
-    if (-not $proc.HasExited) { $proc.Kill($true) }
-    $proc.WaitForExit()
-    $serverError = $proc.StandardError.ReadToEnd()
+    try {
+        $mainExitedGracefully = Stop-ServerProcess -Process $proc -Label 'main server'
+        if (-not $mainExitedGracefully) {
+            Write-Host 'HANDSHAKE FAILED: main server required the kill fallback during shutdown.'
+            $failed = $true
+        }
+    }
+    catch {
+        Write-Host "HANDSHAKE FAILED: main server shutdown failed: $_"
+        $failed = $true
+    }
+    $serverError = if ($proc.HasExited) {
+        $proc.StandardError.ReadToEnd()
+    }
+    else {
+        'server process remained alive after bounded shutdown attempts'
+    }
     if (-not $failed) {
         try {
             $segments = @(Get-ChildItem -LiteralPath (Join-Path $auditRoot 'spool') -Filter '*.jsonl' |
@@ -258,13 +384,40 @@ finally {
                     throw 'accepted invoke did not reference exact script evidence'
                 }
             }
-            if ($rawAudit.Contains('$warm = 41') -or $rawAudit.Contains('$warm + 1')) {
-                throw 'exact script text leaked into the core audit stream'
+            if ($rawAudit.Contains($outputToken) -or
+                $rawAudit.Contains($warmSeedScript) -or
+                $rawAudit.Contains($warmReadScript)) {
+                throw 'runtime output token or exact script text leaked into the core audit stream'
+            }
+            $outputAccepted = @($events | Where-Object {
+                $_.event_type -eq 'call.accepted' -and $_.request.tool -eq 'ptk_output'
+            })
+            if ($outputAccepted.Count -ne 1) {
+                throw "expected one accepted output audit event; got $($outputAccepted.Count)"
+            }
+            $outputCallId = $outputAccepted[0].correlation.call_id
+            $outputEvents = @($events | Where-Object {
+                $_.correlation.call_id -eq $outputCallId
+            } | Sort-Object sequence)
+            $outputEventTypes = @($outputEvents.event_type)
+            if (($outputEventTypes -join ',') -ne 'call.accepted,output.read_accessed,call.completed') {
+                throw "output audit lifecycle drifted: $($outputEventTypes -join ', ')"
+            }
+            $outputAccess = @($outputEvents | Where-Object event_type -EQ 'output.read_accessed')
+            if ($outputAccess.Count -ne 1 -or
+                $outputAccess[0].outcome.state -ne 'available' -or
+                $outputAccess[0].outcome.bytes_returned -le 0 -or
+                $outputAccess[0].outcome.next_offset -le 0 -or
+                -not $outputAccess[0].request.output_handle_digest) {
+                throw 'output read audit facts were incomplete or incorrect'
+            }
+            if ($rawAudit.Contains($recoveryHandle)) {
+                throw 'raw output handle leaked into the core audit stream'
             }
             $evidence = @(Get-ChildItem -LiteralPath (Join-Path $auditRoot 'evidence') -Filter '*.script')
             if ($evidence.Count -ne 2) { throw "expected two evidence payloads; got $($evidence.Count)" }
             $payloads = @($evidence | ForEach-Object { Get-Content -Raw -LiteralPath $_.FullName })
-            if ($payloads -notcontains '$warm = 41' -or $payloads -notcontains '$warm + 1') {
+            if ($payloads -notcontains $warmSeedScript -or $payloads -notcontains $warmReadScript) {
                 throw 'evidence payloads did not preserve the exact submitted scripts'
             }
             Write-Host 'audit ok: boundary attribution, provided fields, evidence references, and core secrecy verified'
@@ -274,12 +427,33 @@ finally {
             $failed = $true
         }
     }
+    if ($mainExitedGracefully) {
+        try {
+            $retainedOutputFiles = if (Test-Path -LiteralPath $outputParent) {
+                @(Get-ChildItem -LiteralPath $outputParent -Recurse -Force -File)
+            }
+            else {
+                @()
+            }
+            if ($retainedOutputFiles.Count -ne 0) {
+                throw "graceful shutdown retained $($retainedOutputFiles.Count) output artifact file(s)"
+            }
+            Write-Host 'output cleanup ok: graceful main exit retained no artifact files'
+        }
+        catch {
+            Write-Host "OUTPUT CLEANUP VERIFICATION FAILED: $_"
+            $failed = $true
+        }
+    }
     if ($failed -and -not [string]::IsNullOrWhiteSpace($serverError)) {
         Write-Host "server stderr:`n$serverError"
     }
     $proc.Dispose()
     if (Test-Path -LiteralPath $auditRoot) {
         Remove-Item -LiteralPath $auditRoot -Recurse -Force
+    }
+    if (Test-Path -LiteralPath $outputParent) {
+        Remove-Item -LiteralPath $outputParent -Recurse -Force
     }
 }
 
@@ -292,11 +466,13 @@ if (-not $failed) {
         '.ptk/test-handshake-diagnostic-' + [guid]::NewGuid().ToString('N'))
     $blocker = Join-Path $diagnosticParent 'not-a-directory'
     $marker = Join-Path $diagnosticParent 'must-not-exist'
+    $diagnosticOutputParent = Join-Path $diagnosticParent 'output'
     $proc = $null
     try {
         [void](New-Item -ItemType Directory -Path $diagnosticParent)
         Set-Content -LiteralPath $blocker -Value 'blocked'
         $psi.Environment['PTK_AUDIT_ROOT'] = Join-Path $blocker 'audit'
+        $psi.Environment['PTK_OUTPUT_ROOT'] = $diagnosticOutputParent
         $proc = [System.Diagnostics.Process]::Start($psi)
 
         Send-Rpc @{
@@ -344,6 +520,9 @@ if (-not $failed) {
             (Test-Path -LiteralPath $marker)) {
             throw 'diagnostic-only invoke was not rejected before its effect'
         }
+        if (Test-Path -LiteralPath $diagnosticOutputParent) {
+            throw 'diagnostic-only audit outage allocated an output-store root behind the audit gate'
+        }
         Write-Host 'audit outage ok: MCP diagnostic remains available and invoke stays fail-closed'
     }
     catch {
@@ -351,10 +530,24 @@ if (-not $failed) {
         $failed = $true
     }
     finally {
-        if ($null -ne $proc -and -not $proc.HasExited) { $proc.Kill($true) }
         if ($null -ne $proc) {
-            $proc.WaitForExit()
-            $diagnosticError = $proc.StandardError.ReadToEnd()
+            try {
+                $diagnosticExitedGracefully = Stop-ServerProcess -Process $proc -Label 'diagnostic server'
+                if (-not $diagnosticExitedGracefully) {
+                    Write-Host 'DIAGNOSTIC HANDSHAKE FAILED: server required the kill fallback during shutdown.'
+                    $failed = $true
+                }
+            }
+            catch {
+                Write-Host "DIAGNOSTIC HANDSHAKE FAILED: server shutdown failed: $_"
+                $failed = $true
+            }
+            $diagnosticError = if ($proc.HasExited) {
+                $proc.StandardError.ReadToEnd()
+            }
+            else {
+                'diagnostic server remained alive after bounded shutdown attempts'
+            }
             if ($failed -and -not [string]::IsNullOrWhiteSpace($diagnosticError)) {
                 Write-Host "diagnostic server stderr:`n$diagnosticError"
             }
@@ -362,6 +555,126 @@ if (-not $failed) {
         }
         if (Test-Path -LiteralPath $diagnosticParent) {
             Remove-Item -LiteralPath $diagnosticParent -Recurse -Force
+        }
+    }
+}
+
+# A hard-killed harness cannot run OutputStore.Dispose. Recovery must therefore
+# use an already-unlinked artifact through its supervisor-owned open handle.
+if (-not $failed) {
+    $hardKillAuditRoot = Join-Path (
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) (
+        '.ptk/test-handshake-hard-kill-audit-' + [guid]::NewGuid().ToString('N'))
+    $hardKillOutputParent = Join-Path (
+        [Environment]::GetFolderPath([Environment+SpecialFolder]::UserProfile)) (
+        '.ptk/test-handshake-hard-kill-output-' + [guid]::NewGuid().ToString('N'))
+    $hardKillToken = 'ptk-hard-kill-' + [guid]::NewGuid().ToString('N')
+    $hardKillScript = "'" + $hardKillToken.Replace("'", "''") + "'"
+    $proc = $null
+    try {
+        $psi.Environment['PTK_AUDIT_ROOT'] = $hardKillAuditRoot
+        $psi.Environment['PTK_OUTPUT_ROOT'] = $hardKillOutputParent
+        $proc = [System.Diagnostics.Process]::Start($psi)
+
+        Send-Rpc @{
+            jsonrpc = '2.0'; id = 201; method = 'initialize'
+            params = @{
+                protocolVersion = '2025-06-18'
+                capabilities    = @{}
+                clientInfo      = @{ name = 'ptk-handshake-hard-kill'; version = '0.0.0' }
+            }
+        }
+        $hardKillInit = Read-RpcResponse -Id 201
+        if (-not $hardKillInit.result.serverInfo.name) {
+            throw 'hard-kill initialize failed'
+        }
+        Send-Rpc @{ jsonrpc = '2.0'; method = 'notifications/initialized' }
+        Send-Rpc @{
+            jsonrpc = '2.0'; id = 202; method = 'tools/call'
+            params = @{
+                name = 'ptk_invoke'
+                arguments = @{ script = $hardKillScript; route = 'pwsh' }
+            }
+        }
+        $hardKillInvoke = (Read-RpcResponse -Id 202).result
+        $hardKillText = $hardKillInvoke.content[0].text
+        $hardKillHandles = [regex]::Matches(
+            $hardKillText,
+            '(?m)^recovery=available: ptk_output handle=(ptko_[A-Za-z0-9_-]+)\r?$')
+        if ($hardKillInvoke.isError -or
+            $hardKillText -notmatch "(?m)^$([regex]::Escape($hardKillToken))\r?$" -or
+            $hardKillHandles.Count -ne 1) {
+            throw 'hard-kill invoke did not produce one recoverable PowerShell artifact'
+        }
+        $hardKillHandle = $hardKillHandles[0].Groups[1].Value
+        Send-Rpc @{
+            jsonrpc = '2.0'; id = 203; method = 'tools/call'
+            params = @{ name = 'ptk_output'; arguments = @{ handle = $hardKillHandle } }
+        }
+        $hardKillRead = (Read-RpcResponse -Id 203).result
+        if ($hardKillRead.isError -or
+            $hardKillRead.content[0].text -notmatch "(?m)^$([regex]::Escape($hardKillToken))\r?$") {
+            throw 'hard-kill guard could not read the live anonymous recovery artifact'
+        }
+        Assert-LiveOutputRoot -Parent $hardKillOutputParent -Label 'hard-kill server'
+
+        $liveArtifactFiles = if (Test-Path -LiteralPath $hardKillOutputParent) {
+            @(Get-ChildItem -LiteralPath $hardKillOutputParent -Recurse -Force -File |
+                Where-Object Name -Like 'artifact-*.out')
+        }
+        else {
+            @()
+        }
+        if ($liveArtifactFiles.Count -ne 0) {
+            throw "live anonymous recovery retained $($liveArtifactFiles.Count) named artifact file(s)"
+        }
+
+        $proc.Kill($true)
+        if (-not $proc.WaitForExit($TimeoutSec * 1000)) {
+            throw "hard-killed server did not exit within ${TimeoutSec}s"
+        }
+
+        $remainingArtifactFiles = if (Test-Path -LiteralPath $hardKillOutputParent) {
+            @(Get-ChildItem -LiteralPath $hardKillOutputParent -Recurse -Force -File |
+                Where-Object Name -Like 'artifact-*.out')
+        }
+        else {
+            @()
+        }
+        if ($remainingArtifactFiles.Count -ne 0) {
+            throw "hard-kill retained $($remainingArtifactFiles.Count) output artifact file(s)"
+        }
+        Write-Host 'hard-kill output cleanup ok: anonymous live recovery left no named artifact before or after exit'
+    }
+    catch {
+        Write-Host "HARD-KILL OUTPUT CLEANUP FAILED: $_"
+        $failed = $true
+    }
+    finally {
+        if ($null -ne $proc) {
+            if (-not $proc.HasExited) {
+                try { [void](Stop-ServerProcess -Process $proc -Label 'hard-kill guard server') }
+                catch {
+                    Write-Host "HARD-KILL OUTPUT CLEANUP FAILED: bounded process cleanup failed: $_"
+                    $failed = $true
+                }
+            }
+            $hardKillError = if ($proc.HasExited) {
+                $proc.StandardError.ReadToEnd()
+            }
+            else {
+                'hard-kill guard server remained alive after bounded cleanup attempts'
+            }
+            if ($failed -and -not [string]::IsNullOrWhiteSpace($hardKillError)) {
+                Write-Host "hard-kill server stderr:`n$hardKillError"
+            }
+            $proc.Dispose()
+        }
+        if (Test-Path -LiteralPath $hardKillAuditRoot) {
+            Remove-Item -LiteralPath $hardKillAuditRoot -Recurse -Force
+        }
+        if (Test-Path -LiteralPath $hardKillOutputParent) {
+            Remove-Item -LiteralPath $hardKillOutputParent -Recurse -Force
         }
     }
 }

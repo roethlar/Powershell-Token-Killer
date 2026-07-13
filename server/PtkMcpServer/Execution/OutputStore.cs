@@ -1,4 +1,5 @@
 using System.Buffers;
+using System.Collections.Concurrent;
 using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
@@ -55,14 +56,24 @@ internal sealed record OutputStoreOptions(
     long MaximumAggregateBytes,
     Func<DateTimeOffset>? UtcNow = null,
     Action<string>? ArtifactDeleteStartingForTests = null,
-    int MaximumRetainedArtifacts = 4096)
+    int MaximumRetainedArtifacts = 4096,
+    Action<string>? ArtifactCreateStartingForTests = null,
+    Action? ReservationStartingForTests = null,
+    Action<string>? ArtifactWriteStartingForTests = null,
+    Action<string>? ArtifactUnlinkIdentityVerifiedForTests = null,
+    Action? ArtifactPublishingClaimedForTests = null)
 {
     internal static OutputStoreOptions Production()
     {
+        var configuredParent = Environment.GetEnvironmentVariable("PTK_OUTPUT_ROOT");
+        var parent = string.IsNullOrWhiteSpace(configuredParent)
+            ? Path.Combine(
+                Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+                ".ptk",
+                "output")
+            : Path.GetFullPath(configuredParent);
         var root = Path.Combine(
-            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
-            ".ptk",
-            "output",
+            parent,
             $"server-{Environment.ProcessId}-{Guid.NewGuid():N}");
         return new OutputStoreOptions(
             root,
@@ -117,8 +128,16 @@ internal sealed record OutputSearchResult(
 /// handle is returned only by a successful seal, never by the reservation.</summary>
 internal sealed class OutputCaptureReservation : IDisposable
 {
+    private const int Active = 0;
+    private const int Sealing = 1;
+    private const int Canceled = 2;
+    private const int Publishing = 3;
+    private const int Published = 4;
+    private const int Closed = 5;
+
     private OutputStore? _owner;
     private readonly Guid _artifactId;
+    private int _state = Active;
 
     internal OutputCaptureReservation(OutputStore owner, Guid artifactId)
     {
@@ -133,10 +152,11 @@ internal sealed class OutputCaptureReservation : IDisposable
     internal OutputSealResult Seal(OutputArtifactContent content)
     {
         ArgumentNullException.ThrowIfNull(content);
-        var owner = Interlocked.Exchange(ref _owner, null);
-        return owner is null
+        var owner = Volatile.Read(ref _owner);
+        return owner is null ||
+               Interlocked.CompareExchange(ref _state, Sealing, Active) != Active
             ? new OutputSealResult(false, null, OutputArtifactState.NotFound, 0, "reservation_closed")
-            : owner.Seal(_artifactId, content);
+            : owner.Seal(this, _artifactId, content);
     }
 
     internal OutputSealResult SealIncomplete(OutputArtifactContent prefix, string reason)
@@ -150,9 +170,256 @@ internal sealed class OutputCaptureReservation : IDisposable
         });
     }
 
+    /// <summary>Wins the cancel-versus-publish race. Once publication has
+    /// started, the coordinator must observe and return that exact result.</summary>
+    internal bool TryCancel()
+    {
+        while (true)
+        {
+            var state = Volatile.Read(ref _state);
+            if (state is Canceled or Closed) return true;
+            if (state == Publishing) return false;
+            if (state == Published)
+            {
+                Interlocked.Exchange(ref _owner, null);
+                return false;
+            }
+            if (Interlocked.CompareExchange(ref _state, Canceled, state) != state)
+                continue;
+
+            Interlocked.Exchange(ref _owner, null)?.CancelSeal(_artifactId);
+            return true;
+        }
+    }
+
+    internal bool TryBeginPublishing() =>
+        Interlocked.CompareExchange(ref _state, Publishing, Sealing) == Sealing;
+
+    internal void MarkPublished() => Volatile.Write(ref _state, Published);
+
+    internal void CompleteObserved()
+    {
+        Interlocked.Exchange(ref _owner, null);
+        if (Volatile.Read(ref _state) != Published)
+            Volatile.Write(ref _state, Closed);
+    }
+
+    public void Dispose() => _ = TryCancel();
+}
+
+/// <summary>Request-owned supervisor coordinator for one foreground capture.
+/// Reservation stays lazy until the host has selected a capturable dispatch,
+/// then the worker-facing path receives only the one-shot write capability.</summary>
+internal sealed class ForegroundOutputCapture : IDisposable
+{
+    private sealed class ReservationAttempt
+    {
+        private const int Pending = 0;
+        private const int Canceled = 1;
+        private const int Published = 2;
+        private int _state = Pending;
+
+        internal bool TryCancel() =>
+            Interlocked.CompareExchange(ref _state, Canceled, Pending) == Pending;
+
+        internal bool TryPublish() =>
+            Interlocked.CompareExchange(ref _state, Published, Pending) == Pending;
+    }
+
+    private sealed record ReservationWorkResult(
+        OutputCaptureReservation? Reservation,
+        string? Failure);
+
+    private OutputStore? _store;
+    private OutputCaptureReservation? _reservation;
+    private readonly Action? _sealCancellationRejectedForTests;
+    private readonly Func<TimeSpan, Task>? _sealDelayForTests;
+    private string? _failure;
+    private bool _prepared;
+
+    internal ForegroundOutputCapture(
+        OutputStore store,
+        Action? sealCancellationRejectedForTests = null,
+        Func<TimeSpan, Task>? sealDelayForTests = null)
+    {
+        _store = store ?? throw new ArgumentNullException(nameof(store));
+        _sealCancellationRejectedForTests = sealCancellationRejectedForTests;
+        _sealDelayForTests = sealDelayForTests;
+    }
+
+    internal long MaximumArtifactBytes =>
+        _store?.MaximumArtifactBytes ?? OutputStore.DefaultReadBytes;
+
+    internal async Task PrepareAsync(
+        TimeSpan maximumWait,
+        CancellationToken cancellationToken)
+    {
+        if (_prepared) return;
+        _prepared = true;
+        if (maximumWait <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(maximumWait));
+        var store = _store;
+        if (store is null)
+        {
+            _failure = "output_store_unavailable";
+            return;
+        }
+
+        var attempt = new ReservationAttempt();
+        if (!store.TryStartForegroundOperation(
+                () =>
+                {
+                    try
+                    {
+                        if (!store.TryReserve(
+                                "default",
+                                out var reservation,
+                                out var failure))
+                        {
+                            return new ReservationWorkResult(
+                                null,
+                                failure is null
+                                    ? "output_store_unavailable"
+                                    : $"output_store_{failure}");
+                        }
+
+                        if (attempt.TryPublish())
+                            return new ReservationWorkResult(reservation, null);
+
+                        reservation!.Dispose();
+                        return new ReservationWorkResult(
+                            null,
+                            "output_store_prepare_timed_out");
+                    }
+                    catch
+                    {
+                        return new ReservationWorkResult(
+                            null,
+                            "output_store_unavailable");
+                    }
+                },
+                out var prepareTask))
+        {
+            _failure = "output_store_busy";
+            return;
+        }
+
+        var delayTask = cancellationToken.CanBeCanceled
+            ? Task.Delay(maximumWait, cancellationToken)
+            : Task.Delay(maximumWait);
+        if (await Task.WhenAny(prepareTask!, delayTask).ConfigureAwait(false) != prepareTask)
+        {
+            if (attempt.TryCancel())
+            {
+                _failure = cancellationToken.IsCancellationRequested
+                    ? "output_store_prepare_canceled"
+                    : "output_store_prepare_timed_out";
+                ObserveFault(prepareTask!);
+                return;
+            }
+        }
+
+        var result = await prepareTask!.ConfigureAwait(false);
+        _reservation = result.Reservation;
+        _failure = result.Failure;
+    }
+
+    internal Task<OutputRecoverySummary> SealAsync(
+        OutputArtifactContent content,
+        TimeSpan maximumWait) =>
+        SealCoreAsync(content, incompleteReason: null, maximumWait);
+
+    internal Task<OutputRecoverySummary> SealIncompleteAsync(
+        OutputArtifactContent content,
+        string reason,
+        TimeSpan maximumWait) =>
+        SealCoreAsync(
+            content,
+            reason ?? throw new ArgumentNullException(nameof(reason)),
+            maximumWait);
+
+    private async Task<OutputRecoverySummary> SealCoreAsync(
+        OutputArtifactContent content,
+        string? incompleteReason,
+        TimeSpan maximumWait)
+    {
+        ArgumentNullException.ThrowIfNull(content);
+        if (maximumWait <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(maximumWait));
+        var reservation = Interlocked.Exchange(ref _reservation, null);
+        if (reservation is null)
+        {
+            return OutputRecoverySummary.Unavailable(
+                _failure ?? (_prepared ? "output_store_unavailable" : "capture_not_prepared"),
+                advertise: true);
+        }
+
+        var store = _store;
+        if (store is null ||
+            !store.TryStartForegroundOperation(
+                () => incompleteReason is null
+                    ? reservation.Seal(content)
+                    : reservation.SealIncomplete(content, incompleteReason),
+                out var sealTask))
+        {
+            _ = reservation.TryCancel();
+            return OutputRecoverySummary.Unavailable(
+                "output_store_busy",
+                advertise: true);
+        }
+        var delayTask = _sealDelayForTests?.Invoke(maximumWait) ?? Task.Delay(maximumWait);
+        if (await Task.WhenAny(sealTask!, delayTask).ConfigureAwait(false) != sealTask)
+        {
+            if (reservation.TryCancel())
+            {
+                ObserveFault(sealTask!);
+                return OutputRecoverySummary.Unavailable(
+                    "output_store_seal_timed_out",
+                    advertise: true);
+            }
+            try
+            {
+                _sealCancellationRejectedForTests?.Invoke();
+            }
+            catch
+            {
+                // This observer runs after cancellation has already lost and
+                // cannot change the result the coordinator must await.
+            }
+        }
+
+        OutputSealResult result;
+        try { result = await sealTask!; }
+        catch
+        {
+            _ = reservation.TryCancel();
+            return OutputRecoverySummary.Unavailable(
+                "output_store_unavailable",
+                advertise: true);
+        }
+        finally
+        {
+            reservation.CompleteObserved();
+        }
+        return result.Success
+            ? OutputRecoverySummary.FromSeal(result)
+            : OutputRecoverySummary.Unavailable(
+                result.DetailCode ?? "output_store_unavailable",
+                advertise: true);
+    }
+
+    private static void ObserveFault(Task task) =>
+        _ = task.ContinueWith(
+            static completed => _ = completed.Exception,
+            CancellationToken.None,
+            TaskContinuationOptions.OnlyOnFaulted |
+            TaskContinuationOptions.ExecuteSynchronously,
+            TaskScheduler.Default);
+
     public void Dispose()
     {
-        Interlocked.Exchange(ref _owner, null)?.Abandon(_artifactId);
+        Interlocked.Exchange(ref _reservation, null)?.Dispose();
+        _store = null;
     }
 }
 
@@ -176,9 +443,13 @@ public sealed class OutputStore : IDisposable
     private readonly Dictionary<Guid, ArtifactEntry> _entries = [];
     private readonly Dictionary<string, Guid> _handles = new(StringComparer.Ordinal);
     private readonly Dictionary<string, long> _sessionBytes = new(StringComparer.Ordinal);
+    private readonly ConcurrentDictionary<Guid, byte> _canceledReservations = [];
     private long _aggregateBytes;
     private long _reservedBytes;
     private long _nextSequence;
+    private int _foregroundOperationActive;
+    private int _cancelReaperActive;
+    private int _retentionRunning;
     private bool _disposed;
 
     internal OutputStore(OutputStoreOptions options)
@@ -196,6 +467,53 @@ public sealed class OutputStore : IDisposable
     }
 
     internal string RootPathForTests => _root;
+    internal long MaximumArtifactBytes => _options.MaximumArtifactBytes;
+
+    internal SafeFileHandle RetainedArtifactHandleForTests(string handle)
+    {
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var entry = FindReadableLocked(handle) ??
+                throw new KeyNotFoundException("The output artifact handle is unavailable.");
+            return entry.Stream?.SafeFileHandle ??
+                throw new InvalidOperationException("The output artifact has no retained stream.");
+        }
+    }
+
+    /// <summary>Starts at most one potentially uninterruptible foreground
+    /// storage operation. A wedged filesystem call therefore consumes one
+    /// worker, while later invocations fail capture immediately and still run
+    /// their user operation exactly once.</summary>
+    internal bool TryStartForegroundOperation<T>(
+        Func<T> operation,
+        out Task<T>? task)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        task = null;
+        if (Interlocked.CompareExchange(
+                ref _foregroundOperationActive,
+                1,
+                0) != 0)
+        {
+            return false;
+        }
+
+        try
+        {
+            task = Task.Run(() =>
+            {
+                try { return operation(); }
+                finally { Volatile.Write(ref _foregroundOperationActive, 0); }
+            });
+            return true;
+        }
+        catch
+        {
+            Volatile.Write(ref _foregroundOperationActive, 0);
+            throw;
+        }
+    }
 
     internal bool TryReserve(
         string sessionAlias,
@@ -209,6 +527,8 @@ public sealed class OutputStore : IDisposable
             failure = "invalid_session";
             return false;
         }
+
+        _options.ReservationStartingForTests?.Invoke();
 
         lock (_gate)
         {
@@ -240,6 +560,7 @@ public sealed class OutputStore : IDisposable
             };
             _entries.Add(id, entry);
             _handles.Add(handle, id);
+            _sessionBytes.TryAdd(sessionAlias, 0);
             _reservedBytes = checked(_reservedBytes + entry.ReservedBytes);
             reservation = new OutputCaptureReservation(this, id);
             return true;
@@ -424,12 +745,20 @@ public sealed class OutputStore : IDisposable
         }
     }
 
-    internal OutputSealResult Seal(Guid artifactId, OutputArtifactContent content)
+    internal OutputSealResult Seal(
+        OutputCaptureReservation reservation,
+        Guid artifactId,
+        OutputArtifactContent content)
     {
+        ArgumentNullException.ThrowIfNull(reservation);
+        ArgumentNullException.ThrowIfNull(content);
         ArtifactEntry entry;
         lock (_gate)
         {
-            if (_disposed || !_entries.TryGetValue(artifactId, out entry!) || !entry.Capturing)
+            if (_disposed ||
+                _canceledReservations.ContainsKey(artifactId) ||
+                !_entries.TryGetValue(artifactId, out entry!) ||
+                !entry.Capturing)
             {
                 return new OutputSealResult(
                     false,
@@ -443,30 +772,45 @@ public sealed class OutputStore : IDisposable
         var path = Path.Combine(_root, $"artifact-{artifactId:N}.out");
         RenderResult rendered;
         FileStream? stream = null;
+        var pathLinked = false;
         try
         {
+            _options.ArtifactCreateStartingForTests?.Invoke(path);
             stream = SecureAuditStorage.CreateExclusiveFile(
                 path,
-                share: FileShare.Read | FileShare.Delete,
+                share: FileShare.Delete,
                 access: FileAccess.ReadWrite);
-            rendered = Render(stream, content, _options.MaximumArtifactBytes);
-            stream.Flush(flushToDisk: true);
-            SecureAuditStorage.ConfirmRetainedCreatedFileDurability(
+            pathLinked = true;
+            // The protected file is still empty here. Remove its directory
+            // entry before rendering any invocation bytes, so a hard-killed
+            // supervisor cannot strand sensitive named output. Recovery reads
+            // only through this retained handle. The storage primitive proves
+            // that this exact handle is unlinked on Unix or newly delete-pending
+            // on Windows before returning; managed DeleteOnClose is deliberately
+            // absent because it can delete a later Unix path substitute.
+            SecureAuditStorage.DeleteRetainedProtectedFile(
                 _root,
                 path,
-                stream.SafeFileHandle);
+                stream.SafeFileHandle,
+                identityVerifiedForTests: () =>
+                    _options.ArtifactUnlinkIdentityVerifiedForTests?.Invoke(path));
+            pathLinked = false;
+            _options.ArtifactWriteStartingForTests?.Invoke(path);
+            rendered = Render(stream, content, _options.MaximumArtifactBytes);
+            stream.Flush(flushToDisk: true);
         }
         catch
         {
             if (stream is not null)
             {
-                TryDeleteRetainedProtectedFile(path, stream);
+                if (pathLinked) TryDeleteRetainedProtectedFile(path, stream);
                 stream.Dispose();
             }
             lock (_gate)
             {
                 if (_entries.TryGetValue(artifactId, out var failed) && failed.Capturing)
                     RemoveReservationLocked(failed, removeHandle: true);
+                _canceledReservations.TryRemove(artifactId, out _);
             }
             return new OutputSealResult(
                 false,
@@ -476,82 +820,219 @@ public sealed class OutputStore : IDisposable
                 "storage_unavailable");
         }
 
+        DateTimeOffset sealedUtc;
+        DateTimeOffset expiresUtc;
+        string? detailCode;
+        bool complete;
+        OutputArtifactState state;
+        try
+        {
+            sealedUtc = UtcNow();
+            expiresUtc = sealedUtc.Add(_options.TimeToLive);
+            complete = content.Complete && !rendered.Truncated;
+            state = complete
+                ? OutputArtifactState.Available
+                : OutputArtifactState.Incomplete;
+            detailCode = rendered.Truncated
+                ? "artifact_cap_exceeded"
+                : content.Complete ? null : NormalizeDetail(content.IncompleteReason);
+        }
+        catch
+        {
+            RemoveFailedReservation(artifactId);
+            if (pathLinked) TryDeleteRetainedProtectedFile(path, stream);
+            stream.Dispose();
+            return new OutputSealResult(
+                false,
+                null,
+                OutputArtifactState.NotFound,
+                0,
+                "storage_unavailable");
+        }
+
+        OutputSealResult? failure = null;
+        OutputSealResult? success = null;
         lock (_gate)
         {
-            if (_disposed || !_entries.TryGetValue(artifactId, out entry!) || !entry.Capturing)
+            if (_disposed ||
+                _canceledReservations.ContainsKey(artifactId) ||
+                !_entries.TryGetValue(artifactId, out entry!) ||
+                !entry.Capturing)
             {
-                TryDeleteRetainedProtectedFile(path, stream);
-                stream.Dispose();
-                return new OutputSealResult(
+                if (_entries.TryGetValue(artifactId, out var canceled) &&
+                    canceled.Capturing)
+                {
+                    RemoveReservationLocked(canceled, removeHandle: true);
+                }
+                _canceledReservations.TryRemove(artifactId, out _);
+                failure = new OutputSealResult(
                     false,
                     null,
                     OutputArtifactState.NotFound,
                     0,
                     "reservation_unavailable");
             }
+            else
+            {
+                long aggregateBytes;
+                long sessionBytes;
+                try
+                {
+                    // These are the final potentially throwing calculations.
+                    // They must precede the cancel-versus-publish claim.
+                    aggregateBytes = checked(_aggregateBytes + rendered.Bytes);
+                    sessionBytes = checked(
+                        SessionBytesLocked(entry.SessionAlias) + rendered.Bytes);
+                }
+                catch
+                {
+                    RemoveReservationLocked(entry, removeHandle: true);
+                    failure = new OutputSealResult(
+                        false,
+                        null,
+                        OutputArtifactState.NotFound,
+                        0,
+                        "storage_unavailable");
+                    goto PublishFinished;
+                }
 
-            _reservedBytes -= entry.ReservedBytes;
-            entry.ReservedBytes = 0;
-            entry.Capturing = false;
-            entry.Path = path;
-            entry.Stream = stream;
-            entry.Bytes = rendered.Bytes;
-            entry.Provenance = content.Provenance;
-            entry.Complete = content.Complete && !rendered.Truncated;
-            entry.State = entry.Complete
-                ? OutputArtifactState.Available
-                : OutputArtifactState.Incomplete;
-            entry.DetailCode = rendered.Truncated
-                ? "artifact_cap_exceeded"
-                : content.Complete ? null : NormalizeDetail(content.IncompleteReason);
-            entry.SealedUtc = UtcNow();
-            entry.ExpiresUtc = entry.SealedUtc + _options.TimeToLive;
-            entry.Segments = rendered.Segments;
-            _aggregateBytes = checked(_aggregateBytes + entry.Bytes);
-            _sessionBytes[entry.SessionAlias] = checked(
-                SessionBytesLocked(entry.SessionAlias) + entry.Bytes);
+                if (!reservation.TryBeginPublishing())
+                {
+                    RemoveReservationLocked(entry, removeHandle: true);
+                    _canceledReservations.TryRemove(artifactId, out _);
+                    failure = new OutputSealResult(
+                        false,
+                        null,
+                        OutputArtifactState.NotFound,
+                        0,
+                        "reservation_unavailable");
+                    goto PublishFinished;
+                }
 
-            return new OutputSealResult(
-                true,
-                entry.Handle,
-                entry.State,
-                entry.Bytes,
-                entry.DetailCode);
+                try
+                {
+                    _options.ArtifactPublishingClaimedForTests?.Invoke();
+                }
+                catch
+                {
+                    // Publication is already irreversible. A test observer
+                    // cannot be allowed to make the claimed transition throw.
+                }
+
+                // Publication is now irreversible and contains only
+                // nonthrowing assignments to already allocated state.
+                _reservedBytes -= entry.ReservedBytes;
+                entry.ReservedBytes = 0;
+                entry.Capturing = false;
+                entry.Path = pathLinked ? path : null;
+                entry.Stream = stream;
+                entry.Bytes = rendered.Bytes;
+                entry.Provenance = content.Provenance;
+                entry.Complete = complete;
+                entry.State = state;
+                entry.DetailCode = detailCode;
+                entry.SealedUtc = sealedUtc;
+                entry.ExpiresUtc = expiresUtc;
+                entry.Segments = rendered.Segments;
+                _aggregateBytes = aggregateBytes;
+                _sessionBytes[entry.SessionAlias] = sessionBytes;
+                reservation.MarkPublished();
+
+                success = new OutputSealResult(
+                    true,
+                    entry.Handle,
+                    entry.State,
+                    entry.Bytes,
+                    entry.DetailCode);
+            }
+
+        PublishFinished:;
         }
+
+        if (success is not null) return success;
+        if (pathLinked) TryDeleteRetainedProtectedFile(path, stream);
+        stream.Dispose();
+        return failure!;
     }
 
-    internal void Abandon(Guid artifactId)
+    internal void CancelSeal(Guid artifactId)
+    {
+        _canceledReservations.TryAdd(artifactId, 0);
+        if (Monitor.TryEnter(_gate))
+        {
+            try { RemoveCanceledReservationLocked(artifactId); }
+            finally { Monitor.Exit(_gate); }
+            return;
+        }
+        ScheduleCancellationReaper();
+    }
+
+    internal void Abandon(Guid artifactId) => CancelSeal(artifactId);
+
+    private void RemoveFailedReservation(Guid artifactId)
     {
         lock (_gate)
         {
-            if (_disposed) return;
             if (_entries.TryGetValue(artifactId, out var entry) && entry.Capturing)
                 RemoveReservationLocked(entry, removeHandle: true);
+            _canceledReservations.TryRemove(artifactId, out _);
         }
+    }
+
+    private void RemoveCanceledReservationLocked(Guid artifactId)
+    {
+        if (_entries.TryGetValue(artifactId, out var entry) && entry.Capturing)
+            RemoveReservationLocked(entry, removeHandle: true);
+        _canceledReservations.TryRemove(artifactId, out _);
+    }
+
+    private void ScheduleCancellationReaper()
+    {
+        if (Interlocked.CompareExchange(ref _cancelReaperActive, 1, 0) != 0)
+            return;
+
+        _ = Task.Run(() =>
+        {
+            try
+            {
+                lock (_gate)
+                {
+                    foreach (var artifactId in _canceledReservations.Keys)
+                        RemoveCanceledReservationLocked(artifactId);
+                }
+            }
+            finally
+            {
+                Volatile.Write(ref _cancelReaperActive, 0);
+                if (!_canceledReservations.IsEmpty)
+                    ScheduleCancellationReaper();
+            }
+        });
     }
 
     public void Dispose()
     {
-        List<(string Path, FileStream Stream)> artifacts;
+        List<(string? Path, FileStream Stream)> artifacts;
         lock (_gate)
         {
             if (_disposed) return;
             _disposed = true;
             _retentionTimer.Dispose();
             artifacts = _entries.Values
-                .Where(entry => entry.Path is not null && entry.Stream is not null)
-                .Select(entry => (entry.Path!, entry.Stream!))
+                .Where(entry => entry.Stream is not null)
+                .Select(entry => (entry.Path, entry.Stream!))
                 .ToList();
             _entries.Clear();
             _handles.Clear();
             _sessionBytes.Clear();
+            _canceledReservations.Clear();
             _aggregateBytes = 0;
             _reservedBytes = 0;
         }
 
         foreach (var (path, stream) in artifacts)
         {
-            TryDeleteRetainedProtectedFile(path, stream);
+            if (path is not null) TryDeleteRetainedProtectedFile(path, stream);
             stream.Dispose();
         }
         try
@@ -567,6 +1048,8 @@ public sealed class OutputStore : IDisposable
 
     private void RunRetentionSafely()
     {
+        if (Interlocked.CompareExchange(ref _retentionRunning, 1, 0) != 0)
+            return;
         try
         {
             lock (_gate)
@@ -578,6 +1061,10 @@ public sealed class OutputStore : IDisposable
         {
             // A later request receives a truthful unavailable/capacity result;
             // the timer must never terminate the process.
+        }
+        finally
+        {
+            Volatile.Write(ref _retentionRunning, 0);
         }
     }
 
@@ -627,14 +1114,14 @@ public sealed class OutputStore : IDisposable
         }
 
         foreach (var entry in _entries.Values
-                     .Where(entry => IsTombstoned(entry) && entry.Path is not null)
+                     .Where(entry => IsTombstoned(entry) && entry.Stream is not null)
                      .ToArray())
         {
             TryDeleteStoredArtifactLocked(entry);
         }
 
         var removable = _entries.Values
-            .Where(entry => IsTombstoned(entry) && entry.Path is null &&
+            .Where(entry => IsTombstoned(entry) && entry.Stream is null &&
                             entry.TombstonedUtc is { } tombstoned &&
                             tombstoned + _options.TimeToLive <= now)
             .OrderBy(entry => entry.TombstonedUtc)
@@ -646,7 +1133,7 @@ public sealed class OutputStore : IDisposable
         }
 
         var tombstones = _entries.Values
-            .Where(entry => IsTombstoned(entry) && entry.Path is null)
+            .Where(entry => IsTombstoned(entry) && entry.Stream is null)
             .OrderBy(entry => entry.TombstonedUtc)
             .ToList();
         foreach (var entry in tombstones.Take(Math.Max(0, tombstones.Count - MaximumTombstones)))
@@ -674,19 +1161,21 @@ public sealed class OutputStore : IDisposable
 
     private bool TryDeleteStoredArtifactLocked(ArtifactEntry entry)
     {
-        if (entry.Path is not { } path) return true;
         if (entry.Stream is not { } stream) return false;
-        try
+        if (entry.Path is { } path)
         {
-            _options.ArtifactDeleteStartingForTests?.Invoke(path);
-            SecureAuditStorage.DeleteRetainedProtectedFile(
-                _root,
-                path,
-                stream.SafeFileHandle);
-        }
-        catch
-        {
-            return false;
+            try
+            {
+                _options.ArtifactDeleteStartingForTests?.Invoke(path);
+                SecureAuditStorage.DeleteRetainedProtectedFile(
+                    _root,
+                    path,
+                    stream.SafeFileHandle);
+            }
+            catch
+            {
+                return false;
+            }
         }
 
         _aggregateBytes = checked(_aggregateBytes - entry.Bytes);
@@ -788,7 +1277,7 @@ public sealed class OutputStore : IDisposable
         entry.DetailCode);
 
     private static bool IsReadableArtifact(ArtifactEntry entry) =>
-        entry.Path is not null && entry.Stream is not null &&
+        entry.Stream is not null &&
         entry.State is OutputArtifactState.Available or OutputArtifactState.Incomplete;
 
     private static bool IsTombstoned(ArtifactEntry entry) =>
@@ -816,7 +1305,8 @@ public sealed class OutputStore : IDisposable
 
     private static void ValidateOptions(OutputStoreOptions options)
     {
-        if (options.TimeToLive <= TimeSpan.Zero)
+        if (options.TimeToLive <= TimeSpan.Zero ||
+            options.TimeToLive > DateTimeOffset.MaxValue - DateTimeOffset.MinValue)
             throw new ArgumentOutOfRangeException(nameof(options.TimeToLive));
         if (options.RetentionInterval <= TimeSpan.Zero)
             throw new ArgumentOutOfRangeException(nameof(options.RetentionInterval));

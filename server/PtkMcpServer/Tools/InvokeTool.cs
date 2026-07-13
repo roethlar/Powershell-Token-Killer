@@ -64,7 +64,8 @@ public static class InvokeTool
             "the warm session (live connections, imported modules); stateless long " +
             "work should use background=true instead.")]
         int timeoutSeconds = 0,
-        AuditCallContextAccessor? auditContext = null)
+        AuditCallContextAccessor? auditContext = null,
+        OutputStore? outputStore = null)
     {
         var audit = auditContext?.Current;
         if (!background && audit is not null && !audit.BeginValidation())
@@ -216,8 +217,19 @@ public static class InvokeTool
                     "[job not started] Background pre-start checks failed; the original operation was not started.");
             }
         }
+        using var outputCapture = outputStore is null
+            ? null
+            : new ForegroundOutputCapture(outputStore);
         var result = audit is null
-            ? await host.InvokeAsync(script, raw, cancellationToken, route, timeoutSeconds)
+            ? outputCapture is null
+                ? await host.InvokeAsync(script, raw, cancellationToken, route, timeoutSeconds)
+                : await host.InvokeWithOutputCaptureAsync(
+                    script,
+                    outputCapture,
+                    raw,
+                    cancellationToken,
+                    route,
+                    timeoutSeconds)
             : await host.InvokeAsync(
                 script,
                 audit,
@@ -225,7 +237,8 @@ public static class InvokeTool
                 cancellationToken,
                 route,
                 timeoutSeconds,
-                audit.Metadata.Request.DeadlineUtc);
+                audit.Metadata.Request.DeadlineUtc,
+                outputCapture);
 
         var sb = new StringBuilder();
         var output = result.Output.TrimEnd();
@@ -274,6 +287,16 @@ public static class InvokeTool
             sb.AppendLine();
             sb.AppendLine("[warnings]");
             foreach (var warning in result.Warnings) sb.AppendLine(warning);
+        }
+
+        if (result.OutputRecovery is { Advertise: true } recovery)
+        {
+            sb.AppendLine();
+            sb.Append(recovery.Handle is { } handle
+                ? $"recovery=available: ptk_output handle={handle}"
+                : recovery.DetailCode == "rtk_capture_unsupported"
+                    ? "recovery=unavailable: rtk capture unsupported"
+                    : "recovery=unavailable: output capture unavailable; command was not rerun");
         }
 
         var response = sb.ToString().TrimEnd();

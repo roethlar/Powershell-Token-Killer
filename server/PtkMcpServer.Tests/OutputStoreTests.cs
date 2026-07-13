@@ -1,3 +1,4 @@
+using System.Runtime.InteropServices;
 using PtkMcpServer.Audit;
 
 namespace PtkMcpServer.Tests;
@@ -28,7 +29,7 @@ public sealed class OutputStoreTests : IDisposable
         Assert.StartsWith("ptko_", sealedArtifact.Handle, StringComparison.Ordinal);
         Assert.DoesNotContain(Path.DirectorySeparatorChar, sealedArtifact.Handle!);
         SecureAuditStorage.VerifyExternalProtectedDirectory(store.RootPathForTests);
-        SecureAuditStorage.VerifyExternalProtectedFile(Assert.Single(Directory.GetFiles(store.RootPathForTests)));
+        AssertNoNamedArtifacts(store);
 
         var first = store.Read(sealedArtifact.Handle!, offset: 3, maximumBytes: 3);
         var repeated = store.Read(sealedArtifact.Handle!, offset: 3, maximumBytes: 3);
@@ -158,15 +159,13 @@ public sealed class OutputStoreTests : IDisposable
             Assert.Equal("abcdefgh", read.Text);
             Assert.False(read.Complete);
 
-            var expiredPath = Assert.Single(Directory.GetFiles(capped.RootPathForTests));
-
             now = now.AddMinutes(1).AddTicks(1);
             capped.RunRetentionForTests();
             var expired = capped.Status(truncated.Handle!);
             Assert.Equal(OutputArtifactState.Expired, expired.State);
             Assert.Equal("ttl_expired", expired.DetailCode);
             Assert.NotEqual(OutputArtifactState.NotFound, expired.State);
-            Assert.False(File.Exists(expiredPath));
+            AssertNoNamedArtifacts(capped);
 
             var expiredRead = capped.Read(truncated.Handle!, 0, 8);
             Assert.Equal(OutputArtifactState.Expired, expiredRead.State);
@@ -179,6 +178,11 @@ public sealed class OutputStoreTests : IDisposable
             Assert.Empty(expiredSearch.Matches);
             Assert.Equal(0, expiredSearch.TotalBytes);
             Assert.Equal(0, expiredSearch.BytesScanned);
+
+            Assert.True(
+                capped.TryReserve("replacement", out var replacement, out var replacementFailure),
+                replacementFailure);
+            replacement!.Dispose();
         }
 
         now = new DateTimeOffset(2026, 7, 13, 13, 0, 0, TimeSpan.Zero);
@@ -188,15 +192,14 @@ public sealed class OutputStoreTests : IDisposable
             maximumSessionBytes: 8,
             maximumAggregateBytes: 8);
         var first = Seal(evicting, "12345678", sessionAlias: "alpha");
-        var firstPath = Assert.Single(Directory.GetFiles(evicting.RootPathForTests));
         var second = Seal(evicting, "abcdefgh", sessionAlias: "beta");
 
         var evicted = evicting.Status(first.Handle!);
         Assert.Equal(OutputArtifactState.Evicted, evicted.State);
         Assert.Equal("aggregate_capacity", evicted.DetailCode);
         Assert.Equal(OutputArtifactState.Available, evicting.Status(second.Handle!).State);
-        Assert.False(File.Exists(firstPath));
-        Assert.Single(Directory.GetFiles(evicting.RootPathForTests));
+        Assert.Equal("abcdefgh", evicting.Read(second.Handle!, 0, 8).Text);
+        AssertNoNamedArtifacts(evicting);
 
         var evictedRead = evicting.Read(first.Handle!, 0, 8);
         Assert.Equal(OutputArtifactState.Evicted, evictedRead.State);
@@ -250,6 +253,94 @@ public sealed class OutputStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Publishing_claim_beats_cancel_and_coordinator_returns_exact_handle()
+    {
+        var publishingClaimed = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var releasePublication = new ManualResetEventSlim();
+        var cancellationRejected = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var sealDeadlineElapsed = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        using var store = CreateStore(
+            () => DateTimeOffset.UtcNow,
+            artifactPublishingClaimedForTests: () =>
+            {
+                publishingClaimed.TrySetResult();
+                releasePublication.Wait();
+        });
+        using var capture = new ForegroundOutputCapture(
+            store,
+            sealCancellationRejectedForTests: () => cancellationRejected.TrySetResult(),
+            sealDelayForTests: _ => sealDeadlineElapsed.Task);
+        await capture.PrepareAsync(TimeSpan.FromSeconds(5), CancellationToken.None);
+
+        var sealTask = capture.SealAsync(
+            new OutputArtifactContent(
+                "PUBLISHING_CLAIM_WINS",
+                [],
+                [],
+                [],
+                null,
+                OutputProvenance.PowerShellObjects),
+            TimeSpan.FromMilliseconds(25));
+
+        try
+        {
+            await publishingClaimed.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            sealDeadlineElapsed.TrySetResult();
+            await cancellationRejected.Task.WaitAsync(TimeSpan.FromSeconds(15));
+            Assert.False(sealTask.IsCompleted);
+            releasePublication.Set();
+
+            var recovery = await sealTask.WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(recovery.Advertise);
+            Assert.Equal(OutputArtifactState.Available, recovery.State);
+            Assert.Null(recovery.DetailCode);
+            var handle = Assert.IsType<string>(recovery.Handle);
+            capture.Dispose();
+            Assert.Equal(
+                "PUBLISHING_CLAIM_WINS",
+                store.Read(handle, 0, OutputStore.MaximumReadBytes).Text);
+            AssertNoNamedArtifacts(store);
+        }
+        finally
+        {
+            releasePublication.Set();
+        }
+    }
+
+    [Fact]
+    public void Expiration_overflow_cannot_publish_or_leak_a_reservation()
+    {
+        var now = DateTimeOffset.MaxValue.AddMinutes(-1);
+        using var store = CreateStore(
+            () => now,
+            maximumArtifactBytes: 8,
+            maximumSessionBytes: 16,
+            maximumAggregateBytes: 16,
+            ttl: TimeSpan.FromMinutes(15));
+
+        Assert.True(store.TryReserve("default", out var reservation, out var failure), failure);
+        var result = reservation!.Seal(new OutputArtifactContent(
+            "overflow",
+            [],
+            [],
+            [],
+            ExitCode: null,
+            OutputProvenance.PowerShellObjects));
+
+        Assert.False(result.Success);
+        Assert.Null(result.Handle);
+        Assert.Equal("storage_unavailable", result.DetailCode);
+        Assert.Empty(Directory.GetFiles(store.RootPathForTests));
+        Assert.True(store.TryReserve("default", out var first, out var firstFailure), firstFailure);
+        Assert.True(store.TryReserve("default", out var second, out var secondFailure), secondFailure);
+        first!.Dispose();
+        second!.Dispose();
+    }
+
+    [Fact]
     public void Retained_artifact_count_bounds_zero_byte_snapshots_and_open_handles()
     {
         using var store = CreateStore(
@@ -258,101 +349,271 @@ public sealed class OutputStoreTests : IDisposable
         var first = Seal(store, string.Empty, sessionAlias: "alpha");
         var second = Seal(store, string.Empty, sessionAlias: "beta");
 
-        Assert.Equal(2, Directory.GetFiles(store.RootPathForTests).Length);
+        AssertNoNamedArtifacts(store);
         Assert.True(store.TryReserve("gamma", out var third, out var failure), failure);
 
         Assert.Equal(OutputArtifactState.Evicted, store.Status(first.Handle!).State);
         Assert.Equal("artifact_count_capacity", store.Status(first.Handle!).DetailCode);
         Assert.Equal(OutputArtifactState.Available, store.Status(second.Handle!).State);
-        Assert.Single(Directory.GetFiles(store.RootPathForTests));
+        AssertNoNamedArtifacts(store);
         third!.Dispose();
     }
 
     [Fact]
-    public void Periodic_retention_expires_and_physically_deletes_without_an_api_trigger()
+    public void Periodic_retention_expires_anonymous_handle_and_releases_accounting_without_api_trigger()
     {
         var now = new DateTimeOffset(2026, 7, 13, 12, 0, 0, TimeSpan.Zero);
-        var nowTicks = now.Ticks;
+        var expiredNow = now.AddMinutes(1).AddTicks(1);
+        using var retentionObserved = new ManualResetEventSlim();
+        var exposeExpiredClock = 0;
         using var store = CreateStore(
-            () => new DateTimeOffset(Interlocked.Read(ref nowTicks), TimeSpan.Zero),
+            () =>
+            {
+                if (Volatile.Read(ref exposeExpiredClock) == 0) return now;
+                retentionObserved.Set();
+                return expiredNow;
+            },
+            maximumArtifactBytes: 8,
+            maximumSessionBytes: 8,
+            maximumAggregateBytes: 8,
             ttl: TimeSpan.FromMinutes(1),
             retentionInterval: TimeSpan.FromMilliseconds(10));
-        var artifact = Seal(store, "periodic");
-        var path = Assert.Single(Directory.GetFiles(store.RootPathForTests));
+        var artifact = Seal(store, "12345678");
 
-        Interlocked.Exchange(ref nowTicks, now.AddMinutes(1).AddTicks(1).Ticks);
+        Volatile.Write(ref exposeExpiredClock, 1);
         Assert.True(
-            SpinWait.SpinUntil(() => !File.Exists(path), TimeSpan.FromSeconds(5)),
-            "The periodic retention callback did not delete the expired artifact.");
+            retentionObserved.Wait(TimeSpan.FromSeconds(5)),
+            "The periodic retention callback did not observe the expired clock.");
+        Volatile.Write(ref exposeExpiredClock, 0);
 
         var expired = store.Status(artifact.Handle!);
         Assert.Equal(OutputArtifactState.Expired, expired.State);
         Assert.Equal("ttl_expired", expired.DetailCode);
+        Assert.Empty(store.Read(artifact.Handle!, 0, 8).Text);
+        Assert.True(
+            store.TryReserve("replacement", out var replacement, out var replacementFailure),
+            replacementFailure);
+        replacement!.Dispose();
+        AssertNoNamedArtifacts(store);
     }
 
     [Fact]
-    public void Failed_retention_deletion_stays_nondisclosing_and_charged_until_retry_succeeds()
+    public void Anonymous_eviction_stays_nondisclosing_and_releases_retained_handle_accounting()
     {
-        var refuseDeletion = true;
         using var store = CreateStore(
             () => new DateTimeOffset(2026, 7, 13, 12, 0, 0, TimeSpan.Zero),
             maximumArtifactBytes: 8,
             maximumSessionBytes: 8,
-            maximumAggregateBytes: 8,
-            artifactDeleteStartingForTests: _ =>
-            {
-                if (refuseDeletion) throw new IOException("injected deletion failure");
-            });
+            maximumAggregateBytes: 8);
         var artifact = Seal(store, "12345678", sessionAlias: "alpha");
-        var path = Assert.Single(Directory.GetFiles(store.RootPathForTests));
 
-        Assert.False(store.TryReserve("beta", out var blocked, out var failure));
-        Assert.Null(blocked);
-        Assert.Equal("capacity", failure);
+        Assert.True(store.TryReserve("beta", out var admitted, out var failure), failure);
         Assert.Equal(OutputArtifactState.Evicted, store.Status(artifact.Handle!).State);
         Assert.Empty(store.Read(artifact.Handle!, 0, 8).Text);
-        Assert.True(File.Exists(path));
-
-        refuseDeletion = false;
-        store.RunRetentionForTests();
-        Assert.False(File.Exists(path));
-        Assert.True(store.TryReserve("beta", out var admitted, out var admittedFailure), admittedFailure);
+        AssertNoNamedArtifacts(store);
         admitted!.Dispose();
     }
 
     [Fact]
-    public void Retained_identity_preserves_snapshot_and_never_deletes_a_path_substitute()
+    public void Anonymous_snapshot_preserves_content_and_never_deletes_a_later_path_substitute()
     {
         var now = new DateTimeOffset(2026, 7, 13, 12, 0, 0, TimeSpan.Zero);
+        string? anonymousPath = null;
         using var store = CreateStore(
             () => now,
-            ttl: TimeSpan.FromMinutes(1));
+            ttl: TimeSpan.FromMinutes(1),
+            artifactCreateStartingForTests: path => anonymousPath = path);
         var artifact = Seal(store, "original snapshot");
-        var path = Assert.Single(Directory.GetFiles(store.RootPathForTests));
-        var displaced = path + ".displaced";
+        var path = Assert.IsType<string>(anonymousPath);
+        Assert.False(File.Exists(path));
 
-        File.Move(path, displaced);
+        Assert.Equal(
+            "original snapshot",
+            store.Read(artifact.Handle!, 0, OutputStore.MaximumReadBytes).Text);
+
+        // A retained anonymous handle must be identity-bound. In particular,
+        // its eventual close must not implement DeleteOnClose by pathname and
+        // remove a different file created under the retired artifact name.
         using (var substitute = SecureAuditStorage.CreateExclusiveFile(path))
         {
             substitute.Write("substitute"u8);
             substitute.Flush(flushToDisk: true);
         }
 
-        Assert.Equal(
-            "original snapshot",
-            store.Read(artifact.Handle!, 0, OutputStore.MaximumReadBytes).Text);
-
         now = now.AddMinutes(1).AddTicks(1);
         store.RunRetentionForTests();
         Assert.Equal(OutputArtifactState.Expired, store.Status(artifact.Handle!).State);
         Assert.Empty(store.Read(artifact.Handle!, 0, OutputStore.MaximumReadBytes).Text);
         Assert.Equal("substitute", File.ReadAllText(path));
-        Assert.True(File.Exists(displaced));
-
         File.Delete(path);
-        File.Move(displaced, path);
-        store.RunRetentionForTests();
-        Assert.False(File.Exists(path));
+    }
+
+    [Fact]
+    public void Dispose_closes_retained_anonymous_artifact_handles_before_returning()
+    {
+        var store = CreateStore(
+            () => new DateTimeOffset(2026, 7, 13, 12, 0, 0, TimeSpan.Zero));
+        var artifact = Seal(store, "dispose-owned snapshot");
+        var retainedHandle = store.RetainedArtifactHandleForTests(artifact.Handle!);
+
+        Assert.False(retainedHandle.IsClosed);
+
+        store.Dispose();
+
+        Assert.True(retainedHandle.IsClosed);
+    }
+
+    [Fact]
+    public void Rename_and_substitute_after_identity_check_fails_before_sensitive_rendering()
+    {
+        string? createdPath = null;
+        string? verifiedPath = null;
+        string? displacedPath = null;
+        var writeStarted = false;
+        using var store = CreateStore(
+            () => DateTimeOffset.UtcNow,
+            artifactCreateStartingForTests: path => createdPath = path,
+            artifactWriteStartingForTests: _ => writeStarted = true,
+            artifactUnlinkIdentityVerifiedForTests: path =>
+            {
+                verifiedPath = path;
+                displacedPath = $"{path}.displaced";
+                File.Move(path, displacedPath);
+                using var substitute = SecureAuditStorage.CreateExclusiveFile(path);
+                substitute.Write("substitute"u8);
+                substitute.Flush(flushToDisk: true);
+            });
+
+        try
+        {
+            Assert.True(store.TryReserve("default", out var reservation, out var failure), failure);
+            using (reservation)
+            {
+                var result = reservation!.Seal(new OutputArtifactContent(
+                    "SENSITIVE_NEVER_WRITTEN",
+                    [],
+                    [],
+                    [],
+                    null,
+                    OutputProvenance.PowerShellObjects));
+
+                Assert.False(result.Success);
+                Assert.Null(result.Handle);
+                Assert.Equal("storage_unavailable", result.DetailCode);
+            }
+
+            Assert.Equal(createdPath, verifiedPath);
+            Assert.False(writeStarted);
+            var displaced = Assert.IsType<string>(displacedPath);
+            Assert.True(File.Exists(displaced));
+            Assert.Equal(0, new FileInfo(displaced).Length);
+            Assert.DoesNotContain(
+                "SENSITIVE_NEVER_WRITTEN",
+                File.ReadAllText(displaced),
+                StringComparison.Ordinal);
+            Assert.False(File.Exists(Assert.IsType<string>(createdPath)));
+
+            // The failed seal must release both reservation and aggregate
+            // accounting. Two full-size replacements consume the session cap.
+            Assert.True(
+                store.TryReserve("default", out var firstReplacement, out var firstFailure),
+                firstFailure);
+            Assert.True(
+                store.TryReserve("default", out var secondReplacement, out var secondFailure),
+                secondFailure);
+            firstReplacement!.Dispose();
+            secondReplacement!.Dispose();
+        }
+        finally
+        {
+            if (createdPath is not null && File.Exists(createdPath))
+                File.Delete(createdPath);
+            if (displacedPath is not null && File.Exists(displacedPath))
+                File.Delete(displacedPath);
+        }
+    }
+
+    [Fact]
+    public void Windows_hard_link_after_identity_check_fails_before_sensitive_rendering()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        string? createdPath = null;
+        string? hardLinkPath = null;
+        var writeStarted = false;
+        using var store = CreateStore(
+            () => DateTimeOffset.UtcNow,
+            artifactCreateStartingForTests: path => createdPath = path,
+            artifactWriteStartingForTests: _ => writeStarted = true,
+            artifactUnlinkIdentityVerifiedForTests: path =>
+            {
+                hardLinkPath = $"{path}.linked";
+                if (!CreateHardLink(hardLinkPath, path, IntPtr.Zero))
+                {
+                    throw new IOException(
+                        $"CreateHardLink failed with Windows error {Marshal.GetLastPInvokeError()}.");
+                }
+            });
+
+        try
+        {
+            Assert.True(store.TryReserve("default", out var reservation, out var failure), failure);
+            using (reservation)
+            {
+                var result = reservation!.Seal(new OutputArtifactContent(
+                    "SENSITIVE_NEVER_WRITTEN",
+                    [],
+                    [],
+                    [],
+                    null,
+                    OutputProvenance.PowerShellObjects));
+
+                Assert.False(result.Success);
+                Assert.Null(result.Handle);
+                Assert.Equal("storage_unavailable", result.DetailCode);
+            }
+
+            Assert.False(writeStarted);
+            var linked = Assert.IsType<string>(hardLinkPath);
+            Assert.True(File.Exists(linked));
+            Assert.Equal(0, new FileInfo(linked).Length);
+            Assert.DoesNotContain(
+                "SENSITIVE_NEVER_WRITTEN",
+                File.ReadAllText(linked),
+                StringComparison.Ordinal);
+        }
+        finally
+        {
+            if (createdPath is not null && File.Exists(createdPath))
+                File.Delete(createdPath);
+            if (hardLinkPath is not null && File.Exists(hardLinkPath))
+                File.Delete(hardLinkPath);
+        }
+    }
+
+    [Fact]
+    public void Sensitive_rendering_starts_only_after_the_protected_name_is_gone()
+    {
+        string? createdPath = null;
+        var writeStarted = false;
+        using var store = CreateStore(
+            () => DateTimeOffset.UtcNow,
+            artifactCreateStartingForTests: path => createdPath = path,
+            artifactWriteStartingForTests: path =>
+            {
+                writeStarted = true;
+                Assert.Equal(createdPath, path);
+                Assert.False(File.Exists(path));
+                Assert.Empty(Directory.GetFiles(Path.GetDirectoryName(path)!));
+            });
+
+        var artifact = Seal(store, "sensitive invocation output");
+
+        Assert.True(artifact.Success);
+        Assert.True(writeStarted);
+        Assert.Equal(
+            "sensitive invocation output",
+            store.Read(artifact.Handle!, 0, OutputStore.MaximumReadBytes).Text);
     }
 
     [Fact]
@@ -383,6 +644,7 @@ public sealed class OutputStoreTests : IDisposable
             Assert.Contains("native diagnostic", read.Text, StringComparison.Ordinal);
             Assert.Contains("[errors]", read.Text, StringComparison.Ordinal);
             Assert.Contains("[warnings]", read.Text, StringComparison.Ordinal);
+            AssertNoNamedArtifacts(store);
         }
     }
 
@@ -393,8 +655,11 @@ public sealed class OutputStoreTests : IDisposable
         long maximumAggregateBytes = 4096,
         TimeSpan? ttl = null,
         TimeSpan? retentionInterval = null,
-        Action<string>? artifactDeleteStartingForTests = null,
-        int maximumRetainedArtifacts = 4096)
+        int maximumRetainedArtifacts = 4096,
+        Action<string>? artifactCreateStartingForTests = null,
+        Action<string>? artifactWriteStartingForTests = null,
+        Action<string>? artifactUnlinkIdentityVerifiedForTests = null,
+        Action? artifactPublishingClaimedForTests = null)
     {
         var root = Path.Combine(
             Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
@@ -410,8 +675,12 @@ public sealed class OutputStoreTests : IDisposable
             maximumSessionBytes,
             maximumAggregateBytes,
             clock,
-            artifactDeleteStartingForTests,
-            maximumRetainedArtifacts));
+            ArtifactDeleteStartingForTests: null,
+            MaximumRetainedArtifacts: maximumRetainedArtifacts,
+            ArtifactCreateStartingForTests: artifactCreateStartingForTests,
+            ArtifactWriteStartingForTests: artifactWriteStartingForTests,
+            ArtifactUnlinkIdentityVerifiedForTests: artifactUnlinkIdentityVerifiedForTests,
+            ArtifactPublishingClaimedForTests: artifactPublishingClaimedForTests));
     }
 
     private static OutputSealResult Seal(OutputStore store, string text, string sessionAlias = "default")
@@ -419,13 +688,29 @@ public sealed class OutputStoreTests : IDisposable
         Assert.True(store.TryReserve(sessionAlias, out var reservation, out var failure), failure);
         using (reservation)
         {
-            return reservation!.Seal(new OutputArtifactContent(
+            var result = reservation!.Seal(new OutputArtifactContent(
                 text,
                 [],
                 [],
                 [],
                 null,
                 OutputProvenance.PowerShellObjects));
+            if (result.Success) AssertNoNamedArtifacts(store);
+            return result;
         }
     }
+
+    private static void AssertNoNamedArtifacts(OutputStore store) =>
+        Assert.Empty(Directory.GetFiles(store.RootPathForTests));
+
+    [DllImport(
+        "kernel32.dll",
+        EntryPoint = "CreateHardLinkW",
+        CharSet = CharSet.Unicode,
+        SetLastError = true)]
+    [return: MarshalAs(UnmanagedType.Bool)]
+    private static extern bool CreateHardLink(
+        string fileName,
+        string existingFileName,
+        IntPtr securityAttributes);
 }

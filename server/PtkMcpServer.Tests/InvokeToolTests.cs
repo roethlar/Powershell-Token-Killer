@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Text.RegularExpressions;
 using PtkMcpServer.Tools;
 using PtkRtkTestFixture;
 
@@ -16,11 +17,47 @@ public sealed class InvokeToolTests : IDisposable
     private readonly JobManager _jobs = new(
         Path.Combine(Path.GetTempPath(), "ptk-invoke-jobs-" + Guid.NewGuid().ToString("N")));
     private readonly RawUsageCounter _rawUsage = new();
+    private readonly List<string> _outputRoots = [];
 
     public void Dispose()
     {
         _host.Dispose();
         _jobs.Dispose();
+        foreach (var root in _outputRoots)
+        {
+            try { Directory.Delete(root, recursive: true); }
+            catch { }
+        }
+    }
+
+    private OutputStore CreateOutputStore(
+        Action<string>? artifactCreateStartingForTests = null,
+        Action? reservationStartingForTests = null)
+    {
+        var root = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            ".ptk",
+            "invoke-output-tests",
+            Guid.NewGuid().ToString("N"));
+        _outputRoots.Add(root);
+        return new OutputStore(new OutputStoreOptions(
+            root,
+            TimeSpan.FromMinutes(15),
+            TimeSpan.FromHours(1),
+            MaximumArtifactBytes: 2 * 1024 * 1024,
+            MaximumSessionBytes: 4 * 1024 * 1024,
+            MaximumAggregateBytes: 8 * 1024 * 1024,
+            ArtifactCreateStartingForTests: artifactCreateStartingForTests,
+            ReservationStartingForTests: reservationStartingForTests));
+    }
+
+    private static string AssertSingleRecoveryHandle(string response)
+    {
+        var handles = Regex.Matches(response, @"ptko_[A-Za-z0-9_-]+")
+            .Select(match => match.Value)
+            .Distinct(StringComparer.Ordinal)
+            .ToArray();
+        return Assert.Single(handles);
     }
 
     private static RtkExecutableIdentity? ResolveFixtureRtkIdentity(
@@ -49,6 +86,556 @@ public sealed class InvokeToolTests : IDisposable
         var text = await InvokeTool.Invoke(_host, _jobs, _rawUsage, "$warm + 1", CancellationToken.None);
 
         Assert.Contains("42", text);
+    }
+
+    [Fact]
+    public async Task PowerShell_capture_shapes_and_recovers_the_same_single_execution()
+    {
+        using var store = CreateOutputStore();
+        await _host.InvokeAsync(
+            "$global:ptkCaptureCount = 0",
+            raw: true,
+            route: "pwsh");
+        var script =
+            "$global:ptkCaptureCount++; $id = [guid]::NewGuid().ToString('N'); " +
+            "1..41 | ForEach-Object { " +
+            "$token = if ($_ -eq 41) { \"$id|RAW_ONLY_ROW_41\" } else { \"$id|ROW_$('{0:D2}' -f $_)\" }; " +
+            "[pscustomobject]@{ Token = $token } }";
+
+        var response = await InvokeTool.Invoke(
+            _host,
+            _jobs,
+            _rawUsage,
+            script,
+            CancellationToken.None,
+            route: "pwsh",
+            outputStore: store);
+
+        Assert.Contains("objects: 41", response, StringComparison.Ordinal);
+        Assert.DoesNotMatch(
+            @"Ptk\.Detached\..+\.[0-9a-f]{32}",
+            response);
+        Assert.DoesNotContain("RAW_ONLY_ROW_41", response, StringComparison.Ordinal);
+        var executionId = Regex.Match(response, @"([0-9a-f]{32})\|ROW_").Groups[1].Value;
+        Assert.NotEmpty(executionId);
+        var handle = AssertSingleRecoveryHandle(response);
+        var status = store.Status(handle);
+        Assert.Equal(OutputArtifactState.Available, status.State);
+        Assert.True(status.Complete);
+        Assert.Equal(OutputProvenance.PowerShellObjects, status.Provenance);
+        var recovered = OutputTool.Output(
+            store,
+            handle,
+            maxBytes: OutputStore.MaximumReadBytes);
+        Assert.Contains($"{executionId}|RAW_ONLY_ROW_41", recovered, StringComparison.Ordinal);
+
+        var count = await _host.InvokeAsync(
+            "$global:ptkCaptureCount",
+            raw: true,
+            route: "pwsh");
+        Assert.Equal("1", count.Output.Trim());
+    }
+
+    [Fact]
+    public async Task Direct_foreground_text_returns_a_working_same_invocation_handle()
+    {
+        using var store = CreateOutputStore();
+        var script =
+            "Write-Warning 'CAPTURED_WARNING'; " +
+            "Write-Error 'CAPTURED_ERROR' -ErrorAction Continue; " +
+            "1..700 | ForEach-Object { 'DIRECT_ROW_{0:D3}' -f $_ }; " +
+            NativeStderr("CAPTURED_STDERR", exit: 7);
+
+        var response = await InvokeTool.Invoke(
+            _host,
+            _jobs,
+            _rawUsage,
+            script,
+            CancellationToken.None,
+            route: "pwsh",
+            outputStore: store);
+
+        Assert.Contains("lines elided", response, StringComparison.Ordinal);
+        Assert.DoesNotContain("DIRECT_ROW_350", response, StringComparison.Ordinal);
+        Assert.Contains("[stderr]", response, StringComparison.Ordinal);
+        Assert.Contains("CAPTURED_STDERR", response, StringComparison.Ordinal);
+        Assert.Contains("[exit] 7", response, StringComparison.Ordinal);
+        Assert.Contains("[errors]", response, StringComparison.Ordinal);
+        Assert.Contains("CAPTURED_ERROR", response, StringComparison.Ordinal);
+        Assert.Contains("[warnings]", response, StringComparison.Ordinal);
+        Assert.Contains("CAPTURED_WARNING", response, StringComparison.Ordinal);
+        Assert.Single(Regex.Matches(response, "CAPTURED_STDERR"));
+        Assert.Single(Regex.Matches(response, "CAPTURED_ERROR"));
+        Assert.Single(Regex.Matches(response, "CAPTURED_WARNING"));
+        Assert.Single(Regex.Matches(response, @"\[exit\] 7"));
+        var handle = AssertSingleRecoveryHandle(response);
+        Assert.Contains(
+            $"lines elided - recovery=available: ptk_output handle={handle}",
+            response,
+            StringComparison.Ordinal);
+        Assert.EndsWith(
+            $"recovery=available: ptk_output handle={handle}",
+            response,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            "recovery=unavailable: output capture unavailable",
+            response,
+            StringComparison.Ordinal);
+        var status = store.Status(handle);
+        Assert.Equal(OutputArtifactState.Available, status.State);
+        Assert.True(status.Complete);
+        Assert.Equal(OutputProvenance.PowerShellObjects, status.Provenance);
+        var recovered = OutputTool.Output(
+            store,
+            handle,
+            maxBytes: OutputStore.MaximumReadBytes);
+        Assert.Contains("DIRECT_ROW_350", recovered, StringComparison.Ordinal);
+        Assert.Contains("[stderr]", recovered, StringComparison.Ordinal);
+        Assert.Contains("CAPTURED_STDERR", recovered, StringComparison.Ordinal);
+        Assert.Contains("[exit] 7", recovered, StringComparison.Ordinal);
+        Assert.Contains("[errors]", recovered, StringComparison.Ordinal);
+        Assert.Contains("CAPTURED_ERROR", recovered, StringComparison.Ordinal);
+        Assert.Contains("[warnings]", recovered, StringComparison.Ordinal);
+        Assert.Contains("CAPTURED_WARNING", recovered, StringComparison.Ordinal);
+        Assert.Single(Regex.Matches(recovered, "CAPTURED_STDERR"));
+        Assert.Single(Regex.Matches(recovered, "CAPTURED_ERROR"));
+        Assert.Single(Regex.Matches(recovered, "CAPTURED_WARNING"));
+    }
+
+    [Fact]
+    public async Task Interleaved_streams_are_drained_once_into_the_same_artifact()
+    {
+        using var store = CreateOutputStore();
+        using var capture = new ForegroundOutputCapture(store);
+        var script =
+            "1..96 | ForEach-Object { " +
+            "'INTERLEAVED_OUTPUT_{0:D3}' -f $_; " +
+            "Write-Error ('INTERLEAVED_ERROR_{0:D3}' -f $_) -ErrorAction Continue; " +
+            "Write-Warning ('INTERLEAVED_WARNING_{0:D3}' -f $_) }; " +
+            NativeStderr("INTERLEAVED_STDERR", exit: 9);
+
+        var result = await _host.InvokeWithOutputCaptureAsync(
+            script,
+            capture,
+            route: "pwsh");
+
+        Assert.True(result.Success, string.Join(Environment.NewLine, result.Errors));
+        Assert.Equal(9, result.ExitCode);
+        Assert.Equal(
+            96,
+            result.Errors.Count(error =>
+                error.Contains("INTERLEAVED_ERROR_", StringComparison.Ordinal)));
+        Assert.Equal(
+            96,
+            result.Warnings.Count(warning =>
+                warning.Contains("INTERLEAVED_WARNING_", StringComparison.Ordinal)));
+        Assert.Single(
+            Assert.IsType<string[]>(result.Stderr),
+            line => line.Contains("INTERLEAVED_STDERR", StringComparison.Ordinal));
+        var handle = Assert.IsType<string>(result.OutputRecovery?.Handle);
+        var status = store.Status(handle);
+        Assert.Equal(OutputArtifactState.Available, status.State);
+        Assert.True(status.Complete);
+        var recovered = OutputTool.Output(
+            store,
+            handle,
+            maxBytes: OutputStore.MaximumReadBytes);
+        Assert.Equal(96, Regex.Matches(recovered, @"INTERLEAVED_OUTPUT_\d{3}").Count);
+        Assert.Equal(96, Regex.Matches(recovered, @"INTERLEAVED_ERROR_\d{3}").Count);
+        Assert.Equal(96, Regex.Matches(recovered, @"INTERLEAVED_WARNING_\d{3}").Count);
+        Assert.Single(Regex.Matches(recovered, "INTERLEAVED_STDERR"));
+        Assert.Contains("[exit] 9", recovered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Empty_and_terminating_output_still_seal_complete_artifacts()
+    {
+        using var store = CreateOutputStore();
+        using (var emptyCapture = new ForegroundOutputCapture(store))
+        {
+            var empty = await _host.InvokeWithOutputCaptureAsync(
+                "$null",
+                emptyCapture,
+                route: "pwsh");
+
+            Assert.True(empty.Success, string.Join(Environment.NewLine, empty.Errors));
+            Assert.Equal(string.Empty, empty.Output.Trim());
+            var emptyHandle = Assert.IsType<string>(empty.OutputRecovery?.Handle);
+            var emptyStatus = store.Status(emptyHandle);
+            Assert.Equal(OutputArtifactState.Available, emptyStatus.State);
+            Assert.True(emptyStatus.Complete);
+        }
+
+        using var terminatingCapture = new ForegroundOutputCapture(store);
+        var terminating = await _host.InvokeWithOutputCaptureAsync(
+            "throw 'TERMINATING_EMPTY_CAPTURE'",
+            terminatingCapture,
+            route: "pwsh");
+
+        Assert.False(terminating.Success);
+        Assert.Equal(string.Empty, terminating.Output);
+        Assert.Contains(
+            terminating.Errors,
+            error => error.Contains("TERMINATING_EMPTY_CAPTURE", StringComparison.Ordinal));
+        var terminatingHandle = Assert.IsType<string>(terminating.OutputRecovery?.Handle);
+        var terminatingStatus = store.Status(terminatingHandle);
+        Assert.Equal(OutputArtifactState.Available, terminatingStatus.State);
+        Assert.True(terminatingStatus.Complete);
+        var recovered = OutputTool.Output(
+            store,
+            terminatingHandle,
+            maxBytes: OutputStore.MaximumReadBytes);
+        Assert.Contains("[errors]", recovered, StringComparison.Ordinal);
+        Assert.Contains("TERMINATING_EMPTY_CAPTURE", recovered, StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Output_store_seal_failure_does_not_rerun_or_advertise_a_handle()
+    {
+        var createAttempts = 0;
+        using var store = CreateOutputStore(_ =>
+        {
+            createAttempts++;
+            throw new IOException("injected artifact creation failure");
+        });
+        await _host.InvokeAsync(
+            "$global:ptkSealFailureCount = 0",
+            raw: true,
+            route: "pwsh");
+        var script =
+            "$global:ptkSealFailureCount++; " +
+            "1..41 | ForEach-Object { [pscustomobject]@{ Row = $_ } }";
+
+        var response = await InvokeTool.Invoke(
+            _host,
+            _jobs,
+            _rawUsage,
+            script,
+            CancellationToken.None,
+            route: "pwsh",
+            outputStore: store);
+
+        Assert.Equal(1, createAttempts);
+        Assert.Contains("objects: 41", response, StringComparison.Ordinal);
+        Assert.Contains(
+            "recovery=unavailable: output capture unavailable; command was not rerun",
+            response,
+            StringComparison.Ordinal);
+        Assert.DoesNotContain("ptko_", response, StringComparison.Ordinal);
+        Assert.Empty(Directory.GetFiles(store.RootPathForTests));
+        Assert.True(
+            store.TryReserve("default", out var firstReservation, out var firstFailure),
+            firstFailure);
+        Assert.True(
+            store.TryReserve("default", out var secondReservation, out var secondFailure),
+            secondFailure);
+        firstReservation!.Dispose();
+        secondReservation!.Dispose();
+        var count = await _host.InvokeAsync(
+            "$global:ptkSealFailureCount",
+            raw: true,
+            route: "pwsh");
+        Assert.Equal("1", count.Output.Trim());
+    }
+
+    [Fact]
+    public async Task Slow_output_reservation_is_single_flight_bounded_and_canceled_late()
+    {
+        using var reserveEntered = new ManualResetEventSlim();
+        using var releaseReserve = new ManualResetEventSlim();
+        var reserveAttempts = 0;
+        using var store = CreateOutputStore(
+            reservationStartingForTests: () =>
+            {
+                if (Interlocked.Increment(ref reserveAttempts) != 1) return;
+                reserveEntered.Set();
+                releaseReserve.Wait();
+            });
+        _host.OutputSealLimitForTests = TimeSpan.FromMilliseconds(100);
+        await _host.InvokeAsync(
+            "$global:ptkSlowReserveCount = 0",
+            raw: true,
+            route: "pwsh");
+
+        try
+        {
+            var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+            var firstResponse = await InvokeTool.Invoke(
+                _host,
+                _jobs,
+                _rawUsage,
+                "$global:ptkSlowReserveCount++; 'FIRST_WITHOUT_CAPTURE'",
+                CancellationToken.None,
+                route: "pwsh",
+                outputStore: store);
+            var secondResponse = await InvokeTool.Invoke(
+                _host,
+                _jobs,
+                _rawUsage,
+                "$global:ptkSlowReserveCount++; 'SECOND_WITHOUT_CAPTURE'",
+                CancellationToken.None,
+                route: "pwsh",
+                outputStore: store);
+            stopwatch.Stop();
+
+            Assert.True(reserveEntered.IsSet);
+            Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), stopwatch.Elapsed.ToString());
+            Assert.Equal(1, Volatile.Read(ref reserveAttempts));
+            Assert.Contains("FIRST_WITHOUT_CAPTURE", firstResponse, StringComparison.Ordinal);
+            Assert.Contains("SECOND_WITHOUT_CAPTURE", secondResponse, StringComparison.Ordinal);
+            Assert.DoesNotContain("ptko_", firstResponse, StringComparison.Ordinal);
+            Assert.DoesNotContain("ptko_", secondResponse, StringComparison.Ordinal);
+            Assert.Contains(
+                "recovery=unavailable: output capture unavailable; command was not rerun",
+                firstResponse,
+                StringComparison.Ordinal);
+
+            releaseReserve.Set();
+            OutputCaptureReservation? first = null;
+            OutputCaptureReservation? second = null;
+            try
+            {
+                Assert.True(
+                    SpinWait.SpinUntil(() =>
+                    {
+                        first?.Dispose();
+                        second?.Dispose();
+                        first = null;
+                        second = null;
+                        if (!store.TryReserve("default", out first, out _)) return false;
+                        if (store.TryReserve("default", out second, out _)) return true;
+                        first!.Dispose();
+                        first = null;
+                        return false;
+                    }, TimeSpan.FromSeconds(5)),
+                    "The late canceled reservation did not restore full capacity.");
+            }
+            finally
+            {
+                first?.Dispose();
+                second?.Dispose();
+            }
+
+            Assert.Empty(Directory.GetFiles(store.RootPathForTests));
+            var count = await _host.InvokeAsync(
+                "$global:ptkSlowReserveCount",
+                raw: true,
+                route: "pwsh");
+            Assert.Equal("2", count.Output.Trim());
+        }
+        finally
+        {
+            releaseReserve.Set();
+            _host.OutputSealLimitForTests = TimeSpan.FromSeconds(5);
+        }
+    }
+
+    [Fact]
+    public async Task Slow_output_store_seal_is_bounded_and_never_reruns()
+    {
+        using var sealEntered = new ManualResetEventSlim();
+        using var releaseSeal = new ManualResetEventSlim();
+        using var sealHookReturned = new ManualResetEventSlim();
+        using var store = CreateOutputStore(_ =>
+        {
+            sealEntered.Set();
+            try { releaseSeal.Wait(); }
+            finally { sealHookReturned.Set(); }
+        });
+        _host.OutputSealLimitForTests = TimeSpan.FromSeconds(2);
+        await _host.InvokeAsync(
+            "$global:ptkSlowSealCount = 0",
+            raw: true,
+            route: "pwsh");
+
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+        OutputCaptureReservation? firstReservation = null;
+        OutputCaptureReservation? secondReservation = null;
+        try
+        {
+            var response = await InvokeTool.Invoke(
+                _host,
+                _jobs,
+                _rawUsage,
+                "$global:ptkSlowSealCount++; 'SEALED_OUTPUT'",
+                CancellationToken.None,
+                route: "pwsh",
+                timeoutSeconds: 1,
+                outputStore: store);
+            stopwatch.Stop();
+
+            Assert.True(sealEntered.IsSet);
+            Assert.True(stopwatch.Elapsed < TimeSpan.FromSeconds(2), stopwatch.Elapsed.ToString());
+            Assert.Contains("SEALED_OUTPUT", response, StringComparison.Ordinal);
+            Assert.Contains(
+                "recovery=unavailable: output capture unavailable; command was not rerun",
+                response,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain("ptko_", response, StringComparison.Ordinal);
+            Assert.DoesNotContain(
+                "call budget expired before output shaping",
+                response,
+                StringComparison.OrdinalIgnoreCase);
+            var count = await _host.InvokeAsync(
+                "$global:ptkSlowSealCount",
+                raw: true,
+                route: "pwsh");
+            Assert.Equal("1", count.Output.Trim());
+
+            releaseSeal.Set();
+            Assert.True(
+                sealHookReturned.Wait(TimeSpan.FromSeconds(5)),
+                "The delayed output-store create hook did not return.");
+            var emptySince = DateTimeOffset.MinValue;
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () =>
+                    {
+                        if (Directory.GetFiles(store.RootPathForTests).Length != 0)
+                        {
+                            emptySince = DateTimeOffset.MinValue;
+                            return false;
+                        }
+
+                        var now = DateTimeOffset.UtcNow;
+                        if (emptySince == DateTimeOffset.MinValue) emptySince = now;
+                        return now - emptySince >= TimeSpan.FromMilliseconds(250);
+                    },
+                    TimeSpan.FromSeconds(5)),
+                "The timed-out seal left or later published an artifact file.");
+            Assert.True(
+                store.TryReserve("default", out firstReservation, out var firstFailure),
+                firstFailure);
+            Assert.True(
+                store.TryReserve("default", out secondReservation, out var secondFailure),
+                secondFailure);
+            Assert.Empty(Directory.GetFiles(store.RootPathForTests));
+        }
+        finally
+        {
+            releaseSeal.Set();
+            firstReservation?.Dispose();
+            secondReservation?.Dispose();
+            _host.OutputSealLimitForTests = TimeSpan.FromSeconds(5);
+        }
+    }
+
+    [Fact]
+    public async Task Timeout_seals_the_emitted_prefix_as_an_incomplete_surviving_artifact()
+    {
+        using var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(60))
+        {
+            RtkIdentityOverrideForTests = ResolveFixtureRtkIdentity,
+        };
+        using var store = CreateOutputStore();
+        var sentinel = Path.Combine(
+            Path.GetTempPath(),
+            "ptk-timeout-sentinel-" + Guid.NewGuid().ToString("N"));
+        try
+        {
+            var warm = await host.InvokeAsync("'warm'", raw: true, route: "pwsh");
+            Assert.True(warm.Success, string.Join(Environment.NewLine, warm.Errors));
+            var escapedSentinel = sentinel.Replace("'", "''");
+            var response = await InvokeTool.Invoke(
+                host,
+                _jobs,
+                _rawUsage,
+                $"[IO.File]::AppendAllText('{escapedSentinel}', 'once'); " +
+                "'PREFIX_BEFORE_TIMEOUT'; Start-Sleep -Seconds 60",
+                CancellationToken.None,
+                route: "pwsh",
+                timeoutSeconds: 1,
+                outputStore: store);
+
+            Assert.Contains("timed out", response, StringComparison.OrdinalIgnoreCase);
+            Assert.Equal("once", File.ReadAllText(sentinel));
+            var handle = AssertSingleRecoveryHandle(response);
+            var status = OutputTool.Output(store, handle, action: "status");
+            Assert.Contains("state=incomplete", status, StringComparison.Ordinal);
+            Assert.Contains("complete=false", status, StringComparison.Ordinal);
+            Assert.Contains("detail=pipeline_timed_out", status, StringComparison.Ordinal);
+            var recovered = OutputTool.Output(
+                store,
+                handle,
+                maxBytes: OutputStore.MaximumReadBytes);
+            Assert.Contains("PREFIX_BEFORE_TIMEOUT", recovered, StringComparison.Ordinal);
+        }
+        finally
+        {
+            try { File.Delete(sentinel); }
+            catch { }
+        }
+    }
+
+    [Fact]
+    public async Task Caller_cancellation_seals_the_same_invocation_prefix_as_incomplete()
+    {
+        using var store = CreateOutputStore();
+        using var cancellation = new CancellationTokenSource();
+        var started = Path.Combine(
+            Path.GetTempPath(),
+            "ptk-cancel-started-" + Guid.NewGuid().ToString("N"));
+        var prefix = "PREFIX_BEFORE_CANCEL_" + Guid.NewGuid().ToString("N");
+        try
+        {
+            var setup = await _host.InvokeAsync(
+                "$global:ptkCancellationExecutionCount = 0",
+                raw: true,
+                route: "pwsh");
+            Assert.True(setup.Success, string.Join(Environment.NewLine, setup.Errors));
+
+            var escapedStarted = started.Replace("'", "''");
+            var invocation = InvokeTool.Invoke(
+                _host,
+                _jobs,
+                _rawUsage,
+                "$global:ptkCancellationExecutionCount++; " +
+                $"'{prefix}'; " +
+                $"[IO.File]::WriteAllText('{escapedStarted}', 'started'); " +
+                "while ($true) { Start-Sleep -Milliseconds 100 }",
+                cancellation.Token,
+                route: "pwsh",
+                outputStore: store);
+
+            Assert.True(
+                SpinWait.SpinUntil(
+                    () => File.Exists(started),
+                    TimeSpan.FromSeconds(5)),
+                "The cancellation probe did not reach its started sentinel.");
+            cancellation.Cancel();
+            var response = await invocation.WaitAsync(TimeSpan.FromSeconds(10));
+
+            Assert.Contains("canceled by the caller", response, StringComparison.OrdinalIgnoreCase);
+            var handle = AssertSingleRecoveryHandle(response);
+            Assert.Contains(
+                $"recovery=available: ptk_output handle={handle}",
+                response,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain("recovery=unavailable", response, StringComparison.Ordinal);
+
+            var status = OutputTool.Output(store, handle, action: "status");
+            Assert.Contains("state=incomplete", status, StringComparison.Ordinal);
+            Assert.Contains("complete=false", status, StringComparison.Ordinal);
+            Assert.Contains("detail=pipeline_canceled", status, StringComparison.Ordinal);
+            Assert.DoesNotContain("state=not_found", status, StringComparison.Ordinal);
+            var recovered = OutputTool.Output(
+                store,
+                handle,
+                maxBytes: OutputStore.MaximumReadBytes);
+            Assert.Contains(prefix, recovered, StringComparison.Ordinal);
+
+            var count = await _host.InvokeAsync(
+                "$global:ptkCancellationExecutionCount",
+                raw: true,
+                route: "pwsh");
+            Assert.Equal("1", count.Output.Trim());
+        }
+        finally
+        {
+            cancellation.Cancel();
+            try { File.Delete(started); }
+            catch { }
+        }
     }
 
     [Fact]
@@ -1410,6 +1997,46 @@ public sealed class InvokeToolTests : IDisposable
         finally
         {
             Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Seam_absent_rtk_route_reports_recovery_unavailable_without_a_handle()
+    {
+        var body = OperatingSystem.IsWindows()
+            ? ">>\"%PTK_RTK_TEST_LOG%\" echo %*\necho RTKROUTE %*\nexit /b 0"
+            : "printf '%s\\n' \"$*\" >> \"$PTK_RTK_TEST_LOG\"\necho RTKROUTE %*\nexit 0";
+        var (dir, stub) = CreateRtkStub(body);
+        var invocationLog = Path.Combine(dir.FullName, "capture-invocations.log");
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        var savedLog = Environment.GetEnvironmentVariable("PTK_RTK_TEST_LOG");
+        using var store = CreateOutputStore();
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            Environment.SetEnvironmentVariable("PTK_RTK_TEST_LOG", invocationLog);
+            var text = await InvokeTool.Invoke(
+                _host,
+                _jobs,
+                _rawUsage,
+                "git status",
+                CancellationToken.None,
+                outputStore: store);
+
+            Assert.Contains("RTKROUTE git status", text, StringComparison.Ordinal);
+            Assert.Contains(
+                "recovery=unavailable: rtk capture unsupported",
+                text,
+                StringComparison.Ordinal);
+            Assert.DoesNotContain("ptko_", text, StringComparison.Ordinal);
+            Assert.Empty(Directory.GetFiles(store.RootPathForTests));
+            Assert.Equal(["git status"], File.ReadAllLines(invocationLog));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            Environment.SetEnvironmentVariable("PTK_RTK_TEST_LOG", savedLog);
             dir.Delete(recursive: true);
         }
     }

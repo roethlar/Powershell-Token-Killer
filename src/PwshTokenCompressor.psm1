@@ -287,10 +287,31 @@ function Compress-PtcService {
     Join-PtcLines (@("services: {0} ({1})" -f $items.Count, ($status -join ', ')) + (Format-PtcTable -Rows $rows -Properties @('Status', 'Name', 'DisplayName') -MaxItems $MaxItems))
 }
 
+function Get-PtcStableTypeName {
+    param(
+        [AllowNull()][object]$InputObject,
+        [AllowNull()][string]$DetachedTypeNonce
+    )
+
+    $typeName = [string]$InputObject.PSObject.TypeNames[0]
+    if ($DetachedTypeNonce -cmatch '^[0-9a-f]{32}$') {
+        $detachedType = [regex]::Match(
+            $typeName,
+            '^Ptk\.Detached\.(.+)\.([0-9a-f]{32})$',
+            [System.Text.RegularExpressions.RegexOptions]::CultureInvariant)
+        if ($detachedType.Success -and
+            $detachedType.Groups[2].Value -ceq $DetachedTypeNonce) {
+            return $detachedType.Groups[1].Value
+        }
+    }
+    $typeName
+}
+
 function Compress-PtcGenericObject {
     param(
         [object[]]$InputObject,
-        [int]$MaxItems = $script:DefaultMaxItems
+        [int]$MaxItems = $script:DefaultMaxItems,
+        [AllowNull()][string]$DetachedTypeNonce
     )
 
     $items = @($InputObject)
@@ -317,7 +338,9 @@ function Compress-PtcGenericObject {
     # (visible across warm-session calls).
     $first = $items[0]
     $props = @(Get-PtcDisplayProperties -Object $first)
-    $typeNames = @($items | Microsoft.PowerShell.Core\ForEach-Object { $_.PSObject.TypeNames[0] } | Microsoft.PowerShell.Utility\Select-Object -Unique)
+    $typeNames = @($items | Microsoft.PowerShell.Core\ForEach-Object {
+        Get-PtcStableTypeName -InputObject $_ -DetachedTypeNonce $DetachedTypeNonce
+    } | Microsoft.PowerShell.Utility\Select-Object -Unique)
     $header = if ($typeNames.Count -gt 1) {
         # Bound the type list too: a stream of many distinct types must not
         # grow the header line without limit (i1-1).
@@ -347,7 +370,8 @@ function Compress-PtcObject {
         [Parameter(ValueFromPipeline)]
         [AllowNull()]
         [object]$InputObject,
-        [int]$MaxItems = $script:DefaultMaxItems
+        [int]$MaxItems = $script:DefaultMaxItems,
+        [AllowNull()][string]$DetachedTypeNonce
     )
 
     begin {
@@ -375,7 +399,9 @@ function Compress-PtcObject {
         # legitimately absent on real objects is guarded conditionally instead:
         # DirectoryInfo has no Length, but a *file* without a known Length is a
         # projection whose size is unknown, not zero, so it goes generic.
-        $typeNames = @($array | Microsoft.PowerShell.Core\ForEach-Object { $_.PSObject.TypeNames[0] } | Microsoft.PowerShell.Utility\Select-Object -Unique)
+        $typeNames = @($array | Microsoft.PowerShell.Core\ForEach-Object {
+            Get-PtcStableTypeName -InputObject $_ -DetachedTypeNonce $DetachedTypeNonce
+        } | Microsoft.PowerShell.Utility\Select-Object -Unique)
         $allMatchType = {
             param([string[]]$Pattern)
             foreach ($typeName in $typeNames) {
@@ -422,7 +448,7 @@ function Compress-PtcObject {
             return
         }
 
-        Compress-PtcGenericObject -InputObject $array -MaxItems $MaxItems
+        Compress-PtcGenericObject -InputObject $array -MaxItems $MaxItems -DetachedTypeNonce $DetachedTypeNonce
     }
 }
 
@@ -1047,23 +1073,21 @@ function Get-PtcShellDialectFinding {
 # 2026-07-08, amending the Phase 2 never-truncate contract): a generous
 # head+tail window sized so real command output virtually never hits it —
 # the cap exists for the pathological case, a whole-file Get-Content landing
-# in context through a compression tool. Elision is always labeled and names
-# raw=true as what it is (shell-dialect plan D2): the recovery hatch for the
-# rare case the elided middle matters, never a standing invitation - the
-# marker lands mid-output at the exact moment raw is tempting.
+# in context through a compression tool. Elision is always labeled with the
+# caller-owned same-invocation recovery contract; the marker lands mid-output
+# at the exact moment the missing detail matters.
 function Limit-PtcPassthrough {
     param(
         [AllowNull()][string]$Text,
         [int]$MaxLines = $script:PtcPassthroughMaxLines,
         [int]$MaxChars = $script:PtcPassthroughMaxChars,
-        # The marker's recovery advice. The default speaks to the ptk_invoke
-        # context; callers shaping output whose recovery differs (ptk_job
-        # polls have no raw parameter - the recovery is the job's log file)
-        # pass their own hint, so the advice is composed BY the elision
+        # The marker's recovery advice. The default is explicitly unavailable;
+        # callers with a same-invocation artifact (or a job log) pass their
+        # context-specific recovery instruction, so the advice is composed BY the elision
         # itself and can never be false or missing (sd3-2..sd3-4: two
         # downstream inference heuristics both failed - ANSI stripping
         # shortens without eliding, near-boundary elision lengthens).
-        [string]$ElisionHint = 'rerun with raw=true only if the elided middle matters'
+        [string]$ElisionHint = 'recovery=unavailable: output capture unavailable; command was not rerun'
     )
 
     if ($null -eq $Text) { return '' }
@@ -1123,6 +1147,9 @@ function Compress-PtcOutput {
         [AllowNull()][string]$PinnedRtkPath,
         [AllowNull()][string]$PinnedRtkDigest,
         [AllowNull()][Nullable[System.IO.UnixFileMode]]$PinnedRtkUnixMode,
+        # Only the host's exact per-capture nonce authorizes stripping its
+        # Ptk.Detached.<category>.<nonce> transport wrapper from type names.
+        [AllowNull()][string]$DetachedTypeNonce,
         [switch]$EmitRoutingEnvelope
     )
 
@@ -1182,7 +1209,7 @@ function Compress-PtcOutput {
                 return (Limit-PtcPassthrough $text @limitArgs)
             }
 
-            return ($array | Compress-PtcObject -MaxItems $MaxItems)
+            return ($array | Compress-PtcObject -MaxItems $MaxItems -DetachedTypeNonce $DetachedTypeNonce)
         }
         catch {
             $raw = ($array | Microsoft.PowerShell.Utility\Out-String).TrimEnd()
