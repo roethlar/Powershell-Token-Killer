@@ -184,6 +184,38 @@ changed._
   archive were all removed after the battery. No persistent configuration or
   installed payload changed.
 
+#### Failed checkout validation — 2026-07-13
+
+Code head `40923784601bf8063d9461188b04be3940374c7d` is **not verified on
+Windows**. An exact `git archive` ZIP was uploaded to a collision-checked
+GUID-named path under `F:\dev`; the local and Windows copies matched SHA-256
+`CE5707231353BABCBA096E90076513B9532A7C0B1FE9C64F337A474D8110FF2E` before
+expansion.
+
+- `dotnet.exe test server/PtkMcpServer.slnx` passed 1,020/1,030 and failed the
+  following ten tests:
+  - `RtkProcessRunnerTests.Deadline_stops_the_started_root_without_retrying_it`
+    — the expected `starts.txt` marker did not exist.
+  - `RtkProcessRunnerTests.Direct_capture_preserves_stdout_stderr_and_nonzero_exit`
+    — captured stderr was `DIRECT_STDERR  ` rather than `DIRECT_STDERR`.
+  - `InvokeToolTests.Single_native_command_routes_through_rtk`
+  - `InvokeToolTests.Relative_rtk_override_is_bound_before_the_warm_cwd_changes`
+  - `InvokeToolTests.Rtk_routed_output_is_not_shaped_by_rtk_a_second_time`
+  - `InvokeToolTests.Authorization_observes_exact_rtk_preparation_before_exit_reset_and_execution`
+  - `InvokeToolTests.Rtk_capture_ignores_warm_native_error_preferences_and_preserves_error_state`
+  - `InvokeToolTests.Operator_pinned_rtk_identity_survives_warm_environment_poisoning`
+  - `InvokeToolTests.Rtk_install_nag_is_filtered_but_real_stderr_survives`
+  - `InvokeToolTests.Routed_command_exit_code_is_reported`
+- The eight `InvokeToolTests` failures all observed empty/no routed output from
+  the new Windows RTK fixture. Pester and the stdio handshake did not run after
+  the required .NET gate failed.
+- A preliminary validation-harness attempt stopped before expansion because it
+  used an unsupported `New-Item -LiteralPath` parameter; its `finally` cleanup
+  succeeded. The corrected harness produced the test evidence above.
+- The failed run's disposable checkout, uploaded archive, and local transfer
+  archive were confirmed removed. Existing repositories, installed payloads,
+  and persistent host configuration were unchanged.
+
 ## Disposable Ubuntu 26.04 ARM64 validation
 
 _Focused verification 2026-07-11 for the Slice 1 secure-storage implementation

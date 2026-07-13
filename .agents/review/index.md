@@ -1499,4 +1499,5 @@ guards exposed Windows stderr/timeout-marker defects and eight RTK-route
 integration guards returned empty/no routed output. Pester and handshake were
 correctly skipped after the required .NET gate failed. All owned local and
 remote disposable artifacts were removed. The earlier macOS fixed-SHA Claude
-acceptance remains historical evidence, not current branch readiness.
+acceptance remains historical evidence, not current branch readiness;
+canonical machine-level failure evidence is in `.agents/machines.md`.

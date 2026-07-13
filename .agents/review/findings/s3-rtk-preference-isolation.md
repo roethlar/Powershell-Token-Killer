@@ -147,4 +147,5 @@ Pester and handshake did not run after the required .NET gate failed. The
 remote checkout, uploaded archive, and local archive were all confirmed
 removed; installed payloads and persistent configuration were untouched. This
 platform result supersedes branch readiness but does not erase the historical
-macOS Claude acceptance above.
+macOS Claude acceptance above. Canonical machine-level failure evidence is in
+`.agents/machines.md`.
