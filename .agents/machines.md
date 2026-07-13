@@ -75,6 +75,23 @@ validation, not an installed-payload update._
   malformed prior hashes, noncanonical boot IDs, and empty intermediate
   segments.
 
+### Audited-harness Slice 3 checkout validation
+
+_Verified 2026-07-12 at fixed code head `669ce6e` in Claude's disposable
+worktree; this was checkout validation, not an installed-payload update._
+
+- The exact code head passed 1,010/1,010 .NET tests, 139 PowerShell module
+  tests with two platform skips, and the stdio handshake. The handshake build
+  had zero warnings.
+- Claude independently removed the positive mixed-guidance behavior and saw
+  exactly two focused guards fail, then removed the canonical `Set-Content`
+  identity/source checks and saw the noncanonical-sink guard fail. Both
+  restorations passed focused 9/9, left the exact head byte-clean, and the
+  disposable worktree was removed.
+- This checkout battery does not replace the later installed/OS-protected live
+  validation needed for executable check/start races, dynamic dependencies,
+  ACL/xattr mutation, and other properties a source snapshot cannot bind.
+
 ## `NETWATCH-01` — Michael's Windows machine
 
 _Verified 2026-07-11 for audited-session slice 0 at repo base `2a83723`._
@@ -147,6 +164,25 @@ not changed._
 - At `eb0060f`, the full .NET suite passed 455/455. Focused configuration/ACL
   and Schannel mTLS guards also passed. The exact Windows Pester and handshake
   checks were not rerun at that historical commit.
+
+### Audited-harness Slice 3 checkout validation
+
+_Verified 2026-07-12 at fixed code head `669ce6e` in a disposable copy under
+`F:\dev`; the installed Windows payload and existing repositories were not
+changed._
+
+- A `git archive` ZIP of the exact code head was transferred with strict host
+  key checking and verified on Windows at SHA-256
+  `d472a9a6e64b1dfc57168722a62e52cc25a05468a52c740e0b4a3d955e77f0bf`.
+- The full .NET suite passed 1,010/1,010; the PowerShell module suite passed
+  140 tests with one skip; and the stdio handshake passed with a zero-warning
+  build.
+- The passing .NET count is not live Windows Bash coverage where `/bin/bash`
+  is absent; the Darwin battery exercises the real Bash leg. Full live Windows
+  session checks remain the plan's later validation slice.
+- The GUID-named validation directory, uploaded archive, and local transfer
+  archive were all removed after the battery. No persistent configuration or
+  installed payload changed.
 
 ## Disposable Ubuntu 26.04 ARM64 validation
 

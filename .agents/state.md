@@ -23,8 +23,10 @@ short and update it when important repo facts change.
   and bind it to the canonical built-in `Set-Content`. Claude accepted fixed
   scope `f311fe2..669ce6e` with both mutation guards confirmed; the restored
   exact head passed 1,010/1,010 .NET tests, 139 Pester tests (2 platform skips),
-  and the stdio handshake on macOS. Cross-platform verification and the final
-  integrated Slice 3 fixed-SHA review remain.
+  and the stdio handshake on macOS. A SHA-verified Windows archive of the same
+  code head passed 1,010/1,010 .NET tests, 140 Pester tests (1 skip), and the
+  zero-warning handshake in a disposable checkout. The final integrated Slice
+  3 fixed-SHA review remains.
 - **Audited-harness Slice 2 is complete locally.** The final
   integrated code head `3d3739a` completes job/control audit, local-only and
   anchored OTLP export, evidence administration and retention, permanent
@@ -70,8 +72,7 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Run exact-head cross-platform verification for audited-harness Slice 3,
-   then the integrated fixed-SHA Claude reviewloop.
+1. Run the integrated fixed-SHA Claude reviewloop for audited-harness Slice 3.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.
