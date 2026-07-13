@@ -1412,7 +1412,7 @@ clean and removed.
 | s3-rtk-output-bounds | HIGH | Default RTK output bypasses ANSI cleanup and all passthrough bounds | `[x]` | `fix/s3-rtk-output-bounds` |
 | s3-block-fidelity | MEDIUM | Clean/dynamicparam blocks can be silently dropped by RTK routing | `[x]` | `fix/s3-block-fidelity` |
 | s3-background-operator | MEDIUM | A trailing background operator becomes synchronous RTK execution | `[x]` | `fix/s3-background-operator` |
-| s3-rtk-preference-isolation | HIGH | Warm native preferences can discard routed stdout and pollute `$Error` | `[~]` | `fix/s3-rtk-preference-isolation` |
+| s3-rtk-preference-isolation | HIGH | Warm native preferences can discard routed stdout and pollute `$Error` | `[x]` | `fix/s3-rtk-preference-isolation` |
 | s3-wrapper-context | MEDIUM | Context-changing wrappers are routed despite the exact-original contract | `[x]` | `fix/s3-wrapper-context` |
 | s3-using-statement-fidelity | MEDIUM | A top-level using statement can be omitted from routed execution | `[x]` | `fix/s3-using-statement-fidelity` |
 | s3-background-bash-parity | MEDIUM | Background Bash parity is assigned to later Slice 5 | `[-]` | |
@@ -1503,11 +1503,22 @@ acceptance remains historical evidence, not current branch readiness;
 canonical machine-level failure evidence is in `.agents/machines.md`.
 
 **s3-rtk-preference-isolation WINDOWS CORRECTIVE EXACT-ARCHIVE VALIDATION —
-PASSED, REVIEW PENDING** (`NETWATCH-01`), validated corrective head
+PASSED (PRE-REVIEW)** (`NETWATCH-01`), validated corrective head
 `c100ba199d9854f7171733d9950b26e2a8a397ab` from local/uploaded SHA-256
 `76F027844CC53919B8D2FCEE526940F9196A684337AA3BBFB0E798C5B67BF5A3`,
 2026-07-13T05:29:28Z. Removing fixture stream forwarding failed exactly the
 eight RTK-route integration guards; byte-exact restoration passed the full
 .NET/Pester/handshake battery. All disposable artifacts were removed.
 Canonical counts and machine caveats are in `.agents/machines.md`; a new
-fixed-SHA Claude verdict remains required.
+fixed-SHA Claude verdict was required and is recorded below.
+
+**s3-rtk-preference-isolation WINDOWS CORRECTION CLAUDE REVIEW — ACCEPTED**
+(Claude Code 2.1.207, model `claude-opus-4-8`, isolated macOS and Windows
+worktrees), reviewed head `64eb767a826da0c8177d9fcdd2fa1ea7033a1d73`
+against base `747358e9650c8cf21e95890bd827559f90395639`,
+`guard_confirmed=true`, 2026-07-13T05:42:02Z. Claude independently confirmed
+the range leaves production routing byte-identical, passed the macOS battery,
+and used a separately hashed exact-head Windows archive. Removing only fixture
+stream forwarding failed exactly the eight RTK-route guards; byte-exact
+restoration passed the full Windows .NET/Pester/handshake battery. All local
+and remote review artifacts were removed and the coder tree remained clean.

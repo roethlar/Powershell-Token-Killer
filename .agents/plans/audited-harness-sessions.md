@@ -24,9 +24,10 @@ individual corrections were accepted on macOS through code head `4092378`,
 but its first exact-archive Windows validation reopened
 `s3-rtk-preference-isolation`. Its corrective head `c100ba1` now passes the
 load-bearing Windows exact-archive battery; canonical evidence is in
-`.agents/review/index.md` and `.agents/machines.md`. Re-review that finding,
-then repeat the integrated fixed-SHA review before Slice 3 completion. No push
-was performed or authorized.
+`.agents/review/index.md` and `.agents/machines.md`. The fixed-SHA correction
+review is accepted at `64eb767`; all individual findings are verified, and the
+repeated integrated fixed-SHA review remains before Slice 3 completion. No
+push was performed or authorized.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the

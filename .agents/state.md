@@ -31,8 +31,9 @@ short and update it when important repo facts change.
   validation reopened `s3-rtk-preference-isolation` with ten .NET failures.
   Corrective head `c100ba1` passes a load-bearing exact-archive Windows proof.
   Canonical finding/review and platform evidence is in
-  `.agents/review/index.md` and `.agents/machines.md`; fixed-SHA finding
-  re-review and the repeated integrated review remain.
+  `.agents/review/index.md` and `.agents/machines.md`. Claude accepted the
+  fixed-SHA correction review at `64eb767`; all individual findings are
+  verified, and the repeated integrated review remains.
 - **Audited-harness Slice 2 is complete locally.** The final
   integrated code head `3d3739a` completes job/control audit, local-only and
   anchored OTLP export, evidence administration and retention, permanent
@@ -78,10 +79,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Run the fixed-SHA Claude re-review of the Windows-corrected
-   `s3-rtk-preference-isolation` finding, then repeat the integrated fixed-SHA
-   Claude reviewloop. Canonical finding and platform evidence is in
-   `.agents/review/index.md` and `.agents/machines.md`.
+1. Repeat the audited-harness Slice 3 integrated fixed-SHA Claude reviewloop.
+   Canonical finding and platform evidence is in `.agents/review/index.md` and
+   `.agents/machines.md`.
 2. Do not infer approval as a push go; push remains separately ask-first.
 3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before slice 4.

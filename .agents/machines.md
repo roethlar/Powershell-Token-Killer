@@ -237,6 +237,13 @@ changed._
   persistent configuration were unchanged. The checkout proof still does not
   replace later installed/OS-protected live validation for the recorded
   check/start and dependency caveats.
+- Claude independently repeated the exact-head proof at review head
+  `64eb767a826da0c8177d9fcdd2fa1ea7033a1d73` from archive SHA-256
+  `C3949B5474FE9427BBFEEE2767F95C8C6FCD7900F11524635CEB2028AC2D5874`.
+  The same eight-test mutation failed and byte-exact restoration passed the
+  full Windows battery. The reviewer corrected one no-effect cleanup-command
+  quoting error, then it and the coder independently confirmed zero remaining
+  `ptkrev-*` artifacts under `F:\dev`; no persistent host state changed.
 
 ## Disposable Ubuntu 26.04 ARM64 validation
 

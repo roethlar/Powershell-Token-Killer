@@ -2,7 +2,7 @@
 
 **Severity**: HIGH — ambient warm-session native error preferences can discard
 valid routed stdout and pollute persistent `$Error` state.
-**Status**: In progress
+**Status**: Verified
 **Branch**: `fix/s3-rtk-preference-isolation`
 **Commit**: `c100ba199d9854f7171733d9950b26e2a8a397ab`
 
@@ -112,8 +112,8 @@ produce an RTK plan when `raw=true`; that coupling remains implicit. The new
 Windows fixture and Windows/Legacy argument branches were statically reviewed
 on macOS. The first exact-archive Windows checkout validation reopened the
 finding with ten focused/integration failures; the corrective exact-head
-Windows proof now passes. A new fixed-SHA finding review is still required
-before the repeated integrated review.
+Windows proof now passes, and the accepted fixed-SHA correction review is
+recorded below. The repeated integrated review remains.
 
 ## Reviewer comments
 
@@ -165,3 +165,21 @@ deadline semantics. Exact-archive Windows validation of corrective head
 `76F027844CC53919B8D2FCEE526940F9196A684337AA3BBFB0E798C5B67BF5A3`, passed
 the load-bearing mutation and restored full battery, recorded
 2026-07-13T05:29:28Z. All disposable artifacts were confirmed removed.
+
+Claude Code 2.1.207 (`claude-opus-4-8`) reviewed
+`747358e9650c8cf21e95890bd827559f90395639..64eb767a826da0c8177d9fcdd2fa1ea7033a1d73`
+with `guard_confirmed=true` and verdict `accepted`, recorded
+2026-07-13T05:42:02Z. The reviewer confirmed the range changes no production
+RTK path, drains both fixture streams concurrently before flush/exit, preserves
+raw bytes, keeps the deadline assertions load-bearing, and strengthens the cwd
+marker. Its disposable macOS worktree passed 1,030/1,030 .NET, 139 Pester with
+two skips, and the zero-warning handshake.
+
+The reviewer independently archived the exact head at SHA-256
+`C3949B5474FE9427BBFEEE2767F95C8C6FCD7900F11524635CEB2028AC2D5874` and
+verified the same hash before Windows expansion. Removing only stream
+forwarding failed exactly the eight RTK-route guards (1,022/1,030); restoring
+`Program.cs` byte-exactly passed 1,030/1,030, 140 Pester with one skip, and the
+zero-warning handshake. Its worktree, archives, proof script, and remote
+checkout were removed, and independent cleanup probes found no remaining
+review artifacts or coder-tree change.
