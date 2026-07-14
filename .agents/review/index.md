@@ -2144,3 +2144,43 @@ the later worker/containment sub-slices. These are the approved next-layer
 obligations, not findings in this seam. This acceptance authorizes the next
 approved Slice 7 sub-slice; it does not authorize push, history rewriting, or
 landing.
+
+---
+
+**AUDITED-HARNESS SLICE 7C PLATFORM-NEUTRAL WORKER LIFECYCLE — ACCEPTED.**
+Claude Code 2.1.209 (model `claude-opus-4-8[1m]`, isolated disposable
+worktree) reviewed exact committed range
+`cfaee5fce1b4b59f1672f32fec969ce72582703c..56734e3ec7793d259cda5ae7e70ba1b0e78d0522`
+and returned the required structured `accepted` verdict with
+`guard_confirmed=true` at 2026-07-14T16:17:16Z. The range adds a
+platform-neutral lifecycle server over injected private streams: hello before
+read, strict initialize-first boot/ID/payload validation, one absolute startup
+deadline that includes scheduler queue time, explicit host-cancellation races,
+ready/shutdown correlation, stable protocol/transport/runtime exits, and
+exactly-once shutdown/disposal of every returned session lifetime. It does not
+add worker mode, stdio, process launch, containment, request dispatch, audit,
+or output-store capability.
+
+The reviewer independently repeated seven required mutations. Moving runtime
+construction back onto the protocol loop hid EOF; dropping buffered EOF
+admission constructed a runtime; weakening the delegate-side deadline check
+constructed after queue expiry; dropping late-factory drain leaked the
+returned lifetime; synchronous unguarded cancellation leaked an aggregate
+exception to the host; changing deadline equality published false ready; and
+returning canceled before cleanup left the ready lifetime undrained. Each
+named focused guard failed for its intended reason. Restoring the exact
+reviewed head returned 1,280/1,280 .NET tests, 141 Pester tests with two
+expected skips, the full stdio handshake, and `git diff --check` green.
+
+The reviewer recorded three nonblocking observations. Two `run.IsCompleted`
+cleanup probes are scheduling-sensitive in isolation, but the cleanup result
+classification test deterministically guards the same await. The capability
+reflection sweep checks the outer `WorkerServer` surface rather than nested
+types; no forbidden capability exists at this head, and later nested-state
+changes must preserve that source-level boundary. The post-ready loop is
+single-iteration until the next dispatcher sub-slice replaces it. None is a
+production defect in this range. The orchestrator independently parsed and
+matched the JSON `result` and `structured_output`, verified exit zero, exact
+base/head, literal guard confirmation, and clean coder/reviewer trees, then
+removed the disposable worktree. This acceptance authorizes the next approved
+Slice 7 sub-slice; it does not authorize push, history rewriting, or landing.

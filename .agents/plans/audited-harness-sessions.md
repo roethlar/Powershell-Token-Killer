@@ -47,8 +47,14 @@ mutation proofs and the full battery on 2026-07-14. Slice 7b code head
 `e70089f` adds the behavior-preserving tool-to-provider operations seam and
 separate disposable lifetime seam; Claude accepted exact range
 `2eca287..e70089f` with `guard_confirmed=true` after four independent mutation
-proofs and the full battery on 2026-07-14. Slice 7 continues with internal
-worker hosting and creation-time containment.
+proofs and the full battery on 2026-07-14. Slice 7c code head `56734e3` adds
+the platform-neutral worker lifecycle core: hello/initialize/ready/shutdown
+phases, strict identity and correlation, one absolute startup deadline,
+explicit host-cancellation races, and exactly-once owned-lifetime cleanup.
+Claude accepted exact range `cfaee5f..56734e3` with
+`guard_confirmed=true` after seven independent mutation proofs and the full
+battery on 2026-07-14. Slice 7 continues with production worker launch and
+creation-time containment.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
