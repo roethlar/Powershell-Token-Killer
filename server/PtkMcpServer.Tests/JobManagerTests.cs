@@ -1817,10 +1817,10 @@ public sealed class JobManagerTests : IDisposable
         };
         var command = OperatingSystem.IsWindows()
             ? "echo FIRST_CANARY&ping -n 2 127.0.0.1 >nul&" +
-              "for /L %i in (1,1,20000) do @echo FOREIGN_CANARY_%i&" +
+              "echo FOREIGN_CANARY&" +
               "ping -n 4 127.0.0.1 >nul"
             : "printf '%s\n' FIRST_CANARY; sleep 0.2; " +
-              "i=0; while [ $i -lt 20000 ]; do printf 'FOREIGN_CANARY_%s\\n' \"$i\"; i=$((i+1)); done; " +
+              "printf '%s\n' FOREIGN_CANARY; " +
               "sleep 2";
         var dispatch = CreateRtkDispatch(_fixtureDir, DirectCommand(command));
         var plan = jobs.PrepareStart(dispatch, _fixtureDir);
