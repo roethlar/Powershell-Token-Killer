@@ -294,3 +294,47 @@ prototype the smallest possible .NET stdio MCP server exposing one tool
 preconnect, returning `Compress-PtcObject` output. (3) Only then add the module map,
 `ptk_reset`, and the router shaping layer. Each step is a separate authorized change
 requiring its own go.
+
+### OPEN (2026-07-14): Whether PTK should ship a mini SIEM receiver for external audit custody
+
+**Status:** Open — explicitly appended by the owner to the end of the decision
+queue. No implementation is authorized, and this scoped addition does not
+release the hold on broader decision-log reconciliation.
+
+**Question:** When Microsoft Sentinel, Splunk, or another robust SIEM is
+unavailable, should PTK ship or maintain a small external receiver so anchored
+audit records leave both the PowerShell runspace and the PTK source machine,
+receive secure durable custody, and remain useful for basic investigation and
+alerting?
+
+**Current evidence:** PTK already exports one immutable core record at a time
+over authenticated OTLP/HTTP HTTPS and advances its checkpoint only after a
+valid nonrejecting acknowledgment. `server/AUDIT-EXPORT.md` makes the configured
+receiver the observable anchor boundary and requires durable commit under a
+separately administered principal before success. A same-user sidecar or an
+in-memory collector is not a meaningful anchor; a default in-memory
+OpenTelemetry pipeline therefore does not answer this question.
+
+**Options to assess:**
+
+1. Ship a PTK-maintained minimal OTLP receiver with durable-before-ack storage,
+   authentication, chain/event validation, bounded query, retention, and basic
+   alerts.
+2. Ship only a hardened deployment profile and validation harness for existing
+   lightweight components that together provide the same external durable
+   boundary.
+3. Ship no fallback receiver and require an independently operated SIEM or
+   durable OTLP service for anchored mode.
+
+**Acceptance questions before any build:** define the threat model and separate
+service identity; durable-before-`200` semantics; duplicate handling for PTK's
+at-least-once delivery; event-ID/hash-chain validation; crash, disk-full,
+backpressure, and restart behavior; mTLS or equivalent authentication; receiver
+host storage protection; retention and read authorization; minimum useful
+queries/alerts; upgrade/backup/recovery ownership; and the security patch burden
+created by exposing a network service.
+
+**Standing recommendation:** discovery first, not implementation. Compare the
+smallest existing durable OTLP deployment against a custom receiver using the
+criteria above. Build PTK-specific receiver code only if no supportable existing
+shape provides the required external boundary at acceptable operational cost.

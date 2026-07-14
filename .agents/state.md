@@ -141,7 +141,9 @@ short and update it when important repo facts change.
 - **`.agents/decisions.md` is UNDER HOLD** (owner, 2026-07-10: do not
   update it until the discussion is complete). The security reframe and RTK
   routing direction still need durable entries after the owner releases the
-  hold.
+  hold. On 2026-07-14 the owner explicitly authorized only appending the new
+  mini-SIEM receiver question to the end of its open queue; that scoped addition
+  does not release the broader hold.
 - **Release distribution remains approved work.** Slices 0-2 are landed;
   slice 3 is queued and `.github/workflows/release.yml` is still absent.
   The deliberately open hook-default choice blocks slice 4 only.
