@@ -18,9 +18,14 @@ Claude accepted exact range `ff42447..bbcb1b7` with
 battery on 2026-07-13. Slice 5c code head `c936866` makes polling and its
 audit facts provenance-aware; Claude accepted exact range
 `5d12205..c936866` with `guard_confirmed=true` after four independent
-mutation proofs and the full battery. Remaining Slice 5 production planning,
-operational fallback, output handles, and path-free recovery-interface wiring
-is next. No push was performed or authorized.
+mutation proofs and the full battery. Slice 5d code head `f7d5940`, with the
+platform-faithful guard correction at reviewed head `36e0f49`, adds cold PATH
+and PATHEXT resolution, target identity/revalidation, target-aware native
+argument mode, and cold-plan fidelity gates. Claude accepted exact range
+`43d1307..36e0f49` with `guard_confirmed=true` after an independent
+trailing-space mutation proof and the full coder battery. Remaining Slice 5
+production activation/fallback, output handles, and path-free
+recovery-interface wiring is next. No push was performed or authorized.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the

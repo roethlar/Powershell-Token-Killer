@@ -1799,3 +1799,34 @@ handle/path-free sub-slice lands. The new Windows fixture branches were
 reviewed statically on macOS and remain covered by the existing CI matrix.
 Acceptance authorizes the next approved Slice 5 sub-slice, not push or history
 rewriting.
+
+---
+
+**SLICE 5D COLD BACKGROUND PLANNING FIDELITY PRIMITIVES CLAUDE REVIEW —
+ACCEPTED** (Claude Code 2.1.207, model `claude-opus-4-8`, isolated disposable
+worktree), reviewed head `36e0f49fd7bc38a7af6f7fcb0b2263a49862295b`
+against base `43d1307f061904e0e6a54d6d71aa303ac59637cc`,
+`guard_confirmed=true`, 2026-07-14T01:29:43Z. The one-shot JSON envelope
+exited zero; its result matched the verdict schema, both fixed SHAs matched
+the dispatch, and Claude found no material defect in the cold planning
+primitives or the platform-faithful test correction.
+
+Claude independently changed `rawEntry.TrimStart()` to `rawEntry.Trim()`.
+The live-PowerShell PATH differential failed only for `trailing_space`, with
+12 resolver tests passing and one failing; exact restoration passed all 13
+resolver tests and left both index and worktree clean at the reviewed SHA.
+The coder's exact restored tree passed 1,173/1,173 .NET tests, 141 Pester
+tests with two platform skips, and the stdio handshake.
+
+Three reviewer comments were adjudicated as nonblocking. Windows CI remains
+load-bearing for live PATHEXT/candidate-order coverage. A case-only spelling
+change in a Windows target path can conservatively report target-resolution
+change because the target record uses ordinal path equality; this proves no
+start and selects the authorized exact-original fallback rather than changing
+semantics. Claude also questioned case-insensitive PATH-directory
+deduplication on case-sensitive filesystems, but the coder rechecked upstream
+PowerShell: `CommandDiscovery.LookupPathCollection.Contains` and `IndexOf`
+unconditionally use `StringComparison.OrdinalIgnoreCase`, so PTK matches the
+behavior it models. Production invoke activation/revalidation/fallback and
+output-handle wiring remain the next approved Slice 5 scope. Acceptance does
+not authorize push or history rewriting.

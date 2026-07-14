@@ -15,11 +15,14 @@ short and update it when important repo facts change.
   access audit provenance-aware: seam-absent `RtkUnknown` output stays
   ANSI-cleaned and bounded without a second `rtk log`, carries explicit unavailable
   recovery, preserves source routing through cleanup failure, and leaves
-  legacy placeholder routing neutral. Claude accepted exact range
-  `5d12205..c936866` with `guard_confirmed=true`; canonical guard and
-  verification evidence is in `.agents/review/index.md`. Production invoke
-  planning/fallback, output handles, and path-free recovery remain unwired.
-  No push was performed or authorized.
+  legacy placeholder routing neutral. Sub-slice 5d code head `f7d5940`, with
+  its platform-faithful test correction at reviewed head `36e0f49`, adds
+  PowerShell-faithful cold PATH/PATHEXT resolution, frozen target identity and
+  revalidation, target-aware native argument mode, and conservative fidelity
+  gates. Claude accepted exact range `43d1307..36e0f49` with
+  `guard_confirmed=true`; canonical guard and verification evidence is in
+  `.agents/review/index.md`. Production invoke activation/fallback, output
+  handles, and path-free recovery remain unwired.
 - **Audited-harness Slice 4 is complete locally.** Final product
   head `76d4f0c` integrates the supervisor-owned output store and audited
   `ptk_output`, bounded two-stage same-invocation capture/recovery, anonymous
@@ -31,7 +34,6 @@ short and update it when important repo facts change.
   fast-forwarded to local `master`, content arrival was verified independently,
   and the feature branch was removed. Canonical review evidence is in
   `.agents/review/index.md`; host-specific evidence is in `.agents/machines.md`.
-  No push was performed or authorized.
 - **Audited-harness Slice 3 is complete locally.** Final
   integrated code head `b78d9c6` completes structured foreground routing,
   audited RTK/Bash dispatch, bounded preference-independent RTK capture,
