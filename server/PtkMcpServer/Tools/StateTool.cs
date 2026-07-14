@@ -22,7 +22,7 @@ public static class StateTool
         "busy line (active-call age, waiter count) instead of queueing, and " +
         "marks runspace-dependent details unavailable.")]
     public static Task<string> State(
-        SessionRuntime runtime,
+        ISessionOperations runtime,
         [Description("Also enumerate every installed module instead of only loaded ones.")]
         bool listAvailable = false,
         CancellationToken cancellationToken = default,
@@ -30,5 +30,5 @@ public static class StateTool
         => runtime.StateAsync(
             listAvailable,
             cancellationToken,
-            auditContext?.Current);
+            auditContext);
 }

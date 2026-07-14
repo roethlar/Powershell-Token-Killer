@@ -24,7 +24,7 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
     private AuditRuntimeResources? _resources;
     private AuditJournal? _journal;
     private AuditServerLifecycle? _lifecycle;
-    private SessionRuntime? _sessionRuntime;
+    private ISessionLifetime? _sessionLifetime;
     private Task? _stopTask;
     private TaskCompletionSource<bool>? _activeCallsDrained;
     private int _activeCalls;
@@ -270,9 +270,10 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
         }
     }
 
-    internal SessionRuntime RunSessionRuntimeAfterStarted(
-        Func<SessionRuntime> downstreamFactory)
-        => RunAfterStarted(downstreamFactory, runtime => _sessionRuntime = runtime);
+    internal TSession RunSessionAfterStarted<TSession>(
+        Func<TSession> downstreamFactory)
+        where TSession : class, ISessionLifetime
+        => RunAfterStarted(downstreamFactory, lifetime => _sessionLifetime = lifetime);
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -302,7 +303,7 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
                         : _activeCallsDrained!.Task;
                     _stopTask = StopCoreAsync(
                         activeCalls,
-                        _sessionRuntime,
+                        _sessionLifetime,
                         _lifecycle,
                         _resources);
                     return _stopTask;
@@ -348,13 +349,13 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
 
     private async Task StopCoreAsync(
         Task activeCalls,
-        SessionRuntime? sessionRuntime,
+        ISessionLifetime? sessionLifetime,
         AuditServerLifecycle? lifecycle,
         AuditRuntimeResources? resources)
     {
         await activeCalls.ConfigureAwait(false);
-        if (sessionRuntime is not null)
-            await sessionRuntime.ShutdownAsync().ConfigureAwait(false);
+        if (sessionLifetime is not null)
+            await sessionLifetime.ShutdownAsync().ConfigureAwait(false);
         if (resources is not null)
             await resources.StopExporterAsync().ConfigureAwait(false);
         lifecycle?.Stop();

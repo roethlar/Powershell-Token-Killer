@@ -16,10 +16,10 @@ public static class ResetTool
         "back clean), and kills running background jobs. Use when leaked state is " +
         "corrupting results; ptk_state shows what has drifted.")]
     public static Task<string> Reset(
-        SessionRuntime runtime,
+        ISessionOperations runtime,
         CancellationToken cancellationToken = default,
         AuditCallContextAccessor? auditContext = null)
         => runtime.ResetAsync(
             cancellationToken,
-            auditContext?.Current);
+            auditContext);
 }

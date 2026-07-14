@@ -34,7 +34,7 @@ public static class InvokeTool
         "attempts bounded tracked-root termination, preserves warm state, and reports " +
         "descendant and remote outcomes as unknown without retrying.")]
     public static Task<string> Invoke(
-        SessionRuntime runtime,
+        ISessionOperations runtime,
         [Description("The command to execute: a PowerShell script or a native command line (git, npm, ...).")] string script,
         CancellationToken cancellationToken,
         [Description(
@@ -74,6 +74,6 @@ public static class InvokeTool
             route,
             background,
             timeoutSeconds,
-            auditContext?.Current,
+            auditContext,
             outputStore);
 }

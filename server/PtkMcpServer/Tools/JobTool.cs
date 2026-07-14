@@ -21,7 +21,7 @@ public static class JobTool
         "are reported path-free, and seam-absent RTK jobs have no raw recovery. Jobs are " +
         "killed by ptk_reset and at server shutdown.")]
     public static Task<string> Job(
-        SessionRuntime runtime,
+        ISessionOperations runtime,
         [Description("status | output | kill | list")] string action,
         CancellationToken cancellationToken,
         [Description("Job id (required for status/output/kill).")] long id = 0,
@@ -32,5 +32,5 @@ public static class JobTool
             cancellationToken,
             id,
             offset,
-            auditContext?.Current);
+            auditContext);
 }

@@ -10,7 +10,7 @@ namespace PtkMcpServer.Sessions;
 /// Background jobs may retain only their designed terminal audit and output
 /// capabilities until completion.
 /// </summary>
-public sealed class SessionRuntime : IDisposable
+public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisposable
 {
     private readonly RunspaceHost _host;
     private readonly JobManager _jobs;
@@ -32,6 +32,56 @@ public sealed class SessionRuntime : IDisposable
         _jobs = jobs;
         _rawUsage = rawUsage;
     }
+
+    Task<string> ISessionOperations.InvokeAsync(
+        string script,
+        CancellationToken cancellationToken,
+        bool raw,
+        string route,
+        bool background,
+        int timeoutSeconds,
+        AuditCallContextAccessor? auditContext,
+        OutputStore? outputStore)
+        => InvokeAsync(
+            script,
+            cancellationToken,
+            raw,
+            route,
+            background,
+            timeoutSeconds,
+            auditContext?.Current,
+            outputStore);
+
+    Task<string> ISessionOperations.JobAsync(
+        string action,
+        CancellationToken cancellationToken,
+        long id,
+        long offset,
+        AuditCallContextAccessor? auditContext)
+        => JobAsync(
+            action,
+            cancellationToken,
+            id,
+            offset,
+            auditContext?.Current);
+
+    Task<string> ISessionOperations.StateAsync(
+        bool listAvailable,
+        CancellationToken cancellationToken,
+        AuditCallContextAccessor? auditContext)
+        => StateAsync(
+            listAvailable,
+            cancellationToken,
+            auditContext?.Current);
+
+    Task<string> ISessionOperations.ResetAsync(
+        CancellationToken cancellationToken,
+        AuditCallContextAccessor? auditContext)
+        => ResetAsync(
+            cancellationToken,
+            auditContext?.Current);
+
+    Task ISessionLifetime.ShutdownAsync() => ShutdownAsync();
 
     internal async Task ShutdownAsync()
     {

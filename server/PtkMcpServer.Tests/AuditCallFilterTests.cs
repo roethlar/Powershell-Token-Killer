@@ -152,7 +152,7 @@ public sealed class AuditCallFilterTests : IDisposable
         var result = await Invoke(fixture, Call("ptk_state"), cancellationToken =>
         {
             handlerCalled = true;
-            fixture.Services.GetRequiredService<SessionRuntime>();
+            fixture.Services.GetRequiredService<ISessionOperations>();
             return ValueTask.FromResult(Text("full state"));
         });
         blocker!.Release();
@@ -385,7 +385,7 @@ public sealed class AuditCallFilterTests : IDisposable
             .AddSingleton(accessor);
         if (includeToolDependencySentinels)
         {
-            collection.AddSingleton<SessionRuntime>(_ =>
+            collection.AddSingleton<ISessionOperations>(_ =>
             {
                 touches.RuntimeResolutions++;
                 throw new InvalidOperationException("Session runtime must not be resolved.");

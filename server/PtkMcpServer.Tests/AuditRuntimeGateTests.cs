@@ -493,7 +493,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         await runtime.StartAsync(CancellationToken.None);
         var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(5));
         var jobs = new JobManager(Path.Combine(root, "jobs"));
-        using var session = runtime.RunSessionRuntimeAfterStarted(() =>
+        using var session = runtime.RunSessionAfterStarted(() =>
             new SessionRuntime(host, jobs, new RawUsageCounter()));
         var callbackEntered = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -555,6 +555,45 @@ public sealed class AuditRuntimeGateTests : IDisposable
     }
 
     [Fact]
+    public async Task Shutdown_awaits_the_owned_session_through_its_lifetime_seam()
+    {
+        var root = NewRoot();
+        var options = CreateOptions(Path.Combine(root, "audit"));
+        var health = new AuditHealth(options);
+        using var runtime = CreateRuntime(options, health);
+        await runtime.StartAsync(CancellationToken.None);
+        var session = new BlockingSessionLifetime();
+
+        var tracked = runtime.RunSessionAfterStarted(() => session);
+
+        Assert.Same(session, tracked);
+        Task? stop = null;
+        try
+        {
+            stop = runtime.StopAsync(CancellationToken.None);
+            await session.ShutdownEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
+            Assert.Equal(1, session.ShutdownCount);
+            Assert.False(stop.IsCompleted, "server shutdown overtook the owned session lifetime");
+            session.ReleaseShutdown.TrySetResult();
+            await stop.WaitAsync(TimeSpan.FromSeconds(10));
+            runtime.Dispose();
+            Assert.Equal(1, session.ShutdownCount);
+        }
+        finally
+        {
+            session.ReleaseShutdown.TrySetResult();
+            if (stop is not null)
+            {
+                try { await stop.WaitAsync(TimeSpan.FromSeconds(10)); }
+                catch { /* preserve primary failure */ }
+            }
+        }
+        Assert.Equal(
+            ["server.started", "server.stopped"],
+            ReadEvents(options).Select(EventType));
+    }
+
+    [Fact]
     public async Task Shutdown_awaits_runspace_teardown_before_server_stopped()
     {
         var root = NewRoot();
@@ -568,7 +607,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
             TaskCreationOptions.RunContinuationsAsynchronously);
         var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(5));
         var jobs = new JobManager(Path.Combine(root, "jobs"));
-        using var session = runtime.RunSessionRuntimeAfterStarted(() =>
+        using var session = runtime.RunSessionAfterStarted(() =>
             new SessionRuntime(host, jobs, new RawUsageCounter()));
         host.TrackOwnedBackgroundWorkForTests(Task.Run(async () =>
         {
@@ -618,7 +657,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         var releaseShutdown = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
         JobManager? manager = null;
-        var construction = Task.Run(() => runtime.RunSessionRuntimeAfterStarted(() =>
+        var construction = Task.Run(() => runtime.RunSessionAfterStarted(() =>
         {
             factoryEntered.TrySetResult(true);
             releaseFactory.Task.GetAwaiter().GetResult();
@@ -819,7 +858,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
             ShutdownOverrideForTests = () =>
                 Task.FromException(new IOException("injected drain failure")),
         };
-        var session = runtime.RunSessionRuntimeAfterStarted(() =>
+        var session = runtime.RunSessionAfterStarted(() =>
             new SessionRuntime(host, jobs, new RawUsageCounter()));
         try
         {
@@ -849,7 +888,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         await runtime.StartAsync(CancellationToken.None);
         var host = new RunspaceHost(callTimeout: TimeSpan.FromSeconds(5));
         var jobs = new JobManager(Path.Combine(root, "jobs"));
-        var session = runtime.RunSessionRuntimeAfterStarted(() =>
+        var session = runtime.RunSessionAfterStarted(() =>
             new SessionRuntime(host, jobs, new RawUsageCounter()));
         host.TrackOwnedBackgroundWorkForTests(
             Task.FromException(new IOException("injected teardown failure")));
@@ -1009,6 +1048,26 @@ public sealed class AuditRuntimeGateTests : IDisposable
         private Action? _onDispose = onDispose;
 
         public void Dispose() => Interlocked.Exchange(ref _onDispose, null)?.Invoke();
+    }
+
+    private sealed class BlockingSessionLifetime : ISessionLifetime
+    {
+        internal int ShutdownCount { get; private set; }
+
+        internal TaskCompletionSource ShutdownEntered { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal TaskCompletionSource ReleaseShutdown { get; } = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        public async Task ShutdownAsync()
+        {
+            ShutdownCount++;
+            ShutdownEntered.TrySetResult();
+            await ReleaseShutdown.Task;
+        }
+
+        public void Dispose() => ReleaseShutdown.TrySetResult();
     }
 
     private sealed class BlockingExportSource(Func<long> readSequence) : IAuditExportStepSource

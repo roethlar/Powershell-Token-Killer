@@ -72,8 +72,8 @@ builder.Services.AddSingleton(_ => new OutputStore(OutputStoreOptions.Production
 // before either the runspace or the job manager can be constructed. The
 // runtime preserves shutdown order (jobs, then runspace), and the output store
 // remains supervisor-owned so recovery handles outlive session replacement.
-builder.Services.AddSingleton(sp =>
-    sp.GetRequiredService<AuditRuntimeGate>().RunSessionRuntimeAfterStarted(() =>
+builder.Services.AddSingleton<ISessionOperations>(sp =>
+    sp.GetRequiredService<AuditRuntimeGate>().RunSessionAfterStarted(() =>
     {
         var host = new RunspaceHost(callTimeout, maxCallTimeout: maxCallTimeout);
         try

@@ -315,7 +315,8 @@ public sealed class RawUsageTests : IDisposable
         foreach (var method in methods)
         {
             var parameters = method.GetParameters();
-            Assert.Single(parameters, parameter => parameter.ParameterType == typeof(SessionRuntime));
+            Assert.Single(parameters, parameter => parameter.ParameterType == typeof(ISessionOperations));
+            Assert.DoesNotContain(parameters, parameter => parameter.ParameterType == typeof(SessionRuntime));
             Assert.DoesNotContain(parameters, parameter => parameter.ParameterType == typeof(RunspaceHost));
             Assert.DoesNotContain(parameters, parameter => parameter.ParameterType == typeof(JobManager));
             Assert.DoesNotContain(parameters, parameter => parameter.ParameterType == typeof(RawUsageCounter));
