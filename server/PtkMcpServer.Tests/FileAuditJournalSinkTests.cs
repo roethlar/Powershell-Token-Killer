@@ -246,7 +246,7 @@ public sealed class FileAuditJournalSinkTests : IDisposable
     {
         if (!OperatingSystem.IsWindows()) return;
         var root = NewRoot(create: true);
-        SetAlternateWindowsOwner(root);
+        SetAlternateWindowsOwnerWhenAvailable(root);
         var options = Options(root, segmentSlots: 2, aggregateSegments: 4);
         string segmentPath;
         using (AuditJournalFactory.Open(
@@ -1325,11 +1325,13 @@ public sealed class FileAuditJournalSinkTests : IDisposable
             () => BaseTime);
 
     [SupportedOSPlatform("windows")]
-    private static void SetAlternateWindowsOwner(string path)
+    private static void SetAlternateWindowsOwnerWhenAvailable(string path)
     {
-        var alternateOwner = new SecurityIdentifier(
-            WellKnownSidType.BuiltinUsersSid,
-            domainSid: null);
+        using var identity = WindowsIdentity.GetCurrent();
+        var currentUser = Assert.IsType<SecurityIdentifier>(identity.User);
+        var alternateOwner = identity.Owner;
+        if (alternateOwner is null || alternateOwner.Equals(currentUser)) return;
+
         var security = FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path));
         security.SetOwner(alternateOwner);
         FileSystemAclExtensions.SetAccessControl(new DirectoryInfo(path), security);
