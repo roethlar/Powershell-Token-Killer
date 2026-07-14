@@ -14,7 +14,9 @@ short and update it when important repo facts change.
   independent follow-up diagnoses and a candidate-order mutation proof
   validated the final one-line correction. GitHub Actions run `29313220388`
   passed Ubuntu, macOS, and Windows at the exact final head, including all
-  server suites and stdio handshakes. Canonical evidence is in
+  server suites and stdio handshakes. The validated repair history was
+  fast-forwarded to local `master`, and an exact branch-to-master diff verified
+  content arrival. Canonical evidence is in
   `.agents/plans/ci-portability-repair.md` and `.agents/review/index.md`; RTK
   distribution remains a separate decision.
 - **Audited-harness Slice 6 is complete locally.** Code
@@ -107,12 +109,11 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Obtain owner direction on landing the validated CI portability repair.
-2. Create the Slice 7 feature branch and begin worker mode under
+1. Create the Slice 7 feature branch and begin worker mode under
    `.agents/plans/audited-harness-sessions.md`.
-3. Execute release-distribution slice 3 under its approved plan. Re-present
+2. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before release-distribution slice 4.
-4. When the owner releases the decisions hold, reconcile the rejected
+3. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
 
