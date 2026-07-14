@@ -5,9 +5,9 @@ descendant `e3b1dfd` exposed three further scheduling failures in an otherwise
 identical server tree. The Slice 8 overlap checkpoint's accidental five-second
 budget is corrected locally at `adaffd2`; its singleton mutation failed and
 the scoped form passed 10/10 on `NETWATCH-01`. Two older Ubuntu rendezvous
-tests share a diagnosed blocking-ThreadPool harness flaw, but their proposed
-test-only scheduling repair is outside the approved slices and awaits owner
-approval. The work does not change production runtime behavior, install RTK
+tests share a diagnosed blocking-ThreadPool harness flaw. The owner approved
+one test-only Slice 9 covering both fixtures on 2026-07-14. The work does not
+change production runtime behavior, install RTK
 into ordinary unit-test jobs, or decide whether a future PTK release bundles a
 pinned RTK binary.
 
@@ -105,6 +105,15 @@ Each numbered slice is one finding and one commit.
    handler calls, eight accepted/completed pairs, and final stop assertions.
    Mutating the accessor back to singleton must fail under the barrier;
    restoring scoped ownership must pass on Windows.
+9. **Remove ThreadPool admission from atomic-publication rendezvous tests.**
+   Launch the eight synchronous contenders in both affected fixtures with
+   `TaskCreationOptions.LongRunning` and `TaskScheduler.Default` instead of
+   `Task.Run`. Preserve each start gate, eight-party collision barrier,
+   convergence assertion, identity validation, and temporary-file cleanup
+   assertion. Both files are one finding because they use the same blocking
+   rendezvous pattern and failed together under parallel xUnit load. Prove the
+   stabilized fixtures still reject broken collision convergence, then run
+   both focused tests together before the complete battery.
 
 ## Verification
 
@@ -146,11 +155,12 @@ Ubuntu failed two older eight-way atomic-publication tests before either
 reached the publication primitive. Each synchronously blocks eight
 `Task.Run` workers at a test-only barrier, and both classes can run in
 parallel. On a low-core hosted runner, delayed ThreadPool injection can leave
-participants queued until earlier barrier participants time out. The proposed
+participants queued until earlier barrier participants time out. The approved
 repair is one new test-only slice replacing those synchronous `Task.Run`
 contenders with dedicated `TaskCreationOptions.LongRunning` tasks while
 preserving all eight participants, the collision barrier, convergence checks,
-and temporary-file assertions. This slice is not approved yet.
+and temporary-file assertions. The owner approved this exact scope on
+2026-07-14.
 
 ## Non-goals
 

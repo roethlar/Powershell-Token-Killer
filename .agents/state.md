@@ -12,11 +12,12 @@ short and update it when important repo facts change.
   workflow trees are identical to green `d30bbf3`. The Windows checkpoint now
   shares the original fifteen-second contender budget; the singleton mutation
   failed and scoped ownership passed 10/10 on `NETWATCH-01`. The Ubuntu pair
-  is diagnosed as one blocking-ThreadPool test-harness flaw, but the proposed
-  dedicated-thread repair is outside the approved slices and awaits owner
-  approval. No production files changed. Canonical evidence and the pending
-  scope are in `.agents/plans/ci-portability-repair.md`; RTK distribution
-  remains a separate decision.
+  is diagnosed as one blocking-ThreadPool test-harness flaw; the owner approved
+  one test-only slice using dedicated `LongRunning` contenders in both
+  fixtures while preserving their eight-way collision and cleanup assertions.
+  No production files changed. Canonical evidence and approved scope are in
+  `.agents/plans/ci-portability-repair.md`; RTK distribution remains a separate
+  decision.
 - **Audited-harness Slice 6 is complete locally.** Code
   head `7999328` moves invoke/job/state/reset behavior and session-lifetime
   caches behind one owning `SessionRuntime`, leaves audit and output
