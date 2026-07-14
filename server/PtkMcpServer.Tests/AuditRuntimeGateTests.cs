@@ -679,42 +679,79 @@ public sealed class AuditRuntimeGateTests : IDisposable
         File.WriteAllText(options.EvidenceDirectory, "not a directory");
         using var services = new ServiceCollection()
             .AddSingleton(runtime)
-            .AddSingleton(new AuditCallContextAccessor())
+            .AddScoped<AuditCallContextAccessor>()
             .BuildServiceProvider();
 
-        var first = await Filter(
-            services,
-            Call("ptk_invoke", ("script", "'initial failure'")),
-            _ => throw new InvalidOperationException("handler must not run"));
+        CallToolResult first;
+        using (var scope = services.CreateScope())
+        {
+            first = await Filter(
+                scope.ServiceProvider,
+                Call("ptk_invoke", ("script", "'initial failure'")),
+                _ => throw new InvalidOperationException("handler must not run"));
+        }
         Assert.True(first.IsError);
         Assert.Equal("evidence.storage", health.Snapshot().FailureClass);
         File.Delete(options.EvidenceDirectory);
 
         var start = new TaskCompletionSource<bool>(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        var overlappingHandlersEntered = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        var releaseOverlappingHandlers = new TaskCompletionSource<bool>(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var handlerCalls = 0;
+        var contenderTimeout = TimeSpan.FromSeconds(20);
         var contenders = Enumerable.Range(0, 8)
             .Select(index => Task.Run(async () =>
             {
                 await start.Task;
+                using var scope = services.CreateScope();
                 return await Filter(
-                    services,
+                    scope.ServiceProvider,
                     Call("ptk_invoke", ("script", $"'recovered {index}'")),
-                    _ =>
+                    async _ =>
                     {
-                        Interlocked.Increment(ref handlerCalls);
-                        return ValueTask.FromResult(Text("handled"));
+                        var entered = Interlocked.Increment(ref handlerCalls);
+                        if (entered <= 2)
+                        {
+                            if (entered == 2)
+                                overlappingHandlersEntered.TrySetResult(true);
+                            await releaseOverlappingHandlers.Task;
+                        }
+                        return Text("handled");
                     });
             }))
             .ToArray();
         start.TrySetResult(true);
-        var results = await Task.WhenAll(contenders).WaitAsync(TimeSpan.FromSeconds(20));
+        try
+        {
+            try
+            {
+                await Task.WhenAny(
+                    overlappingHandlersEntered.Task,
+                    Task.Delay(contenderTimeout));
+                Assert.True(
+                    overlappingHandlersEntered.Task.IsCompleted,
+                    $"Only {Volatile.Read(ref handlerCalls)} of the first 2 handlers entered.");
+            }
+            finally
+            {
+                releaseOverlappingHandlers.TrySetResult(true);
+            }
 
-        Assert.All(results, result => Assert.False(result.IsError ?? false));
-        Assert.Equal(8, handlerCalls);
-        Assert.Equal(AuditHealthState.Healthy, health.Snapshot().State);
-        await runtime.StopAsync(CancellationToken.None);
-        runtime.Dispose();
+            var results = await Task.WhenAll(contenders).WaitAsync(contenderTimeout);
+            Assert.All(results, result => Assert.False(result.IsError ?? false));
+            Assert.Equal(8, handlerCalls);
+            Assert.Equal(AuditHealthState.Healthy, health.Snapshot().State);
+            await runtime.StopAsync(CancellationToken.None);
+            runtime.Dispose();
+        }
+        finally
+        {
+            start.TrySetResult(true);
+            releaseOverlappingHandlers.TrySetResult(true);
+        }
 
         var eventTypes = ReadEvents(options).Select(EventType).ToArray();
         Assert.Equal(1, eventTypes.Count(type => type == "audit.degraded"));
