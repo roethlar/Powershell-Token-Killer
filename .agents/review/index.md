@@ -2029,3 +2029,29 @@ Owner-approved GitHub Actions run `29316181542` tested exact head
 passed setup, Pester, the complete server suite, the stdio handshake, and
 cleanup. This closes the master-landing flake follow-up. It does not authorize
 history rewriting or unrelated work.
+
+---
+
+**CI FINAL-TIP SCHEDULING FOLLOW-UP — CODE ACCEPTED, HOSTED PENDING.** An
+independent `ci_final_review` agent reviewed exact committed range
+`e3b1dfd..6193129` on 2026-07-14. The range changes only three test files plus
+plan/state documentation; no production file changes. The reviewer confirmed
+that the startup-repair test retains scoped per-request ownership,
+deterministic two-handler overlap, and every original event/open/shutdown
+assertion while reusing its original fifteen-second contender budget. Both
+atomic-publication fixtures retain their start gates, eight-party barriers,
+convergence or identity assertions, and temporary-file cleanup checks while
+moving synchronous contenders to dedicated `LongRunning` threads on
+`TaskScheduler.Default`. No code finding remained.
+
+The guards were independently red then green. Restoring singleton ownership
+admitted only one of the first two audit handlers; scoped ownership passed
+10/10 on Windows. Replacing each production collision-recovery return with a
+rethrow made its corresponding stabilized fixture fail immediately with the
+losing `File exists` publication error, not a rendezvous timeout; exact
+restoration returned both green, and the pair passed together 10/10. The
+complete local battery passed 1,207/1,207 .NET tests, 141 Pester tests with two
+expected skips, and the full handshake. The matching server patch passed
+1,207/1,207 .NET tests, 142 Pester tests with one expected skip, and the full
+zero-warning handshake on `NETWATCH-01`. A new hosted three-platform matrix
+remains the completion gate.

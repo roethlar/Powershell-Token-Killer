@@ -301,6 +301,21 @@ exact follow-up head `d30bbf3701c484aeb81ab59616f6aa074687e95c`._
   one platform skip, and the complete stdio handshake with a zero-warning,
   zero-error build. The checkout was clean at the exact head afterward.
 
+#### Final-tip scheduling follow-up — 2026-07-14
+
+_Verified from the existing `F:\dev\PowerShell-Token-Killer` checkout using
+the exact stable server patch from `d30bbf3..6193129`; local and Windows patch
+IDs matched `ce3374eb1781fd1d3a94770214e5df4c606a7522`, and only the three
+intended test files differed._
+
+- The host reported Windows 11 Pro 10.0.26200, PowerShell 7.6.3, .NET SDK
+  10.0.301, and Pester 5.8.0. `git diff --check` passed and no untracked files
+  were present.
+- The three corrected focused tests passed together. The complete battery then
+  passed 1,207/1,207 .NET tests in 1m32s, 142 Pester tests with one expected
+  platform skip, and the full stdio handshake with zero build warnings and
+  errors.
+
 ## Disposable Ubuntu 26.04 ARM64 validation
 
 _Focused verification 2026-07-11 for the Slice 1 secure-storage implementation

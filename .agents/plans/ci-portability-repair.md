@@ -1,15 +1,15 @@
 # Plan: CI portability repair after audited-harness Slice 6
 
-**Status:** REOPENED after GitHub Actions run `29316766579` at docs-only
-descendant `e3b1dfd` exposed three further scheduling failures in an otherwise
-identical server tree. The Slice 8 overlap checkpoint's accidental five-second
-budget is corrected locally at `adaffd2`; its singleton mutation failed and
-the scoped form passed 10/10 on `NETWATCH-01`. Two older Ubuntu rendezvous
-tests share a diagnosed blocking-ThreadPool harness flaw. The owner approved
-one test-only Slice 9 covering both fixtures on 2026-07-14. The work does not
-change production runtime behavior, install RTK
-into ordinary unit-test jobs, or decide whether a future PTK release bundles a
-pinned RTK binary.
+**Status:** IMPLEMENTED AND DIRECTLY VERIFIED at test-only code head
+`6193129`; hosted verification remains pending. GitHub Actions run
+`29316766579` at docs-only descendant `e3b1dfd` exposed three scheduling
+failures in an otherwise identical server tree. Commit `adaffd2` restores the
+Slice 8 overlap checkpoint's original fifteen-second contender budget, and
+Slice 9 at `6193129` gives both blocking eight-way rendezvous fixtures
+dedicated threads. Deterministic guards, the complete local and direct Windows
+batteries, and independent review all passed. The work does not change
+production runtime behavior, install RTK into ordinary unit-test jobs, or
+decide whether a future PTK release bundles a pinned RTK binary.
 
 ## Evidence and problem
 
@@ -161,6 +161,19 @@ contenders with dedicated `TaskCreationOptions.LongRunning` tasks while
 preserving all eight participants, the collision barrier, convergence checks,
 and temporary-file assertions. The owner approved this exact scope on
 2026-07-14.
+
+Completed direct evidence for the reopened work: the corrected Slice 8
+singleton mutation admitted only one of two handlers, while scoped ownership
+passed 10/10 on Windows. For Slice 9, independently disabling each production
+collision-recovery return made its corresponding fixture fail immediately
+with the losing atomic-publish `File exists` error; restoration returned each
+fixture green, and both passed together 10/10. The exact committed range
+`e3b1dfd..6193129` changes only three test files plus plan/state documentation
+and was independently accepted with no code finding. The complete local
+battery passed 1,207 .NET tests, 141 Pester tests with two expected skips, and
+the full handshake. The matching server patch passed 1,207 .NET tests, 142
+Pester tests with one expected skip, and the full zero-warning handshake on
+`NETWATCH-01`. Hosted matrix evidence is still required before completion.
 
 ## Non-goals
 
