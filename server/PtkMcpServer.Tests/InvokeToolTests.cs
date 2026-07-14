@@ -1788,26 +1788,40 @@ public sealed class InvokeToolTests : IDisposable
     [InlineData(true)]
     public async Task Forced_rtk_fallback_metadata_is_raw_invariant(bool raw)
     {
-        ExecutionPlan? observed = null;
+        var body = OperatingSystem.IsWindows()
+            ? "echo RTK_MUST_NOT_RUN %*\nexit /b 0"
+            : "echo RTK_MUST_NOT_RUN \"$@\"\nexit 0";
+        var (dir, stub) = CreateRtkStub(body);
+        var saved = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        try
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", stub);
+            ExecutionPlan? observed = null;
 
-        var result = await _host.InvokeAsync(
-            "'direct execution'",
-            new TestInvocationAuthorizer((preparation, cancellationToken) =>
-            {
-                observed = preparation;
-                return ValueTask.FromResult(true);
-            }),
-            raw: raw,
-            route: "rtk");
+            var result = await _host.InvokeAsync(
+                "'direct execution'",
+                new TestInvocationAuthorizer((preparation, cancellationToken) =>
+                {
+                    observed = preparation;
+                    return ValueTask.FromResult(true);
+                }),
+                raw: raw,
+                route: "rtk");
 
-        Assert.True(result.Success);
-        Assert.NotNull(observed);
-        Assert.Equal(ExecutionDomain.PowerShell, observed.Domain);
-        Assert.Equal(ExecutionPath.PowerShellDirect, observed.ExecutionPath);
-        Assert.Equal(RequestedExecutionRoute.Rtk, observed.RequestedRoute);
-        Assert.Equal(OutputProvenance.PowerShellObjects, observed.OutputProvenance);
-        Assert.Empty(observed.PermittedFallbacks);
-        Assert.Equal(ExecutionFallbackReason.RtkIneligibleShape, observed.FallbackReason);
+            Assert.True(result.Success);
+            Assert.NotNull(observed);
+            Assert.Equal(ExecutionDomain.PowerShell, observed.Domain);
+            Assert.Equal(ExecutionPath.PowerShellDirect, observed.ExecutionPath);
+            Assert.Equal(RequestedExecutionRoute.Rtk, observed.RequestedRoute);
+            Assert.Equal(OutputProvenance.PowerShellObjects, observed.OutputProvenance);
+            Assert.Empty(observed.PermittedFallbacks);
+            Assert.Equal(ExecutionFallbackReason.RtkIneligibleShape, observed.FallbackReason);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", saved);
+            dir.Delete(recursive: true);
+        }
     }
 
     [Fact]
