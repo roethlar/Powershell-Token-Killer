@@ -1,13 +1,15 @@
 # Plan: CI portability repair after audited-harness Slice 6
 
-**Status:** COMPLETED at test-only follow-up head `d30bbf3`. The owner approved
-the master-landing follow-up on 2026-07-14 (`go` after the exact `00e74d2`
-failure diagnosis and two-commit proposal). Independent review accepted exact
-range `00e74d2..d30bbf3`; the complete local and direct Windows batteries
-passed, and GitHub Actions run `29316181542` passed Ubuntu, macOS, and Windows,
-including each server suite and stdio handshake. The work does not change
-production runtime behavior, install RTK into ordinary unit-test jobs, or
-decide whether a future PTK release bundles a pinned RTK binary.
+**Status:** REOPENED after GitHub Actions run `29316766579` at docs-only
+descendant `e3b1dfd` exposed three further scheduling failures in an otherwise
+identical server tree. The Slice 8 overlap checkpoint's accidental five-second
+budget is corrected locally at `adaffd2`; its singleton mutation failed and
+the scoped form passed 10/10 on `NETWATCH-01`. Two older Ubuntu rendezvous
+tests share a diagnosed blocking-ThreadPool harness flaw, but their proposed
+test-only scheduling repair is outside the approved slices and awaits owner
+approval. The work does not change production runtime behavior, install RTK
+into ordinary unit-test jobs, or decide whether a future PTK release bundles a
+pinned RTK binary.
 
 ## Evidence and problem
 
@@ -132,6 +134,23 @@ approved GitHub Actions run `29316181542` passed exact head
 `d30bbf3701c484aeb81ab59616f6aa074687e95c`. Canonical mutation, battery, and
 independent-review details are recorded in `.agents/review/index.md` and
 `.agents/machines.md`.
+
+Final-tip run `29316766579` tested `e3b1dfd`, whose complete `server/` and
+workflow trees are identical to `d30bbf3`. macOS passed. Windows failed before
+either handler entered because Slice 8's new intermediate overlap checkpoint
+allowed five seconds even though the original contender completion budget was
+fifteen seconds. Local commit `adaffd2` reuses the original fifteen-second
+budget at both checkpoints without changing the two-handler scope guard.
+
+Ubuntu failed two older eight-way atomic-publication tests before either
+reached the publication primitive. Each synchronously blocks eight
+`Task.Run` workers at a test-only barrier, and both classes can run in
+parallel. On a low-core hosted runner, delayed ThreadPool injection can leave
+participants queued until earlier barrier participants time out. The proposed
+repair is one new test-only slice replacing those synchronous `Task.Run`
+contenders with dedicated `TaskCreationOptions.LongRunning` tasks while
+preserving all eight participants, the collision barrier, convergence checks,
+and temporary-file assertions. This slice is not approved yet.
 
 ## Non-goals
 

@@ -5,19 +5,18 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **CI portability repair and master-landing stabilization are complete as of
-  `d30bbf3`.** The original repair passed three-platform run `29313220388` at
-  `3c61886`. After docs-only master descendant `00e74d2` exposed two
-  pre-existing Windows harness flakes, two further test-only commits separated
-  setup warm-up from the named one-second timeout and gave each concurrent
-  synthetic request its production-faithful scoped audit holder. Independent
-  review accepted exact range `00e74d2..d30bbf3` with no material findings.
-  Deterministic Windows mutations proved both guards; the complete local and
-  direct `NETWATCH-01` batteries passed; GitHub Actions run `29316181542`
-  passed Ubuntu, macOS, and Windows at the exact follow-up head. No production
-  files changed. Canonical evidence is in
-  `.agents/plans/ci-portability-repair.md` and `.agents/review/index.md`; RTK
-  distribution remains a separate decision.
+- **CI portability repair is reopened at local test-only head `adaffd2`.**
+  GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
+  Windows at Slice 8's newly introduced five-second overlap checkpoint and
+  failed Ubuntu in two older eight-way rendezvous fixtures; its server and
+  workflow trees are identical to green `d30bbf3`. The Windows checkpoint now
+  shares the original fifteen-second contender budget; the singleton mutation
+  failed and scoped ownership passed 10/10 on `NETWATCH-01`. The Ubuntu pair
+  is diagnosed as one blocking-ThreadPool test-harness flaw, but the proposed
+  dedicated-thread repair is outside the approved slices and awaits owner
+  approval. No production files changed. Canonical evidence and the pending
+  scope are in `.agents/plans/ci-portability-repair.md`; RTK distribution
+  remains a separate decision.
 - **Audited-harness Slice 6 is complete locally.** Code
   head `7999328` moves invoke/job/state/reset behavior and session-lifetime
   caches behind one owning `SessionRuntime`, leaves audit and output
