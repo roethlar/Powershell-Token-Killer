@@ -371,13 +371,24 @@ public sealed class ColdCommandResolutionTests : IDisposable
             File.SetUnixFileMode(second, executable);
         }
 
-        Assert.Null(ColdCommandTargetIdentity.TryCapture(
-            "fixture",
-            new ResolvedCommand(
-                CommandTypes.Application,
-                Path.GetRelativePath(Directory.GetCurrentDirectory(), first),
-                fileName),
-            _root));
+        var relativeSource = ".ptk-cold-relative-" + Guid.NewGuid().ToString("N");
+        var relativeFixture = Path.Combine(Directory.GetCurrentDirectory(), relativeSource);
+        File.WriteAllText(relativeFixture, "relative");
+        try
+        {
+            Assert.False(Path.IsPathFullyQualified(relativeSource));
+            Assert.Null(ColdCommandTargetIdentity.TryCapture(
+                "fixture",
+                new ResolvedCommand(
+                    CommandTypes.Application,
+                    relativeSource,
+                    fileName),
+                _root));
+        }
+        finally
+        {
+            File.Delete(relativeFixture);
+        }
 
         var savedPath = Environment.GetEnvironmentVariable("PATH");
         var savedPathExtensions = Environment.GetEnvironmentVariable("PATHEXT");
