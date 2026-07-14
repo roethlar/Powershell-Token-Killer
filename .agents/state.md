@@ -164,6 +164,15 @@ short and update it when important repo facts change.
 
 ## Blockers
 
+- **Unix containment contract is incomplete; Windows work is not blocked:**
+  the canonical audited-harness plan fixes `START_FAILED` as a stage byte plus
+  errno but does not enumerate stage values, and it requires bounded broker
+  TERM/KILL/reap without fixing those intervals or their relationship to
+  `timeoutContainmentGrace`. It also does not pin native macOS/Linux build
+  baselines, so moving runners could emit authenticated but incompatible
+  binaries. Freeze these values before the Unix broker/build sub-slices; do
+  not invent them during implementation. The independent Windows Job Object
+  sub-slice can proceed without them.
 - **Decision-log conflict, correction blocked by the owner hold:**
   `.agents/decisions.md` still describes the policy-file gate as the open
   response after its criterion fires, while the later explicit owner call in
