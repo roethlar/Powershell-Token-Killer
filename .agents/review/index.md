@@ -1951,3 +1951,26 @@ mutations were restored, the tree was clean at `7999328`, and it was removed.
 No product or required-verification gap remains. Acceptance completes Slice 6;
 it does not authorize push, history rewriting, or landing without the next
 owner go.
+
+---
+
+**CI PORTABILITY REPAIR REVIEW — ACCEPTED.** An independent
+`ci_repair_review` agent reviewed head `1066de1` against base `e775a1d` on
+2026-07-14 and found no material defect. The exact range changes only the
+approved plan/state and six test-harness files; it does not change production
+code. The reviewer confirmed that the original behavioral assertions remain
+intact, temporary RTK fixtures and environment state are restored, the
+Windows owner setup uses only token-assignable capabilities, the state probe
+uses the production budget, the bounded buffer workload retains the same-
+buffer overwrite opportunity, and both command-resolution fixtures preserve
+their original guards. `git diff --check` passed.
+
+The restored code head passed 1,207/1,207 .NET tests, 141 Pester tests with
+two expected platform skips, and the full stdio handshake. A second complete
+.NET run with `PTK_RTK_PATH` forced to a missing file also passed
+1,207/1,207. Independent red-to-green mutation proofs showed that removing
+the output-buffer ownership copy loses the first canary and that removing the
+fully-qualified cold-target guard captures the deliberately relative file.
+The Windows-specific branches remain provisional until an explicitly
+approved push runs the hosted GitHub Actions matrix; acceptance does not
+authorize that push.

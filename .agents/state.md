@@ -5,14 +5,16 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **CI portability repair is in flight.** Owner-approved 2026-07-14 after
-  GitHub Actions run `29310719880` failed the .NET server suite at `69bd0d5`
-  on all three runners while checkout/setup/Pester stayed green. The common
-  failure is an ambient-RTK-dependent test; Windows additionally exposed five
-  independent harness assumptions. The approved test-only scope, evidence,
-  commit boundaries, and verification are canonical in
-  `.agents/plans/ci-portability-repair.md`. Production behavior and RTK
-  distribution are out of scope.
+- **CI portability repair is complete locally and independently accepted.**
+  Code head `1066de1` fixes the ambient-RTK-dependent test and five Windows
+  harness assumptions exposed by GitHub Actions run `29310719880`, without
+  changing production files. The exact range `e775a1d..1066de1` passed the
+  complete local battery, including all 1,207 .NET tests with ambient RTK
+  forced missing, and an independent review found no material defect. Windows
+  remains provisionally verified until an explicitly approved push runs the
+  hosted matrix. The scope and evidence are canonical in
+  `.agents/plans/ci-portability-repair.md` and `.agents/review/index.md`; RTK
+  distribution remains a separate decision.
 - **Audited-harness Slice 6 is complete locally.** Code
   head `7999328` moves invoke/job/state/reset behavior and session-lifetime
   caches behind one owning `SessionRuntime`, leaves audit and output
@@ -103,8 +105,8 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Complete and independently review the CI portability repair, then obtain
-   explicit push approval for the Windows matrix proof.
+1. Obtain explicit push approval for the CI portability repair's Windows
+   matrix proof.
 2. Create the Slice 7 feature branch and begin worker mode under
    `.agents/plans/audited-harness-sessions.md`.
 3. Execute release-distribution slice 3 under its approved plan. Re-present

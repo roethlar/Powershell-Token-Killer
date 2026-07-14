@@ -1,10 +1,14 @@
 # Plan: CI portability repair after audited-harness Slice 6
 
-**Status:** APPROVED by owner 2026-07-14 ("continue" after the exact
-`69bd0d5` CI diagnosis and the proposed test-only repair scope). This plan
-repairs the failing verification harness only. It does not change production
-runtime behavior, install RTK into the ordinary unit-test jobs, or decide
-whether a future PTK release bundles a pinned RTK binary.
+**Status:** IMPLEMENTED LOCALLY at code head `1066de1`. The owner approved the
+test-only scope on 2026-07-14 ("continue" after the exact `69bd0d5` CI
+diagnosis); an independent review of `e775a1d..1066de1` accepted the repair
+without material findings, and the complete local battery is green. The
+Windows branches remain provisional until an explicitly approved push runs
+the hosted matrix. This plan repairs the failing verification harness only.
+It does not change production runtime behavior, install RTK into the ordinary
+unit-test jobs, or decide whether a future PTK release bundles a pinned RTK
+binary.
 
 ## Evidence and problem
 
