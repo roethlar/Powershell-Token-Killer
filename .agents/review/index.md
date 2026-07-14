@@ -1916,3 +1916,38 @@ drift belongs to a future deliberate `drift` pass. Neither reviewer found a
 material observable defect. Acceptance completes Slice 5 and authorizes the
 approved Slice 6 implementation next; it does not authorize push or history
 rewriting.
+
+---
+
+**SLICE 6 `SESSIONRUNTIME` EXTRACTION CLAUDE REVIEW — ACCEPTED.** Claude Code
+2.1.208 (model `claude-opus-4-8[1m]`, isolated disposable worktree) completed
+at 2026-07-14T05:57:42Z. Its first one-shot envelope exited zero and returned
+an exact schema-constrained `accepted` payload with `guard_confirmed=true`,
+reviewed head `7999328de546c86b042e58b0ff21b38d6e97e322`, and base
+`aca20a65e7441297a2763f73e27c358a80ae4eae`. The orchestrator independently
+matched both fixed SHAs and the literal guard flag. Claude found no material
+defect in the verbatim handler extraction, per-call audit/output capability
+boundary, jobs-before-runspace shutdown, fail-closed DI construction,
+runtime-local cache, reset lifetime, or unchanged MCP schemas/defaults.
+
+Claude independently proved four product boundaries red then green: making
+the available-module cache static broke two-runtime cache isolation; removing
+runtime disposal left its long-running job alive; replacing the reset adapter
+with a plausible constant left warm state uncleared; and clearing the module
+cache during reset forced a second enumeration. Every mutation was restored.
+The exact restored head passed 1,207/1,207 .NET tests, 141 Pester tests with
+two platform skips, and the stdio handshake. Claude confirmed its detached
+tree clean at the exact head, removed it, and left the coder tree untouched.
+
+One nonblocking reviewer observation was evidence-checked rather than silently
+accepted. A same-typed invoke `raw`/`background` swap passed the .NET suite,
+and Claude suggested direct adapter tests for invoke/job/state. In a separate
+clean detached tree, the coder proved the canonical stdio handshake already
+guards those adapters behaviorally: that invoke swap failed the background
+job assertion, a job `id`/`offset` swap failed background status, and a
+constant state adapter failed the state header assertion. The focused reset
+adapter test covers the only adapter the handshake does not execute. All
+mutations were restored, the tree was clean at `7999328`, and it was removed.
+No product or required-verification gap remains. Acceptance completes Slice 6;
+it does not authorize push, history rewriting, or landing without the next
+owner go.

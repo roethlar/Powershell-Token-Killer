@@ -5,6 +5,15 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **Audited-harness Slice 6 is complete on the accepted feature branch.** Code
+  head `7999328` moves invoke/job/state/reset behavior and session-lifetime
+  caches behind one owning `SessionRuntime`, leaves audit and output
+  capabilities per operation, keeps MCP adapters thin and schema-compatible,
+  and preserves jobs-before-runspace audited shutdown. Claude Code 2.1.208
+  accepted exact range `aca20a6..7999328` with `guard_confirmed=true` in a
+  clean detached worktree after independent cache-isolation, ownership,
+  adapter, and reset-lifetime mutation proofs plus the full battery. Canonical
+  evidence is in `.agents/review/index.md`.
 - **Audited-harness Slice 5 is complete locally.** Final code head
   `fc61be6` completes audited cold-background planning, typed exactly-once
   dispatch/fallback, provenance-
@@ -83,9 +92,8 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Create the Slice 6 feature branch and begin the behavior-preserving
-   `SessionRuntime` extraction under
-   `.agents/plans/audited-harness-sessions.md`.
+1. Land the accepted Slice 6 branch on the next owner go, then begin Slice 7
+   worker mode under `.agents/plans/audited-harness-sessions.md`.
 2. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before release-distribution slice 4.
 3. When the owner releases the decisions hold, reconcile the rejected
@@ -129,11 +137,12 @@ short and update it when important repo facts change.
 - Automated verification entry point: `.agents/repo-guidance.md`
   (Verification). Review-loop evidence lives in `.agents/review/index.md`;
   do not duplicate volatile counts here.
-- Audited-session slices 0-5 are complete locally. Slice 4's exact integrated
+- Audited-session slices 0-6 are complete locally. Slice 4's exact integrated
   fixed-head Claude acceptance and independently verified local landing are
   recorded in `.agents/review/index.md`; host-specific verification records
   live in `.agents/machines.md`. Slice 5's final path-free output-recovery
-  acceptance by both Claude and Grok is recorded in the same review index.
+  acceptance by both Claude and Grok and Slice 6's `SessionRuntime` acceptance
+  by Claude are recorded in the same review index.
 
 ## Active Sources
 
