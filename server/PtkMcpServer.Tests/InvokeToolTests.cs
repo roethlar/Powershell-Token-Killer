@@ -2591,6 +2591,308 @@ public sealed class InvokeToolTests : IDisposable
     }
 
     [Fact]
+    public async Task Cold_background_plan_uses_post_cwd_snapshot_and_dispatches_rtk()
+    {
+        var root = Directory.CreateTempSubdirectory("ptk-cold-plan-");
+        var marker = Path.Combine(root.FullName, "target-starts.txt");
+        var targetBody = OperatingSystem.IsWindows()
+            ? ">>\"%PTK_COLD_TARGET_MARKER%\" echo x\necho COLD_RTK_TARGET %*\nexit /b 0"
+            : "printf 'x\\n' >> \"$PTK_COLD_TARGET_MARKER\"\n" +
+              "printf 'COLD_RTK_TARGET %s\\n' \"$*\"\nexit 0";
+        var (targetDir, _) = CreateRtkStub(
+            targetBody,
+            root.FullName,
+            "ptk-cold-target");
+        var (_, rtk) = RtkTestStub.CreatePassthrough(root.FullName);
+        var savedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var savedPathExt = Environment.GetEnvironmentVariable("PATHEXT");
+        var savedRtk = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        var savedMarker = Environment.GetEnvironmentVariable("PTK_COLD_TARGET_MARKER");
+        try
+        {
+            var relativeTargetDirectory = Path.GetRelativePath(
+                root.FullName,
+                targetDir.FullName);
+            Environment.SetEnvironmentVariable(
+                "PATH",
+                relativeTargetDirectory + Path.PathSeparator + savedPath);
+            if (OperatingSystem.IsWindows())
+                Environment.SetEnvironmentVariable("PATHEXT", ".EXE");
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", rtk);
+            Environment.SetEnvironmentVariable("PTK_COLD_TARGET_MARKER", marker);
+            var setLocation = await _host.InvokeAsync(
+                $"Set-Location -LiteralPath '{root.FullName.Replace("'", "''", StringComparison.Ordinal)}'",
+                route: "pwsh");
+            Assert.True(setLocation.Success, string.Join(Environment.NewLine, setLocation.Errors));
+            JobStartPlan? observed = null;
+            _jobs.BeforeProcessStartForTests = plan => observed = plan;
+
+            var response = await InvokeTool.Invoke(
+                _host,
+                _jobs,
+                _rawUsage,
+                "ptk-cold-target ARG",
+                CancellationToken.None,
+                background: true);
+
+            Assert.Contains("[job 1 started]", response, StringComparison.Ordinal);
+            var started = Assert.Single(_jobs.List());
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(60);
+            while (_jobs.Snapshot(started.Id)?.Running == true)
+            {
+                Assert.True(DateTimeOffset.UtcNow < deadline, "cold RTK job did not exit");
+                await Task.Delay(50);
+            }
+            var final = _jobs.Snapshot(started.Id)!;
+            var output = _jobs.ReadOutput(started.Id, 0)!.Value.Text;
+
+            Assert.NotNull(observed);
+            Assert.Equal(ExecutionPath.Rtk, observed.ExecutionPath);
+            Assert.Equal(ResolutionContext.Cold, observed.Execution.ResolutionContext);
+            Assert.Equal(OutputProvenance.RtkUnknown, observed.Execution.OutputProvenance);
+            Assert.Equal(
+                Path.GetFullPath(root.FullName),
+                observed.Dispatch.ColdCommandTargetIdentity?.WorkingDirectory,
+                OperatingSystem.IsWindows()
+                    ? StringComparer.OrdinalIgnoreCase
+                    : StringComparer.Ordinal);
+            Assert.Equal(ExecutionPath.Rtk, final.Execution.ExecutionPath);
+            Assert.Equal(["x"], File.ReadAllLines(marker));
+            Assert.Contains("COLD_RTK_TARGET ARG", output, StringComparison.Ordinal);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", savedPath);
+            Environment.SetEnvironmentVariable("PATHEXT", savedPathExt);
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", savedRtk);
+            Environment.SetEnvironmentVariable("PTK_COLD_TARGET_MARKER", savedMarker);
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Proved_no_start_reauthorizes_and_runs_background_fallback_once()
+    {
+        var root = Directory.CreateTempSubdirectory("ptk-cold-fallback-");
+        var marker = Path.Combine(root.FullName, "target-starts.txt");
+        var targetBody = OperatingSystem.IsWindows()
+            ? ">>\"%PTK_COLD_TARGET_MARKER%\" echo x\necho COLD_FALLBACK_TARGET %*\nexit /b 0"
+            : "printf 'x\\n' >> \"$PTK_COLD_TARGET_MARKER\"\n" +
+              "printf 'COLD_FALLBACK_TARGET %s\\n' \"$*\"\nexit 0";
+        var (targetDir, _) = CreateRtkStub(
+            targetBody,
+            root.FullName,
+            "ptk-cold-fallback-target");
+        var (_, rtk) = RtkTestStub.CreatePassthrough(root.FullName);
+        var savedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var savedPathExt = Environment.GetEnvironmentVariable("PATHEXT");
+        var savedRtk = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        var savedMarker = Environment.GetEnvironmentVariable("PTK_COLD_TARGET_MARKER");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PATH",
+                Path.GetRelativePath(root.FullName, targetDir.FullName) +
+                Path.PathSeparator + savedPath);
+            if (OperatingSystem.IsWindows())
+                Environment.SetEnvironmentVariable("PATHEXT", ".EXE");
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", rtk);
+            Environment.SetEnvironmentVariable("PTK_COLD_TARGET_MARKER", marker);
+            var setLocation = await _host.InvokeAsync(
+                $"Set-Location -LiteralPath '{root.FullName.Replace("'", "''", StringComparison.Ordinal)}'",
+                route: "pwsh");
+            Assert.True(setLocation.Success, string.Join(Environment.NewLine, setLocation.Errors));
+            var attempts = new List<ExecutionPath>();
+            _jobs.BeforeProcessStartForTests = plan => attempts.Add(plan.ExecutionPath);
+            var starts = 0;
+            _jobs.ProcessStartOverrideForTests = process =>
+            {
+                var attempt = Interlocked.Increment(ref starts);
+                return attempt == 1 ? false : process.Start();
+            };
+
+            var response = await InvokeTool.Invoke(
+                _host,
+                _jobs,
+                _rawUsage,
+                "ptk-cold-fallback-target ARG",
+                CancellationToken.None,
+                route: "rtk",
+                background: true);
+
+            Assert.Contains("[job 1 started]", response, StringComparison.Ordinal);
+            Assert.Contains(
+                "[route] requested=rtk effective=powershell_direct " +
+                "fallback=rtk_execution_preparation_failed",
+                response,
+                StringComparison.Ordinal);
+            var started = Assert.Single(_jobs.List());
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(60);
+            while (_jobs.Snapshot(started.Id)?.Running == true)
+            {
+                Assert.True(DateTimeOffset.UtcNow < deadline, "cold fallback job did not exit");
+                await Task.Delay(50);
+            }
+            var final = _jobs.Snapshot(started.Id)!;
+            var output = _jobs.ReadOutput(started.Id, 0)!.Value.Text;
+
+            Assert.Equal([ExecutionPath.Rtk, ExecutionPath.PowerShellDirect], attempts);
+            Assert.Equal(2, starts);
+            Assert.Equal(["x"], File.ReadAllLines(marker));
+            Assert.Contains("COLD_FALLBACK_TARGET ARG", output, StringComparison.Ordinal);
+            Assert.Equal(ExecutionPath.PowerShellDirect, final.Execution.ExecutionPath);
+            Assert.Equal(OutputProvenance.DirectText, final.Execution.OutputProvenance);
+            Assert.Equal(
+                ExecutionFallbackReason.RtkExecutionPreparationFailed,
+                final.Execution.FallbackReason);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", savedPath);
+            Environment.SetEnvironmentVariable("PATHEXT", savedPathExt);
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", savedRtk);
+            Environment.SetEnvironmentVariable("PTK_COLD_TARGET_MARKER", savedMarker);
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public async Task Indeterminate_rtk_start_never_dispatches_the_direct_fallback(
+        bool associateProcess)
+    {
+        var root = Directory.CreateTempSubdirectory("ptk-cold-uncertain-");
+        var jobs = new JobManager(Path.Combine(root.FullName, "jobs"));
+        var marker = Path.Combine(root.FullName, "uncertain-target-starts.txt");
+        var targetBody = OperatingSystem.IsWindows()
+            ? ">>\"%PTK_COLD_UNCERTAIN_MARKER%\" echo x\nping -n 300 127.0.0.1 >nul\nexit /b 0"
+            : "printf 'x\\n' >> \"$PTK_COLD_UNCERTAIN_MARKER\"\n" +
+              "sleep 300\nexit 0";
+        var (targetDirectory, _) = CreateRtkStub(
+            targetBody,
+            root.FullName,
+            "ptk-cold-uncertain-target");
+        var (_, rtk) = RtkTestStub.CreatePassthrough(root.FullName);
+        var savedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var savedPathExt = Environment.GetEnvironmentVariable("PATHEXT");
+        var savedRtk = Environment.GetEnvironmentVariable("PTK_RTK_PATH");
+        var savedMarker = Environment.GetEnvironmentVariable("PTK_COLD_UNCERTAIN_MARKER");
+        try
+        {
+            Environment.SetEnvironmentVariable(
+                "PATH",
+                targetDirectory.FullName + Path.PathSeparator + savedPath);
+            if (OperatingSystem.IsWindows())
+                Environment.SetEnvironmentVariable("PATHEXT", ".EXE");
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", rtk);
+            Environment.SetEnvironmentVariable("PTK_COLD_UNCERTAIN_MARKER", marker);
+            var attempts = new List<ExecutionPath>();
+            jobs.BeforeProcessStartForTests = plan =>
+                attempts.Add(plan.ExecutionPath);
+            var processStarts = 0;
+            jobs.ProcessStartOverrideForTests = process =>
+            {
+                Interlocked.Increment(ref processStarts);
+                if (!associateProcess)
+                    throw new IOException("injected failure before process association");
+                Assert.True(process.Start());
+                Assert.True(
+                    SpinWait.SpinUntil(MarkerWasWritten, TimeSpan.FromSeconds(10)),
+                    "the associated RTK target never reached its marker");
+                throw new IOException("injected failure after process association");
+            };
+
+            var response = await InvokeTool.Invoke(
+                _host,
+                jobs,
+                _rawUsage,
+                "ptk-cold-uncertain-target ARG",
+                CancellationToken.None,
+                route: "rtk",
+                background: true);
+
+            Assert.Equal([ExecutionPath.Rtk], attempts);
+            Assert.Equal(1, processStarts);
+            Assert.DoesNotContain(
+                "effective=powershell_direct",
+                response,
+                StringComparison.Ordinal);
+            Assert.Contains(
+                associateProcess
+                    ? "started; outcome unknown"
+                    : "start outcome unknown",
+                response,
+                StringComparison.Ordinal);
+            var job = Assert.Single(jobs.List());
+            var deadline = DateTimeOffset.UtcNow + TimeSpan.FromSeconds(15);
+            while (jobs.Snapshot(job.Id)?.Running == true)
+            {
+                Assert.True(deadline > DateTimeOffset.UtcNow, "uncertain RTK job did not settle");
+                await Task.Delay(50);
+            }
+            var final = jobs.Snapshot(job.Id)!;
+            Assert.Equal(ExecutionPath.Rtk, final.Execution.ExecutionPath);
+            Assert.Null(final.Execution.FallbackReason);
+            if (associateProcess)
+                Assert.Equal(["x"], File.ReadAllLines(marker));
+            else
+            {
+                Assert.False(File.Exists(marker));
+                await Assert.ThrowsAsync<InvalidOperationException>(jobs.ShutdownAsync);
+            }
+
+            bool MarkerWasWritten()
+            {
+                try { return File.Exists(marker) && File.ReadAllLines(marker).Length == 1; }
+                catch (IOException) { return false; }
+            }
+        }
+        finally
+        {
+            foreach (var retained in jobs.List())
+                jobs.ConfirmStartRecorded(retained.Id);
+            try { jobs.Dispose(); }
+            catch (InvalidOperationException) when (!associateProcess) { }
+            Environment.SetEnvironmentVariable("PATH", savedPath);
+            Environment.SetEnvironmentVariable("PATHEXT", savedPathExt);
+            Environment.SetEnvironmentVariable("PTK_RTK_PATH", savedRtk);
+            Environment.SetEnvironmentVariable("PTK_COLD_UNCERTAIN_MARKER", savedMarker);
+            root.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Cold_background_planning_respects_remaining_deadline()
+    {
+        _host.CurrentLocationReaderOverrideForTests =
+            () => Directory.GetCurrentDirectory();
+        _host.PreflightDelayForTests = TimeSpan.FromSeconds(4);
+        var processStarts = 0;
+        _jobs.BeforeProcessStartForTests = _ =>
+            Interlocked.Increment(ref processStarts);
+        var stopwatch = System.Diagnostics.Stopwatch.StartNew();
+
+        var response = await InvokeTool.Invoke(
+            _host,
+            _jobs,
+            _rawUsage,
+            "Get-Date",
+            CancellationToken.None,
+            background: true,
+            timeoutSeconds: 1);
+        stopwatch.Stop();
+
+        Assert.Contains("[job not started]", response, StringComparison.Ordinal);
+        Assert.Contains("planning", response, StringComparison.OrdinalIgnoreCase);
+        Assert.Equal(0, processStarts);
+        Assert.Empty(_jobs.List());
+        Assert.True(
+            stopwatch.Elapsed < TimeSpan.FromSeconds(3),
+            $"cold planning response took {stopwatch.Elapsed}");
+    }
+
+    [Fact]
     public async Task Rtk_unknown_job_poll_is_bounded_without_a_second_rtk_invocation()
     {
         var invocationLog = Path.Combine(

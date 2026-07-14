@@ -211,6 +211,7 @@ public sealed class JobManager : IDisposable
     internal Func<Task>? ShutdownOverrideForTests { get; set; }
     internal Action<JobStartPlan>? BeforeProcessStartForTests { get; set; }
     internal Func<Process, bool>? ProcessStartOverrideForTests { get; set; }
+    internal Action<Process>? AfterProcessStartForTests { get; set; }
     internal Action<Process>? BeforeKillForTests { get; set; }
     internal Action<Process>? BeforeInternalContainmentForTests { get; set; }
     internal Action<JobStartPlan>? BeforeOutputWriteForTests { get; set; }
@@ -635,7 +636,9 @@ public sealed class JobManager : IDisposable
     /// </summary>
     public JobSnapshot CommitStart(
         JobStartPlan plan,
-        Func<JobSnapshot, Task>? onTerminal = null)
+        Func<JobSnapshot, Task>? onTerminal = null,
+        DateTimeOffset? deadline = null,
+        CancellationToken cancellationToken = default)
     {
         ArgumentNullException.ThrowIfNull(plan);
         if (!_allowColdBackground)
@@ -647,7 +650,11 @@ public sealed class JobManager : IDisposable
         BeginStartAttempt(plan);
         try
         {
-            var snapshot = CommitAdmittedStart(plan, onTerminal);
+            var snapshot = CommitAdmittedStart(
+                plan,
+                onTerminal,
+                deadline,
+                cancellationToken);
             FinishStartAttempt(plan, provenFallbackReason: null);
             return snapshot;
         }
@@ -669,9 +676,11 @@ public sealed class JobManager : IDisposable
 
     private JobSnapshot CommitAdmittedStart(
         JobStartPlan plan,
-        Func<JobSnapshot, Task>? onTerminal)
+        Func<JobSnapshot, Task>? onTerminal,
+        DateTimeOffset? deadline,
+        CancellationToken cancellationToken)
     {
-
+        ThrowIfStartBudgetExpired(deadline, cancellationToken);
         ProcessStartInfo startInfo;
         if (plan.ExecutionPath == ExecutionPath.PowerShellDirect)
         {
@@ -686,30 +695,49 @@ public sealed class JobManager : IDisposable
         }
         else
         {
-            var rtk = plan.Dispatch.RtkExecutableIdentity!;
-            if (!rtk.MatchesCurrentFile())
-                throw RtkIdentityChanged();
-            startInfo = RtkProcessRunner.CreateStartInfo(plan.Dispatch);
+            ValidateRtkLaunchFacts(plan);
+            try
+            {
+                startInfo = RtkProcessRunner.CreateStartInfo(plan.Dispatch);
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                throw RtkPreparationFailed(exception);
+            }
         }
 
         lock (_shutdownGate)
         {
             ThrowIfAdmissionClosedLocked();
         }
+        ThrowIfStartBudgetExpired(deadline, cancellationToken);
         Directory.CreateDirectory(_jobsDir);
+        ThrowIfStartBudgetExpired(deadline, cancellationToken);
 
         JobEntry? entry = null;
         JobOutputWriter? outputWriter = null;
         if (plan.ExecutionPath == ExecutionPath.Rtk)
         {
-            outputWriter = new JobOutputWriter(
-                plan.OutputPath,
-                () => BeforeOutputWriteForTests?.Invoke(plan),
-                code =>
+            var outputExisted = File.Exists(plan.OutputPath);
+            try
+            {
+                outputWriter = new JobOutputWriter(
+                    plan.OutputPath,
+                    () => BeforeOutputWriteForTests?.Invoke(plan),
+                    code =>
+                    {
+                        if (entry is not null) MarkOutputIncomplete(entry, code);
+                    },
+                    _abortedOutputDrainGrace);
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                if (!outputExisted)
                 {
-                    if (entry is not null) MarkOutputIncomplete(entry, code);
-                },
-                _abortedOutputDrainGrace);
+                    try { File.Delete(plan.OutputPath); } catch { }
+                }
+                throw RtkPreparationFailed(exception);
+            }
         }
 
         var process = new Process
@@ -744,12 +772,12 @@ public sealed class JobManager : IDisposable
 
             try
             {
+                ThrowIfStartBudgetExpired(deadline, cancellationToken);
                 BeforeProcessStartForTests?.Invoke(plan);
-                if (plan.ExecutionPath == ExecutionPath.Rtk &&
-                    !plan.Dispatch.RtkExecutableIdentity!.MatchesCurrentFile())
-                {
-                    throw RtkIdentityChanged();
-                }
+                ThrowIfStartBudgetExpired(deadline, cancellationToken);
+                if (plan.ExecutionPath == ExecutionPath.Rtk)
+                    ValidateRtkLaunchFacts(plan);
+                ThrowIfStartBudgetExpired(deadline, cancellationToken);
                 StartProcessOrThrow(plan, process);
             }
             catch (JobStartException exception) when (exception.ProcessStarted is null)
@@ -761,6 +789,22 @@ public sealed class JobManager : IDisposable
                     processStarted: true,
                     innerException: exception);
             }
+            catch (OperationCanceledException)
+            {
+                CleanupUnstarted(plan, entry);
+                throw;
+            }
+            catch (JobStartException)
+            {
+                CleanupUnstarted(plan, entry);
+                throw;
+            }
+            catch (Exception exception) when (
+                plan.ExecutionPath == ExecutionPath.Rtk && !IsFatal(exception))
+            {
+                CleanupUnstarted(plan, entry);
+                throw RtkPreparationFailed(exception);
+            }
             catch
             {
                 CleanupUnstarted(plan, entry);
@@ -770,12 +814,25 @@ public sealed class JobManager : IDisposable
             // Process.Start returning true is the no-retry boundary. Everything
             // below retains the entry and converts capture failures into terminal
             // metadata instead of a fallback-eligible start failure.
-            entry.ProcessId = process.Id;
-            try { process.StandardInput.Close(); } catch { }
-            if (plan.ExecutionPath == ExecutionPath.Rtk)
-                InitializeRtkOutputCapture(entry);
-            _ = ObserveTerminalAsync(plan.Id, entry);
-            return SnapshotLocked(plan.Id, entry);
+            try
+            {
+                AfterProcessStartForTests?.Invoke(process);
+                entry.ProcessId = process.Id;
+                try { process.StandardInput.Close(); } catch { }
+                if (plan.ExecutionPath == ExecutionPath.Rtk)
+                    InitializeRtkOutputCapture(entry);
+                _ = ObserveTerminalAsync(plan.Id, entry);
+                return SnapshotLocked(plan.Id, entry);
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                var processStarted = RetainUnknownStart(entry) ? true : (bool?)null;
+                throw new JobStartException(
+                    "background_process_start_outcome_unknown",
+                    "Background process startup raised an indeterminate host failure; PTK will not retry it.",
+                    processStarted,
+                    innerException: exception);
+            }
         }
     }
 
@@ -847,6 +904,35 @@ public sealed class JobManager : IDisposable
             attempt.State = fallbackAvailable
                 ? JobStartAttemptState.FallbackAvailable
                 : JobStartAttemptState.Consumed;
+        }
+    }
+
+    /// <summary>Consumes an unused proved-no-start fallback capability. This
+    /// is idempotent so cancellation/audit-failure cleanup can safely run from
+    /// more than one enclosing path without reopening the attempt.</summary>
+    internal bool AbandonFallback(JobStartPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        lock (_shutdownGate)
+        {
+            if (!_startAttempts.TryGetValue(plan.Id, out var attempt))
+                return false;
+            if (!ReferenceEquals(attempt.Plan, plan.Dispatch.Plan))
+            {
+                throw new InvalidOperationException(
+                    "The abandoned fallback does not belong to the authorized plan.");
+            }
+            if (attempt.State == JobStartAttemptState.Consumed)
+                return false;
+            if (attempt.State != JobStartAttemptState.FallbackAvailable)
+            {
+                throw new InvalidOperationException(
+                    "A background fallback can only be abandoned after a proved no-start.");
+            }
+
+            attempt.ProvenFallbackReason = null;
+            attempt.State = JobStartAttemptState.Consumed;
+            return true;
         }
     }
 
@@ -947,6 +1033,44 @@ public sealed class JobManager : IDisposable
         "Pinned RTK execution facts changed before the background process started.",
         processStarted: false,
         ExecutionFallbackReason.RtkExecutableBecameUnavailable);
+
+    private static JobStartException RtkTargetResolutionChanged() => new(
+        "rtk_target_resolution_changed",
+        "The cold command target changed before the background process started.",
+        processStarted: false,
+        ExecutionFallbackReason.RtkTargetResolutionChanged);
+
+    private static JobStartException RtkPreparationFailed(Exception exception) => new(
+        "rtk_execution_preparation_failed",
+        "RTK background execution preparation failed before any process started.",
+        processStarted: false,
+        ExecutionFallbackReason.RtkExecutionPreparationFailed,
+        exception);
+
+    private static void ValidateRtkLaunchFacts(JobStartPlan plan)
+    {
+        if (!plan.Dispatch.RtkExecutableIdentity!.MatchesCurrentFile())
+            throw RtkIdentityChanged();
+        if (plan.Dispatch.ColdCommandTargetIdentity is not { } target ||
+            !target.MatchesCurrentResolution())
+        {
+            throw RtkTargetResolutionChanged();
+        }
+    }
+
+    private static void ThrowIfStartBudgetExpired(
+        DateTimeOffset? deadline,
+        CancellationToken cancellationToken)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        if (deadline is not null && DateTimeOffset.UtcNow >= deadline.Value)
+        {
+            throw new JobStartException(
+                "prestart_deadline_expired",
+                "The wall-clock budget expired before the background process started.",
+                processStarted: false);
+        }
+    }
 
     private void StartProcessOrThrow(JobStartPlan plan, Process process)
     {

@@ -1592,6 +1592,315 @@ public sealed class AuditPreEffectGuardTests : IDisposable
     }
 
     [Fact]
+    public async Task Successful_cold_rtk_job_preserves_rtk_terminal_routing()
+    {
+        var (rtkDirectory, rtkPath) = RtkTestStub.CreatePassthrough();
+        var savedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var savedPathExt = Environment.GetEnvironmentVariable("PATHEXT");
+        var savedMarker = Environment.GetEnvironmentVariable("PTK_COLD_AUDIT_MARKER");
+        try
+        {
+            using var fixture = CreateFixture(rtkPathOverride: rtkPath);
+            var marker = Path.Combine(fixture.Root, "cold-audit-rtk-starts.txt");
+            var targetBody = OperatingSystem.IsWindows()
+                ? ">>\"%PTK_COLD_AUDIT_MARKER%\" echo x\necho AUDITED_RTK_TARGET %*\nexit /b 0"
+                : "printf 'x\\n' >> \"$PTK_COLD_AUDIT_MARKER\"\n" +
+                  "printf 'AUDITED_RTK_TARGET %s\\n' \"$*\"\nexit 0";
+            var (targetDirectory, _) = RtkTestStub.Create(
+                targetBody,
+                fixture.Root,
+                "ptk-audit-rtk-target");
+            Environment.SetEnvironmentVariable(
+                "PATH",
+                targetDirectory.FullName + Path.PathSeparator + savedPath);
+            if (OperatingSystem.IsWindows())
+                Environment.SetEnvironmentVariable("PATHEXT", ".EXE");
+            Environment.SetEnvironmentVariable("PTK_COLD_AUDIT_MARKER", marker);
+            var attempts = new List<ExecutionPath>();
+            fixture.Jobs.BeforeProcessStartForTests = plan =>
+                attempts.Add(plan.ExecutionPath);
+            const string script = "ptk-audit-rtk-target ARG";
+
+            var result = await fixture.Filter(
+                Call(
+                    "ptk_invoke",
+                    ("script", script),
+                    ("route", "rtk"),
+                    ("background", true)),
+                async token => Text(await InvokeTool.Invoke(
+                    fixture.Host,
+                    fixture.Jobs,
+                    fixture.RawUsage,
+                    script,
+                    token,
+                    route: "rtk",
+                    background: true,
+                    auditContext: fixture.AuditContext)));
+
+            Assert.False(result.IsError ?? false);
+            Assert.Contains("[job 1 started]", ResultText(result), StringComparison.Ordinal);
+            var job = Assert.Single(fixture.Jobs.List());
+            await WaitUntilAsync(() => fixture.Jobs.Snapshot(job.Id)?.Running == false);
+            await WaitUntilAsync(() =>
+                fixture.EventTypes().Count(type => type == "job.completed") == 1);
+
+            Assert.Equal([ExecutionPath.Rtk], attempts);
+            Assert.Equal(["x"], File.ReadAllLines(marker));
+            var events = fixture.Events();
+            Assert.Equal(
+                [
+                    "call.accepted",
+                    "job.start_requested",
+                    "execution.validation_started",
+                    "execution.prepare_authorized",
+                    "execution.validation_completed",
+                    "execution.planned",
+                    "execution.dispatched",
+                    "job.started",
+                    "call.completed",
+                    "job.completed",
+                ],
+                events.Select(value =>
+                    value.GetProperty("event_type").GetString()));
+            foreach (var actual in events.Where(value =>
+                         value.GetProperty("event_type").GetString() is
+                             "execution.dispatched" or
+                             "job.started" or
+                             "call.completed" or
+                             "job.completed"))
+            {
+                var routing = actual.GetProperty("routing");
+                Assert.Equal(
+                    "rtk",
+                    routing.GetProperty("effective_route").GetString());
+                Assert.Equal(
+                    "rtk_unknown",
+                    routing.GetProperty("provenance").GetString());
+                Assert.Equal(
+                    JsonValueKind.Null,
+                    routing.GetProperty("fallback_reason").ValueKind);
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", savedPath);
+            Environment.SetEnvironmentVariable("PATHEXT", savedPathExt);
+            Environment.SetEnvironmentVariable("PTK_COLD_AUDIT_MARKER", savedMarker);
+            rtkDirectory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
+    public async Task Proved_rtk_no_start_audits_one_fallback_and_terminal_actual_route()
+    {
+        var (rtkDirectory, rtkPath) = RtkTestStub.CreatePassthrough();
+        var savedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var savedPathExt = Environment.GetEnvironmentVariable("PATHEXT");
+        var savedMarker = Environment.GetEnvironmentVariable("PTK_COLD_AUDIT_MARKER");
+        try
+        {
+            using var fixture = CreateFixture(rtkPathOverride: rtkPath);
+            var marker = Path.Combine(fixture.Root, "cold-audit-target-starts.txt");
+            var targetBody = OperatingSystem.IsWindows()
+                ? ">>\"%PTK_COLD_AUDIT_MARKER%\" echo x\necho AUDITED_COLD_TARGET %*\nexit /b 0"
+                : "printf 'x\\n' >> \"$PTK_COLD_AUDIT_MARKER\"\n" +
+                  "printf 'AUDITED_COLD_TARGET %s\\n' \"$*\"\nexit 0";
+            var (targetDirectory, _) = RtkTestStub.Create(
+                targetBody,
+                fixture.Root,
+                "ptk-audit-fallback-target");
+            Environment.SetEnvironmentVariable(
+                "PATH",
+                targetDirectory.FullName + Path.PathSeparator + savedPath);
+            if (OperatingSystem.IsWindows())
+                Environment.SetEnvironmentVariable("PATHEXT", ".EXE");
+            Environment.SetEnvironmentVariable("PTK_COLD_AUDIT_MARKER", marker);
+            var attempts = new List<ExecutionPath>();
+            fixture.Jobs.BeforeProcessStartForTests = plan =>
+                attempts.Add(plan.ExecutionPath);
+            var processStarts = 0;
+            fixture.Jobs.ProcessStartOverrideForTests = process =>
+            {
+                var attempt = Interlocked.Increment(ref processStarts);
+                return attempt == 1 ? false : process.Start();
+            };
+            const string script = "ptk-audit-fallback-target ARG";
+
+            var result = await fixture.Filter(
+                Call(
+                    "ptk_invoke",
+                    ("script", script),
+                    ("route", "rtk"),
+                    ("background", true)),
+                async token => Text(await InvokeTool.Invoke(
+                    fixture.Host,
+                    fixture.Jobs,
+                    fixture.RawUsage,
+                    script,
+                    token,
+                    route: "rtk",
+                    background: true,
+                    auditContext: fixture.AuditContext)));
+
+            Assert.False(result.IsError ?? false);
+            Assert.Contains(
+                "requested=rtk effective=powershell_direct " +
+                "fallback=rtk_execution_preparation_failed",
+                ResultText(result),
+                StringComparison.Ordinal);
+            var job = Assert.Single(fixture.Jobs.List());
+            await WaitUntilAsync(() => fixture.Jobs.Snapshot(job.Id)?.Running == false);
+            await WaitUntilAsync(() =>
+                fixture.EventTypes().Count(type => type == "job.completed") == 1);
+
+            Assert.Equal([ExecutionPath.Rtk, ExecutionPath.PowerShellDirect], attempts);
+            Assert.Equal(2, processStarts);
+            Assert.Equal(["x"], File.ReadAllLines(marker));
+            var events = fixture.Events();
+            Assert.Equal(
+                [
+                    "call.accepted",
+                    "job.start_requested",
+                    "execution.validation_started",
+                    "execution.prepare_authorized",
+                    "execution.validation_completed",
+                    "execution.planned",
+                    "execution.dispatched",
+                    "execution.dispatched",
+                    "job.started",
+                    "call.completed",
+                    "job.completed",
+                ],
+                events.Select(value =>
+                    value.GetProperty("event_type").GetString()));
+            Assert.Equal(
+                "rtk",
+                events[5].GetProperty("routing").GetProperty("effective_route").GetString());
+            Assert.Equal(
+                "rtk",
+                events[6].GetProperty("routing").GetProperty("effective_route").GetString());
+            foreach (var actual in events.Skip(7))
+            {
+                var routing = actual.GetProperty("routing");
+                Assert.Equal(
+                    "powershell_direct",
+                    routing.GetProperty("effective_route").GetString());
+                Assert.Equal(
+                    "direct_text",
+                    routing.GetProperty("provenance").GetString());
+                Assert.Equal(
+                    "rtk_execution_preparation_failed",
+                    routing.GetProperty("fallback_reason").GetString());
+            }
+            Assert.Single(events
+                .Select(value => value.GetProperty("correlation").GetProperty("plan_id"))
+                .Where(value => value.ValueKind != JsonValueKind.Null)
+                .Select(value => value.GetGuid())
+                .Distinct());
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", savedPath);
+            Environment.SetEnvironmentVariable("PATHEXT", savedPathExt);
+            Environment.SetEnvironmentVariable("PTK_COLD_AUDIT_MARKER", savedMarker);
+            rtkDirectory.Delete(recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData((int)AuditSinkFaultPoint.BeforeAppend)]
+    [InlineData((int)AuditSinkFaultPoint.Flush)]
+    public async Task Fallback_dispatch_persistence_failure_starts_nothing(
+        int pointValue)
+    {
+        var (rtkDirectory, rtkPath) = RtkTestStub.CreatePassthrough();
+        var savedPath = Environment.GetEnvironmentVariable("PATH") ?? string.Empty;
+        var savedPathExt = Environment.GetEnvironmentVariable("PATHEXT");
+        var savedMarker = Environment.GetEnvironmentVariable("PTK_COLD_AUDIT_MARKER");
+        try
+        {
+            var point = (AuditSinkFaultPoint)pointValue;
+            using var fixture = CreateFixture(
+                journalFault: (current, append) =>
+                    current == point && append == 8,
+                rtkPathOverride: rtkPath);
+            var marker = Path.Combine(fixture.Root, "forbidden-fallback-start.txt");
+            var targetBody = OperatingSystem.IsWindows()
+                ? ">>\"%PTK_COLD_AUDIT_MARKER%\" echo x\nexit /b 0"
+                : "printf 'x\\n' >> \"$PTK_COLD_AUDIT_MARKER\"\nexit 0";
+            var (targetDirectory, _) = RtkTestStub.Create(
+                targetBody,
+                fixture.Root,
+                "ptk-audit-fault-target");
+            Environment.SetEnvironmentVariable(
+                "PATH",
+                targetDirectory.FullName + Path.PathSeparator + savedPath);
+            if (OperatingSystem.IsWindows())
+                Environment.SetEnvironmentVariable("PATHEXT", ".EXE");
+            Environment.SetEnvironmentVariable("PTK_COLD_AUDIT_MARKER", marker);
+            var processStarts = 0;
+            fixture.Jobs.ProcessStartOverrideForTests = process =>
+            {
+                Interlocked.Increment(ref processStarts);
+                return false;
+            };
+            const string script = "ptk-audit-fault-target ARG";
+
+            var result = await fixture.Filter(
+                Call(
+                    "ptk_invoke",
+                    ("script", script),
+                    ("route", "rtk"),
+                    ("background", true)),
+                async token => Text(await InvokeTool.Invoke(
+                    fixture.Host,
+                    fixture.Jobs,
+                    fixture.RawUsage,
+                    script,
+                    token,
+                    route: "rtk",
+                    background: true,
+                    auditContext: fixture.AuditContext)));
+
+            Assert.True(result.IsError);
+            AssertNoStartRefusal(result);
+            Assert.Equal(1, processStarts);
+            Assert.Empty(fixture.Jobs.List());
+            Assert.False(File.Exists(marker));
+            var dispatches = fixture.Events()
+                .Where(value =>
+                    value.GetProperty("event_type").GetString() ==
+                    "execution.dispatched")
+                .ToArray();
+            Assert.InRange(dispatches.Length, 1, 2);
+            var initial = dispatches[0];
+            Assert.Equal(
+                "rtk",
+                initial.GetProperty("routing").GetProperty("effective_route").GetString());
+            // A flush fault can leave the unflushed candidate visible in this
+            // in-memory sink; a before-append fault cannot. Neither authorizes
+            // the fallback process, which is the safety boundary under test.
+            if (dispatches.Length == 2)
+            {
+                Assert.Equal(
+                    AuditSinkFaultPoint.Flush,
+                    point);
+                Assert.Equal(
+                    "powershell_direct",
+                    dispatches[1].GetProperty("routing")
+                        .GetProperty("effective_route").GetString());
+            }
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("PATH", savedPath);
+            Environment.SetEnvironmentVariable("PATHEXT", savedPathExt);
+            Environment.SetEnvironmentVariable("PTK_COLD_AUDIT_MARKER", savedMarker);
+            rtkDirectory.Delete(recursive: true);
+        }
+    }
+
+    [Fact]
     public async Task Associated_start_exception_records_started_failed_call_and_one_unknown_terminal()
     {
         using var fixture = CreateFixture();

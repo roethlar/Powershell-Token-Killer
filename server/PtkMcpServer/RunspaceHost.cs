@@ -907,7 +907,9 @@ public sealed class RunspaceHost : IDisposable
         });
     }
 
-    private TrustedCommandSnapshot CaptureBackgroundCommandFacts(string script)
+    private TrustedCommandSnapshot CaptureBackgroundCommandFacts(
+        string script,
+        string? workingDirectory = null)
     {
         var snapshot = _backgroundStockCommands.Clone();
         foreach (var name in TrustedPreflightClassifier
@@ -916,7 +918,10 @@ public sealed class RunspaceHost : IDisposable
                      .Distinct(StringComparer.OrdinalIgnoreCase))
         {
             if (snapshot.Resolve(name, CommandTypes.All) is not null) continue;
-            snapshot.Set(name, CommandTypes.All, ColdPathCommandResolver.Resolve(name));
+            snapshot.Set(
+                name,
+                CommandTypes.All,
+                ColdPathCommandResolver.Resolve(name, workingDirectory));
         }
         return snapshot;
     }
@@ -1214,6 +1219,136 @@ public sealed class RunspaceHost : IDisposable
             return await work;
         }
         return null;
+    }
+
+    internal enum BackgroundExecutionPreparationStatus
+    {
+        Ready,
+        DialectRefused,
+        TimedOut,
+        Canceled,
+        Failed,
+    }
+
+    internal sealed record BackgroundExecutionPreparation(
+        BackgroundExecutionPreparationStatus Status,
+        ExecutionPlan? Plan = null,
+        string? DetailCode = null,
+        string? Response = null);
+
+    /// <summary>Builds one cold execution plan from one post-cwd command
+    /// snapshot. A timeout, cancellation, or snapshot failure is explicit and
+    /// fail-closed: callers must not degrade to an unplanned direct start.</summary>
+    internal async Task<BackgroundExecutionPreparation> PrepareBackgroundExecutionAsync(
+        string script,
+        string route,
+        string workingDirectory,
+        DateTimeOffset deadline,
+        CancellationToken cancellationToken)
+    {
+        ObjectDisposedException.ThrowIf(_disposed, this);
+        ArgumentNullException.ThrowIfNull(script);
+        ArgumentException.ThrowIfNullOrWhiteSpace(workingDirectory);
+        if (!Path.IsPathFullyQualified(workingDirectory))
+            throw new ArgumentException(
+                "A cold execution working directory must be absolute.",
+                nameof(workingDirectory));
+
+        LastActivityUtc = DateTimeOffset.UtcNow;
+        if (cancellationToken.IsCancellationRequested)
+        {
+            return new BackgroundExecutionPreparation(
+                BackgroundExecutionPreparationStatus.Canceled,
+                DetailCode: "canceled");
+        }
+        if (DateTimeOffset.UtcNow >= deadline)
+        {
+            return new BackgroundExecutionPreparation(
+                BackgroundExecutionPreparationStatus.TimedOut,
+                DetailCode: "prestart_deadline_expired");
+        }
+
+        // Explicit PowerShell consent has no dialect or PATH dependency. It
+        // still receives a typed cold plan so audit and job metadata share the
+        // same immutable dispatch contract as automatic routing.
+        if (string.Equals(route, "pwsh", StringComparison.OrdinalIgnoreCase))
+        {
+            return new BackgroundExecutionPreparation(
+                BackgroundExecutionPreparationStatus.Ready,
+                ExecutionPlanner.CreateDirect(
+                    script,
+                    route,
+                    compressAvailable: false,
+                    ResolutionContext.Cold));
+        }
+
+        var preflightDelay = PreflightDelayForTests;
+        var work = Task.Run(() =>
+        {
+            try
+            {
+                if (preflightDelay > TimeSpan.Zero)
+                    Thread.Sleep(preflightDelay);
+                if (DateTimeOffset.UtcNow >= deadline)
+                {
+                    return new BackgroundExecutionPreparation(
+                        BackgroundExecutionPreparationStatus.TimedOut,
+                        DetailCode: "prestart_deadline_expired");
+                }
+
+                var commands = CaptureBackgroundCommandFacts(script, workingDirectory);
+                if (_moduleSource is not null)
+                {
+                    var finding = TrustedPreflightClassifier.GetShellDialectFinding(
+                        script,
+                        commands);
+                    if (finding is not null)
+                    {
+                        return new BackgroundExecutionPreparation(
+                            BackgroundExecutionPreparationStatus.DialectRefused,
+                            DetailCode: "dialect_refused",
+                            Response: FormatDialectRefusal(
+                                finding,
+                                BashAvailable(commands),
+                                background: true));
+                    }
+                }
+
+                var plan = ExecutionPlanner.Create(
+                    script,
+                    route,
+                    EffectiveRtkIdentity(),
+                    commands,
+                    compressAvailable: false,
+                    ResolutionContext.Cold,
+                    allowFileSystemGuidance: false,
+                    workingDirectory,
+                    nativeArgumentPassing: null);
+                return new BackgroundExecutionPreparation(
+                    BackgroundExecutionPreparationStatus.Ready,
+                    plan);
+            }
+            catch (Exception exception) when (exception is not (
+                OutOfMemoryException or StackOverflowException or
+                AccessViolationException or AppDomainUnloadedException))
+            {
+                return new BackgroundExecutionPreparation(
+                    BackgroundExecutionPreparationStatus.Failed,
+                    DetailCode: "cold_planning_failed");
+            }
+        }, CancellationToken.None);
+        TrackOwnedBackgroundWork(work);
+
+        return await WaitForDeadlineAsync(work, deadline, cancellationToken) switch
+        {
+            WaitOutcome.Completed => await work,
+            WaitOutcome.Canceled => new BackgroundExecutionPreparation(
+                BackgroundExecutionPreparationStatus.Canceled,
+                DetailCode: "canceled"),
+            _ => new BackgroundExecutionPreparation(
+                BackgroundExecutionPreparationStatus.TimedOut,
+                DetailCode: "prestart_deadline_expired"),
+        };
     }
 
     internal enum WaitOutcome { Completed, TimedOut, Canceled }

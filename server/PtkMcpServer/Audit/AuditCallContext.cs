@@ -320,6 +320,7 @@ internal sealed class AuditCallContext : IInvocationAuthorizer
         // fallback already bounded by the same plan; terminal routing below
         // then inherits this actual dispatch.
 
+        var previousRouting = _routing;
         ProjectDispatchRouting(dispatch, includePermittedFallbacks: true);
 
         try
@@ -336,10 +337,15 @@ internal sealed class AuditCallContext : IInvocationAuthorizer
                             : null);
             _authorizedDispatch = dispatch;
             _effectAuthorized = true;
+            _jobTerminalLease?.UpdateRouting(_routing);
             return ValueTask.FromResult(true);
         }
         catch (AuditUnavailableException)
         {
+            // The projected route is not authoritative unless its dispatch
+            // record crossed the durable barrier. In particular, a failed
+            // fallback append must leave the initial RTK route intact.
+            _routing = previousRouting;
             _authorizationPersistenceFailed = true;
             return ValueTask.FromResult(false);
         }
@@ -461,6 +467,7 @@ internal sealed class AuditCallContext : IInvocationAuthorizer
     internal void RecordValidationNoStart(string detailCode)
     {
         EnsureActive();
+        if (_validationCompleted) return;
         if (_planId is null && !BeginValidation()) return;
         try
         {
@@ -583,6 +590,136 @@ internal sealed class AuditCallContext : IInvocationAuthorizer
             _authorizationPersistenceFailed = true;
             return null;
         }
+    }
+
+    /// <summary>Durably authorizes one typed cold plan while retaining the
+    /// caller's opportunity to recheck cancellation/deadline before dispatch.</summary>
+    internal async ValueTask<bool> AuthorizeJobPlanAsync(
+        JobStartPlan plan,
+        CancellationToken cancellationToken)
+    {
+        var authorizedCwd = RequireBoundJobPlan(plan);
+        EnsureActive();
+        if (_jobStartRequested && _request!.JobId != plan.Id)
+        {
+            throw new InvalidOperationException(
+                "The authorized job ID does not match the requested job ID.");
+        }
+        if ((!_jobStartRequested && !BeginJobStartRequest(plan.Id)) ||
+            (!_validationStarted && !BeginValidation()))
+        {
+            _authorizationPersistenceFailed = true;
+            return false;
+        }
+
+        _request = _request! with
+        {
+            JobId = plan.Id,
+            Cwd = authorizedCwd,
+        };
+        return await AuthorizePlanAsync(
+            plan.Dispatch.Plan,
+            cancellationToken);
+    }
+
+    /// <summary>Durably authorizes the first exact dispatch for the already
+    /// authorized cold plan, then transfers its terminal-event reservation.</summary>
+    internal async ValueTask<AuditJobTerminalLease?> AuthorizeJobDispatchAsync(
+        JobStartPlan plan,
+        CancellationToken cancellationToken)
+    {
+        _ = RequireBoundJobPlan(plan);
+        EnsureActive();
+        if (_jobTerminalLease is not null ||
+            plan.Dispatch.IsFallback ||
+            _authorizedPlan is null ||
+            !ReferenceEquals(_authorizedPlan, plan.Dispatch.Plan) ||
+            !_jobStartRequested ||
+            _request!.JobId != plan.Id)
+        {
+            throw new InvalidOperationException(
+                "The first job dispatch must match the active typed job plan.");
+        }
+        if (!await AuthorizeDispatchAsync(plan.Dispatch, cancellationToken))
+            return null;
+
+        try
+        {
+            var terminalReservation = _reservation!.TransferSlot();
+            _jobTerminalLease = new AuditJobTerminalLease(
+                _journal,
+                terminalReservation,
+                Metadata.Actor,
+                _request,
+                _routing,
+                _callId,
+                _parentEventId,
+                _planId,
+                plan.Id);
+            return _jobTerminalLease;
+        }
+        catch (AuditUnavailableException)
+        {
+            _authorizationPersistenceFailed = true;
+            return null;
+        }
+    }
+
+    /// <summary>Compatibility composition for tests and internal callers that
+    /// do not need a deadline check between the two durable barriers.</summary>
+    internal async ValueTask<AuditJobTerminalLease?> AuthorizeJobStartAsync(
+        JobStartPlan plan,
+        CancellationToken cancellationToken)
+    {
+        if (!await AuthorizeJobPlanAsync(plan, cancellationToken))
+            return null;
+        return await AuthorizeJobDispatchAsync(plan, cancellationToken);
+    }
+
+    /// <summary>Appends the sole permitted superseding dispatch for a proved
+    /// unstarted RTK attempt. The terminal lease is updated transactionally by
+    /// <see cref="AuthorizeDispatchAsync"/> only after the append succeeds.</summary>
+    internal ValueTask<bool> AuthorizeJobFallbackAsync(
+        JobStartPlan fallback,
+        CancellationToken cancellationToken)
+    {
+        RequireBoundJobPlan(fallback);
+        EnsureActive();
+        if (_jobTerminalLease is null ||
+            !_jobStartRequested ||
+            _request!.JobId != fallback.Id ||
+            !fallback.Dispatch.IsFallback)
+        {
+            throw new InvalidOperationException(
+                "A job fallback requires the active typed terminal lease for that job.");
+        }
+        return AuthorizeDispatchAsync(fallback.Dispatch, cancellationToken);
+    }
+
+    private static string RequireBoundJobPlan(JobStartPlan plan)
+    {
+        ArgumentNullException.ThrowIfNull(plan);
+        if (!plan.DispatchBound ||
+            plan.AuthorizedWorkingDirectory is not { } authorizedCwd ||
+            !Path.IsPathFullyQualified(authorizedCwd) ||
+            plan.Execution is null ||
+            !ReferenceEquals(plan.Execution.Dispatch, plan.Dispatch) ||
+            !string.Equals(
+                plan.Script,
+                plan.Dispatch.Plan.OriginalScript,
+                StringComparison.Ordinal) ||
+            plan.Dispatch.WorkingDirectory is { } plannedCwd &&
+            !string.Equals(
+                Path.GetFullPath(plannedCwd),
+                Path.GetFullPath(authorizedCwd),
+                OperatingSystem.IsWindows()
+                    ? StringComparison.OrdinalIgnoreCase
+                    : StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException(
+                "Typed job authorization requires one bound dispatch and absolute cwd.");
+        }
+        return authorizedCwd;
     }
 
     internal bool RecordJobStarted(long jobId, string response)
@@ -1138,11 +1275,12 @@ public sealed class AuditCallContextAccessor
 /// <summary>Persistent one-record obligation detached from a completed start call.</summary>
 internal sealed class AuditJobTerminalLease
 {
+    private readonly object _stateGate = new();
     private readonly AuditJournal _journal;
     private readonly AuditReservation _reservation;
     private readonly AuditActor _actor;
     private readonly AuditRequest _request;
-    private readonly AuditRouting _routing;
+    private AuditRouting _routing;
     private readonly Guid _callId;
     private Guid? _parentEventId;
     private readonly Guid? _planId;
@@ -1173,7 +1311,15 @@ internal sealed class AuditJobTerminalLease
 
     internal Task CompleteAsync(JobSnapshot snapshot)
     {
-        if (Interlocked.Exchange(ref _completed, 1) != 0) return Task.CompletedTask;
+        AuditRouting routing;
+        Guid? parentEventId;
+        lock (_stateGate)
+        {
+            if (_completed != 0) return Task.CompletedTask;
+            _completed = 1;
+            routing = _routing;
+            parentEventId = _parentEventId;
+        }
         try
         {
             var outcomeUnknown = snapshot.ExecutionOutcomeUnknown ||
@@ -1213,11 +1359,11 @@ internal sealed class AuditJobTerminalLease
                     {
                         CallId = _callId,
                         JobId = _jobId,
-                        ParentEventId = _parentEventId,
+                        ParentEventId = parentEventId,
                         PlanId = _planId,
                     },
                     Request = _request,
-                    Routing = _routing,
+                    Routing = routing,
                     Outcome = new AuditOutcome
                     {
                         State = outcomeUnknown
@@ -1253,11 +1399,35 @@ internal sealed class AuditJobTerminalLease
 
     internal void ReleaseWithoutTerminal()
     {
-        if (Interlocked.Exchange(ref _completed, 1) == 0)
-            _reservation.Release();
+        lock (_stateGate)
+        {
+            if (_completed != 0) return;
+            _completed = 1;
+        }
+        _reservation.Release();
     }
 
-    internal void SetParent(Guid parentEventId) => _parentEventId = parentEventId;
+    internal void SetParent(Guid parentEventId)
+    {
+        lock (_stateGate)
+        {
+            if (_completed == 0) _parentEventId = parentEventId;
+        }
+    }
+
+    internal void UpdateRouting(AuditRouting routing)
+    {
+        ArgumentNullException.ThrowIfNull(routing);
+        lock (_stateGate)
+        {
+            if (_completed != 0)
+            {
+                throw new InvalidOperationException(
+                    "A completed job terminal lease cannot change routing.");
+            }
+            _routing = routing;
+        }
+    }
 
     private AuditEventHealth EventHealth()
     {

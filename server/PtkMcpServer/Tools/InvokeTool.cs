@@ -91,6 +91,11 @@ public static class InvokeTool
 
         if (background)
         {
+            JobStartPlan? activePlan = null;
+            AuditJobTerminalLease? terminalLease = null;
+            var terminalCallbackOwnedByJob = false;
+            var fallbackMustBeAbandoned = false;
+            var startAuthorized = false;
             try
             {
                 // One wall-clock budget for the whole request, established
@@ -102,8 +107,8 @@ public static class InvokeTool
                 var deadline = audit?.Metadata.Request.DeadlineUtc
                     ?? host.ComputeDeadline(timeoutSeconds);
 
-                var plan = jobs.PrepareStart(script);
-                if (audit is not null && !audit.RecordJobStartRequest(plan.Id))
+                activePlan = jobs.PrepareStart(script);
+                if (audit is not null && !audit.RecordJobStartRequest(activePlan.Id))
                     return AuditCallContext.NotStartedMessage;
 
                 if (!jobs.AllowColdBackground)
@@ -113,7 +118,7 @@ public static class InvokeTool
                         "Nothing was executed. Background jobs are cold and stateless; run " +
                         "connection-dependent work in the foreground so it uses the warm session.";
                     audit?.RecordJobAdmissionRefused(
-                        plan.Id,
+                        activePlan.Id,
                         "cold_background_disabled",
                         disabled);
                     return audit?.AuthorizationPersistenceFailed == true
@@ -121,20 +126,17 @@ public static class InvokeTool
                         : disabled;
                 }
 
-                if (audit is not null && !audit.BeginJobStartRequest(plan.Id))
+                if (audit is not null && !audit.BeginJobStartRequest(activePlan.Id))
                     return AuditCallContext.NotStartedMessage;
 
-                // Dialect check BEFORE the job starts (shell-dialect plan,
-                // slice 2): a detected bash-only script is refused fast, never
-                // started as a job that dies in its log. route=pwsh is the
-                // only interpreter-consent bypass; legacy raw is inert. The
-                // check resolves against a cold command table because that
-                // is where the job will run.
-                if (route != "pwsh")
+                cancellationToken.ThrowIfCancellationRequested();
+                if (DateTimeOffset.UtcNow >= deadline)
                 {
-                    var refusal = await host.TryGetBackgroundDialectRefusalAsync(script, cancellationToken, deadline);
-                    if (refusal is not null)
-                        return RecordJobNotStarted(audit, "dialect_refused", refusal);
+                    return RecordJobNotStarted(
+                        audit,
+                        "prestart_deadline_expired",
+                        "[job not started] The wall-clock budget expired during pre-start checks. " +
+                        "Nothing was executed. Retry, or raise timeoutSeconds.");
                 }
 
                 // Anything but Ok fails the start rather than degrading to the
@@ -191,60 +193,203 @@ public static class InvokeTool
                            "Nothing was executed. Retry, or raise timeoutSeconds.");
                 }
 
-                plan = plan with { WorkingDirectory = cwd };
-                var terminalLease = audit?.AuthorizeJobStart(plan.Id, cwd);
-                if (audit is not null && terminalLease is null)
-                    return AuditCallContext.NotStartedMessage;
+                var preparation = await host.PrepareBackgroundExecutionAsync(
+                    script,
+                    route,
+                    cwd!,
+                    deadline,
+                    cancellationToken);
+                switch (preparation.Status)
+                {
+                    case RunspaceHost.BackgroundExecutionPreparationStatus.DialectRefused:
+                        return RecordJobNotStarted(
+                            audit,
+                            preparation.DetailCode ?? "dialect_refused",
+                            preparation.Response ??
+                            "[job not started] Shell dialect validation refused this cold job.");
+                    case RunspaceHost.BackgroundExecutionPreparationStatus.TimedOut:
+                        return RecordJobNotStarted(
+                            audit,
+                            preparation.DetailCode ?? "prestart_deadline_expired",
+                            "[job not started] The wall-clock budget expired during cold execution planning. " +
+                            "Nothing was executed. Retry, or raise timeoutSeconds.");
+                    case RunspaceHost.BackgroundExecutionPreparationStatus.Canceled:
+                        return RecordJobNotStarted(
+                            audit,
+                            preparation.DetailCode ?? "canceled",
+                            "[job not started] The request was canceled before the background process started.");
+                    case RunspaceHost.BackgroundExecutionPreparationStatus.Failed:
+                        return RecordJobNotStarted(
+                            audit,
+                            preparation.DetailCode ?? "cold_planning_failed",
+                            "[job not started] Cold execution planning failed; the original operation was not started.");
+                }
+
+                var executionPlan = preparation.Plan ??
+                    throw new InvalidOperationException(
+                        "Cold execution planning completed without an execution plan.");
+                var initialDispatch = ExecutionDispatch.FromPlan(executionPlan);
+                activePlan = jobs.BindDispatch(activePlan, initialDispatch, cwd!);
+                if (audit is not null)
+                {
+                    if (!await audit.AuthorizeJobPlanAsync(
+                            activePlan,
+                            CancellationToken.None))
+                    {
+                        return AuditCallContext.NotStartedMessage;
+                    }
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (DateTimeOffset.UtcNow >= deadline)
+                    {
+                        return RecordJobNotStarted(
+                            audit,
+                            "prestart_deadline_expired",
+                            "[job not started] The wall-clock budget expired after plan authorization. " +
+                            "Nothing was executed. Retry, or raise timeoutSeconds.");
+                    }
+
+                    terminalLease = await audit.AuthorizeJobDispatchAsync(
+                        activePlan,
+                        CancellationToken.None);
+                    if (terminalLease is null)
+                        return AuditCallContext.NotStartedMessage;
+                }
+                startAuthorized = true;
+
+                // Audit append/flush is deliberately noncancelable. Recheck
+                // the caller's wall-clock authority immediately afterward and
+                // again inside JobManager at the final process-start gate.
+                cancellationToken.ThrowIfCancellationRequested();
+                if (DateTimeOffset.UtcNow >= deadline)
+                {
+                    return RecordJobNotStarted(
+                        audit,
+                        "prestart_deadline_expired",
+                        "[job not started] The wall-clock budget expired after dispatch authorization. " +
+                        "Nothing was executed. Retry, or raise timeoutSeconds.");
+                }
 
                 JobSnapshot job;
+                Func<JobSnapshot, Task>? onTerminal = terminalLease is null
+                    ? null
+                    : terminalLease.CompleteAsync;
                 try
                 {
-                    Func<JobSnapshot, Task>? onTerminal = terminalLease is null
-                        ? null
-                        : terminalLease.CompleteAsync;
-                    job = jobs.CommitStart(plan, onTerminal);
+                    job = jobs.CommitStart(
+                        activePlan,
+                        onTerminal,
+                        deadline,
+                        cancellationToken);
                 }
-                catch (JobStartException exception) when (exception.ProcessStarted is true)
+                catch (JobStartException exception) when (
+                    exception.ProcessStarted is false &&
+                    exception.ProvenPreStartFallbackReason is { } coldFallbackReason &&
+                    activePlan.Dispatch.ExecutionPath == ExecutionPath.Rtk)
                 {
-                    var unknown =
-                        $"[job {plan.Id} started; outcome unknown] The host confirmed that the " +
-                        "background process started but its startup path then failed. PTK retained " +
-                        "the job, attempted containment, and will not retry it; inspect " +
-                        $"ptk_job status/output id={plan.Id}.";
-                    var outcomeRecorded =
-                        audit?.RecordJobStartedOutcomeUnknown(plan.Id, unknown) ?? true;
-                    jobs.ConfirmStartRecorded(plan.Id);
-                    return outcomeRecorded
-                        ? unknown
-                        : $"[job {plan.Id} started] Required audit persistence failed after launch; the execution outcome is unknown.";
+                    // ProcessStarted=false plus the typed reason is the only
+                    // capability that permits another dispatch. This is one
+                    // explicit branch, never a retry loop.
+                    fallbackMustBeAbandoned = true;
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (DateTimeOffset.UtcNow >= deadline)
+                    {
+                        return RecordJobNotStarted(
+                            audit,
+                            "prestart_deadline_expired",
+                            "[job not started] The wall-clock budget expired before the proved-no-start fallback. " +
+                            "Nothing was executed. Retry, or raise timeoutSeconds.");
+                    }
+
+                    var fallbackDispatch = ExecutionDispatch.RtkPreStartFallback(
+                        executionPlan,
+                        coldFallbackReason);
+                    activePlan = jobs.BindDispatch(activePlan, fallbackDispatch, cwd!);
+                    if (audit is not null && !await audit.AuthorizeJobFallbackAsync(
+                            activePlan,
+                            CancellationToken.None))
+                    {
+                        return AuditCallContext.NotStartedMessage;
+                    }
+
+                    cancellationToken.ThrowIfCancellationRequested();
+                    if (DateTimeOffset.UtcNow >= deadline)
+                    {
+                        return RecordJobNotStarted(
+                            audit,
+                            "prestart_deadline_expired",
+                            "[job not started] The wall-clock budget expired after fallback authorization. " +
+                            "Nothing was executed. Retry, or raise timeoutSeconds.");
+                    }
+
+                    job = jobs.CommitStart(
+                        activePlan,
+                        onTerminal,
+                        deadline,
+                        cancellationToken);
                 }
-                catch (JobStartException exception) when (exception.ProcessStarted is null)
-                {
-                    var unknown =
-                        $"[job {plan.Id} start outcome unknown] The host could not confirm whether " +
-                        "the background process started. PTK retained the job record but had no " +
-                        "associated process handle with which to confirm containment, and it will " +
-                        $"not retry; inspect ptk_job status/output id={plan.Id}.";
-                    audit?.RecordJobStartOutcomeUnknown(plan.Id, unknown);
-                    terminalLease?.ReleaseWithoutTerminal();
-                    return unknown;
-                }
-                catch (Exception)
-                {
-                    terminalLease?.ReleaseWithoutTerminal();
-                    const string failed = "[job start failed] The background process could not be started.";
-                    audit?.RecordJobStartFailed(plan.Id, "process_start_failed", failed);
-                    return failed;
-                }
+                terminalCallbackOwnedByJob = true;
 
                 var started = $"[job {job.Id} started] pid {job.Pid}, cold process (no warm session state), log: {job.OutputPath}\n" +
-                              $"Poll with ptk_job action=output id={job.Id} (then pass the returned next offset); " +
-                              $"ptk_job action=status id={job.Id} for exit state.";
+                    (job.Execution.FallbackReason is { } actualFallback
+                        ? $"[route] requested={job.Execution.RequestedRoute.ToMachineCode()} " +
+                          $"effective={job.Execution.ExecutionPath.ToMachineCode()} " +
+                          $"fallback={actualFallback.ToMachineCode()}; the original script was dispatched once " +
+                          "and PTK did not retry it.\n"
+                        : string.Empty) +
+                    $"Poll with ptk_job action=output id={job.Id} (then pass the returned next offset); " +
+                    $"ptk_job action=status id={job.Id} for exit state.";
                 var startRecorded = audit?.RecordJobStarted(job.Id, started) ?? true;
                 jobs.ConfirmStartRecorded(job.Id);
                 return startRecorded
                     ? started
                     : $"[job {job.Id} started] Required audit persistence failed after launch; the execution outcome is unknown.";
+            }
+            catch (JobStartException exception) when (exception.ProcessStarted is true)
+            {
+                var jobId = activePlan!.Id;
+                terminalCallbackOwnedByJob = true;
+                var unknown =
+                    $"[job {jobId} started; outcome unknown] The host confirmed that the " +
+                    "background process started but its startup path then failed. PTK retained " +
+                    "the job, attempted containment, and will not retry it; inspect " +
+                    $"ptk_job status/output id={jobId}.";
+                var outcomeRecorded =
+                    audit?.RecordJobStartedOutcomeUnknown(jobId, unknown) ?? true;
+                jobs.ConfirmStartRecorded(jobId);
+                return outcomeRecorded
+                    ? unknown
+                    : $"[job {jobId} started] Required audit persistence failed after launch; the execution outcome is unknown.";
+            }
+            catch (JobStartException exception) when (exception.ProcessStarted is null)
+            {
+                var jobId = activePlan!.Id;
+                var unknown =
+                    $"[job {jobId} start outcome unknown] The host could not confirm whether " +
+                    "the background process started. PTK retained the job record but had no " +
+                    "associated process handle with which to confirm containment, and it will " +
+                    $"not retry; inspect ptk_job status/output id={jobId}.";
+                audit?.RecordJobStartOutcomeUnknown(jobId, unknown);
+                return unknown;
+            }
+            catch (JobStartException exception) when (
+                exception.ProcessStarted is false &&
+                exception.DetailCode == "prestart_deadline_expired")
+            {
+                return RecordJobNotStarted(
+                    audit,
+                    exception.DetailCode,
+                    "[job not started] The wall-clock budget expired before the background process started. " +
+                    "Nothing was executed. Retry, or raise timeoutSeconds.");
+            }
+            catch (JobStartException exception) when (exception.ProcessStarted is false)
+            {
+                const string failed =
+                    "[job start failed] The background process could not be started.";
+                audit?.RecordJobStartFailed(
+                    activePlan!.Id,
+                    exception.DetailCode,
+                    failed);
+                return failed;
             }
             catch (OperationCanceledException)
             {
@@ -255,10 +400,33 @@ public static class InvokeTool
             }
             catch (Exception)
             {
+                if (startAuthorized)
+                {
+                    const string failed =
+                        "[job start failed] The background process could not be started.";
+                    audit?.RecordJobStartFailed(
+                        activePlan!.Id,
+                        "process_start_failed",
+                        failed);
+                    return failed;
+                }
                 return RecordJobNotStarted(
                     audit,
                     "prestart_failed",
                     "[job not started] Background pre-start checks failed; the original operation was not started.");
+            }
+            finally
+            {
+                try
+                {
+                    if (fallbackMustBeAbandoned && activePlan is not null)
+                        jobs.AbandonFallback(activePlan);
+                }
+                finally
+                {
+                    if (!terminalCallbackOwnedByJob)
+                        terminalLease?.ReleaseWithoutTerminal();
+                }
             }
         }
         using var outputCapture = outputStore is null
