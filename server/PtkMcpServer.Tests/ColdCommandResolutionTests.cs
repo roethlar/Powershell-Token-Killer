@@ -444,9 +444,9 @@ public sealed class ColdCommandResolutionTests : IDisposable
         startInfo.ArgumentList.Add("-NonInteractive");
         startInfo.ArgumentList.Add("-Command");
         startInfo.ArgumentList.Add(
-            $"$c = Get-Command -Name '{commandName.Replace("'", "''")}' " +
+            $"$c = @(Get-Command -Name '{commandName.Replace("'", "''")}' " +
             "-CommandType Application,ExternalScript " +
-            "-ErrorAction SilentlyContinue; if ($null -ne $c) { " +
+            "-ErrorAction SilentlyContinue)[0]; if ($null -ne $c) { " +
             "[Console]::Out.WriteLine(('{0}|{1}' -f $c.CommandType, $c.Source)) }; exit 0");
         startInfo.Environment["PATH"] = pathValue;
         startInfo.Environment["PATHEXT"] = pathExtensions;
