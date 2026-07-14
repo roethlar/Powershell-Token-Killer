@@ -5,8 +5,14 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **Stop point:** no implementation or review work is in flight; resume with
-  `## Next` item 1.
+- **CI portability repair is in flight.** Owner-approved 2026-07-14 after
+  GitHub Actions run `29310719880` failed the .NET server suite at `69bd0d5`
+  on all three runners while checkout/setup/Pester stayed green. The common
+  failure is an ambient-RTK-dependent test; Windows additionally exposed five
+  independent harness assumptions. The approved test-only scope, evidence,
+  commit boundaries, and verification are canonical in
+  `.agents/plans/ci-portability-repair.md`. Production behavior and RTK
+  distribution are out of scope.
 - **Audited-harness Slice 6 is complete locally.** Code
   head `7999328` moves invoke/job/state/reset behavior and session-lifetime
   caches behind one owning `SessionRuntime`, leaves audit and output
@@ -97,11 +103,13 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Create the Slice 7 feature branch and begin worker mode under
+1. Complete and independently review the CI portability repair, then obtain
+   explicit push approval for the Windows matrix proof.
+2. Create the Slice 7 feature branch and begin worker mode under
    `.agents/plans/audited-harness-sessions.md`.
-2. Execute release-distribution slice 3 under its approved plan. Re-present
+3. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before release-distribution slice 4.
-3. When the owner releases the decisions hold, reconcile the rejected
+4. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
 
