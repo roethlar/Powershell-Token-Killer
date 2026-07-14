@@ -61,7 +61,8 @@ borrowed cancellable wait with an owning duplicated process handle; Claude
 accepted exact range `4578e6f..d1cca1b` with `guard_confirmed=true` after the
 corrected two-mutation proof. On 2026-07-14 the owner approved the staged Slice
 7e boundary below: add a Windows-only lifecycle worker entry while leaving
-default MCP routing unchanged. Exact bootstrap ownership and process-exit
+default MCP routing unchanged. The owner then approved the managed process-
+exit mapping below. Exact bootstrap ownership and bounded abnormal-diagnostic
 contracts remain to be frozen before Slice 7e code begins.
 
 This plan is the canonical implementation contract replacing the still-open
@@ -1602,10 +1603,22 @@ inventing a code sabotage.
   replaces it atomically with the supervisor proxy only after dispatch,
   cancellation, audit, output, diagnostics, and compatibility guards exist;
   no in-process fallback remains after that cutover.
+- Managed process exits are fixed as follows: `0` for `Shutdown`, `Eof`, or
+  `Canceled` after cleanup; `64` for malformed `--worker` invocation; `80` for
+  entry/bootstrap failure before `WorkerServer`; `81` for `InitializeFailed`;
+  `82` for `ProtocolError`; `83` for `TransportFailure`; and `84` for
+  `RuntimeFailure`, including cleanup or shutdown failure. Codes `80..84`
+  deliberately do not overlap the Unix broker's reserved `70..74` range.
+  `WorkerServerExit.DetailCode` preserves the specific diagnosis.
+- Process exit zero never proves an expected stop by itself. The supervisor's
+  admitted lifecycle transition is authoritative: zero is expected only when
+  paired with its requested shutdown, deliberate protocol EOF, or cancellation;
+  every unpaired zero is worker loss and follows the same containment/audit
+  path as another unexpected exit.
 - Before implementation, freeze the still-open exact handle parsing,
-  validation, ownership/cleanup order, managed process-exit mapping, and
-  bounded abnormal diagnostic contract. These are part of Slice 7e's plan
-  amendment, not implementation-time choices.
+  validation, ownership/cleanup order, and bounded abnormal diagnostic
+  contract. These are part of Slice 7e's plan amendment, not implementation-
+  time choices.
 
 ### Slice 8 — named harness-scoped sessions
 
