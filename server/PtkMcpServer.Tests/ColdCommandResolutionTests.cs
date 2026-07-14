@@ -322,7 +322,7 @@ public sealed class ColdCommandResolutionTests : IDisposable
             windows: true,
             workingDirectory: _root);
         live = ResolveWithLivePowerShell(_root, "fixture.exe", ".CMD;.EXE");
-        Assert.Equal(Path.GetFullPath(exact), resolved?.Source);
+        Assert.Equal(Path.GetFullPath(exact), resolved?.Source, ignoreCase: true);
         Assert.Equal(resolved?.Source, live?.Source, ignoreCase: true);
     }
 
