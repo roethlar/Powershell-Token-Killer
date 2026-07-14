@@ -159,9 +159,14 @@ short and update it when important repo facts change.
    Managed exit codes are now frozen: `0` for cleaned-up shutdown/EOF/cancel,
    `64` for malformed worker invocation, and `80..84` for bootstrap,
    initialize, protocol, transport, and runtime/cleanup failure; supervisor
-   lifecycle state, not zero alone, decides whether a stop was expected. Next
-   freeze exact bootstrap ownership and abnormal diagnostics, then implement
-   without operation DTOs or default routing. Before real wiring coverage,
+   lifecycle state, not zero alone, decides whether a stop was expected. The
+   next owner decision is pending: capture and immediately remove both private
+   handle variables; accept only canonical unsigned-decimal, distinct valid
+   pipe handles; duplicate them as noninheritable owned handles; close the
+   inherited originals; construct no runtime until both streams succeed; and
+   close everything on partial failure. If approved, record that contract,
+   present the bounded abnormal-diagnostic decision, then implement without
+   operation DTOs or default routing. Before real wiring coverage,
    isolate Windows containment tests from parallel process-spawning tests. The
    final default-session cutover must keep supervisor-owned audit/output,
    worker-owned runtime/process creation, and no in-process fallback. Keep the
@@ -194,7 +199,8 @@ short and update it when important repo facts change.
   the Windows-only lifecycle-entry staging boundary on 2026-07-14, but exact
   bootstrap handle parsing/ownership/cleanup and abnormal diagnostic
   termination remain open before that code. The worker-exit-to-process-exit
-  mapping is frozen in `.agents/plans/audited-harness-sessions.md`.
+  mapping is frozen in `.agents/plans/audited-harness-sessions.md`; the concrete
+  bootstrap recommendation in `## Next` is awaiting owner approval.
   Operation DTO/dispatch/cancel/response and supervisor audit/output transfer
   remain a later contract required before default-session cutover. At
   `d1cca1b`, `Program.cs` still has no `--worker` branch and constructs the
