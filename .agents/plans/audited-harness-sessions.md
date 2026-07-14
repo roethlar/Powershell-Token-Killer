@@ -43,8 +43,12 @@ cache-isolation, adapter, and reset-lifetime mutation proofs plus the full
 battery. Slice 6 is complete and landed locally. Slice 7a code head `f86de26`
 adds the strict bounded v1 worker protocol foundation; Claude accepted exact
 range `a88d605..f86de26` with `guard_confirmed=true` after six independent
-mutation proofs and the full battery on 2026-07-14. Slice 7 continues with the
-session-operations/lifetime seam, internal worker hosting, and containment.
+mutation proofs and the full battery on 2026-07-14. Slice 7b code head
+`e70089f` adds the behavior-preserving tool-to-provider operations seam and
+separate disposable lifetime seam; Claude accepted exact range
+`2eca287..e70089f` with `guard_confirmed=true` after four independent mutation
+proofs and the full battery on 2026-07-14. Slice 7 continues with internal
+worker hosting and creation-time containment.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the

@@ -2110,3 +2110,37 @@ applicability. These are non-blocking obligations for later approved Slice 7
 sub-slices, not protocol-code defects. This acceptance authorizes the next
 approved Slice 7 sub-slice; it does not authorize push, history rewriting, or
 landing.
+
+---
+
+**AUDITED-HARNESS SLICE 7B SESSION OPERATIONS/LIFETIME SEAM — ACCEPTED.**
+Claude Code 2.1.209 (model `claude-opus-4-8[1m]`, isolated disposable
+worktree) reviewed exact committed range
+`2eca287a0d9111d91a741d8ddd16c6c621d53370..e70089fd933b638fd4732c87c5b0e39ba7a423b6`
+on 2026-07-14 and returned the required structured `accepted` verdict with
+`guard_confirmed=true`. The range introduces the public tool-to-provider
+`ISessionOperations` seam and separate internal disposable
+`ISessionLifetime`, keeps audit/output capabilities supervisor-local rather
+than making them protocol payloads, retargets all four session tools and
+production DI, and makes the audit runtime gate own only the ordered lifetime.
+It adds no worker hosting and changes no tool schema, output, reset, or audit
+authority.
+
+The reviewer independently repeated three required mutations. A concrete
+`SessionRuntime` downcast failed against the fake provider; an unawaited
+lifetime drain let server shutdown overtake the blocker; and inferred concrete
+DI registration leaked `runtime` into the public `ptk_state` schema. An extra
+mutation dropping the audit capability at the explicit interface boundary also
+drove the full .NET suite red. Restoring the exact reviewed head returned
+1,250/1,250 .NET tests, 141 Pester tests with two expected skips, the full
+stdio handshake, and `git diff --check` green. The orchestrator independently
+confirmed the coder and review trees were both clean at the exact reviewed
+SHA, then removed the disposable worktree.
+
+The future remote provider must capture each request's current audit
+capability immediately, retain the output store in the supervisor, and send
+only bounded protocol DTOs. Deadline-aware worker shutdown remains owned by
+the later worker/containment sub-slices. These are the approved next-layer
+obligations, not findings in this seam. This acceptance authorizes the next
+approved Slice 7 sub-slice; it does not authorize push, history rewriting, or
+landing.
