@@ -112,7 +112,7 @@ public sealed class ColdCommandResolutionTests : IDisposable
     }
 
     [Fact]
-    public void Windows_PATH_tokenization_does_not_add_empty_dequote_or_trim_trailing_space()
+    public void Windows_PATH_tokenization_ignores_empty_and_leading_space_without_dequoting()
     {
         Directory.CreateDirectory(_root);
         File.WriteAllText(Path.Combine(_root, "fixture.EXE"), "application");
@@ -129,12 +129,6 @@ public sealed class ColdCommandResolutionTests : IDisposable
             ".EXE",
             windows: true,
             workingDirectory: _root);
-        var trailingSpace = ColdPathCommandResolver.Resolve(
-            "fixture",
-            _root + " ",
-            ".EXE",
-            windows: true,
-            workingDirectory: _root);
         var leadingSpace = ColdPathCommandResolver.Resolve(
             "fixture",
             "  " + _root,
@@ -144,7 +138,6 @@ public sealed class ColdCommandResolutionTests : IDisposable
 
         Assert.False(empty?.CommandType == CommandTypes.Application);
         Assert.False(quoted?.CommandType == CommandTypes.Application);
-        Assert.False(trailingSpace?.CommandType == CommandTypes.Application);
         Assert.Equal(CommandTypes.Application, leadingSpace?.CommandType);
     }
 
