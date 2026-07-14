@@ -9,7 +9,7 @@ namespace PtkMcpServer.Tests;
 [Collection("ProcessEnvironment")]
 public sealed class StateToolTests : IDisposable
 {
-    private readonly RunspaceHost _host = new(callTimeout: TimeSpan.FromSeconds(60));
+    private readonly RunspaceHost _host = new();
     private readonly JobManager _jobs = new(
         Path.Combine(Path.GetTempPath(), "ptk-state-jobs-" + Guid.NewGuid().ToString("N")));
     private readonly RawUsageCounter _rawUsage = new();
