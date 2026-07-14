@@ -73,6 +73,7 @@ internal sealed class WindowsWorkerNative : IWindowsWorkerNative
     private const uint FileShareDelete = 0x00000004;
     private const uint OpenExisting = 3;
     private const uint FileAttributeNormal = 0x00000080;
+    private const uint DuplicateSameAccess = 0x00000002;
 
     public IWindowsJobHandle CreateUnnamedJob()
     {
@@ -585,12 +586,12 @@ internal sealed class WindowsWorkerNative : IWindowsWorkerNative
 
         public async Task WaitForExitAsync(CancellationToken cancellationToken = default)
         {
-            BorrowedProcessWaitHandle waitHandle;
+            OwnedProcessWaitHandle waitHandle;
             lock (_gate)
             {
                 var process = _process ??
                     throw new ObjectDisposedException(nameof(NativeProcessHandle));
-                waitHandle = new BorrowedProcessWaitHandle(process);
+                waitHandle = new OwnedProcessWaitHandle(process);
             }
 
             using (waitHandle)
@@ -679,36 +680,36 @@ internal sealed class WindowsWorkerNative : IWindowsWorkerNative
         }
     }
 
-    private sealed class BorrowedProcessWaitHandle : WaitHandle
+    private sealed class OwnedProcessWaitHandle : WaitHandle
     {
-        private readonly SafeProcessHandle _process;
-        private bool _addedReference;
-
-        internal BorrowedProcessWaitHandle(SafeProcessHandle process)
+        internal OwnedProcessWaitHandle(SafeProcessHandle process)
         {
-            _process = process;
-            var addedReference = false;
+            var currentProcess = NativeMethods.GetCurrentProcess();
+            SafeWaitHandle? duplicate = null;
             try
             {
-                process.DangerousAddRef(ref addedReference);
-                _addedReference = addedReference;
-                SafeWaitHandle = new SafeWaitHandle(
-                    process.DangerousGetHandle(),
-                    ownsHandle: false);
-            }
-            catch
-            {
-                if (addedReference) process.DangerousRelease();
-                throw;
-            }
-        }
+                if (!NativeMethods.DuplicateHandle(
+                        currentProcess,
+                        process,
+                        currentProcess,
+                        out duplicate,
+                        desiredAccess: 0,
+                        inheritHandle: false,
+                        options: DuplicateSameAccess))
+                {
+                    var error = Marshal.GetLastWin32Error();
+                    throw new Win32Exception(
+                        error,
+                        "Could not duplicate the contained worker process handle for waiting.");
+                }
 
-        protected override void Dispose(bool explicitDisposing)
-        {
-            base.Dispose(explicitDisposing);
-            if (!_addedReference) return;
-            _addedReference = false;
-            _process.DangerousRelease();
+                SafeWaitHandle = duplicate;
+                duplicate = null;
+            }
+            finally
+            {
+                duplicate?.Dispose();
+            }
         }
     }
 
@@ -1237,6 +1238,20 @@ internal sealed class WindowsWorkerNative : IWindowsWorkerNative
             SafeProcessHandle process,
             NativeJobHandle job,
             [MarshalAs(UnmanagedType.Bool)] out bool result);
+
+        [DllImport("kernel32.dll")]
+        internal static extern IntPtr GetCurrentProcess();
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool DuplicateHandle(
+            IntPtr sourceProcessHandle,
+            SafeProcessHandle sourceHandle,
+            IntPtr targetProcessHandle,
+            out SafeWaitHandle targetHandle,
+            uint desiredAccess,
+            [MarshalAs(UnmanagedType.Bool)] bool inheritHandle,
+            uint options);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         internal static extern uint ResumeThread(NativeThreadHandle thread);

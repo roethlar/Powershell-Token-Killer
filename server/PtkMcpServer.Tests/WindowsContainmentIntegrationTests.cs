@@ -45,9 +45,22 @@ public sealed class WindowsContainmentIntegrationTests
             Assert.Equal("fixture:stderr", await ReadLineAsync(errorReader));
             Assert.Equal("entered\n", await File.ReadAllTextAsync(enteredMarker));
 
+            using var canceledWaitCancellation = new CancellationTokenSource();
+            var canceledWait = worker.WaitForExitAsync(canceledWaitCancellation.Token);
+            var survivingWait = worker.WaitForExitAsync();
+            Assert.False(canceledWait.IsCompleted);
+            Assert.False(survivingWait.IsCompleted);
+
+            canceledWaitCancellation.Cancel();
+            await Assert.ThrowsAnyAsync<OperationCanceledException>(
+                async () => await canceledWait);
+            Assert.False(workerWitness.HasExited);
+            Assert.False(survivingWait.IsCompleted);
+
             var owner = worker;
             worker = null;
             owner.Dispose();
+            await survivingWait.WaitAsync(CheckpointTimeout);
             await WaitForExitAsync(workerWitness);
         }
         finally

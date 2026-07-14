@@ -320,6 +320,8 @@ public sealed class WindowsProcessTreeSupervisorTests
                 "CreatePipe",
                 "CreateProcessW",
                 "DeleteProcThreadAttributeList",
+                "DuplicateHandle",
+                "GetCurrentProcess",
                 "InitializeProcThreadAttributeList",
                 "IsProcessInJob",
                 "QueryInformationJobObject",
@@ -341,6 +343,23 @@ public sealed class WindowsProcessTreeSupervisorTests
             throw new InvalidOperationException("The native create method is unavailable.");
         Assert.Equal(1, CountDirectCalls(createProcessInJob, createProcessPInvoke));
 
+        var duplicateHandlePInvoke = pInvokes.Single(candidate => string.Equals(
+            candidate.Import!.EntryPoint ?? candidate.Method.Name,
+            "DuplicateHandle",
+            StringComparison.Ordinal)).Method;
+        var getCurrentProcessPInvoke = pInvokes.Single(candidate => string.Equals(
+            candidate.Import!.EntryPoint ?? candidate.Method.Name,
+            "GetCurrentProcess",
+            StringComparison.Ordinal)).Method;
+        var ownedWaitHandle = typeof(WindowsWorkerNative).GetNestedType(
+            "OwnedProcessWaitHandle",
+            BindingFlags.NonPublic) ??
+            throw new InvalidOperationException("The owning process wait handle is unavailable.");
+        var ownedWaitConstructor = Assert.Single(ownedWaitHandle.GetConstructors(
+            BindingFlags.Instance | BindingFlags.NonPublic));
+        Assert.Equal(1, CountDirectCalls(ownedWaitConstructor, duplicateHandlePInvoke));
+        Assert.Equal(1, CountDirectCalls(ownedWaitConstructor, getCurrentProcessPInvoke));
+
         var source = File.ReadAllText(NativeSourcePath());
         var executableSource = RemoveComments(source);
         Assert.DoesNotContain("LibraryImport", executableSource, StringComparison.Ordinal);
@@ -352,6 +371,11 @@ public sealed class WindowsProcessTreeSupervisorTests
         Assert.Matches(
             new Regex(
                 @"ProcThreadAttributeJobList\s*=\s*0x0002000D\s*;",
+                RegexOptions.CultureInvariant),
+            executableSource);
+        Assert.Matches(
+            new Regex(
+                @"DuplicateSameAccess\s*=\s*0x00000002\s*;",
                 RegexOptions.CultureInvariant),
             executableSource);
         Assert.Equal(
@@ -413,6 +437,25 @@ public sealed class WindowsProcessTreeSupervisorTests
         Assert.DoesNotMatch(
             new Regex(@"\b(?:for|foreach|while|do|goto)\b", RegexOptions.CultureInvariant),
             executableCreateBody);
+
+        var waitStart = source.IndexOf(
+            "private sealed class OwnedProcessWaitHandle",
+            StringComparison.Ordinal);
+        var waitEnd = source.IndexOf(
+            "private sealed class NativeWorkerPipeSet",
+            waitStart,
+            StringComparison.Ordinal);
+        Assert.True(waitStart >= 0 && waitEnd > waitStart);
+        var executableWaitBody = RemoveComments(source[waitStart..waitEnd]);
+        Assert.Contains("desiredAccess: 0", executableWaitBody, StringComparison.Ordinal);
+        Assert.Contains("inheritHandle: false", executableWaitBody, StringComparison.Ordinal);
+        Assert.Contains("options: DuplicateSameAccess", executableWaitBody, StringComparison.Ordinal);
+        Assert.Contains("SafeWaitHandle = duplicate", executableWaitBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("BorrowedProcessWaitHandle", executableWaitBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("DangerousAddRef", executableWaitBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("DangerousRelease", executableWaitBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("DangerousGetHandle", executableWaitBody, StringComparison.Ordinal);
+        Assert.DoesNotContain("ownsHandle: false", executableWaitBody, StringComparison.Ordinal);
     }
 
     [Fact]
@@ -573,7 +616,7 @@ public sealed class WindowsProcessTreeSupervisorTests
             string.Empty,
             RegexOptions.CultureInvariant);
 
-    private static int CountDirectCalls(MethodInfo caller, MethodInfo callee)
+    private static int CountDirectCalls(MethodBase caller, MethodInfo callee)
     {
         var il = caller.GetMethodBody()?.GetILAsByteArray() ??
             throw new InvalidOperationException($"{caller.Name} has no managed method body.");
