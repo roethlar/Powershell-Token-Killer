@@ -231,9 +231,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Present the resilience draft's remaining owner-facing choices one at a time.
-   After they are settled, land the planning branch only, then present its R0
-   contract/feasibility slice for a separate code go.
+1. Complete the resilience plan's fresh fixed-SHA Claude Fable 5 review. If it
+   is accepted, present the planning branch for its owner-gated local merge;
+   only after it lands, present R0 contract/feasibility for a separate code go.
 2. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
