@@ -106,6 +106,10 @@ Target session rules:
   auto-create after a typo.
 - `reset` and `restart` replace the entire target worker and increment its
   generation. They do not affect another session.
+- After an execution timeout returns its terminal and the old worker tree is
+  confirmed dead, an otherwise eligible session automatically starts its next
+  generation from the fresh declared baseline. The timed-out call is never
+  replayed.
 - An optional `expectedGeneration` prevents a stale caller from acting on a
   replacement worker.
 - Optional templates loaded from `~/.ptk/profiles.json` can freeze a bootstrap

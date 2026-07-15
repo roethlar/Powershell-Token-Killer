@@ -652,13 +652,15 @@ serializes scripts within the admitted generation.
      work runs after the original deadline. Wait at most
      `timeoutContainmentGrace` for confirmed worker/group death.
   4. On confirmation, terminate its managed jobs, publish
-     `lost(reason=timeout)`, and return the original call's terminal. Only then
-     may the resilience controller allocate a new generation and restore the
-     exact declared baseline under its eligibility/backoff rules; recovery
-     never extends the expired call. On grace expiry, return
+     `lost(reason=timeout)`, and return the original call's terminal. Only after
+     that terminal is delivered does the resilience controller automatically
+     allocate an otherwise eligible new generation and restore the exact
+     declared baseline under its backoff rules; recovery never extends or
+     replays the expired call. On grace expiry, return
      `timed_out, containment_unconfirmed`, publish `quarantined` with no new
      admission/generation, and keep observing containment; only confirmed death
-     can unblock automatic recovery.
+     later automatically starts otherwise eligible baseline recovery after the
+     already-returned terminal, with no explicit restart.
 
   The timeout response is returned after confirmation or grace expiry and
   labels session/job state loss plus containment certainty. PTK never tries to
@@ -2505,15 +2507,19 @@ not a correctness guard, and rrp-10 remains documentation reconciliation.
   timeout/reset effects.
 - A template-less dynamic session establishes a process-scoped auth/module
   sentinel, then times out after execution starts. Its whole worker exits, its
-  generation changes, its managed jobs stop, and automatic recovery creates
-  only a new empty declared baseline; the sentinel is absent there and the
-  other session remains untouched.
+  original terminal is delivered, its managed jobs stop, and—only after
+  confirmed old-tree death—automatic recovery changes generation and creates
+  only a new empty declared baseline. The timed-out call is not replayed, the
+  sentinel is absent there, and the other session remains untouched.
 - Barrier tests expire a call while it owns the only operation lease and while
   other calls/jobs are queued. The slot enters timeout-resetting without
   self-deadlock, admits no new work, cancels the other generation leases, and
   never starts a replacement before confirmed old-group death. A stuck kill
   returns by deadline plus the fixed containment grace with the slot
-  quarantined and `containment_unconfirmed`.
+  quarantined and `containment_unconfirmed`. Releasing the fixture's death
+  confirmation later automatically starts the otherwise eligible baseline
+  generation without an explicit lifecycle call; the original timeout remains
+  the call's only terminal.
 - A barrier test, not timing alone, proves different sessions can progress
   concurrently while one session remains serial.
 - Concurrent open starts one worker; list/state on cold does not start it.

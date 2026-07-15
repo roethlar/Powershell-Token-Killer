@@ -106,7 +106,9 @@ short and update it when important repo facts change.
   has shipped and only this development environment is in use, then delegated
   the choice: keep the current registration usable through R6, perform one R7
   cutover to the matched guardian package, and preserve no direct-server
-  migration or compatibility layer.
+  migration or compatibility layer. An eligible alias also recovers
+  automatically to its fresh declared baseline after an execution-timeout
+  terminal and confirmed old-tree death; the timed-out call is never replayed.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and

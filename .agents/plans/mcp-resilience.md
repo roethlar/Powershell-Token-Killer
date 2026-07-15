@@ -35,6 +35,12 @@ connection remains open, idle timeout cannot stop or recycle the guardian,
 host, or warm workers; only public EOF, explicit recycle, or failure replaces
 them.
 
+The owner approved automatic post-timeout recovery on 2026-07-15. After an
+execution-timeout terminal has been delivered and the old worker tree is
+confirmed dead, an otherwise eligible alias automatically creates its next
+generation from the fresh declared baseline. The timed-out call is never
+replayed, and no replacement overlaps the old tree.
+
 The owner delegated the packaging/cutover choice on 2026-07-15 after
 confirming PTK has not shipped and its only current user is this development
 environment. The chosen contract has no migration layer or backward-
@@ -502,9 +508,10 @@ explicit lifecycle action, but PTK never guesses.
 A deterministic configuration/bootstrap validation failure is `faulted`, not
 an infinite automatic replay. Manual/model-issued restart remains available
 under the existing binding/digest rules. Execution timeout remains the audited
-containment transition; after confirmed death it may enter automatic recovery
-only when the timed-out operation has received its one truthful terminal and
-the alias otherwise meets the eligibility rules.
+containment transition. After the timed-out operation has received its one
+truthful terminal and old-tree death is confirmed, an otherwise eligible alias
+automatically enters the same new-generation baseline recovery; the expired
+call is never extended or replayed.
 
 ## Backoff, crash loops, and health
 
@@ -804,6 +811,9 @@ or history rewriting.
   replayed. Stale expected generation refuses before effects.
 - Public job/output IDs never reuse. Sealed output remains readable; incomplete
   output and lost jobs are truthful tombstones.
+- An execution timeout returns its single terminal and confirms old-tree death
+  before allocating the next eligible generation. Recovery creates only the
+  declared baseline and never reruns the timed-out operation.
 
 ### Availability, loops, and isolation
 
@@ -903,7 +913,11 @@ fails before final fixed-SHA acceptance:
 28. stop or recycle a guardian, host, or worker solely because an open MCP
     connection was idle; and
 29. leave a new payload or any changed harness registration behind after an
-    injected R7 cutover failure.
+    injected R7 cutover failure; and
+30. allocate a post-timeout replacement before the original timeout terminal
+    is delivered; and
+31. leave an otherwise eligible timed-out alias unavailable after its terminal
+    and confirmed old-tree death instead of starting baseline recovery.
 
 ## Documentation and release dependency
 
