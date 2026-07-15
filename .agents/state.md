@@ -59,8 +59,8 @@ short and update it when important repo facts change.
   head `eef38cb`.** It adds only strict transport-neutral value codecs for
   foreground invoke, job controls, and state, with strict logical UTF-8
   script/result limits. It does not bind invoke to ordinary request transport
-  or add runtime execution,
-  prepare/commit, background start, audit/output transfer, job-ID allocation,
+  or add runtime execution, prepare/commit, background start, audit/output
+  transfer, job-ID allocation,
   reset, proxy wiring, or MCP behavior. Claude Code 2.1.210 accepted exact
   range `a83e2e6..eef38cb` with `guard_confirmed=true` after ten independent
   mutations and the full battery. Completion records are committed at
@@ -68,6 +68,14 @@ short and update it when important repo facts change.
   content arrival was verified by direct branch diff, and the feature branch
   was removed. Canonical evidence is in the audited-harness plan and
   `.agents/review/index.md`.
+- **Audited-harness Slice 7h is owner-approved and in progress on
+  `feat/audited-harness-slice7h-prepared-codecs`.** The frozen boundary adds
+  only strict unwired prepare, prepared-correlation, commit, and abort values
+  for foreground invoke. It freezes canonical UUIDv4 plan ID, exact
+  strict-UTF-8 script digest, worker generation, and original absolute deadline
+  correlation without adding reservation behavior, execution, the final
+  prepared descriptor, audit/output transfer, background IDs, server wiring,
+  or MCP behavior. The canonical contract is in the audited-harness plan.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and
@@ -185,10 +193,10 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Present and freeze the next narrow post-7g boundary before code. Prefer one
-   transport/lifecycle seam at a time; do not silently bundle real runtime
-   dispatch, prepare/commit, audit/output transfer, job-ID allocation,
-   reset/process replacement, proxy wiring, or the MCP cutover.
+1. Implement, guard, review, and land the frozen Slice 7h strict unwired
+   prepare/commit/abort payload-codec boundary. Do not add reservation/runtime
+   behavior, the final prepared descriptor, audit/output transfer, background
+   job IDs, reset/process replacement, proxy wiring, or the MCP cutover.
 2. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before release-distribution slice 4.
 3. When the owner releases the decisions hold, reconcile the rejected

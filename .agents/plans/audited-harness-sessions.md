@@ -75,7 +75,8 @@ transport-neutral invoke/job-control/state value codecs while remaining
 deliberately unwired. Claude Code 2.1.210 accepted exact range
 `a83e2e6..eef38cb` with `guard_confirmed=true` after ten independent mutation
 proofs and the full battery on 2026-07-15. Slice 7g is complete and landed on
-local `master`.
+local `master`. The strict still-unwired Slice 7h prepare/commit/abort payload
+codec boundary below was owner-approved on 2026-07-15.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
@@ -1789,6 +1790,65 @@ inventing a code sabotage.
   capability transfer, background start/result handling, public job-ID
   allocation or mapping, reset/process replacement, supervisor proxy wiring,
   default-session cutover, and all MCP/schema/output behavior changes remain
+  separately owner-approved work.
+
+#### Slice 7h staging boundary — owner-approved 2026-07-15
+
+- Land strict standalone value codecs for foreground-invoke `prepare`, its
+  prepared-correlation fragment, `commit`, and `abort` while leaving them
+  deliberately unwired. The codecs accept and create payload objects only:
+  they do not bind a `WorkerEnvelope`, classify a frame, allocate a request ID,
+  register with `WorkerServer`, or execute any operation.
+- A `prepare` payload has exactly positive signed-64-bit `generation`, positive
+  valid-UTC millisecond `deadlineUnixTimeMilliseconds`, a 64-character
+  lowercase hexadecimal SHA-256 `scriptDigest`, exact operation name `invoke`,
+  and `arguments` in the existing foreground-only `WorkerInvokeArguments`
+  shape. Both parse and create recompute the digest from that exact script and
+  reject a mismatch. Background job start and bootstrap prepare shapes remain
+  later separately approved work.
+- `scriptDigest` is SHA-256 over the strict UTF-8 bytes of the exact original
+  script with no normalization, BOM, or domain prefix, matching the audit
+  evidence digest. The deadline is the original absolute operation deadline,
+  not a new budget. Creation requires UTC whole-millisecond precision so
+  serialization is lossless; parsing does not reject an otherwise valid
+  deadline merely because it has already expired.
+- A prepared-correlation fragment contains exactly canonical lowercase RFC
+  4122 UUIDv4 `planId`, `scriptDigest`, `generation`, and
+  `deadlineUnixTimeMilliseconds`. It is not the final prepared descriptor or a
+  live response: execution-plan and permitted-fallback fields remain for a
+  later approved codec. This slice validates values supplied by its caller and
+  never generates a plan ID.
+- A `commit` payload and an `abort` payload each contain exactly the same four
+  correlation fields and have distinct DTO types despite their identical wire
+  shapes. Stateless validators require the prepared fragment to match the
+  prepare digest/generation/deadline and require commit or abort to match all
+  four prepared values exactly. Worker boot and request IDs remain solely in
+  the future outer-envelope binding and are not duplicated in these payloads.
+- Commit and abort contain no script, operation, arguments, result, abort
+  reason, retry flag, or timeout override. The codecs perform no current-worker
+  identity, current-time, reservation, or replay lookup.
+- Every payload rejects duplicate, unknown, missing, explicit-null,
+  wrong-kind, nonintegral, out-of-range, empty, noncanonical, or mismatched
+  values as applicable. Stable failures contain no script, digest, identifier,
+  or inner-exception content. Direct guards cover nested duplicate arguments
+  independently of the outer envelope decoder.
+- Extend the staging boundary over every new codec and DTO type. No production
+  type may construct or call the prepared-operation codec, and its type graph
+  may not carry `ISessionOperations`, `ISessionLifetime`, `SessionRuntime`,
+  audit context, `OutputStore`, `RunspaceHost`, `JobManager`, an executor,
+  scheduler, server, DI, or process-lifecycle capability.
+- Guards must cover exact round trips, all closed-object and numeric bounds,
+  canonical UUIDv4/digest/deadline handling, parse/create digest matching,
+  distinct commit/abort types, content-free failures, and the absence of
+  production wiring. Mutations that admit another operation, normalize an
+  identifier, skip digest matching, accept a lossy deadline, or add a
+  production reference must fail their intended guards.
+- Reservation acquisition, final prepared-descriptor contents and response
+  binding, planning, command-identity revalidation, commit idempotency,
+  abort/expiry behavior,
+  runtime execution, audit/output transfer, background start and public job
+  IDs, job-terminal events, reset/process replacement, supervisor proxy
+  wiring, default-session cutover, and all MCP/schema/output changes remain
   separately owner-approved work.
 
 ### Slice 8 — named harness-scoped sessions
