@@ -112,6 +112,10 @@ PtkMcpServer --worker          # private host-managed session worker
 
 Direct `--host` or `--worker` use without valid inherited bootstrap channels
 fails before configuration, logging, audit, output, PowerShell, or MCP startup.
+The role list above is the post-cutover contract. During R4-R6 only, the
+existing no-argument `PtkMcpServer` public mode remains intact for installed
+registrations; R7 changes registration and removes that legacy public entry in
+one atomic slice.
 
 ## Target topology and ownership
 
@@ -517,13 +521,14 @@ or history rewriting.
 
 ### R4 — private real-host mode and control-plane transfer
 
-- Move the current server body behind exact private `--host` entry, remove its
-  public MCP ownership, and route guardian tool adapters through the private
-  protocol while preserving the current in-process `ISessionOperations`
-  behavior.
-- Move audit admission, output capabilities, public IDs, frozen catalog, and
-  idle policy to the guardian atomically. The host gets no audit credentials or
-  public handles and has no direct production launch path.
+- Add the exact private `--host` entry and route the nondefault guardian
+  apphost's tool adapters through it while preserving current in-process
+  `ISessionOperations` behavior. Keep the installed no-argument server mode and
+  its public MCP behavior byte-for-byte intact through R6.
+- In the guardian path, move audit admission, output capabilities, public IDs,
+  frozen catalog, and idle policy outward atomically. The private host gets no
+  audit credentials or public handles. Shared factories may serve the legacy
+  path, but no installed registration points at `--host` or the guardian yet.
 - Reconcile audit schema/event evolution and package both exact-version
   apphosts, but keep registration cutover separately guarded.
 
@@ -549,8 +554,9 @@ or history rewriting.
 
 ### R7 — registration, distribution, and end-to-end cutover
 
-- Change every install/registration path to launch only the guardian apphost;
-  direct host/worker modes remain private and bootstrap-gated.
+- In one commit, change every install/registration path to launch only the
+  guardian apphost and remove the legacy no-argument public server mode. Direct
+  server use then requires private bootstrap-gated `--host` or `--worker`.
 - Package the guardian, exact pinned host, shared contracts, required Unix
   guardian/worker brokers, and platform containment artifacts together.
   Partial/mixed-version installation fails before public initialization.
