@@ -82,9 +82,10 @@ short and update it when important repo facts change.
   content arrival was verified by direct branch diff, and the feature branch
   was removed. Canonical evidence is in the audited-harness plan and
   `.agents/review/index.md`.
-- **The two-layer MCP resilience planning boundary is owner-approved and being
-  made durable on `plan/mcp-resilience-guardian`; implementation is not
-  authorized.** The target keeps one public stdio guardian alive while it
+- **The two-layer MCP resilience planning boundary is owner-approved; its
+  reconciled draft passed independent fixed-SHA review at `06775ad` on
+  `plan/mcp-resilience-guardian`; implementation is not authorized.** The
+  target keeps one public stdio guardian alive while it
   restarts an exact-version private host, and makes a healthy host replace an
   unexpectedly lost session worker. It never replays ambiguous work, changes
   generation on every replacement, recreates only frozen declared bootstrap
@@ -209,8 +210,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Review, reconcile, and land the owner-approved MCP resilience plan only;
-   then present its R0 contract/feasibility slice for a separate code go.
+1. Present the resilience draft's remaining owner-facing choices one at a time.
+   After they are settled, land the planning branch only, then present its R0
+   contract/feasibility slice for a separate code go.
 2. Do not execute release-distribution slice 3 until its single-process server
    artifact/registration assumptions are reconciled with the approved guardian
    packaging boundary. Re-present the hook-default choice before release slice
