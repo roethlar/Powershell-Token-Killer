@@ -385,6 +385,10 @@ public sealed class WorkerPreparedOperationCodecTests
         var otherDigest = new string('0', 64);
 
         Assert.Equal(
+            WorkerPreparedCorrelationMatch.Mismatch,
+            default(WorkerPreparedCorrelationMatch));
+
+        Assert.Equal(
             WorkerPreparedCorrelationMatch.Match,
             WorkerPreparedOperationCodec.ComparePreparedToPrepare(prepare, prepared));
         foreach (var changed in new[]

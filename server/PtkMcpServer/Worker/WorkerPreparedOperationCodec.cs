@@ -33,8 +33,8 @@ internal sealed record WorkerAbortPayload(
 
 internal enum WorkerPreparedCorrelationMatch
 {
-    Match,
     Mismatch,
+    Match,
 }
 
 /// <summary>
