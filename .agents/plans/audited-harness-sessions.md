@@ -62,8 +62,10 @@ accepted exact range `4578e6f..d1cca1b` with `guard_confirmed=true` after the
 corrected two-mutation proof. On 2026-07-14 the owner approved the staged Slice
 7e boundary below: add a Windows-only lifecycle worker entry while leaving
 default MCP routing unchanged. The owner then approved the managed process-
-exit mapping and exact bootstrap ownership below. Only the bounded abnormal-
-diagnostic contract remains to be frozen before Slice 7e code begins.
+exit mapping, exact bootstrap ownership, and bounded abnormal-diagnostic
+contract below. Slice 7e's entry contract is fully frozen and implementation
+is authorized; operation dispatch and default-session cutover remain later
+sub-slices.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
@@ -1646,9 +1648,31 @@ inventing a code sabotage.
   every acquisition boundary, and the prohibition on runtime construction
   before both streams. Mutations that retain an inheritable protocol handle or
   enter the runtime factory early must fail their intended guards.
-- Before implementation, freeze the still-open bounded abnormal diagnostic
-  contract. It is part of Slice 7e's plan amendment, not an implementation-
-  time choice.
+- PTK infrastructure in worker mode writes no bytes to standard output.
+  Standard output remains available only as bounded untrusted diagnostics from
+  user/runtime code after successful initialization; it is never protocol.
+- A nonzero managed worker exit (`64` or `80..84`) makes exactly one best-effort
+  standard-error write attempt containing at most 256 ASCII bytes including
+  the terminating LF. The exact shape is
+  `ptk_worker_exit kind=<kind> detail=<detail>\n`, where `kind` and `detail`
+  are lowercase fixed internal codes selected from compile-time allow-lists.
+  Cleaned-up zero exits write no infrastructure diagnostic.
+- The diagnostic formatter must map every unknown or non-allow-listed detail
+  to a fixed generic code for its exit kind. It never includes exception text,
+  stack traces, numeric/raw handles, paths, environment names or values,
+  scripts, payloads, command output, user text, or culture-dependent data.
+  Failure or partial completion of the single stderr write neither retries nor
+  changes the already selected process exit code.
+- Any caller that launches the worker must continuously drain stdout and stderr
+  until containment closes and both streams reach EOF. The existing per-boot
+  65,536-byte cap and one-marker-then-drain/discard contract applies when the
+  production supervisor is wired; the Slice 7e contained-process smoke drains
+  both streams without adding MCP/default-session routing.
+- Guards must prove zero-exit silence, exact one-line output for every nonzero
+  class, the 256-byte/ASCII/allow-list bounds, generic mapping for an unknown
+  detail, no exception/data interpolation, no stdout infrastructure write, and
+  write-failure invariance of the exit code. A mutation that interpolates an
+  exception or emits a second line must fail its intended guard.
 
 ### Slice 8 — named harness-scoped sessions
 

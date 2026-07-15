@@ -164,12 +164,14 @@ short and update it when important repo facts change.
    accept only canonical unsigned-decimal distinct pipe handles, replace the
    inherited originals with owned noninheritable duplicates, construct no
    runtime until both streams succeed, and close every partial acquisition.
-   The next owner decision is pending: PTK writes nothing to worker stdout and,
-   on nonzero exit only, writes at most one bounded ASCII stderr line containing
-   fixed kind/detail codes—never exception text, handles, paths, environment
-   values, or scripts; zero exits are silent and the supervisor bounds/drains
-   diagnostics. If approved, record it and implement without operation DTOs or
-   default routing. Before real wiring coverage,
+   Bounded diagnostics are now frozen too: PTK infrastructure writes nothing to
+   worker stdout; each nonzero exit makes one best-effort at-most-256-byte ASCII
+   stderr write using allow-listed kind/detail codes and no sensitive data;
+   zero exits are silent, and callers continuously drain both diagnostic
+   streams. Implement this fully approved Slice 7e entry without operation DTOs
+   or default routing, prove its new guards red then green, run the complete
+   local battery, validate the exact commit through the contained launcher on
+   `NETWATCH-01`, and obtain fixed-SHA review acceptance. Before real wiring,
    isolate Windows containment tests from parallel process-spawning tests. The
    final default-session cutover must keep supervisor-owned audit/output,
    worker-owned runtime/process creation, and no in-process fallback. Keep the
@@ -198,16 +200,15 @@ short and update it when important repo facts change.
 
 ## Blockers
 
-- **Managed worker-entry/dispatch contract is incomplete.** The owner approved
-  the Windows-only lifecycle-entry staging boundary, worker process-exit
-  mapping, and exact bootstrap ownership on 2026-07-14. Only the bounded
-  abnormal diagnostic contract in `## Next` remains open before that code; the
-  frozen contracts live in `.agents/plans/audited-harness-sessions.md`.
-  Operation DTO/dispatch/cancel/response and supervisor audit/output transfer
-  remain a later contract required before default-session cutover. At
-  `d1cca1b`, `Program.cs` still has no `--worker` branch and constructs the
-  supervisor-side `SessionRuntime`; `WorkerServer` accepts only initialize/
-  shutdown after ready.
+- **Default-session dispatch remains a later contract; Slice 7e is not
+  blocked.** The owner approved the Windows-only lifecycle-entry staging
+  boundary, worker process-exit mapping, exact bootstrap ownership, and bounded
+  abnormal diagnostics on 2026-07-14; the frozen contract lives in
+  `.agents/plans/audited-harness-sessions.md`. Operation DTO/dispatch/cancel/
+  response and supervisor audit/output transfer remain required before the
+  later default-session cutover. At `d1cca1b`, `Program.cs` still has no
+  `--worker` branch and constructs the supervisor-side `SessionRuntime`;
+  `WorkerServer` accepts only initialize/shutdown after ready.
 - **Windows wiring requires a hard supervisor/worker role cutover.**
   `Program.cs`, `BashProcessRunner`, `RtkProcessRunner`, and `JobManager` still
   permit supervisor-side runtime or generic process creation. Those paths
