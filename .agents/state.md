@@ -55,16 +55,19 @@ short and update it when important repo facts change.
   was fast-forwarded to local `master`, content arrival was verified by direct
   branch diff, and the feature branch was removed. Canonical review and Windows
   evidence is in `.agents/review/index.md` and `.agents/machines.md`.
-- **Audited-harness Slice 7g is fixed-SHA accepted on
-  `feat/audited-harness-slice7g-operation-codecs` at code head `eef38cb`.** It
-  adds only strict transport-neutral value codecs for foreground invoke, job
-  controls, and state, with strict logical UTF-8 script/result limits. It does
-  not bind invoke to ordinary request transport or add runtime execution,
+- **Audited-harness Slice 7g is complete and landed on local `master` at code
+  head `eef38cb`.** It adds only strict transport-neutral value codecs for
+  foreground invoke, job controls, and state, with strict logical UTF-8
+  script/result limits. It does not bind invoke to ordinary request transport
+  or add runtime execution,
   prepare/commit, background start, audit/output transfer, job-ID allocation,
   reset, proxy wiring, or MCP behavior. Claude Code 2.1.210 accepted exact
   range `a83e2e6..eef38cb` with `guard_confirmed=true` after ten independent
-  mutations and the full battery. Canonical evidence is in the audited-harness
-  plan and `.agents/review/index.md`.
+  mutations and the full battery. Completion records are committed at
+  `8428f17`; the accepted feature history was fast-forwarded to local `master`,
+  content arrival was verified by direct branch diff, and the feature branch
+  was removed. Canonical evidence is in the audited-harness plan and
+  `.agents/review/index.md`.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and
@@ -182,9 +185,10 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Land the fixed-SHA-accepted Slice 7g feature history on local `master`,
-   verify content arrival by direct branch diff, and remove the feature branch.
-   Then present and freeze the next narrow post-7g boundary before code.
+1. Present and freeze the next narrow post-7g boundary before code. Prefer one
+   transport/lifecycle seam at a time; do not silently bundle real runtime
+   dispatch, prepare/commit, audit/output transfer, job-ID allocation,
+   reset/process replacement, proxy wiring, or the MCP cutover.
 2. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before release-distribution slice 4.
 3. When the owner releases the decisions hold, reconcile the rejected
@@ -243,7 +247,7 @@ short and update it when important repo facts change.
 - Automated verification entry point: `.agents/repo-guidance.md`
   (Verification). Review-loop evidence lives in `.agents/review/index.md`;
   do not duplicate volatile counts here.
-- Audited-session Slices 0-6, Slices 7a-7f, and the Windows wait-ownership
+- Audited-session Slices 0-6, Slices 7a-7g, and the Windows wait-ownership
   prerequisite are complete locally. Canonical fixed-head acceptance evidence
   lives in `.agents/review/index.md`; host-specific verification records live
   in `.agents/machines.md`.

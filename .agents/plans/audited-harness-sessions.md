@@ -74,7 +74,8 @@ was owner-approved on 2026-07-15. Slice 7g code head `eef38cb` adds the strict
 transport-neutral invoke/job-control/state value codecs while remaining
 deliberately unwired. Claude Code 2.1.210 accepted exact range
 `a83e2e6..eef38cb` with `guard_confirmed=true` after ten independent mutation
-proofs and the full battery on 2026-07-15.
+proofs and the full battery on 2026-07-15. Slice 7g is complete and landed on
+local `master`.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
