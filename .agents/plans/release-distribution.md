@@ -4,8 +4,8 @@
 open questions and a codex review loop on the plan text — 3 LOW
 doc-consistency findings, all fixed and accepted; see
 `.agents/review/index.md`). Slices execute in order, codex review loop per
-code slice. The scoped push go requested under Owner logistics was NOT
-separately confirmed — get an explicit yes before the first `ci/*` push.
+code slice. The exact plan-scoped push authority is recorded under Owner
+logistics; every push outside that scope remains ask-first.
 Open questions resolved by owner 2026-07-04 (see Resolutions): 5 RIDs,
 version v0.2.0, install root `~/.ptk` everywhere, winget as the eventual
 primary Windows path with readiness built into v0.2.0. One question remains
