@@ -2348,3 +2348,56 @@ Operation DTOs, dispatch/cancellation, supervisor audit/output transfer, and
 the atomic default-session proxy cutover remain later Slice 7 work. This
 acceptance authorizes only the next approved sub-slice; it does not authorize
 push, history rewriting, landing, or default-session cutover.
+
+---
+
+**AUDITED-HARNESS SLICE 7F OPERATION TRANSPORT — ACCEPTED.** Claude Code
+2.1.209 (model `claude-opus-4-8[1m]`, isolated disposable worktree) reviewed
+exact committed range
+`3580e674153c866ee22cdfa9c4b6ee8b4962125a..a9e757ecb22a4fe61c60e9076a2fac88293523b8`
+and returned the required structured `accepted` verdict with
+`guard_confirmed=true` at 2026-07-15T05:13:44Z. The range adds strict private
+request/cancel parsers and a response codec plus a standalone 64-request
+scheduler with increasing request-ID reservation, off-reader-thread dispatch,
+targeted cancellation and deadlines, owned-cancellation classification, one
+uncancelled terminal write attempt, fatal peer cleanup, and idempotent drain.
+It remains deliberately unwired: no production executor, `SessionRuntime`,
+worker server, process entry, program, DI, MCP, audit, output, reset, or proxy
+path references the new transport.
+
+A preliminary launch against the same fixed SHAs returned `invalid` with
+`guard_confirmed=false` because plan-mode correctly denied every mutation and
+test command. It changed nothing and contributed no acceptance evidence. The
+orchestrator re-dispatched the exact review with mutation authority confined to
+the already-disposable worktree; that corrected launch is the sole acceptance
+verdict.
+
+The final reviewer independently applied eight one-at-a-time production
+mutations: adding a concrete production `IWorkerOperationExecutor`, permitting
+`detailCode` on completed responses, moving capacity rejection before
+request-ID reservation, discarding the injected initial high-water mark,
+routing the admission trampoline through the inline scheduler, redirecting
+explicit cancellation to another active request, weakening owned-versus-
+foreign cancellation-token classification, and removing fatal peer
+cancellation after writer failure. Each failed its intended guard for the
+expected assertion, not compilation or unrelated infrastructure. Every edit
+was explicitly reversed without reset or checkout; final production blob
+hashes matched the reviewed head and the worktree was clean.
+
+The restored reviewer tree passed the 38-test focused Slice 7f suite,
+1,470/1,470 .NET tests, 141 Pester tests with two expected skips, and the full
+stdio handshake. The coder's separate disposable proof applied eight
+independent variants, each failed its named guard, and the restored broader
+68-test worker-operation focus passed. Two denied redundant `rtk git` reviewer
+probes contributed no evidence; ordinary PTK-routed checks and the
+orchestrator's independent SHA/status checks confirmed the range and clean
+trees. The orchestrator parsed and matched the JSON `result` and
+`structured_output`, verified exit zero, exact base/head, literal guard
+confirmation, and then removed the disposable worktree.
+
+Concrete operation argument/result codecs, real runtime dispatch,
+prepare/commit/abort/event handling, supervisor audit/output capability
+transfer, public job IDs, reset/process replacement, and the atomic
+default-session proxy cutover remain later separately owner-gated sub-slices.
+This acceptance authorizes only presentation of the next boundary; it does not
+authorize push, history rewriting, landing, or live routing.

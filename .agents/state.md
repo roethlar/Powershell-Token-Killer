@@ -5,16 +5,8 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **Audited-harness Slice 7f operation transport is active on an approved,
-  deliberately unwired boundary.** The sub-slice freezes strict private
-  request/cancel/response wrappers, bounded off-reader-thread scheduling,
-  targeted cancellation, and exactly-one terminal response ownership against
-  an injected executor. It must not admit a real `SessionRuntime` operation or
-  change `WorkerServer`, `WorkerProcessEntry`, `Program`, DI, MCP routing, or
-  supervisor audit/output ownership. The exact contract is canonical in
-  `.agents/plans/audited-harness-sessions.md`.
-- **Audited-harness Slices 7a-7e and the Windows wait-ownership prerequisite
-  are complete locally at code head `12617cc`.**
+- **Audited-harness Slices 7a-7f and the Windows wait-ownership prerequisite
+  are complete locally at code head `a9e757e`.**
   The strict bounded v1 worker protocol freezes all nine wire kinds, enforces
   strict UTF-8 NDJSON with duplicate/unknown/version rejection, caps encoded
   frames at 1 MiB and JSON depth at 32, preserves fragmented and coalesced
@@ -51,9 +43,15 @@ short and update it when important repo facts change.
   diagnostic-destination gaps. Claude accepted exact range
   `eec7ed1..12617cc` with `guard_confirmed=true` after eleven independent
   mutations and the full battery; the exact tree also passed direct
-  `NETWATCH-01` lifecycle and containment validation. Canonical review and
-  Windows evidence is in `.agents/review/index.md` and
-  `.agents/machines.md`.
+  `NETWATCH-01` lifecycle and containment validation. Code head `a9e757e` then
+  adds strict private request/cancel parsing, response encoding, and a bounded
+  standalone scheduler with targeted cancellation, exactly-one terminal
+  ownership, and fatal peer cleanup while remaining deliberately unwired from
+  production.
+  Claude accepted exact range `3580e67..a9e757e` with
+  `guard_confirmed=true` after independent mutation proof and the full battery.
+  Canonical review and Windows evidence is in
+  `.agents/review/index.md` and `.agents/machines.md`.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and
@@ -171,14 +169,13 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Continue Slice 7 by freezing and approving the next operation
-   DTO/dispatch/cancel/response sub-slice before implementation. Preserve
-   supervisor ownership of audit and output capabilities, worker ownership of
-   runtime and process creation, and the current in-process default registration
-   until the later atomic proxy cutover. That cutover must leave no in-process
-   or generic-spawn fallback. Keep the Unix broker behind its separately
-   recorded contract blockers, and require fixed-SHA acceptance before each
-   next sub-slice.
+1. Present and freeze the next post-7f Slice 7 boundary before implementation.
+   Prefer concrete invoke/job/state argument and result codecs as the smallest
+   next candidate; do not silently bundle real `SessionRuntime` dispatch,
+   prepare/commit/abort/event, supervisor audit/output transfer, reset/process
+   replacement, or the atomic proxy cutover. Keep the Unix broker behind its
+   separately recorded contract blockers, and require fixed-SHA acceptance
+   before each next sub-slice.
 2. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before release-distribution slice 4.
 3. When the owner releases the decisions hold, reconcile the rejected
@@ -237,7 +234,7 @@ short and update it when important repo facts change.
 - Automated verification entry point: `.agents/repo-guidance.md`
   (Verification). Review-loop evidence lives in `.agents/review/index.md`;
   do not duplicate volatile counts here.
-- Audited-session Slices 0-6, Slices 7a-7e, and the Windows wait-ownership
+- Audited-session Slices 0-6, Slices 7a-7f, and the Windows wait-ownership
   prerequisite are complete locally. Canonical fixed-head acceptance evidence
   lives in `.agents/review/index.md`; host-specific verification records live
   in `.agents/machines.md`.

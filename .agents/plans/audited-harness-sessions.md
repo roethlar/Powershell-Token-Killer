@@ -64,11 +64,12 @@ managed lifecycle entry, secure bootstrap ownership, stable process-exit
 mapping, and bounded abnormal diagnostics while leaving default MCP routing
 unchanged. Claude accepted exact range `eec7ed1..12617cc` with
 `guard_confirmed=true` after eleven independent mutation proofs, and direct
-Windows validation passed. Operation dispatch and default-session cutover
-remain later sub-slices. Slice 7f is owner-approved as a deliberately unwired
-operation-transport sub-slice: it freezes and tests request/cancel/response
-correlation against an injected executor without admitting a real
-`SessionRuntime` operation or changing MCP routing.
+Windows validation passed. Real `SessionRuntime` dispatch and the
+default-session cutover remain later sub-slices. Slice 7f code head `a9e757e`
+adds deliberately unwired strict request/cancel parsers, a response codec, and
+a standalone scheduler. Claude accepted exact range `3580e67..a9e757e` with
+`guard_confirmed=true` after independent mutation proof and the full battery
+on 2026-07-15.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
