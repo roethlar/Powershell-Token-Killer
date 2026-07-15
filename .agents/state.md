@@ -6,7 +6,8 @@ short and update it when important repo facts change.
 ## Now
 
 - **Audited-harness Slices 7a-7f and the Windows wait-ownership prerequisite
-  are complete locally at code head `a9e757e`.**
+  are complete and landed on local `master`; Slice 7f code head is
+  `a9e757e`.**
   The strict bounded v1 worker protocol freezes all nine wire kinds, enforces
   strict UTF-8 NDJSON with duplicate/unknown/version rejection, caps encoded
   frames at 1 MiB and JSON depth at 32, preserves fragmented and coalesced
@@ -50,8 +51,10 @@ short and update it when important repo facts change.
   production.
   Claude accepted exact range `3580e67..a9e757e` with
   `guard_confirmed=true` after independent mutation proof and the full battery.
-  Canonical review and Windows evidence is in
-  `.agents/review/index.md` and `.agents/machines.md`.
+  Completion records are committed at `83ca3b1`; the accepted feature history
+  was fast-forwarded to local `master`, content arrival was verified by direct
+  branch diff, and the feature branch was removed. Canonical review and Windows
+  evidence is in `.agents/review/index.md` and `.agents/machines.md`.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and
