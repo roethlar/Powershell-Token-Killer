@@ -68,14 +68,17 @@ short and update it when important repo facts change.
   content arrival was verified by direct branch diff, and the feature branch
   was removed. Canonical evidence is in the audited-harness plan and
   `.agents/review/index.md`.
-- **Audited-harness Slice 7h is owner-approved and in progress on
-  `feat/audited-harness-slice7h-prepared-codecs`.** The frozen boundary adds
-  only strict unwired prepare, prepared-correlation, commit, and abort values
-  for foreground invoke. It freezes canonical UUIDv4 plan ID, exact
+- **Audited-harness Slice 7h is fixed-SHA accepted on
+  `feat/audited-harness-slice7h-prepared-codecs` at code head `8f5c57c`.** It
+  adds only strict unwired prepare, prepared-correlation, commit, and abort
+  values for foreground invoke. It freezes canonical UUIDv4 plan ID, exact
   strict-UTF-8 script digest, worker generation, and original absolute deadline
   correlation without adding reservation behavior, execution, the final
   prepared descriptor, audit/output transfer, background IDs, server wiring,
-  or MCP behavior. The canonical contract is in the audited-harness plan.
+  or MCP behavior. Claude Code 2.1.210 accepted exact range
+  `1179ed0..8f5c57c` with `guard_confirmed=true` after eleven independent
+  mutations and the full battery. Canonical evidence is in the audited-harness
+  plan and `.agents/review/index.md`.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and
@@ -193,10 +196,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Implement, guard, review, and land the frozen Slice 7h strict unwired
-   prepare/commit/abort payload-codec boundary. Do not add reservation/runtime
-   behavior, the final prepared descriptor, audit/output transfer, background
-   job IDs, reset/process replacement, proxy wiring, or the MCP cutover.
+1. Land the fixed-SHA-accepted Slice 7h feature history on local `master`,
+   verify content arrival by direct branch diff, and remove the feature branch.
+   Then present and freeze the next narrow post-7h boundary before code.
 2. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before release-distribution slice 4.
 3. When the owner releases the decisions hold, reconcile the rejected

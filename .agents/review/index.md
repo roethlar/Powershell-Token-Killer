@@ -2450,3 +2450,59 @@ reset/process replacement, proxy wiring, and the atomic default-session
 cutover remain separate owner-gated work. This acceptance authorizes the next
 approved sub-slice under the standing delegated local-branch workflow; it does
 not authorize push, history rewriting, or live routing.
+
+---
+
+**AUDITED-HARNESS SLICE 7H PREPARED-OPERATION CODECS — ACCEPTED.** Claude Code
+2.1.210 (model `claude-opus-4-8[1m]`, isolated disposable worktree) reviewed
+exact committed range
+`1179ed03b3ca49170763b5cce83400c491fc792b..8f5c57c61b616cb1b85768619d4646902cfc9c72`
+and returned the required structured `accepted` verdict with
+`guard_confirmed=true`, parsed by the orchestrator at 2026-07-15T15:56:23Z.
+The range adds one production staging file containing strict standalone value
+codecs and distinct DTOs for foreground-invoke `prepare`, its prepared
+correlation, `commit`, and `abort`; no existing production file wires them.
+
+The reviewer confirmed closed-object validation and the frozen content-free
+failure codes; canonical lowercase RFC 4122 UUIDv4 plan IDs and lowercase
+SHA-256 digests; strict-UTF-8 digest recomputation on parse and create;
+positive full-range signed-64-bit generations; lossless positive UTC
+whole-millisecond creation deadlines; fail-closed typed correlation matching;
+distinct commit and abort types; and digest/hash buffer clearing in `finally`.
+It also confirmed that the extended staging guards prohibit envelope, server,
+scheduler, executor, runtime, audit/output, DI, and process-lifecycle
+capabilities and prohibit every production reference outside the staging file.
+
+The reviewer independently applied all eleven required one-at-a-time
+production mutations: making `Match` the enum default, admitting `state` as a
+prepare operation, skipping parse-side digest matching, accepting uppercase
+digest text, omitting UUID version/variant checks, narrowing generation to
+32 bits, accepting non-UTC or sub-millisecond creation deadlines, ignoring
+`planId` in commit correlation, removing digest-buffer zeroing and clear-on-
+return, retaining the nested invalid-script exception, and adding a real codec
+reference in `Program.cs`. Each failed its intended guard. Every mutation was
+restored before the next; the final reviewer tree was porcelain-clean at the
+exact reviewed head with an empty `git diff HEAD`.
+
+On the restored exact head, the reviewer passed the 16-test focused Slice
+7g/7h/staging suite, 1,484/1,484 .NET tests, 141 Pester tests with two expected
+platform skips, the full stdio handshake, and `git diff --check`. After its
+mutation sequence it again passed the focused suite, full .NET suite, and
+handshake. The coder independently exercised the same eleven mutation classes,
+restored exact production content, and passed the same full battery. One
+denied preliminary `rtk`-prefixed status probe contributed no evidence;
+ordinary shell checks supplied the exact SHA, status, diffs, plan facts, and
+all verification evidence.
+
+The orchestrator matched the outer JSON result and inner structured output,
+verified exit zero, exact base/head, literal guard confirmation, and the clean
+restored worktree, then removed the disposable worktree. The reviewer reported
+no material issue and no other observation.
+
+Reservation acquisition, final prepared-descriptor and response binding,
+planning and command-identity revalidation, idempotent commit, abort/expiry,
+runtime execution, audit/output transfer, background start and public job IDs,
+job-terminal events, reset/process replacement, proxy wiring, and the atomic
+default-session cutover remain separate owner-gated work. This acceptance
+authorizes delegated local landing only; it does not authorize push, history
+rewriting, or live routing.

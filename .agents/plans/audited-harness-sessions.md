@@ -76,7 +76,11 @@ deliberately unwired. Claude Code 2.1.210 accepted exact range
 `a83e2e6..eef38cb` with `guard_confirmed=true` after ten independent mutation
 proofs and the full battery on 2026-07-15. Slice 7g is complete and landed on
 local `master`. The strict still-unwired Slice 7h prepare/commit/abort payload
-codec boundary below was owner-approved on 2026-07-15.
+codec boundary below was owner-approved on 2026-07-15. Slice 7h code head
+`8f5c57c` adds the strict prepared-operation value codecs while remaining
+deliberately unwired. Claude Code 2.1.210 accepted exact range
+`1179ed0..8f5c57c` with `guard_confirmed=true` after eleven independent
+mutation proofs and the full battery on 2026-07-15.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
