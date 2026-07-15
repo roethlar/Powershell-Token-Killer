@@ -62,8 +62,8 @@ accepted exact range `4578e6f..d1cca1b` with `guard_confirmed=true` after the
 corrected two-mutation proof. On 2026-07-14 the owner approved the staged Slice
 7e boundary below: add a Windows-only lifecycle worker entry while leaving
 default MCP routing unchanged. The owner then approved the managed process-
-exit mapping below. Exact bootstrap ownership and bounded abnormal-diagnostic
-contracts remain to be frozen before Slice 7e code begins.
+exit mapping and exact bootstrap ownership below. Only the bounded abnormal-
+diagnostic contract remains to be frozen before Slice 7e code begins.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
@@ -1615,10 +1615,40 @@ inventing a code sabotage.
   paired with its requested shutdown, deliberate protocol EOF, or cancellation;
   every unpaired zero is worker loss and follows the same containment/audit
   path as another unexpected exit.
-- Before implementation, freeze the still-open exact handle parsing,
-  validation, ownership/cleanup order, and bounded abnormal diagnostic
-  contract. These are part of Slice 7e's plan amendment, not implementation-
-  time choices.
+- Bootstrap captures the values of `PTK_WORKER_REQUEST_HANDLE` and
+  `PTK_WORKER_EVENT_HANDLE` exactly once, then unconditionally removes both
+  variables from the process environment before platform, syntax, or handle
+  validation. No host, audit object, `WorkerServer`, runtime factory, runspace,
+  or child process may exist before this removal.
+- Each captured value must be canonical invariant unsigned decimal matching
+  `[1-9][0-9]*`: no sign, whitespace, separator, hexadecimal prefix, or leading
+  zero. It must fit the current pointer width and must not equal zero or the
+  pointer-width `INVALID_HANDLE_VALUE`; the two values must be distinct.
+- Wrap both inherited originals as owned handles, then duplicate each within
+  the current process using `DuplicateHandle` with `desiredAccess: 0`,
+  `inheritHandle: false`, and `DUPLICATE_SAME_ACCESS`. After both duplicates
+  exist, close both inherited originals. Require both duplicates to be valid
+  pipe handles and to have `HANDLE_FLAG_INHERIT` clear before stream creation.
+- Construct the request stream as worker-readable and the event stream as
+  worker-writable over those owned noninheritable duplicates. A private
+  idempotent bootstrap owner holds both streams, disposes request first and
+  event last on normal termination, and transfers no handle into PowerShell.
+  `SessionRuntime` remains constructible only inside `WorkerServer`'s validated
+  initialize factory after both streams exist.
+- Every missing, malformed, aliased, out-of-range, invalid, non-pipe,
+  inheritable-duplicate, duplication, or stream-construction failure exits as
+  bootstrap code `80`. Partial acquisition is transactional: every original,
+  duplicate, and stream acquired by that attempt is closed exactly once, and
+  neither runtime construction nor user code occurs.
+- Guards must cover unconditional environment removal, the complete canonical
+  parse matrix, pointer-width and alias rejection, duplication/close/stream
+  ordering, noninheritability and pipe type on Windows, partial failure at
+  every acquisition boundary, and the prohibition on runtime construction
+  before both streams. Mutations that retain an inheritable protocol handle or
+  enter the runtime factory early must fail their intended guards.
+- Before implementation, freeze the still-open bounded abnormal diagnostic
+  contract. It is part of Slice 7e's plan amendment, not an implementation-
+  time choice.
 
 ### Slice 8 — named harness-scoped sessions
 
