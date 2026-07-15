@@ -80,7 +80,8 @@ codec boundary below was owner-approved on 2026-07-15. Slice 7h code head
 `8f5c57c` adds the strict prepared-operation value codecs while remaining
 deliberately unwired. Claude Code 2.1.210 accepted exact range
 `1179ed0..8f5c57c` with `guard_confirmed=true` after eleven independent
-mutation proofs and the full battery on 2026-07-15.
+mutation proofs and the full battery on 2026-07-15. Slice 7h is complete and
+landed on local `master`.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the

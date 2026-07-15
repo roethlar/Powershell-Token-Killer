@@ -68,17 +68,20 @@ short and update it when important repo facts change.
   content arrival was verified by direct branch diff, and the feature branch
   was removed. Canonical evidence is in the audited-harness plan and
   `.agents/review/index.md`.
-- **Audited-harness Slice 7h is fixed-SHA accepted on
-  `feat/audited-harness-slice7h-prepared-codecs` at code head `8f5c57c`.** It
-  adds only strict unwired prepare, prepared-correlation, commit, and abort
-  values for foreground invoke. It freezes canonical UUIDv4 plan ID, exact
-  strict-UTF-8 script digest, worker generation, and original absolute deadline
-  correlation without adding reservation behavior, execution, the final
-  prepared descriptor, audit/output transfer, background IDs, server wiring,
-  or MCP behavior. Claude Code 2.1.210 accepted exact range
+- **Audited-harness Slice 7h is complete and landed on local `master` at code
+  head `8f5c57c`.** It adds only strict unwired prepare,
+  prepared-correlation, commit, and abort values for foreground invoke. It
+  freezes canonical UUIDv4 plan ID, exact strict-UTF-8 script digest, worker
+  generation, and original absolute deadline correlation without adding
+  reservation behavior, execution, the final prepared descriptor, audit/output
+  transfer, background IDs, server wiring, or MCP behavior. Claude Code
+  2.1.210 accepted exact range
   `1179ed0..8f5c57c` with `guard_confirmed=true` after eleven independent
-  mutations and the full battery. Canonical evidence is in the audited-harness
-  plan and `.agents/review/index.md`.
+  mutations and the full battery. Completion records are committed at
+  `c07a958`; the accepted feature history was fast-forwarded to local `master`,
+  content arrival was verified by direct branch diff, and the feature branch
+  was removed. Canonical evidence is in the audited-harness plan and
+  `.agents/review/index.md`.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and
@@ -196,9 +199,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Land the fixed-SHA-accepted Slice 7h feature history on local `master`,
-   verify content arrival by direct branch diff, and remove the feature branch.
-   Then present and freeze the next narrow post-7h boundary before code.
+1. Present and freeze the next narrow post-7h boundary before code. Keep the
+   proposed pipe-owning MCP guardian and backend-recovery policy a distinct
+   architecture slice; do not silently bundle it with live worker routing.
 2. Execute release-distribution slice 3 under its approved plan. Re-present
    the hook-default choice before release-distribution slice 4.
 3. When the owner releases the decisions hold, reconcile the rejected
@@ -257,7 +260,7 @@ short and update it when important repo facts change.
 - Automated verification entry point: `.agents/repo-guidance.md`
   (Verification). Review-loop evidence lives in `.agents/review/index.md`;
   do not duplicate volatile counts here.
-- Audited-session Slices 0-6, Slices 7a-7g, and the Windows wait-ownership
+- Audited-session Slices 0-6, Slices 7a-7h, and the Windows wait-ownership
   prerequisite are complete locally. Canonical fixed-head acceptance evidence
   lives in `.agents/review/index.md`; host-specific verification records live
   in `.agents/machines.md`.
