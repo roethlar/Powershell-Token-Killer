@@ -334,6 +334,53 @@ public sealed class WorkerPreparedOperationCodecTests
     }
 
     [Fact]
+    public void Generation_uses_the_full_positive_signed_64_bit_range()
+    {
+        var prepare = ValidPrepare() with { Generation = long.MaxValue };
+        Assert.Equal(
+            long.MaxValue,
+            WorkerPreparedOperationCodec.ParsePrepare(
+                WorkerPreparedOperationCodec.CreatePrepare(prepare)).Generation);
+
+        var prepared = ValidPrepared() with { Generation = long.MaxValue };
+        Assert.Equal(
+            long.MaxValue,
+            WorkerPreparedOperationCodec.ParsePreparedCorrelation(
+                WorkerPreparedOperationCodec.CreatePreparedCorrelation(prepared)).Generation);
+        Assert.Equal(
+            long.MaxValue,
+            WorkerPreparedOperationCodec.ParseCommit(
+                WorkerPreparedOperationCodec.CreateCommit(new WorkerCommitPayload(
+                    PlanId,
+                    ScriptDigest,
+                    long.MaxValue,
+                    DeadlineUtc))).Generation);
+        Assert.Equal(
+            long.MaxValue,
+            WorkerPreparedOperationCodec.ParseAbort(
+                WorkerPreparedOperationCodec.CreateAbort(new WorkerAbortPayload(
+                    PlanId,
+                    ScriptDigest,
+                    long.MaxValue,
+                    DeadlineUtc))).Generation);
+
+        AssertDetail(
+            "invalid_prepared_field",
+            () => WorkerPreparedOperationCodec.ParsePrepare(Json(
+                ValidPrepareJson.Replace(
+                    "\"generation\":7",
+                    "\"generation\":-1",
+                    StringComparison.Ordinal))));
+        AssertDetail(
+            "invalid_prepared_field",
+            () => WorkerPreparedOperationCodec.ParseCommit(Json(
+                ValidCorrelationJson.Replace(
+                    "\"generation\":7",
+                    "\"generation\":-1",
+                    StringComparison.Ordinal))));
+    }
+
+    [Fact]
     public void Deadlines_parse_expired_and_maximum_but_create_requires_lossless_utc()
     {
         var expiredJson = ValidPrepareJson.Replace(
