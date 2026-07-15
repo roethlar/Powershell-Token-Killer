@@ -7,6 +7,7 @@ using PtkMcpServer.Worker;
 
 namespace PtkMcpServer.Tests;
 
+[Collection(WindowsProcessCreationCollection.Name)]
 public sealed class WindowsContainmentIntegrationTests
 {
     private static readonly TimeSpan CheckpointTimeout = TimeSpan.FromSeconds(15);
