@@ -21,6 +21,10 @@ polls guardian-local state and submits a new request after readiness. An
 ambiguous call remains nonretryable. Declarative bootstrap profiles remain the
 only automatic state-restoration input.
 
+The owner approved the exact crash-loop policy on 2026-07-15: one immediate
+attempt, retries after `250 ms`, `1 s`, `4 s`, `15 s`, and `30 s`, then a
+60-second open circuit with one automatic half-open probe.
+
 Claude Code 2.1.210 using `claude-fable-5` at maximum effort accepted exact
 fixed range `5ae154c..ab54fe1` with `guard_confirmed=true` and no material
 comment on 2026-07-15. This is plan review only; implementation remains
