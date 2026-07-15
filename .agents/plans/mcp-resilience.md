@@ -61,12 +61,13 @@ compatibility contract below keeps OTLP/HTTP stable, uses destination adapters
 for current vendor APIs, and makes any future PTK receiver consume that same
 OTLP stream; the separate mini-SIEM build decision remains open.
 
-Claude Code 2.1.210 using `claude-fable-5` at maximum effort accepted exact
-fixed range `5ae154c..ab54fe1` with `guard_confirmed=true` and no material
-comment on 2026-07-15. This is plan review only; implementation remains
-separately gated. That fixed review predates the subsequent owner-approved
-decision amendments above; the final planning head requires a fresh fixed-SHA
-review before any implementation ask.
+Claude Code 2.1.210 using `claude-fable-5` at maximum effort accepted the
+complete exact fixed range `5ae154c..b4a2c0c` with
+`guard_confirmed=true` and no comments on 2026-07-15. The result repeated both
+full SHAs exactly; its model metadata reported Fable plus Claude Code's Haiku
+helper and no Opus model. The reviewed head includes all owner-approved
+amendments above. This is final plan review only; implementation remains
+separately gated, and this review record changes no implementation contract.
 
 `.agents/decisions.md` remains under the owner's existing hold and is not
 amended by this plan. This plan is the canonical source for MCP transport and

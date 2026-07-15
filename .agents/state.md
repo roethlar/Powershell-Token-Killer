@@ -83,8 +83,9 @@ short and update it when important repo facts change.
   was removed. Canonical evidence is in the audited-harness plan and
   `.agents/review/index.md`.
 - **The two-layer MCP resilience planning boundary is owner-approved; its
-  reconciled draft passed independent fixed-SHA review at `06775ad` on
-  `plan/mcp-resilience-guardian`; implementation is not authorized.** The
+  complete reconciled draft passed final independent fixed-SHA review at
+  `b4a2c0c` on `plan/mcp-resilience-guardian`; implementation is not
+  authorized.** The
   target keeps one public stdio guardian alive while it
   restarts an exact-version private host, and makes a healthy host replace an
   unexpectedly lost session worker. It never replays ambiguous work, changes
@@ -97,12 +98,11 @@ short and update it when important repo facts change.
   in this stage; only proved-no-start errors direct the model to poll state and
   submit a new request, while `outcome_unknown` is never retried. The owner
   requested a fresh Claude Fable 5 maximum-effort review of that update.
-  Claude Code 2.1.210 accepted exact range `5ae154c..ab54fe1` with
-  `guard_confirmed=true` and no comments; its result metadata reported
-  `claude-fable-5` plus CLI helper usage and no Opus model. Canonical review
-  evidence is in `.agents/review/index.md`. Later owner-approved amendments are
-  recorded in the canonical plan and still require one final fixed-SHA review
-  before any implementation ask. For packaging, the owner confirmed nothing
+  Claude Code 2.1.210 accepted the complete exact range
+  `5ae154c..b4a2c0c` with `guard_confirmed=true` and no comments; its result
+  metadata reported `claude-fable-5` plus CLI helper usage and no Opus model.
+  Canonical review evidence is in `.agents/review/index.md`. For packaging,
+  the owner confirmed nothing
   has shipped and only this development environment is in use, then delegated
   the choice: keep the current registration usable through R6, perform one R7
   cutover to the matched guardian package, and preserve no direct-server
@@ -231,9 +231,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Complete the resilience plan's fresh fixed-SHA Claude Fable 5 review. If it
-   is accepted, present the planning branch for its owner-gated local merge;
-   only after it lands, present R0 contract/feasibility for a separate code go.
+1. Present the accepted resilience planning branch for its owner-gated local
+   merge; only after it lands, present R0 contract/feasibility for a separate
+   code go.
 2. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release

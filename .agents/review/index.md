@@ -2528,3 +2528,29 @@ a clean detached reviewer worktree before removing it. The JSON envelope's
 helper only; it contained no Opus model. Reviewed the complete resilience plan;
 no material issue found. This acceptance records plan quality only and does
 not authorize implementation, merge, push, or history rewriting.
+
+---
+
+**MCP RESILIENCE PLAN, COMPLETE AMENDED RANGE — ACCEPTED.** Claude Code
+2.1.210 (`claude-fable-5`, effort `max`, isolated disposable worktree)
+reviewed exact fixed range
+`5ae154cbde38127c21a63a3ff5c001814c1ea244..b4a2c0c02c2a7bb975eb3d9bbfadc719bdbf76d8`
+and returned the schema-constrained verdict `accepted` with
+`guard_confirmed=true`, exact matching SHAs, and no comments. The orchestrator
+parsed the successful envelope at 2026-07-15T20:22:25Z. This range includes
+the complete owner-approved retry-loop timing and readiness-gate contract,
+automatic post-timeout baseline recovery, exact guardian/host binary pinning,
+cold-background session gating, and the distinct outer-host containment grace.
+
+The orchestrator verified exit zero, the exact base/head, literal guard
+confirmation, an empty comment list, clean fixed-range `git diff --check`, and
+clean main and detached reviewer worktrees at the exact head. The JSON
+envelope's `modelUsage` reported `claude-fable-5` for the review and Claude
+Code's Haiku helper only; it contained no Opus model. Earlier attempts through
+the removed proxy returned no verdict and were not accepted as review
+evidence. The successful replacement used the same frozen SHAs, schema,
+review scope, model, and effort after that transport was removed.
+
+Reviewed the complete amended resilience plan; no material issue found. This
+acceptance records plan quality only and does not authorize implementation,
+merge, push, history rewriting, or live routing.
