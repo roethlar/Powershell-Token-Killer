@@ -82,6 +82,16 @@ short and update it when important repo facts change.
   content arrival was verified by direct branch diff, and the feature branch
   was removed. Canonical evidence is in the audited-harness plan and
   `.agents/review/index.md`.
+- **The two-layer MCP resilience planning boundary is owner-approved and being
+  made durable on `plan/mcp-resilience-guardian`; implementation is not
+  authorized.** The target keeps one public stdio guardian alive while it
+  restarts an exact-version private host, and makes a healthy host replace an
+  unexpectedly lost session worker. It never replays ambiguous work, changes
+  generation on every replacement, recreates only frozen declared bootstrap
+  state, and keeps guardian-local health/output surfaces usable. The canonical
+  draft is `.agents/plans/mcp-resilience.md`; it narrowly supersedes the older
+  explicit-restart target without weakening audit, containment, or session
+  isolation.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and
@@ -199,11 +209,12 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Present and freeze the next narrow post-7h boundary before code. Keep the
-   proposed pipe-owning MCP guardian and backend-recovery policy a distinct
-   architecture slice; do not silently bundle it with live worker routing.
-2. Execute release-distribution slice 3 under its approved plan. Re-present
-   the hook-default choice before release-distribution slice 4.
+1. Review, reconcile, and land the owner-approved MCP resilience plan only;
+   then present its R0 contract/feasibility slice for a separate code go.
+2. Do not execute release-distribution slice 3 until its single-process server
+   artifact/registration assumptions are reconciled with the approved guardian
+   packaging boundary. Re-present the hook-default choice before release slice
+   4.
 3. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
@@ -273,6 +284,7 @@ short and update it when important repo facts change.
 - `.agents/plans/security-layer.md`
 - `.agents/plans/rtk-rewrite-routing.md`
 - `.agents/plans/audited-harness-sessions.md`
+- `.agents/plans/mcp-resilience.md`
 - `.agents/plans/release-distribution.md`
 - `.agents/plans/warm-runspace-mcp-server.md`
 - `.agents/plans/shared-persistent-runspace.md`
