@@ -242,21 +242,27 @@ source built and shipped beside PTK for `linux-x64`, `linux-arm64`, and
 not the supervisor, forks the worker. The pre-exec child performs only
 async-signal-safe close/dup/group/gate/`execve` operations, blocks behind a
 closed pipe gate, and executes the managed worker only after containment is
-armed. Broker and child both perform the race-safe `setpgid` checks; the broker
-retains reaper parentage and places no user code before the gate.
+armed. Broker and child perform the race-safe `setpgid` checks only after the
+supervisor admits the gated identities; the broker retains reaper parentage
+and places no user code before the gate.
 
 The final resilience topology does not change this per-worker parentage: each
 worker broker remains a child of the private host. Its separate Unix
-`PtkGuardianBroker` is parent/reaper only for that host; it identity-kills and
-confirms registered descendant broker/groups after host death and relies on the
-platform system reaper for those nonchildren, as frozen in
+`PtkGuardianBroker` is parent/reaper only for that host and owns the host's
+creation-time process group. A worker broker remains in that group. The outer
+broker's pending/armed registration gates the worker's move to its own group
+and later release, identity-kills and confirms those nonchildren after host
+death, and relies on the platform system reaper for them, as frozen in
 `.agents/plans/mcp-resilience.md`.
 
-The broker arms supervisor liveness and group ownership, then sends a bounded
-containment-armed acknowledgment. The supervisor tells the broker to release;
-only then does the child `execve` the worker, complete its private-protocol
-hello, and receive `initialize`. EOF before release kills/abandons the gated
-child; EOF later sends the group bounded TERM then KILL and the broker exits.
+The broker first proves supervisor liveness, forks the still-same-group gated
+child, and sends its bounded identity event. After the supervisor authorizes
+group arm, the broker performs and reports the group transition. The
+supervisor tells the broker to release only after every required local and
+outer acknowledgment; only then does the child `execve` the worker, complete
+its private-protocol hello, and receive `initialize`. EOF before release
+kills/abandons the gated child; EOF later sends the group bounded TERM then
+KILL and the broker exits.
 The ordinary protocol EOF watcher remains a graceful fast path, not the
 hard-death proof. Failure to build, locate, authenticate, launch, or arm the
 RID-matched broker refuses worker startup; the supervisor never spawns the
@@ -267,7 +273,7 @@ The broker contract is fixed and contains no user/script data:
 - Resolve `PtkContainmentBroker` from the published server's sibling directory,
   never PATH. A generated sibling
   `ptk-containment-broker.manifest.json` contains exactly
-  `schemaVersion:1`, `protocolVersion:1`, runtime `rid`, `fileName`, and
+  `schemaVersion:1`, `protocolVersion:2`, runtime `rid`, `fileName`, and
   lowercase SHA-256. Require the current RID, exact digest, a nonsymlink
   regular executable owned by the effective UID, and no group/world write
   bits before launch. A development/test override requires both an absolute
@@ -288,23 +294,27 @@ The broker contract is fixed and contains no user/script data:
   them; the supervisor continuously drains and applies the frozen per-boot
   caps to diagnostic stdout/stderr.
 - Control/event frames have an eight-byte header: ASCII `PTKB`, version byte
-  `1`, message-type byte, and unsigned two-byte big-endian payload length.
+  `2`, message-type byte, and unsigned two-byte big-endian payload length.
   Payload is at most 64 bytes. Readers loop through `EINTR`/short reads to read
   exactly one header and its declared payload; EOF/error before completion is
   protocol-fatal. Coalesced frames are parsed sequentially, never rejected as
   "extra" bytes. Unknown type/version, oversize length, or a type-specific
   payload-length mismatch is protocol-fatal.
   Integers below are unsigned big-endian. Supervisor commands are `START=1`,
-  `RELEASE=2`, and `SHUTDOWN=3`, all with empty payload. The exact absolute
-  worker exec vector (`PtkMcpServer --worker`, or pinned `dotnet` plus absolute
-  entry DLL under tests) is nonsecret broker argv fixed at launch, never a
-  control-frame string.
-- Broker events are `HELLO=1`, `ARMED=2`, `RELEASED=3`, and
-  `START_FAILED=4`. `HELLO` carries broker PID `u32` plus start identity
-  `(u64 high,u64 low)`. After `START`, `ARMED` carries broker PID/identity,
-  worker PID/identity, and PGID `u32`; the supervisor requires the spawned
-  broker PID, `PGID == worker PID`, and independently queried matching start
-  identities before `RELEASE`. Linux identity is `(0, /proc/<pid>/stat
+  `ARM_GROUP=2`, `RELEASE=3`, and `SHUTDOWN=4`, all with empty payload. The
+  exact absolute worker exec vector (`PtkMcpServer --worker`, or pinned
+  `dotnet` plus absolute entry DLL under tests) is nonsecret broker argv fixed
+  at launch, never a control-frame string.
+- Broker events are `HELLO=1`, `CHILD_GATED=2`, `ARMED=3`, `RELEASED=4`, and
+  `START_FAILED=5`. `HELLO` carries broker PID `u32` plus start identity
+  `(u64 high,u64 low)`. After `START`, `CHILD_GATED` carries broker PID/
+  identity and worker PID/identity while both still belong to the supervisor's
+  group. The supervisor requires the spawned broker PID and independently
+  queried matching identities. Under the final guardian topology it then
+  obtains the outer broker's `pending` acknowledgment before sending
+  `ARM_GROUP`. `ARMED` carries the same identities plus PGID `u32`; require
+  `PGID == worker PID` and the outer broker's independently validated `armed`
+  acknowledgment before `RELEASE`. Linux identity is `(0, /proc/<pid>/stat
   starttime ticks)`; Darwin identity is `(proc_bsdinfo start seconds, start
   microseconds)`. `RELEASED` is empty and is sent only after the child's
   CLOEXEC exec-error pipe proves successful `execve`. `START_FAILED` carries

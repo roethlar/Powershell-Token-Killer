@@ -137,13 +137,18 @@ MCP client / harness
 
 On Unix the guardian's managed descendants are rooted through a required
 single-threaded native `PtkGuardianBroker`. The guardian alone holds its
-liveness writer. The broker forks/reaps the private host, owns an identity
-registry for every host-created per-worker broker and process group, and
-survives guardian death only long enough to reap its host and terminate/confirm
-exit of that descendant registry before exiting. Per-worker brokers remain
-children of the private host; after forced host death they are reparented and
-reaped by the platform system reaper, not by an invalid nonparent `waitpid`.
-There is no managed or shell fallback.
+liveness writer. The broker forks the gated private host, proves
+`host PGID == host PID` before host exec/release, and later reaps that direct
+child. The guardian and outer broker never join the host-generation group;
+the host, every ordinary descendant of the transitional in-host runtime, and
+every per-worker broker remain in it. The outer broker also owns the
+identity-fenced pending/armed registry for worker groups that leave it. It
+survives guardian death only long enough to terminate and confirm the host
+group and registry before exiting. Per-worker brokers remain children of the
+private host; after forced host death they are reparented and reaped by the
+platform system reaper, not by an invalid nonparent `waitpid`. Deliberate
+detach/process-group escape retains the audited-harness plan's explicit
+partial-coverage semantics. There is no managed or shell fallback.
 
 The guardian owns `AuditRuntimeGate`, audit/export configuration, exact-script
 evidence, `OutputStore`, the public nonreusing job-ID sequence, call IDs,
@@ -337,17 +342,32 @@ The guardian is the sole managed owner of the outer host containment lease. On
 Windows the host generation and all descendants are inside one creation-time
 `KILL_ON_JOB_CLOSE` Job Object; nested per-worker Job Objects must be probed and
 supported. On Unix `PtkGuardianBroker` is the durable parent/reaper for the
-private host and the identity-fenced containment authority for the host's
-descendant broker/groups; it never claims parentage or calls `waitpid` for a
-per-worker broker. The guardian sends bounded launch/stop commands over its
-private broker channel. Before the private host releases a worker, it reports
-the broker PID/start identity and worker PGID/leader identity through the
-guardian to the outer broker, which atomically arms that registry entry and
-acknowledges it. Host death triggers guardian-requested teardown. Guardian
-death closes the guardian-only liveness writer, which unconditionally makes
-the outer broker TERM/KILL/reap its direct host, identity-kill every registered
-descendant group/broker, and poll the platform identities until exit is
-confirmed; the platform reaps the resulting nonchildren. This works even when
+private host, owns its creation-time host-generation process group, and is the
+identity-fenced containment authority for descendant worker groups; it never
+claims parentage or calls `waitpid` for a per-worker broker. The guardian sends
+bounded launch/stop commands over its private broker channel.
+
+Per-worker containment registration is two-phase. The per-worker broker and
+its gated child start inside the host group. Before either may leave it, the
+host reports the broker PID/start identity, worker PID/start identity, and
+intended `PGID == worker PID` through the guardian; the outer broker records a
+`pending` entry and acknowledges it. Only then may the per-worker broker arm
+the worker group. The outer broker independently validates the leader identity
+and group, promotes the entry to `armed`, and acknowledges again. Only that
+second acknowledgment permits worker release/exec. Before the pending
+acknowledgment, host-group teardown catches both processes. During the
+pending-to-armed transition, teardown targets both the host group and the
+identity-validated intended worker group. An entry is removed only after
+confirmed broker/group disappearance; uncertainty quarantines the old host
+generation.
+
+Host death triggers guardian-requested teardown. Guardian death closes the
+guardian-only liveness writer. Either path first blocks every release, then
+makes the outer broker TERM/KILL the entire host-generation group plus every
+pending/armed worker group, reap only its direct host child, and poll the
+recorded nonchild identities until exit is confirmed; the platform reaps those
+nonchildren. This contains ordinary native descendants and cold background
+jobs while R5 still runs `SessionRuntime` inside the host, and works even when
 the host is hung or kept its own descriptors open. Replacement never overlaps
 an unconfirmed old identity, and lack of the outer broker primitive fails
 startup rather than falling back to managed spawn.
@@ -514,10 +534,13 @@ or history rewriting.
   public-stdout contamination.
 - Prove Windows nested Job Object behavior and the Unix guardian-broker
   liveness/registry topology before selecting production launch primitives.
-  Kill a guardian while its host is hung and prove the native broker reaps its
-  direct host, identity-kills/confirms every registered descendant, never
-  `waitpid`s a nonchild on macOS, and leaves the system reaper no persistent
-  zombie. Failure to confirm old-tree death blocks implementation rather than
+  Kill a guardian while its host is hung and prove the native broker kills the
+  creation-time host group, reaps its direct host, identity-kills/confirms
+  every pending/armed worker group, never `waitpid`s a nonchild on macOS, and
+  leaves the system reaper no persistent zombie. Stop at every boundary before
+  pending registration, during group movement, before/after armed
+  acknowledgment, and before/after release; no user code or process may
+  escape. Failure to confirm old-tree death blocks implementation rather than
   weakening containment.
 - Record direct Windows evidence on `NETWATCH-01` and native Unix evidence in
   `.agents/machines.md`.
@@ -575,6 +598,11 @@ or history rewriting.
   and exact declared-state-only recovery.
 - A host crash while the current default runtime remains in-process still loses
   that runtime; recovery creates the exact documented fresh baseline.
+- On Unix, prove that runtime's ordinary native child, grandchild, and cold
+  background job inherit the host-generation group and all die when the host
+  or guardian is hard-killed. An execution path that detaches from that group
+  retains the existing explicit partial-coverage result; it is not mislabeled
+  as completely contained.
 
 ### R6 — automatic worker recovery after live worker routing
 
@@ -653,9 +681,12 @@ or history rewriting.
   foreground-busy, and job-running barriers.
 - Windows proves creation-time outer containment, required nested Job Objects,
   noninheritance, and direct `NETWATCH-01` cleanup. Linux/macOS prove outer
-  guardian-broker liveness cleanup, registered-group ownership, start-identity
-  fencing, direct-host reap, descendant exit confirmation, correct nonchild
-  reaping, and no old/new group overlap.
+  guardian-broker liveness cleanup, creation-time host-group ownership,
+  pending/armed worker registration, start-identity fencing, direct-host reap,
+  descendant exit confirmation, correct nonchild reaping, and no old/new group
+  overlap. Guards fail if an ordinary R5 child misses the host group, a worker
+  leaves it before pending acknowledgment, or release precedes armed
+  acknowledgment.
 - Guardian stdout is exclusively valid MCP. Every other output is bounded
   stderr/private diagnostics with no scripts, bootstrap, secrets, paths, raw
   environment, or exception text.
