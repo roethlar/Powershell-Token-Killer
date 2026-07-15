@@ -22,6 +22,10 @@ public sealed class Slice7fStagingBoundaryTests
                 productionRoot,
                 "Worker",
                 "WorkerOperationScheduler.cs")),
+            Path.GetFullPath(Path.Combine(
+                productionRoot,
+                "Worker",
+                "WorkerSessionOperationCodec.cs")),
         };
         foreach (var path in Directory.EnumerateFiles(
             productionRoot,
@@ -33,6 +37,8 @@ public sealed class Slice7fStagingBoundaryTests
             Assert.DoesNotContain("WorkerOperationScheduler", source, StringComparison.Ordinal);
             Assert.DoesNotContain("IWorkerOperationExecutor", source, StringComparison.Ordinal);
             Assert.DoesNotContain("WorkerOperationProtocol", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("WorkerSessionOperationCodec", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("WorkerSessionOperationArguments", source, StringComparison.Ordinal);
         }
         foreach (var path in stagingFiles)
         {
@@ -59,6 +65,21 @@ public sealed class Slice7fStagingBoundaryTests
             "Program.cs"));
         Assert.Contains("AddSingleton<ISessionOperations>", program, StringComparison.Ordinal);
         Assert.Contains("DefaultSessionRuntimeFactory.Create", program, StringComparison.Ordinal);
+
+        var concreteCodec = File.ReadAllText(Path.Combine(
+            productionRoot,
+            "Worker",
+            "WorkerSessionOperationCodec.cs"));
+        foreach (var forbidden in new[]
+        {
+            "WorkerOperationRequest",
+            "WorkerOperationScheduler",
+            "WorkerMessageKind",
+            "WorkerServer",
+        })
+        {
+            Assert.DoesNotContain(forbidden, concreteCodec, StringComparison.Ordinal);
+        }
         Assert.DoesNotContain(
             typeof(WorkerOperationScheduler).Assembly.GetTypes(),
             type => !type.IsAbstract &&
@@ -77,6 +98,22 @@ public sealed class Slice7fStagingBoundaryTests
             typeof(WorkerOperationResponse),
             typeof(IWorkerOperationExecutor),
             typeof(WorkerOperationScheduler),
+            typeof(WorkerSessionOperationCodec),
+            typeof(WorkerInvokeRoute),
+            typeof(WorkerSessionOperationArguments),
+            typeof(WorkerInvokeArguments),
+            typeof(WorkerJobListArguments),
+            typeof(WorkerJobStatusArguments),
+            typeof(WorkerJobOutputArguments),
+            typeof(WorkerJobKillArguments),
+            typeof(WorkerStateArguments),
+            typeof(WorkerSessionOperationResult),
+            typeof(WorkerInvokeResult),
+            typeof(WorkerJobListResult),
+            typeof(WorkerJobStatusResult),
+            typeof(WorkerJobOutputResult),
+            typeof(WorkerJobKillResult),
+            typeof(WorkerStateResult),
         }
         .SelectMany(type => type
             .GetMembers(BindingFlags.Instance | BindingFlags.Static |
