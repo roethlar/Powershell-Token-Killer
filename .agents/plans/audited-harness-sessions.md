@@ -1810,10 +1810,11 @@ inventing a code sabotage.
   bootstrap prepare shapes remain later separately approved work.
 - `scriptDigest` is SHA-256 over the strict UTF-8 bytes of the exact original
   script with no normalization, BOM, or domain prefix, matching the audit
-  evidence digest. The deadline is the original absolute operation deadline,
-  not a new budget. Creation requires UTC whole-millisecond precision so
-  serialization is lossless; parsing does not reject an otherwise valid
-  deadline merely because it has already expired.
+  evidence digest. Every temporary byte buffer used to recompute it is cleared
+  in `finally`, including failure paths. The deadline is the original absolute
+  operation deadline, not a new budget. Creation requires UTC
+  whole-millisecond precision so serialization is lossless; parsing does not
+  reject an otherwise valid deadline merely because it has already expired.
 - Before live binding, the MCP deadline boundary must floor `utcNow + budget`
   once to its positive Unix-millisecond value, never extending authority, and
   use that same aligned UTC instant in audit metadata and every protocol
