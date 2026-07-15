@@ -103,8 +103,13 @@ by inference or model memory.
   acknowledgment in a stock OpenTelemetry Collector pipeline is not obviously
   gated on durable commit (exporter-side sending-queue persistence is not
   receiver-side durability — see the Collector resiliency documentation
-  already cited by `server/AUDIT-EXPORT.md`). If no configuration can be shown
-  to satisfy Binding Input 3, option 2 candidates relying on it fail row 2.
+  already cited by `server/AUDIT-EXPORT.md`). Binding Input 3's components
+  are graded separately, mirroring acceptance questions 1 and 2 in
+  `.agents/decisions.md:329-334`: acknowledgment ordering
+  (durable-before-ack) is graded only in row 2; the separately administered
+  principal/service identity is graded in row 1; associated storage
+  controls are graded in row 7. A candidate failing one component fails
+  only the row for that component, not row 2 wholesale.
 - **D2 — threat model and identity draft (rows 1, 6, 7).** Attacker profiles:
   compromised PTK host user, network adversary, receiver-host tampering.
   Separate-principal design for the receiver identity. The existing
@@ -116,11 +121,21 @@ by inference or model memory.
   expectations per option.
 - **D3 — conformance criteria (rows 2-5).** Measurable pass/fail probes
   written against the guardian fixture seam (Binding Input 4):
-  durable-before-`200` (kill between receive and ack ⇒ either the record
-  survives restart or the ack was never sent); duplicate replay idempotence;
+  durable-before-ack with two synchronized barriers — (a) pre-commit: a
+  receiver killed before durable commit must have emitted no valid,
+  nonrejecting OTLP acknowledgment (a bare `200` status alone is not an
+  ack; the full valid/nonrejecting response per
+  `server/AUDIT-EXPORT.md:87-97` is); (b) post-ack: every observed valid
+  nonrejecting OTLP acknowledgment must survive immediate receiver
+  termination and restart with the record intact; duplicate replay
+  idempotence;
   event-ID/hash-chain validation rejects tampering; disk-full ⇒ rejection,
   never a false `200`; backpressure signaling that PTK's existing retry
-  honors; restart/recovery re-advertisement.
+  honors; restart/recovery re-advertisement; cross-version compatibility per
+  `33d6a35:.agents/plans/mcp-resilience.md:785-801` — exact v1, v2, and v3
+  bodies accepted, every retained attribute name and type preserved, the
+  four typed `ptk.host.*` v3 attributes intact, Unicode and timestamp
+  fidelity, and PTK request bytes unchanged.
 - **D4 — operational cost comparison (rows 8-11).** Compare all three options
   across the eleven acceptance criteria; option 3 ("require an external SIEM")
   carries zero PTK code cost but requires an independently operated service.
@@ -146,9 +161,13 @@ by inference or model memory.
   transcript). Cells without evidence stay empty and are listed as unknowns in
   D5 rather than guessed.
 - D3 criteria must discriminate: the guardian fake durable receiver would
-  pass them; a deliberately non-durable configuration must fail at least the
-  durable-before-`200` probe. Executing that check belongs to the separately
-  authorized probe step, not this plan.
+  pass them; a deliberately non-durable configuration — one that returns a
+  valid nonrejecting acknowledgment before durable commit — must fail the
+  post-ack barrier (the record does not survive termination immediately
+  after the ack). A receiver that merely dies before responding satisfies
+  the pre-commit barrier vacuously, so discrimination rests on the post-ack
+  barrier. Executing that check belongs to the separately authorized probe
+  step, not this plan.
 - The standard battery (`.agents/repo-guidance.md` → Verification) stays green
   on this branch; the branch adds documents only.
 
