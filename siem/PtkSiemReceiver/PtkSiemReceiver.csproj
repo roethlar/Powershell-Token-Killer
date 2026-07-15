@@ -9,6 +9,7 @@
 
   <ItemGroup>
     <InternalsVisibleTo Include="PtkSiemReceiver.Tests" />
+    <InternalsVisibleTo Include="PtkMcpServer.Tests" />
   </ItemGroup>
 
   <ItemGroup>

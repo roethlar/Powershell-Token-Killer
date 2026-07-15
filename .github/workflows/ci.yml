@@ -59,3 +59,10 @@ jobs:
 
       - name: SIEM receiver tests
         run: dotnet test siem/PtkSiem.slnx
+
+      - name: Producer to SIEM conformance
+        env:
+          PTK_SIEM_CONFORMANCE_MODE: in-process
+        run: >-
+          dotnet test
+          server/PtkMcpServer.Tests/SiemConformance/PtkMcpServer.SiemConformance.Tests.csproj

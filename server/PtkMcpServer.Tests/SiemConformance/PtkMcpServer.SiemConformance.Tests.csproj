@@ -1,14 +1,14 @@
-﻿<Project Sdk="Microsoft.NET.Sdk">
+<Project Sdk="Microsoft.NET.Sdk">
 
   <PropertyGroup>
     <TargetFramework>net10.0</TargetFramework>
     <ImplicitUsings>enable</ImplicitUsings>
     <Nullable>enable</Nullable>
     <IsPackable>false</IsPackable>
+    <AssemblyName>PtkMcpServer.Tests</AssemblyName>
   </PropertyGroup>
 
   <ItemGroup>
-    <PackageReference Include="coverlet.collector" Version="6.0.4" />
     <PackageReference Include="Microsoft.NET.Test.Sdk" Version="17.14.1" />
     <PackageReference Include="xunit" Version="2.9.3" />
     <PackageReference Include="xunit.runner.visualstudio" Version="3.1.4" />
@@ -19,14 +19,16 @@
   </ItemGroup>
 
   <ItemGroup>
-    <Compile Remove="AuditOtlpSiemConformanceTests.cs" />
-    <Compile Remove="SiemConformance/**/*.cs" />
+    <Compile Include="..\AuditOtlpSiemConformanceTests.cs"
+             Link="AuditOtlpSiemConformanceTests.cs" />
+    <Compile Include="..\AuditCoreSchemaTestRecords.cs"
+             Link="AuditCoreSchemaTestRecords.cs" />
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\PtkContainmentTestFixture\PtkContainmentTestFixture.csproj" />
-    <ProjectReference Include="..\PtkMcpServer\PtkMcpServer.csproj" />
-    <ProjectReference Include="..\PtkRtkTestFixture\PtkRtkTestFixture.csproj" />
+    <ProjectReference Include="..\..\PtkMcpServer\PtkMcpServer.csproj" />
+    <ProjectReference Include="..\..\..\siem\PtkSiemReceiver\PtkSiemReceiver.csproj"
+                      Aliases="siem" />
   </ItemGroup>
 
 </Project>
