@@ -8,6 +8,12 @@ replays uncertain calls, every recovery changes generation, only declared
 bootstrap state is recreated, and health reporting remains usable. This file
 records the implementation contract to review before a separate code go.
 
+The owner additionally accepted on 2026-07-15 that the guardian is a small
+session-lifetime control-plane binary, not a general pipe relay. It owns audit
+admission, sealed output, public IDs, frozen bootstrap metadata, and generation
+allocation while loading no PowerShell. Its own crash ending the stdio MCP
+connection is an acceptable residual boundary.
+
 `.agents/decisions.md` remains under the owner's existing hold and is not
 amended by this plan. This plan is the canonical source for MCP transport and
 backend recovery. It narrowly supersedes the target topology and the
