@@ -128,6 +128,13 @@ MCP client / harness
             └─ session exo ─────────► worker generation C ─► SessionRuntime
 ```
 
+On Unix the guardian's managed descendants are rooted through a required
+single-threaded native `PtkGuardianBroker`. The guardian alone holds its
+liveness writer. The broker forks/reaps the private host, owns the registry of
+every per-worker broker and process group, and survives guardian death only
+long enough to terminate and reap that complete registry before exiting. There
+is no managed or shell fallback.
+
 The guardian owns `AuditRuntimeGate`, audit/export configuration, exact-script
 evidence, `OutputStore`, the public nonreusing job-ID sequence, call IDs,
 frozen catalog/profile/bootstrap bytes and digests, desired session bindings,
@@ -296,13 +303,19 @@ transition. The guardian:
 7. recovers eligible sessions independently, then publishes the host ready
    even when one session remains faulted or recovery-unknown.
 
-The guardian is the sole owner of the outer host containment lease. On Windows
-the host generation and all descendants are inside one creation-time
+The guardian is the sole managed owner of the outer host containment lease. On
+Windows the host generation and all descendants are inside one creation-time
 `KILL_ON_JOB_CLOSE` Job Object; nested per-worker Job Objects must be probed and
-supported. On Unix the host reports every broker/PGID/start identity before a
-worker is released; host death closes the host-owned worker liveness pipes,
-and the guardian independently uses the frozen identities to confirm or finish
-TERM/KILL/reap. Replacement never overlaps an unconfirmed old identity.
+supported. On Unix `PtkGuardianBroker`, not the host, is the durable parent/
+reaper and containment authority for the private host and every per-worker
+broker/group. The guardian sends bounded launch/stop commands over its private
+broker channel; the broker records PID/PGID/start identities before release and
+acknowledges only after the identity is armed. Host death triggers guardian-
+requested teardown. Guardian death closes the guardian-only liveness writer,
+which unconditionally triggers broker-owned TERM/KILL/reap of the host and all
+registered groups even when the host is hung or keeps its own descriptors
+open. Replacement never overlaps an unconfirmed old identity, and lack of the
+outer broker primitive fails startup rather than falling back to managed spawn.
 
 Public job IDs, output handles, audit correlation, and alias generation
 high-water marks never reset across host recovery. Running jobs are not
@@ -464,9 +477,11 @@ or history rewriting.
   same guardian PID/pipes after an idle host kill, guardian-local state during
   recovery, exact one-terminal behavior for every delivery barrier, and no
   public-stdout contamination.
-- Prove Windows nested Job Object behavior and Unix registered-identity cleanup
-  before selecting production launch primitives. Failure to confirm old-tree
-  death blocks implementation rather than weakening containment.
+- Prove Windows nested Job Object behavior and the Unix guardian-broker
+  liveness/registry/TERM-KILL-reap topology before selecting production launch
+  primitives. Kill a guardian while its host is hung and prove the native
+  broker alone removes every registered worker group. Failure to confirm
+  old-tree death blocks implementation rather than weakening containment.
 - Record direct Windows evidence on `NETWATCH-01` and native Unix evidence in
   `.agents/machines.md`.
 
@@ -536,9 +551,9 @@ or history rewriting.
 
 - Change every install/registration path to launch only the guardian apphost;
   direct host/worker modes remain private and bootstrap-gated.
-- Package the guardian, exact pinned host, shared contracts, and platform
-  containment artifacts together. Partial/mixed-version installation fails
-  before public initialization.
+- Package the guardian, exact pinned host, shared contracts, required Unix
+  guardian/worker brokers, and platform containment artifacts together.
+  Partial/mixed-version installation fails before public initialization.
 - Run the complete same-pipe crash matrix from a real MCP client, the full .NET
   and Pester suites, handshake, release archive checks, and direct Windows plus
   native Unix validation before making the guardian the default.
@@ -597,8 +612,9 @@ or history rewriting.
   hard-kill guardian/host/worker at creation, initialize, bootstrap, ready,
   foreground-busy, and job-running barriers.
 - Windows proves creation-time outer containment, required nested Job Objects,
-  noninheritance, and direct `NETWATCH-01` cleanup. Linux/macOS prove broker
-  liveness, start-identity fencing, TERM/KILL/reap, and no old/new group overlap.
+  noninheritance, and direct `NETWATCH-01` cleanup. Linux/macOS prove outer
+  guardian-broker liveness cleanup, registered-group ownership, start-identity
+  fencing, TERM/KILL/reap, and no old/new group overlap.
 - Guardian stdout is exclusively valid MCP. Every other output is bounded
   stderr/private diagnostics with no scripts, bootstrap, secrets, paths, raw
   environment, or exception text.
