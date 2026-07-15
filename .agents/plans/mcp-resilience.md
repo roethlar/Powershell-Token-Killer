@@ -315,8 +315,9 @@ scheduled attempt during containment, backoff, or circuit-open, and resets
 only after the documented 60-second stable-ready window. `retry_gate` names
 the dependency that must recover. It is the refused operation's prerequisite,
 not necessarily its target. The mapping is closed: foreground `ptk_invoke`
-uses the selected canonical alias's session gate; cold-background
-`ptk_invoke`, a backend-dependent `ptk_job` action, `ptk_reset`, and
+and cold-background `ptk_invoke`, plus every backend-dependent `ptk_job`
+action, use the selected canonical alias's session gate because its worker owns
+`SessionRuntime`/`JobManager`. `ptk_reset` and
 `ptk_session open|close|restart` use the host gate; guardian-local
 `ptk_state`, `ptk_session list`, `ptk_output`, sealed/tombstoned job reads,
 `ping`, and `tools/list` never return a recovery gate. Thus lifecycle repair
@@ -348,9 +349,10 @@ retry.
 
 The state poll is advisory, not a reservation. Immediately before the first
 guardian-to-host request byte, guardian dispatch authorization revalidates the
-host gate and captures its boot/generation. For ordinary session work, the
-host repeats the session-gate and worker boot/generation/transition check under
-the owning lifecycle gate immediately before its worker request write. A known
+host gate and captures its boot/generation. For foreground/background invoke
+and backend-dependent job control, the host repeats the session-gate and worker
+boot/generation/transition check under the owning lifecycle gate immediately
+before its worker request write. A known
 mismatch or loss while the relevant downstream delivery remains
 `not_dispatched` starts no effect and returns fresh proved-no-start guidance.
 Once a downstream private request byte may have been written, loss before its
@@ -876,10 +878,10 @@ or history rewriting.
   after that ready snapshot but before dispatch authorization, the fresh call
   starts no effect and receives new recovery guidance. A separate loss after
   private write starts returns `outcome_unknown` and no retry guidance.
-- Gate-matrix tests prove foreground invoke names its exact session, cold-job
-  and lifecycle repair name only the host, and guardian-local operations emit
-  no gate. A recovering session cannot make its own restart wait for session
-  readiness.
+- Gate-matrix tests prove foreground/background invoke and backend-dependent
+  job control name their exact session, lifecycle repair names only the host,
+  and guardian-local operations emit no gate. A recovering session cannot make
+  its own restart wait for session readiness.
 - Old-generation responses/events and forged diagnostic JSON cannot complete a
   public request or mutate current state.
 
