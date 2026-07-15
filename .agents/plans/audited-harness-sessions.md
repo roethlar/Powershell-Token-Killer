@@ -672,6 +672,10 @@ serializes scripts within the admitted generation.
   death drives the documented faulted/lost/cold transition; idle shutdown may
   be reconsidered only after that observer and its reserved audit obligation
   are released.
+- That countdown applies only to the retained legacy public server through
+  resilience R6. At the final guardian cutover, the newer resilience plan
+  supersedes ordinary idle shutdown: an open public MCP pipe keeps the guardian,
+  private host, and every warm worker alive regardless of elapsed inactivity.
 
 No worker, alias, boot ID, generation, job ID, or output handle is valid in a
 new harness.
@@ -1467,7 +1471,9 @@ resilience plan:
   contexts; it no longer owns string-only route inference.
 - `JobManager` stores correlation, route/provenance, session generation,
   output handle, and a polling-independent terminal continuation.
-- `IdleWatchdog` observes `SessionManager` aggregate activity/live work.
+- Through resilience R6, the legacy public server's `IdleWatchdog` observes
+  `SessionManager` aggregate activity/live work. The final guardian entry has
+  no idle watchdog and does not register this service.
 - `PwshTokenCompressor.psm1` retains PowerShell-object and log-text shaping,
   but receives provenance so every RTK-routed output, including `RtkUnknown`,
   is not shaped twice and all rerun-with-raw wording is removed.
@@ -1939,9 +1945,12 @@ inventing a code sabotage.
 - Add bounded graceful shutdown plus proven tree kill.
 - Prove broker-loss teardown and quarantine separately from ordinary worker
   loss; no live generation may continue without its armed broker.
-- Aggregate idle activity/live-work semantics in the supervisor.
-- Count quarantined/unconfirmed-containment observers as live work so idle
-  shutdown cannot discard the recovery gate or its terminal audit obligation.
+- Aggregate idle activity/live-work semantics in the legacy supervisor, then
+  prove final guardian cutover disables its idle exit/recycle path while the
+  public pipe remains open.
+- Count quarantined/unconfirmed-containment observers as live work so the
+  legacy idle path cannot discard the recovery gate or terminal audit
+  obligation before cutover.
 - Prove ordinary MCP EOF removes every worker and managed job; classify hard
   death/outcome uncertainty honestly. Hard-kill the supervisor during worker
   launch, blocked bootstrap, ready idle, foreground native execution, and a
@@ -2579,7 +2588,9 @@ not a correctness guard, and rrp-10 remains documentation reconciliation.
 - With idle timeout shorter than a delayed containment confirmation, a
   quarantined slot keeps the supervisor/observer alive and rejects new
   generations. Only after confirmed death and the resulting terminal audit
-  fact may the ordinary idle countdown resume.
+  fact may the retained legacy path's ordinary idle countdown resume. Under
+  the final guardian entry, advancing past that timeout with an open public pipe
+  preserves the same host/worker generations and warm-state sentinel.
 
 ### Compatibility and live verification
 

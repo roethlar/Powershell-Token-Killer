@@ -30,6 +30,11 @@ same host executable digest, private protocol, and public tool contract for its
 entire MCP session; upgraded or mixed-version components are refused until a
 new guardian/client session.
 
+The owner approved open-pipe persistence on 2026-07-15. While the public MCP
+connection remains open, idle timeout cannot stop or recycle the guardian,
+host, or warm workers; only public EOF, explicit recycle, or failure replaces
+them.
+
 The owner approved `ptk.audit/3` on 2026-07-15 conditional on preserving the
 existing Splunk, Microsoft Sentinel, and proposed mini-SIEM routes. The
 compatibility contract below keeps OTLP/HTTP stable, uses destination adapters
@@ -292,11 +297,15 @@ reset a delay, consume a retry attempt, or wait behind effectful work. If the
 mandatory audit journal is unavailable, only the existing narrow labeled
 unrecorded audit-health diagnostic remains available.
 
-The idle watchdog moves to the guardian. Public-pipe liveness, not host
-liveness, controls guardian shutdown. `PTK_IDLE_EXIT_SECONDS` may recycle an
-idle host/workers behind the guardian but must never close a still-open public
-MCP connection; intentional idle recycle is labeled and uses the same recovery
-generation rules.
+Public-pipe liveness, not elapsed inactivity or host liveness, controls
+guardian shutdown. Guardian mode has no idle watchdog:
+`PTK_IDLE_EXIT_SECONDS` cannot stop or recycle the guardian, host, or workers
+while public stdin remains open. Advancing an idle clock changes no PID,
+generation, desired binding, warm state, or audit lifecycle. During R4-R6 only,
+the retained legacy no-argument public server keeps its existing idle behavior;
+R7 documents the setting as inapplicable to the guardian entry. Public EOF,
+explicit operator recycle, and observed failure remain the only replacement
+triggers.
 
 ## Private guardian-host protocol
 
@@ -514,9 +523,9 @@ failure code, and each alias's desired/observed/recovery state. Repeated state
 reads do not alter those values except ordinary elapsed-time display and do not
 grow an unbounded audit reserve.
 
-Recovery/containment observation is live work. Idle policy cannot terminate
-the guardian or recycle a host while recovery, quarantine, an admitted call,
-or any managed job remains live.
+Recovery/containment observation remains live work for shutdown ordering and
+state. No inactivity policy can terminate the guardian or recycle a host at
+all while the public pipe remains open.
 
 ## Mandatory audit and output continuity
 
@@ -601,11 +610,13 @@ in-memory handle survives a new harness.
 
 ## Shutdown and intentional restart
 
-Public stdin EOF or guardian cancellation atomically sets terminal shutdown
-before any child stop. It disables every restart timer/half-open probe, closes
-host protocol, invokes containment for host/workers/jobs, waits the bounded
-grace, disposes audit/output resources in their approved order, and exits. No
-restart is scheduled after public EOF.
+Public stdin EOF or explicit external guardian shutdown/cancellation atomically
+sets terminal shutdown before any child stop; it can never originate from an
+inactivity timer. This ends the harness rather than replacing children behind
+the same pipe. It disables every restart timer/half-open probe, closes host
+protocol, invokes containment for host/workers/jobs, waits the bounded grace,
+disposes audit/output resources in their approved order, and exits. No restart
+is scheduled after terminal shutdown.
 
 An operator-requested host recycle uses the same containment and new-generation
 rules but is not a crash. It never changes the pinned build or public contract.
@@ -624,9 +635,9 @@ or history rewriting.
   fields/limits, binary/contract digest computation, platform containment
   design, and published artifact layout.
 - Build disposable fake guardian/host fixtures. Prove one public initialize,
-  same guardian PID/pipes after an idle host kill, guardian-local state during
-  recovery, exact one-terminal behavior for every delivery barrier, and no
-  public-stdout contamination.
+  same guardian PID/pipes after forcibly killing an otherwise-idle host,
+  guardian-local state during recovery, exact one-terminal behavior for every
+  delivery barrier, and no public-stdout contamination.
 - Prove Windows nested Job Object behavior and the Unix guardian-broker
   liveness/registry topology before selecting production launch primitives.
   Kill a guardian while its host is hung and prove the native broker kills the
@@ -680,9 +691,10 @@ or history rewriting.
   `ISessionOperations` behavior. Keep the installed no-argument server mode and
   its public MCP behavior byte-for-byte intact through R6.
 - In the guardian path, move audit admission, output capabilities, public IDs,
-  frozen catalog, and idle policy outward atomically. The private host gets no
-  audit credentials or public handles. Shared factories may serve the legacy
-  path, but no installed registration points at `--host` or the guardian yet.
+  frozen catalog, and public-pipe lifetime ownership outward atomically. Remove
+  idle exit/recycle from the private host. The private host gets no audit
+  credentials or public handles. Shared factories may serve the legacy path,
+  but no installed registration points at `--host` or the guardian yet.
 - Reconcile audit schema/event evolution and package both exact-version
   apphosts, but keep registration cutover separately guarded. Extend the OTLP
   mapper with the four host attributes while preserving exact v1/v2 mapping,
@@ -732,9 +744,10 @@ or history rewriting.
 
 ### Public connection and host recovery
 
-- Initialize once, list tools, kill an idle host, read `ptk_state` while it is
-  recovering, then call a real tool successfully on the replacement using the
-  same guardian PID, stdin/stdout, public request-ID domain, and initialization.
+- Initialize once, list tools, forcibly kill an otherwise-idle host, read
+  `ptk_state` while it is recovering, then call a real tool successfully on the
+  replacement using the same guardian PID, stdin/stdout, public request-ID
+  domain, and initialization.
 - Host EOF, exit, reader, and writer failures racing together start
   exactly one recovery. Public stdout remains open and valid.
 - Replacement contract/build mismatch is refused and never changes the live
@@ -778,7 +791,9 @@ or history rewriting.
   but not the guardian connection. Guardian death remains connection-fatal and
   leaves no descendant.
 - Recovery never starts after intentional public EOF, and idle policy never
-  creates a restart loop.
+  creates a restart loop. With an open pipe, advance a fake clock beyond every
+  configured legacy idle interval and prove the same host/worker PIDs,
+  generations, warm-state sentinel, and lifecycle-audit count remain.
 
 ### Audit export compatibility
 
@@ -853,7 +868,9 @@ fails before final fixed-SHA acceptance:
 25. change the OTLP wire/envelope by destination or audit schema version;
 26. drop or mistype one prior or `ptk.host.*` OTLP query attribute; and
 27. let a vendor/mini-SIEM adapter acknowledgment replace PTK's configured
-    durable OTLP anchor semantics.
+    durable OTLP anchor semantics; and
+28. stop or recycle a guardian, host, or worker solely because an open MCP
+    connection was idle.
 
 ## Documentation and release dependency
 
