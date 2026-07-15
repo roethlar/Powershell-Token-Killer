@@ -26,6 +26,10 @@ public sealed class Slice7fStagingBoundaryTests
                 productionRoot,
                 "Worker",
                 "WorkerSessionOperationCodec.cs")),
+            Path.GetFullPath(Path.Combine(
+                productionRoot,
+                "Worker",
+                "WorkerPreparedOperationCodec.cs")),
         };
         foreach (var path in Directory.EnumerateFiles(
             productionRoot,
@@ -39,6 +43,12 @@ public sealed class Slice7fStagingBoundaryTests
             Assert.DoesNotContain("WorkerOperationProtocol", source, StringComparison.Ordinal);
             Assert.DoesNotContain("WorkerSessionOperationCodec", source, StringComparison.Ordinal);
             Assert.DoesNotContain("WorkerSessionOperationArguments", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("WorkerPreparedOperationCodec", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("WorkerInvokePreparePayload", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("WorkerPreparedCorrelation", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("WorkerCommitPayload", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("WorkerAbortPayload", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("WorkerPreparedCorrelationMatch", source, StringComparison.Ordinal);
         }
         foreach (var path in stagingFiles)
         {
@@ -85,6 +95,35 @@ public sealed class Slice7fStagingBoundaryTests
             type => !type.IsAbstract &&
                 !type.IsInterface &&
                 typeof(IWorkerOperationExecutor).IsAssignableFrom(type));
+
+        var preparedCodec = File.ReadAllText(Path.Combine(
+            productionRoot,
+            "Worker",
+            "WorkerPreparedOperationCodec.cs"));
+        foreach (var forbidden in new[]
+        {
+            "WorkerEnvelope",
+            "WorkerMessageKind",
+            "WorkerOperationRequest",
+            "WorkerOperationScheduler",
+            "IWorkerOperationExecutor",
+            "WorkerServer",
+        })
+        {
+            Assert.DoesNotContain(forbidden, preparedCodec, StringComparison.Ordinal);
+        }
+        Assert.Contains(
+            "CryptographicOperations.ZeroMemory(bytes.AsSpan(0, byteCount));",
+            preparedCodec,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "ArrayPool<byte>.Shared.Return(bytes, clearArray: true);",
+            preparedCodec,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "CryptographicOperations.ZeroMemory(hash);",
+            preparedCodec,
+            StringComparison.Ordinal);
     }
 
     [Fact]
@@ -114,6 +153,12 @@ public sealed class Slice7fStagingBoundaryTests
             typeof(WorkerJobOutputResult),
             typeof(WorkerJobKillResult),
             typeof(WorkerStateResult),
+            typeof(WorkerPreparedOperationCodec),
+            typeof(WorkerInvokePreparePayload),
+            typeof(WorkerPreparedCorrelation),
+            typeof(WorkerCommitPayload),
+            typeof(WorkerAbortPayload),
+            typeof(WorkerPreparedCorrelationMatch),
         }
         .SelectMany(type => type
             .GetMembers(BindingFlags.Instance | BindingFlags.Static |
