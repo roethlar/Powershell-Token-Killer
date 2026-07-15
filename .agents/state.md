@@ -97,6 +97,10 @@ short and update it when important repo facts change.
   in this stage; only proved-no-start errors direct the model to poll state and
   submit a new request, while `outcome_unknown` is never retried. The owner
   requested a fresh Claude Fable 5 maximum-effort review of that update.
+  Claude Code 2.1.210 accepted exact range `5ae154c..ab54fe1` with
+  `guard_confirmed=true` and no comments; its result metadata reported
+  `claude-fable-5` plus CLI helper usage and no Opus model. Canonical review
+  evidence is in `.agents/review/index.md`.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and

@@ -21,6 +21,11 @@ polls guardian-local state and submits a new request after readiness. An
 ambiguous call remains nonretryable. Declarative bootstrap profiles remain the
 only automatic state-restoration input.
 
+Claude Code 2.1.210 using `claude-fable-5` at maximum effort accepted exact
+fixed range `5ae154c..ab54fe1` with `guard_confirmed=true` and no material
+comment on 2026-07-15. This is plan review only; implementation remains
+separately gated.
+
 `.agents/decisions.md` remains under the owner's existing hold and is not
 amended by this plan. This plan is the canonical source for MCP transport and
 backend recovery. It narrowly supersedes the target topology and the

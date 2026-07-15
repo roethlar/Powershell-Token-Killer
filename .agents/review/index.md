@@ -2506,3 +2506,25 @@ job-terminal events, reset/process replacement, proxy wiring, and the atomic
 default-session cutover remain separate owner-gated work. This acceptance
 authorizes delegated local landing only; it does not authorize push, history
 rewriting, or live routing.
+
+---
+
+**MCP RESILIENCE PLAN — ACCEPTED.** Claude Code 2.1.210
+(`claude-fable-5`, effort `max`, isolated disposable worktree) reviewed exact
+fixed range
+`5ae154cbde38127c21a63a3ff5c001814c1ea244..ab54fe17c9baae5ad187aa3160e19fa930bf25a5`
+and returned the schema-constrained verdict `accepted` with
+`guard_confirmed=true`, exact matching SHAs, and no comments at
+2026-07-15T17:25:51Z. The range is the complete resilience-plan branch through
+the owner-approved fail-fast model-retry contract: no server-side call queue,
+no saved-state authoring tool, retry guidance only for proved-no-start
+terminals, a guardian-local state poll before a fresh audited request, and no
+retry of `outcome_unknown`.
+
+The orchestrator verified exit zero, the exact base/head, literal guard
+confirmation, an empty comment list, clean fixed-range `git diff --check`, and
+a clean detached reviewer worktree before removing it. The JSON envelope's
+`modelUsage` reported `claude-fable-5` for the review and Claude Code's Haiku
+helper only; it contained no Opus model. Reviewed the complete resilience plan;
+no material issue found. This acceptance records plan quality only and does
+not authorize implementation, merge, push, or history rewriting.
