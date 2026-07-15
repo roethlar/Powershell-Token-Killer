@@ -1,5 +1,6 @@
 using System.Net;
 using System.Security.Authentication;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Google.Protobuf;
 using Microsoft.AspNetCore.Server.Kestrel.Core;
@@ -17,7 +18,9 @@ internal static class ReceiverApplication
     internal static WebApplication Build(
         SiemReceiverOptions options,
         string[]? args = null,
-        IIngestCommitter? committer = null)
+        IIngestCommitter? committer = null,
+        TimeProvider? timeProvider = null,
+        Storage.ISqliteIngestFaultInjector? storageFaultInjector = null)
     {
         ArgumentNullException.ThrowIfNull(options);
 
@@ -57,8 +60,18 @@ internal static class ReceiverApplication
             builder.Services.AddSingleton(options);
             builder.Services.AddSingleton(serverCertificate);
             builder.Services.AddSingleton(trustStore);
-            builder.Services.AddSingleton<IIngestCommitter>(
-                committer ?? UnavailableIngestCommitter.Instance);
+            builder.Services.AddSingleton(timeProvider ?? TimeProvider.System);
+            if (committer is null)
+            {
+                builder.Services.AddSingleton<IIngestCommitter>(serviceProvider =>
+                    Storage.SqliteIngestStore.Open(
+                        serviceProvider.GetRequiredService<SiemReceiverOptions>().SqlitePath,
+                        storageFaultInjector));
+            }
+            else
+            {
+                builder.Services.AddSingleton(committer);
+            }
             builder.Services.AddHostedService<ReceiverLifecycleService>();
 
             var application = builder.Build();
@@ -76,8 +89,10 @@ internal static class ReceiverApplication
     private static async Task HandleIngestAsync(
         HttpContext context,
         SiemReceiverOptions options,
-        IIngestCommitter committer)
+        IIngestCommitter committer,
+        TimeProvider timeProvider)
     {
+        var receivedUtc = timeProvider.GetUtcNow();
         if (!HasExactProtobufContentType(context.Request))
         {
             await OtlpHttpResponse.WritePermanentAsync(
@@ -100,32 +115,56 @@ internal static class ReceiverApplication
             return;
         }
 
-        var validation = OtlpRequestValidator.Validate(body);
-        if (!validation.IsValid)
+        var receipt = CreateReceiptContext(context, receivedUtc);
+        if (receipt is null)
         {
-            await OtlpHttpResponse.WritePermanentAsync(
+            await OtlpHttpResponse.WriteTransientAsync(
                 context.Response,
-                validation.FailureCode!,
+                "connection_metadata",
                 context.RequestAborted);
             return;
         }
 
-        IngestCommitResult commitResult;
+        var validation = OtlpRequestValidator.Validate(body);
+        var commitResult = validation.IsValid
+            ? await InvokeCommitAsync(
+                () => committer.CommitAsync(
+                    validation.Record!,
+                    receipt,
+                    context.RequestAborted),
+                context.RequestAborted)
+            : await InvokeCommitAsync(
+                () => committer.QuarantineAsync(
+                    validation.RejectedAttempt!,
+                    receipt,
+                    context.RequestAborted),
+                context.RequestAborted);
+
+        await WriteCommitResultAsync(context, commitResult);
+    }
+
+    private static async Task<IngestCommitResult> InvokeCommitAsync(
+        Func<Task<IngestCommitResult>> operation,
+        CancellationToken cancellationToken)
+    {
         try
         {
-            commitResult = await committer.CommitAsync(
-                validation.Record!,
-                context.RequestAborted);
+            return await operation();
         }
-        catch (OperationCanceledException) when (context.RequestAborted.IsCancellationRequested)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             throw;
         }
         catch (Exception exception) when (!IsFatal(exception))
         {
-            commitResult = IngestCommitResult.Transient("commit_failed");
+            return IngestCommitResult.Transient("commit_failed");
         }
+    }
 
+    private static async Task WriteCommitResultAsync(
+        HttpContext context,
+        IngestCommitResult commitResult)
+    {
         if (commitResult.Kind == IngestCommitResultKind.Accepted)
         {
             await OtlpHttpResponse.WriteSuccessAsync(context.Response, context.RequestAborted);
@@ -144,6 +183,26 @@ internal static class ReceiverApplication
                 commitResult.FailureCode,
                 context.RequestAborted);
         }
+    }
+
+    private static IngestReceiptContext? CreateReceiptContext(
+        HttpContext context,
+        DateTimeOffset receivedUtc)
+    {
+        var certificate = context.Connection.ClientCertificate;
+        var address = context.Connection.RemoteIpAddress;
+        if (certificate is null || address is null) return null;
+
+        var addressText = address.AddressFamily == System.Net.Sockets.AddressFamily.InterNetworkV6
+            ? $"[{address}]"
+            : address.ToString();
+        var endpoint = $"{addressText}:{context.Connection.RemotePort}";
+        var thumbprint = Convert.ToHexString(SHA256.HashData(certificate.RawData))
+            .ToLowerInvariant();
+        return new IngestReceiptContext(
+            receivedUtc.ToUniversalTime(),
+            thumbprint,
+            endpoint);
     }
 
     private static bool HasExactProtobufContentType(HttpRequest request)
@@ -195,8 +254,19 @@ internal interface IIngestCommitter
 {
     Task<IngestCommitResult> CommitAsync(
         ValidatedOtlpRecord record,
+        IngestReceiptContext receipt,
+        CancellationToken cancellationToken);
+
+    Task<IngestCommitResult> QuarantineAsync(
+        RejectedOtlpAttempt attempt,
+        IngestReceiptContext receipt,
         CancellationToken cancellationToken);
 }
+
+internal sealed record IngestReceiptContext(
+    DateTimeOffset ReceivedUtc,
+    string ClientCertificateThumbprint,
+    string RemoteEndpoint);
 
 internal enum IngestCommitResultKind
 {
@@ -217,18 +287,4 @@ internal readonly record struct IngestCommitResult(
 
     internal static IngestCommitResult Transient(string failureCode) =>
         new(IngestCommitResultKind.TransientFailure, failureCode);
-}
-
-internal sealed class UnavailableIngestCommitter : IIngestCommitter
-{
-    internal static UnavailableIngestCommitter Instance { get; } = new();
-
-    private UnavailableIngestCommitter()
-    {
-    }
-
-    public Task<IngestCommitResult> CommitAsync(
-        ValidatedOtlpRecord record,
-        CancellationToken cancellationToken) =>
-        Task.FromResult(IngestCommitResult.Transient("storage_not_ready"));
 }

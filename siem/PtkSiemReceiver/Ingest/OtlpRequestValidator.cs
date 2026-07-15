@@ -13,21 +13,120 @@ internal sealed record ValidatedOtlpRecord(
     byte[] ExactJsonBody,
     string SchemaVersion,
     Guid EventId,
+    string EventType,
+    DateTimeOffset OccurredUtc,
+    DateTimeOffset ObservedUtc,
+    Guid HostId,
     string EventHash,
+    string? PreviousEventHash,
     Guid SupervisorBootId,
-    long Sequence);
+    Guid? WorkerBootId,
+    long Sequence,
+    string? SessionName,
+    long? SessionGeneration,
+    string? CallId,
+    long? JobId,
+    string? OutcomeState);
+
+internal sealed record RejectedOtlpAttempt(
+    byte[] RawRequestBytes,
+    byte[]? ExactJsonBody,
+    string FailureCode,
+    string? ClaimedEventId,
+    string? ClaimedEventHash,
+    string? ClaimedPreviousEventHash,
+    string? ClaimedSupervisorBootId,
+    long? ClaimedSequence);
 
 internal sealed record OtlpValidationResult(
     ValidatedOtlpRecord? Record,
+    RejectedOtlpAttempt? RejectedAttempt,
     string? FailureCode)
 {
     internal bool IsValid => Record is not null;
 
     internal static OtlpValidationResult Valid(ValidatedOtlpRecord record) =>
-        new(record, null);
+        new(record, null, null);
 
-    internal static OtlpValidationResult Invalid(string failureCode) =>
-        new(null, failureCode);
+    internal static OtlpValidationResult Invalid(
+        ReadOnlySpan<byte> requestBytes,
+        string failureCode) =>
+        new(null, DescribeRejectedAttempt(requestBytes, failureCode), failureCode);
+
+    private static RejectedOtlpAttempt DescribeRejectedAttempt(
+        ReadOnlySpan<byte> requestBytes,
+        string failureCode)
+    {
+        byte[]? exactBody = null;
+        string? eventId = null;
+        string? eventHash = null;
+        string? previousEventHash = null;
+        string? supervisorBootId = null;
+        long? sequence = null;
+
+        try
+        {
+            var request = ExportLogsServiceRequest.Parser.ParseFrom(requestBytes.ToArray());
+            var body = request.ResourceLogs.Count == 1 &&
+                       request.ResourceLogs[0].ScopeLogs.Count == 1 &&
+                       request.ResourceLogs[0].ScopeLogs[0].LogRecords.Count == 1
+                ? request.ResourceLogs[0].ScopeLogs[0].LogRecords[0].Body
+                : null;
+            if (body?.ValueCase == AnyValue.ValueOneofCase.StringValue)
+            {
+                exactBody = Encoding.UTF8.GetBytes(body.StringValue);
+                using var document = JsonDocument.Parse(exactBody, new JsonDocumentOptions
+                {
+                    AllowTrailingCommas = false,
+                    CommentHandling = JsonCommentHandling.Disallow,
+                    MaxDepth = 16,
+                });
+                if (document.RootElement.ValueKind == JsonValueKind.Object)
+                {
+                    var root = document.RootElement;
+                    eventId = ClaimString(root, "event_id");
+                    eventHash = ClaimString(root, "event_hash");
+                    previousEventHash = ClaimString(root, "previous_event_hash");
+                    sequence = ClaimInt64(root, "sequence");
+                    if (root.TryGetProperty("producer", out var producer) &&
+                        producer.ValueKind == JsonValueKind.Object)
+                    {
+                        supervisorBootId = ClaimString(producer, "supervisor_boot_id");
+                    }
+                }
+            }
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            // Claims are advisory only. The exact bounded request remains the evidence.
+        }
+
+        return new RejectedOtlpAttempt(
+            requestBytes.ToArray(),
+            exactBody,
+            failureCode,
+            eventId,
+            eventHash,
+            previousEventHash,
+            supervisorBootId,
+            sequence);
+    }
+
+    private static string? ClaimString(JsonElement parent, string propertyName) =>
+        parent.TryGetProperty(propertyName, out var value) &&
+        value.ValueKind == JsonValueKind.String
+            ? value.GetString()
+            : null;
+
+    private static long? ClaimInt64(JsonElement parent, string propertyName) =>
+        parent.TryGetProperty(propertyName, out var value) &&
+        value.ValueKind == JsonValueKind.Number &&
+        value.TryGetInt64(out var result)
+            ? result
+            : null;
+
+    private static bool IsFatal(Exception exception) =>
+        exception is OutOfMemoryException or StackOverflowException or AccessViolationException;
 }
 
 internal static class OtlpRequestValidator
@@ -80,7 +179,7 @@ internal static class OtlpRequestValidator
             }
             catch (InvalidProtocolBufferException)
             {
-                return OtlpValidationResult.Invalid("protobuf");
+                return OtlpValidationResult.Invalid(requestBytes, "protobuf");
             }
 
             if (request.ResourceLogs.Count != 1) Fail("record_count");
@@ -151,7 +250,7 @@ internal static class OtlpRequestValidator
 
             var producer = RequireObjectProperty(root, "producer", "producer");
             var hostId = RequireString(producer, "host_id", "producer");
-            _ = RequireCanonicalUuid(hostId, 4, "producer");
+            var hostGuid = RequireCanonicalUuid(hostId, 4, "producer");
             var supervisorBootText = RequireString(
                 producer,
                 "supervisor_boot_id",
@@ -161,8 +260,9 @@ internal static class OtlpRequestValidator
                 4,
                 "producer");
             var workerBootId = OptionalString(producer, "worker_boot_id", "producer");
+            Guid? workerBootGuid = null;
             if (workerBootId is not null)
-                _ = RequireCanonicalUuid(workerBootId, 4, "producer");
+                workerBootGuid = RequireCanonicalUuid(workerBootId, 4, "producer");
             var producerVersion = RequireNonemptyString(producer, "version", "producer");
 
             var session = RequireObjectProperty(root, "session", "session");
@@ -254,17 +354,28 @@ internal static class OtlpRequestValidator
                 exactBody,
                 schemaVersion,
                 eventId,
+                eventType,
+                occurred,
+                observed,
+                hostGuid,
                 eventHash,
+                previousHash,
                 supervisorBootId,
-                sequence));
+                workerBootGuid,
+                sequence,
+                OptionalString(session, "name", "session"),
+                OptionalInt64(session, "generation", "session"),
+                OptionalString(correlation, "call_id", "correlation"),
+                OptionalInt64(correlation, "job_id", "correlation"),
+                OptionalString(outcome, "state", "outcome")));
         }
         catch (OtlpValidationException exception)
         {
-            return OtlpValidationResult.Invalid(exception.FailureCode);
+            return OtlpValidationResult.Invalid(requestBytes, exception.FailureCode);
         }
         catch (Exception exception) when (!IsFatal(exception))
         {
-            return OtlpValidationResult.Invalid("invalid_record");
+            return OtlpValidationResult.Invalid(requestBytes, "invalid_record");
         }
     }
 

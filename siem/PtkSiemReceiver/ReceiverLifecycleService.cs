@@ -1,4 +1,5 @@
 using PtkSiemReceiver.Configuration;
+using PtkSiemReceiver.Ingest;
 
 namespace PtkSiemReceiver;
 
@@ -13,9 +14,11 @@ internal sealed class ReceiverLifecycleService : BackgroundService
 
     public ReceiverLifecycleService(
         SiemReceiverOptions options,
+        IIngestCommitter committer,
         ILogger<ReceiverLifecycleService> logger)
     {
         _options = options;
+        _ = committer; // Force durable-store initialization before startup succeeds.
         _logger = logger;
     }
 

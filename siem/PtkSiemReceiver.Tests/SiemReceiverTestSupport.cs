@@ -12,6 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 using PtkMcpServer.Audit.OtlpWire;
 using PtkSiemReceiver.Configuration;
 using PtkSiemReceiver.Ingest;
+using PtkSiemReceiver.Storage;
 
 namespace PtkSiemReceiver.Tests;
 
@@ -120,21 +121,30 @@ internal sealed class SiemReceiverTestHost : IAsyncDisposable
     private readonly WebApplication _application;
     private readonly string _root;
 
-    private SiemReceiverTestHost(WebApplication application, string root, Uri endpoint)
+    private SiemReceiverTestHost(
+        WebApplication application,
+        string root,
+        Uri endpoint,
+        string databasePath)
     {
         _application = application;
         _root = root;
         Endpoint = endpoint;
+        DatabasePath = databasePath;
     }
 
     internal Uri Endpoint { get; }
+
+    internal string DatabasePath { get; }
 
     internal static async Task<SiemReceiverTestHost> StartAsync(
         X509Certificate2 serverCertificate,
         IReadOnlyList<X509Certificate2> trustedClientAuthorities,
         IIngestCommitter? committer = null,
         X509RevocationMode revocationMode = X509RevocationMode.NoCheck,
-        int maximumRequestBytes = 1024 * 1024)
+        int maximumRequestBytes = 1024 * 1024,
+        TimeProvider? timeProvider = null,
+        ISqliteIngestFaultInjector? storageFaultInjector = null)
     {
         var root = Path.Combine(Path.GetTempPath(), $"ptk-siem-host-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
@@ -153,6 +163,7 @@ internal sealed class SiemReceiverTestHost : IAsyncDisposable
                 Environment.NewLine,
                 trustedClientAuthorities.Select(certificate => certificate.ExportCertificatePem())));
 
+        var databasePath = Path.Combine(root, "siem.db");
         var options = new SiemReceiverOptions(
             IPAddress.Loopback,
             0,
@@ -166,14 +177,18 @@ internal sealed class SiemReceiverTestHost : IAsyncDisposable
             new string('t', 32),
             null,
             null,
-            Path.Combine(root, "siem.db"),
+            databasePath,
             null,
             null);
 
         WebApplication? application = null;
         try
         {
-            application = ReceiverApplication.Build(options, committer: committer);
+            application = ReceiverApplication.Build(
+                options,
+                committer: committer,
+                timeProvider: timeProvider,
+                storageFaultInjector: storageFaultInjector);
             await application.StartAsync();
             var server = application.Services.GetRequiredService<IServer>();
             var addresses = server.Features.Get<IServerAddressesFeature>()?.Addresses ??
@@ -182,7 +197,8 @@ internal sealed class SiemReceiverTestHost : IAsyncDisposable
             return new SiemReceiverTestHost(
                 application,
                 root,
-                new Uri(new Uri(address), "/v1/logs"));
+                new Uri(new Uri(address), "/v1/logs"),
+                databasePath);
         }
         catch
         {
@@ -218,6 +234,8 @@ internal sealed class RecordingIngestCommitter : IIngestCommitter
     private readonly IngestCommitResult _result;
     private readonly Exception? _exception;
     private readonly List<ValidatedOtlpRecord> _records = [];
+    private readonly List<IngestReceiptContext> _receipts = [];
+    private readonly List<RejectedOtlpAttempt> _quarantines = [];
 
     internal RecordingIngestCommitter(
         IngestCommitResult? result = null,
@@ -229,26 +247,53 @@ internal sealed class RecordingIngestCommitter : IIngestCommitter
 
     internal IReadOnlyList<ValidatedOtlpRecord> Records => _records;
 
+    internal IReadOnlyList<IngestReceiptContext> Receipts => _receipts;
+
+    internal IReadOnlyList<RejectedOtlpAttempt> Quarantines => _quarantines;
+
     public Task<IngestCommitResult> CommitAsync(
         ValidatedOtlpRecord record,
+        IngestReceiptContext receipt,
         CancellationToken cancellationToken)
     {
         if (_exception is not null) throw _exception;
         _records.Add(record);
+        _receipts.Add(receipt);
         return Task.FromResult(_result);
+    }
+
+    public Task<IngestCommitResult> QuarantineAsync(
+        RejectedOtlpAttempt attempt,
+        IngestReceiptContext receipt,
+        CancellationToken cancellationToken)
+    {
+        if (_exception is not null) throw _exception;
+        _quarantines.Add(attempt);
+        _receipts.Add(receipt);
+        return Task.FromResult(_result.Kind == IngestCommitResultKind.Accepted
+            ? IngestCommitResult.Permanent(attempt.FailureCode)
+            : _result);
     }
 }
 
 internal static class OtlpTestRequest
 {
-    private const string EventId = "018f6a78-4c20-7a11-8a34-1234567890ab";
-    private const string HostId = "1dd95ad8-53f8-49af-81fe-1d2f720ee790";
-    private const string SupervisorBootId = "2a6465d4-6652-4ff7-8630-2ab0c5f6d04c";
+    internal const string DefaultEventId = "018f6a78-4c20-7a11-8a34-1234567890ab";
+    internal const string DefaultHostId = "1dd95ad8-53f8-49af-81fe-1d2f720ee790";
+    internal const string DefaultSupervisorBootId = "2a6465d4-6652-4ff7-8630-2ab0c5f6d04c";
     private const string OccurredUtc = "2026-07-15T12:34:56.1234567Z";
     private const string ObservedUtc = "2026-07-15T12:34:57.1234567Z";
 
-    internal static ExportLogsServiceRequest Create(string schemaVersion = "ptk.audit/2")
+    internal static ExportLogsServiceRequest Create(
+        string schemaVersion = "ptk.audit/2",
+        string? eventId = null,
+        string? supervisorBootId = null,
+        long sequence = 1,
+        string? previousEventHash = null,
+        string eventType = "tool.completed")
     {
+        eventId ??= DefaultEventId;
+        supervisorBootId ??= DefaultSupervisorBootId;
         var requestFields = schemaVersion == "ptk.audit/1"
             ? string.Empty
             : "\"evidence_subject_id\":null,\"evidence_subject_digest\":null," +
@@ -264,14 +309,16 @@ internal static class OtlpTestRequest
         var preHash =
             "{" +
             $"\"schema_version\":\"{schemaVersion}\"," +
-            $"\"event_id\":\"{EventId}\"," +
-            "\"event_type\":\"tool.completed\"," +
+            $"\"event_id\":\"{eventId}\"," +
+            $"\"event_type\":\"{eventType}\"," +
             $"\"occurred_utc\":\"{OccurredUtc}\"," +
             $"\"observed_utc\":\"{ObservedUtc}\"," +
-            $"\"producer\":{{\"host_id\":\"{HostId}\",\"supervisor_boot_id\":\"{SupervisorBootId}\"," +
+            $"\"producer\":{{\"host_id\":\"{DefaultHostId}\",\"supervisor_boot_id\":\"{supervisorBootId}\"," +
             "\"worker_boot_id\":null,\"version\":\"1.2.3\"}" +
             host +
-            ",\"sequence\":1,\"previous_event_hash\":null," +
+            $",\"sequence\":{sequence},\"previous_event_hash\":" +
+            (previousEventHash is null ? "null" : $"\"{previousEventHash}\"") +
+            "," +
             "\"session\":{\"name\":null,\"generation\":null}," +
             "\"actor\":{}," +
             "\"correlation\":{\"call_id\":null,\"job_id\":null,\"trace_id\":null}," +
@@ -289,22 +336,24 @@ internal static class OtlpTestRequest
         resource.Attributes.Add(StringAttribute("service.namespace", "ptk"));
         resource.Attributes.Add(StringAttribute("service.name", "powershell-token-killer"));
         resource.Attributes.Add(StringAttribute("service.version", "1.2.3"));
-        resource.Attributes.Add(StringAttribute("service.instance.id", SupervisorBootId));
-        resource.Attributes.Add(StringAttribute("host.id", HostId));
+        resource.Attributes.Add(StringAttribute("service.instance.id", supervisorBootId));
+        resource.Attributes.Add(StringAttribute("host.id", DefaultHostId));
 
         var record = new LogRecord
         {
             TimeUnixNano = ToUnixNanoseconds(OccurredUtc),
             ObservedTimeUnixNano = ToUnixNanoseconds(ObservedUtc),
-            EventName = "ptk.audit.tool.completed",
+            EventName = $"ptk.audit.{eventType}",
             Body = new AnyValue { StringValue = body },
         };
         record.Attributes.Add(StringAttribute("ptk.audit.schema_version", schemaVersion));
-        record.Attributes.Add(StringAttribute("ptk.audit.event_id", EventId));
-        record.Attributes.Add(StringAttribute("ptk.audit.event_type", "tool.completed"));
-        record.Attributes.Add(IntAttribute("ptk.audit.sequence", 1));
+        record.Attributes.Add(StringAttribute("ptk.audit.event_id", eventId));
+        record.Attributes.Add(StringAttribute("ptk.audit.event_type", eventType));
+        record.Attributes.Add(IntAttribute("ptk.audit.sequence", sequence));
         record.Attributes.Add(StringAttribute("ptk.audit.event_hash", eventHash));
-        record.Attributes.Add(StringAttribute("ptk.supervisor.boot_id", SupervisorBootId));
+        record.Attributes.Add(StringAttribute("ptk.supervisor.boot_id", supervisorBootId));
+        if (previousEventHash is not null)
+            record.Attributes.Add(StringAttribute("ptk.audit.previous_event_hash", previousEventHash));
         record.Attributes.Add(StringAttribute("ptk.outcome.state", "completed"));
         record.Attributes.Add(StringAttribute("ptk.termination.certainty", "confirmed"));
         if (schemaVersion == "ptk.audit/3")

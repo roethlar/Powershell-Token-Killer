@@ -1,6 +1,9 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Google.Protobuf;
+using Microsoft.Data.Sqlite;
+using PtkSiemReceiver.Storage;
 
 namespace PtkSiemReceiver.Tests;
 
@@ -34,7 +37,7 @@ public sealed class OtlpIngestIntegrationTests
     }
 
     [Fact]
-    public async Task Production_s2_committer_refuses_false_ack_with_retryable_503()
+    public async Task Production_s3_committer_persists_exact_evidence_before_success_ack()
     {
         using var authority = new TestCertificateAuthority();
         using var root = authority.Root;
@@ -42,14 +45,102 @@ public sealed class OtlpIngestIntegrationTests
         using var clientCertificate = authority.IssueClient();
         await using var host = await SiemReceiverTestHost.StartAsync(server, [root]);
         using var client = host.CreateClient(clientCertificate);
+        var request = OtlpTestRequest.Create();
+        var requestBytes = request.ToByteArray();
+
+        using var response = await client.PostAsync(host.Endpoint, OtlpTestRequest.Content(request));
+        var responseBody = await response.Content.ReadAsByteArrayAsync();
+
+        Assert.Equal(HttpStatusCode.OK, response.StatusCode);
+        Assert.Equal("application/x-protobuf", response.Content.Headers.ContentType?.ToString());
+        Assert.Empty(responseBody);
+        Assert.Equal(requestBytes, DatabaseBytes(host.DatabasePath, "SELECT raw_request FROM events;"));
+        Assert.Equal(1L, DatabaseInt64(host.DatabasePath, "SELECT COUNT(*) FROM events;"));
+        Assert.Equal(1L, DatabaseInt64(host.DatabasePath, "SELECT COUNT(*) FROM custody;"));
+        Assert.Equal(
+            Convert.ToHexString(SHA256.HashData(clientCertificate.RawData)).ToLowerInvariant(),
+            DatabaseString(host.DatabasePath, "SELECT client_certificate_thumbprint FROM custody;"));
+        Assert.StartsWith(
+            "127.0.0.1:",
+            DatabaseString(host.DatabasePath, "SELECT remote_endpoint FROM custody;"),
+            StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Strict_validation_failure_is_quarantined_before_permanent_response()
+    {
+        using var authority = new TestCertificateAuthority();
+        using var root = authority.Root;
+        using var server = authority.IssueServer();
+        using var clientCertificate = authority.IssueClient();
+        await using var host = await SiemReceiverTestHost.StartAsync(server, [root]);
+        using var client = host.CreateClient(clientCertificate);
+        var request = OtlpTestRequest.Create();
+        request.ResourceLogs[0].ScopeLogs[0].LogRecords[0].Attributes
+            .Single(attribute => attribute.Key == "ptk.audit.event_type")
+            .Value.StringValue = "tool.rejected";
+        var requestBytes = request.ToByteArray();
+
+        using var response = await client.PostAsync(host.Endpoint, OtlpTestRequest.Content(request));
+
+        Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+        Assert.Equal((3, "attributes"), ReadGoogleStatus(await response.Content.ReadAsByteArrayAsync()));
+        Assert.Equal(requestBytes, DatabaseBytes(host.DatabasePath, "SELECT raw_request FROM quarantine;"));
+        Assert.Equal("attributes", DatabaseString(host.DatabasePath, "SELECT failure_code FROM quarantine;"));
+        Assert.Equal(
+            "quarantine:attributes",
+            DatabaseString(host.DatabasePath, "SELECT disposition FROM custody;"));
+        Assert.Equal(0L, DatabaseInt64(host.DatabasePath, "SELECT COUNT(*) FROM events;"));
+    }
+
+    [Fact]
+    public async Task Sqlite_full_during_commit_returns_retryable_503_without_persisted_rows()
+    {
+        using var authority = new TestCertificateAuthority();
+        using var root = authority.Root;
+        using var server = authority.IssueServer();
+        using var clientCertificate = authority.IssueClient();
+        await using var host = await SiemReceiverTestHost.StartAsync(
+            server,
+            [root],
+            storageFaultInjector: new ThrowingStorageFault(
+                SqliteIngestWriteKind.Event,
+                new SqliteException("database or disk is full", 13, 13)));
+        using var client = host.CreateClient(clientCertificate);
 
         using var response = await client.PostAsync(host.Endpoint, OtlpTestRequest.Content());
-        var status = ReadGoogleStatus(await response.Content.ReadAsByteArrayAsync());
 
         Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
-        Assert.Equal("application/x-protobuf", response.Content.Headers.ContentType?.ToString());
         Assert.Equal(TimeSpan.FromSeconds(1), response.Headers.RetryAfter?.Delta);
-        Assert.Equal((14, "storage_not_ready"), status);
+        Assert.Equal((14, "commit_failed"), ReadGoogleStatus(await response.Content.ReadAsByteArrayAsync()));
+        Assert.Equal(0L, DatabaseInt64(host.DatabasePath, "SELECT COUNT(*) FROM events;"));
+        Assert.Equal(0L, DatabaseInt64(host.DatabasePath, "SELECT COUNT(*) FROM chains;"));
+        Assert.Equal(0L, DatabaseInt64(host.DatabasePath, "SELECT COUNT(*) FROM custody;"));
+    }
+
+    [Fact]
+    public async Task Quarantine_commit_failure_returns_503_instead_of_false_permanent_rejection()
+    {
+        using var authority = new TestCertificateAuthority();
+        using var root = authority.Root;
+        using var server = authority.IssueServer();
+        using var clientCertificate = authority.IssueClient();
+        await using var host = await SiemReceiverTestHost.StartAsync(
+            server,
+            [root],
+            storageFaultInjector: new ThrowingStorageFault(
+                SqliteIngestWriteKind.Quarantine,
+                new IOException("interrupted")));
+        using var client = host.CreateClient(clientCertificate);
+        var request = OtlpTestRequest.Create();
+        request.ResourceLogs.Clear();
+
+        using var response = await client.PostAsync(host.Endpoint, OtlpTestRequest.Content(request));
+
+        Assert.Equal(HttpStatusCode.ServiceUnavailable, response.StatusCode);
+        Assert.Equal((14, "commit_failed"), ReadGoogleStatus(await response.Content.ReadAsByteArrayAsync()));
+        Assert.Equal(0L, DatabaseInt64(host.DatabasePath, "SELECT COUNT(*) FROM quarantine;"));
+        Assert.Equal(0L, DatabaseInt64(host.DatabasePath, "SELECT COUNT(*) FROM custody;"));
     }
 
     [Fact]
@@ -129,6 +220,9 @@ public sealed class OtlpIngestIntegrationTests
         Assert.Equal(HttpStatusCode.BadRequest, oversized.StatusCode);
         Assert.Equal((3, "request_too_large"), ReadGoogleStatus(await oversized.Content.ReadAsByteArrayAsync()));
         Assert.Empty(committer.Records);
+        var quarantine = Assert.Single(committer.Quarantines);
+        Assert.Equal("protobuf", quarantine.FailureCode);
+        Assert.Equal(new byte[] { 0x0a, 0xff }, quarantine.RawRequestBytes);
     }
 
     [Fact]
@@ -248,5 +342,39 @@ public sealed class OtlpIngestIntegrationTests
             }
         }
         return (code, message);
+    }
+
+    private static byte[] DatabaseBytes(string path, string sql) =>
+        Assert.IsType<byte[]>(DatabaseScalar(path, sql));
+
+    private static string DatabaseString(string path, string sql) =>
+        Assert.IsType<string>(DatabaseScalar(path, sql));
+
+    private static long DatabaseInt64(string path, string sql) =>
+        Assert.IsType<long>(DatabaseScalar(path, sql));
+
+    private static object DatabaseScalar(string path, string sql)
+    {
+        using var connection = new SqliteConnection(new SqliteConnectionStringBuilder
+        {
+            DataSource = path,
+            Mode = SqliteOpenMode.ReadOnly,
+            Cache = SqliteCacheMode.Private,
+            Pooling = false,
+        }.ToString());
+        connection.Open();
+        using var command = connection.CreateCommand();
+        command.CommandText = sql;
+        return command.ExecuteScalar() ?? DBNull.Value;
+    }
+
+    private sealed class ThrowingStorageFault(
+        SqliteIngestWriteKind target,
+        Exception exception) : ISqliteIngestFaultInjector
+    {
+        public void BeforeCommit(SqliteIngestWriteKind writeKind)
+        {
+            if (writeKind == target) throw exception;
+        }
     }
 }
