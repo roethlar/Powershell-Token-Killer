@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Reflection;
 using PtkMcpServer.Audit;
 using PtkMcpServer.Sessions;
@@ -108,6 +109,14 @@ public sealed class Slice7fStagingBoundaryTests
             "WorkerOperationScheduler",
             "IWorkerOperationExecutor",
             "WorkerServer",
+            "IServiceProvider",
+            "System.Diagnostics",
+            "ProcessStartInfo",
+            "WindowsProcessTreeSupervisor",
+            "IWindowsProcessHandle",
+            "IWindowsWorkerNative",
+            "WorkerLaunchCommand",
+            "ContainedWindowsWorker",
         })
         {
             Assert.DoesNotContain(forbidden, preparedCodec, StringComparison.Ordinal);
@@ -177,6 +186,14 @@ public sealed class Slice7fStagingBoundaryTests
             typeof(OutputStore),
             typeof(RunspaceHost),
             typeof(JobManager),
+            typeof(IServiceProvider),
+            typeof(Process),
+            typeof(ProcessStartInfo),
+            typeof(WindowsProcessTreeSupervisor),
+            typeof(IWindowsProcessHandle),
+            typeof(IWindowsWorkerNative),
+            typeof(WorkerLaunchCommand),
+            typeof(ContainedWindowsWorker),
         })
         {
             Assert.DoesNotContain(forbidden, surface);
