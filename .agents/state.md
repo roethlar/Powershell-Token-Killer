@@ -109,6 +109,10 @@ short and update it when important repo facts change.
   migration or compatibility layer. An eligible alias also recovers
   automatically to its fresh declared baseline after an execution-timeout
   terminal and confirmed old-tree death; the timed-out call is never replayed.
+  Retryable recovery refusals carry phase, attempt, poll delay, and an exact
+  readiness gate: delay expiry permits only `ptk_state`, and a fresh operation
+  waits for readiness plus pre-write dispatch revalidation. After private
+  write begins, the existing `outcome_unknown`/no-replay boundary still wins.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and

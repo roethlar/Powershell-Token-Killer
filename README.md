@@ -73,6 +73,16 @@ generation and only its declared frozen baseline; uncertain work is never
 replayed. Guardian failure still ends the MCP connection and requires the
 client to start a new session.
 
+While recovery is active, PTK refuses dependent work instead of queueing it.
+A safe refusal tells the agent the recovery phase and attempt, then says to
+check `ptk_state` in a specific number of milliseconds. That delay is for the
+state check, not permission to rerun the command: the agent submits a fresh
+request only after the named host/session readiness gate reports ready. PTK
+checks the gate and generation again immediately before private dispatch. If
+they changed before dispatch, PTK returns another no-effect refusal. Once
+request bytes may have been written, PTK reports the outcome as unknown and
+never retries it; the readiness check does not pretend that boundary is safe.
+
 Sessions are deliberately harness-scoped. There is no daemon, reattachment,
 cross-harness session, shared runspace, or durable session key in this design.
 

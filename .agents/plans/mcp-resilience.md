@@ -21,6 +21,12 @@ polls guardian-local state and submits a new request after readiness. An
 ambiguous call remains nonretryable. Declarative bootstrap profiles remain the
 only automatic state-restoration input.
 
+The owner approved the model-facing recovery-loop contract on 2026-07-15.
+Retryable refusals expose the current phase, attempt, minimum delay before the
+next state poll, and exact host/session readiness gate. Delay expiry never
+authorizes execution: the model polls state and submits a fresh request only
+after the named gate is ready, and dispatch authorization rechecks that gate.
+
 The owner approved the exact crash-loop policy on 2026-07-15: one immediate
 attempt, retries after `250 ms`, `1 s`, `4 s`, `15 s`, and `30 s`, then a
 60-second open circuit with one automatic half-open probe.
@@ -281,38 +287,104 @@ Every normalized recovery error includes exact fields:
 ```text
 retryable: boolean
 retry_after_ms: integer 250..60000 | null
+recovery_phase: "containment" | "backoff" | "attempting" | "bootstrap" |
+                "circuit_open" | "half_open" | null
+recovery_attempt: integer 1..Int64.MaxValue | null
+retry_gate:
+  { kind: "host_ready" } |
+  { kind: "session_ready", alias: string } |
+  null
 ```
 
 `retryable=true` is a proof that this public call started no host, worker, or
 user effect, not merely a suggestion that repetition is probably safe. It is
-true exactly for `host_recovering`, `session_recovering`, and
-`backend_lost_before_dispatch`. When the recovery scheduler has a next-attempt
-time, `retry_after_ms` is the ceiling of its remaining monotonic milliseconds
-clamped to `250..60000`; while an attempt/containment/bootstrap transition has
-no scheduled time, it is `250`. Every other code, especially
-`outcome_unknown`, has `retryable=false` and `retry_after_ms=null`.
+true exactly for `host_recovering`, `host_circuit_open`,
+`session_recovering`, and `backend_lost_before_dispatch`. A host or alias
+circuit-open/half-open phase therefore remains visible as the scheduled
+automatic recovery loop rather than looking permanent. When the recovery
+scheduler has a next-attempt time, `retry_after_ms` is the ceiling of its
+remaining monotonic milliseconds clamped to `250..60000`; while an active
+attempt/containment/bootstrap/half-open transition has no scheduled time, it
+is `250`. This is the minimum delay before the next guardian-local `ptk_state`
+poll; its expiry never authorizes resubmission or backend dispatch.
+
+For every `retryable=true` error, `recovery_phase`, `recovery_attempt`, and
+`retry_gate` are nonnull and come from the same atomic recovery snapshot as the
+detail code. `recovery_attempt` is the one-based active attempt, or the next
+scheduled attempt during containment, backoff, or circuit-open, and resets
+only after the documented 60-second stable-ready window. `retry_gate` names
+the dependency that must recover. It is the refused operation's prerequisite,
+not necessarily its target. The mapping is closed: foreground `ptk_invoke`
+uses the selected canonical alias's session gate; cold-background
+`ptk_invoke`, a backend-dependent `ptk_job` action, `ptk_reset`, and
+`ptk_session open|close|restart` use the host gate; guardian-local
+`ptk_state`, `ptk_session list`, `ptk_output`, sealed/tombstoned job reads,
+`ping`, and `tools/list` never return a recovery gate. Thus lifecycle repair
+never waits for the session it is meant to create or repair. For every
+`retryable=false` code, especially
+`outcome_unknown`, all four retry metadata fields are null. No absolute retry
+timestamp is emitted because the portable contract is a monotonic relative
+delay.
 
 The result otherwise includes only bounded guardian/host/session generation
 and recovery facts. It contains no script, arguments, bootstrap content,
 paths, raw environment, exception text, or secret. Existing expected-
 generation checks remain pre-effect and reject a replacement generation.
 
-The frozen MCP server instructions and backend-dependent tool descriptions
-tell the model to use only those fields: after `retryable=true`, wait at least
-the suggested delay, call guardian-local `ptk_state`, and submit a new public
-request only after the required host/session reports ready. Each submission
-has a fresh request ID, receives normal audit admission, and is not PTK replay.
-Polling and new attempts remain bounded by the caller's original task/deadline.
-For `retryable=false`, and unconditionally for `outcome_unknown`, the model must
-not repeat the logical operation merely because of that terminal. It may
-inspect state/output and choose an explicit compensating action, which is a new
-decision rather than a retry.
+The frozen MCP server instructions and backend-dependent tool descriptions use
+the exact model-facing shape: `No work started. PTK recovery is <phase>
+(attempt <n>). Check ptk_state in <NN> ms. Do not resubmit until <gate> is
+ready.` After `retryable=true`, the model waits at least that delay, calls
+guardian-local `ptk_state`, and submits a new public request only after the
+named gate is satisfied. A host gate requires `host.ready_for_effects=true`; a
+session gate requires both that host field and the selected alias's
+`ready_for_effects=true`. Each submission has a fresh request ID, receives
+normal audit admission, and is not PTK replay. Polling and new attempts remain
+bounded by the caller's original task/deadline. For `retryable=false`, and
+unconditionally for `outcome_unknown`, the model must not repeat the logical
+operation merely because of that terminal. It may inspect state/output and
+choose an explicit compensating action, which is a new decision rather than a
+retry.
+
+The state poll is advisory, not a reservation. Immediately before the first
+guardian-to-host request byte, guardian dispatch authorization revalidates the
+host gate and captures its boot/generation. For ordinary session work, the
+host repeats the session-gate and worker boot/generation/transition check under
+the owning lifecycle gate immediately before its worker request write. A known
+mismatch or loss while the relevant downstream delivery remains
+`not_dispatched` starts no effect and returns fresh proved-no-start guidance.
+Once a downstream private request byte may have been written, loss before its
+validated terminal uses the existing `outcome_unknown` contract, never another
+safe-retry claim. Eliminating those final write boundaries would require the
+rejected server queue/reservation design.
 
 `ptk_state(listAvailable=true)` during recovery returns a labeled partial
 result and performs no module scan. State reads never launch a host/worker,
 reset a delay, consume a retry attempt, or wait behind effectful work. If the
 mandatory audit journal is unavailable, only the existing narrow labeled
 unrecorded audit-health diagnostic remains available.
+
+Every guardian-local state snapshot exposes the exact normalized
+`host.state`, `host.recovery_phase`, `host.recovery_attempt`,
+`host.retry_after_ms`, and `host.ready_for_effects` fields plus the same five
+fields for the selected session/each listed alias. `recovery_phase` uses the
+same closed values as the error and is null outside automatic recovery.
+`recovery_attempt` is `0..Int64.MaxValue` with exactly the error field's
+active/next-attempt meaning: circuit-open reports the upcoming half-open
+ordinal, and zero appears only before recovery or after the 60-second stable-
+ready reset. An error and the state snapshot from which it was formed must
+carry identical phase/attempt values.
+
+State `retry_after_ms` has the same poll-only meaning as the error field. It is
+nonnull during automatic containment, backoff, attempting/bootstrap,
+circuit-open, or an in-progress half-open probe, and null when ready or when
+progress requires external/manual intervention, including faulted,
+quarantined, containment-unconfirmed, and recovery-unknown states.
+`ready_for_effects` is false throughout those non-ready states; it becomes true
+as soon as initialization/bootstrap reaches ready, even when half-open circuit
+bookkeeping still awaits the 60-second counter-reset window. This boolean is
+the recovery-resubmission gate, not general authorization for explicit
+lifecycle repair.
 
 Public-pipe liveness, not elapsed inactivity or host liveness, controls
 guardian shutdown. Guardian mode has no idle watchdog:
@@ -536,10 +608,10 @@ failure faults only its alias. One worker circuit never restarts the host or
 another alias.
 
 `ptk_state` exposes bounded normalized fields for guardian boot, host state,
-host boot/generation, retry attempt, next retry time, circuit state, last
-failure code, and each alias's desired/observed/recovery state. Repeated state
-reads do not alter those values except ordinary elapsed-time display and do not
-grow an unbounded audit reserve.
+host boot/generation, retry attempt, poll delay, readiness gate, circuit state,
+last failure code, and each alias's desired/observed/recovery state with the
+same retry-loop fields. Repeated state reads do not alter those values except
+ordinary elapsed-time display and do not grow an unbounded audit reserve.
 
 Recovery/containment observation remains live work for shutdown ordering and
 state. No inactivity policy can terminate the guardian or recycle a host at
@@ -697,8 +769,12 @@ or history rewriting.
   per request, no ambiguous replay, crash-loop bounds, and guardian EOF cleanup
   across all CI platforms.
 - Freeze the model-facing retry instructions and exact error fields. Prove a
-  fake model/client can poll state and submit a new request after a proved-
-  no-start error, while no guardian-held call survives its terminal response.
+  fake model/client can poll through containment and multiple backoff/attempt
+  phases without resubmitting, then submit once only after the named readiness
+  gate is satisfied. If readiness changes between its state snapshot and
+  pre-write dispatch authorization, the new call receives another proved-no-
+  start refusal; after write begins, the existing `outcome_unknown` boundary
+  applies. No guardian-held call survives its terminal response.
 - Keep the development PTK registration pointed at the current server; this
   slice is not the final cutover.
 
@@ -788,11 +864,22 @@ or history rewriting.
 - Complete decoded terminals are delivered once; partial responses and
   effect-before-response crashes are `outcome_unknown`; unwritten calls are
   definitely not started. None is resent.
-- Calls refused during recovery are never queued. The three proved-no-start
-  codes alone carry `retryable=true`; after the prescribed state poll a new
-  request can execute once on the ready generation. Every ambiguous/permanent
-  error is nonretryable, and `outcome_unknown` can never produce model retry
-  instructions.
+- Calls refused during recovery are never queued. The four proved-no-start
+  codes alone carry `retryable=true`, and each refusal exposes matching phase,
+  attempt, poll delay, and readiness gate. Delay expiry permits only a state
+  poll; a new request can execute once only after the prescribed poll reports
+  the gate ready and pre-write dispatch authorization rechecks it. Every
+  ambiguous/permanent error is nonretryable, and `outcome_unknown` can never
+  produce model retry instructions.
+- A fake client polls through multiple recovery phases without changing the
+  scheduler, then submits exactly once after readiness. If the dependency dies
+  after that ready snapshot but before dispatch authorization, the fresh call
+  starts no effect and receives new recovery guidance. A separate loss after
+  private write starts returns `outcome_unknown` and no retry guidance.
+- Gate-matrix tests prove foreground invoke names its exact session, cold-job
+  and lifecycle repair name only the host, and guardian-local operations emit
+  no gate. A recovering session cannot make its own restart wait for session
+  readiness.
 - Old-generation responses/events and forged diagnostic JSON cannot complete a
   public request or mutate current state.
 
@@ -917,7 +1004,21 @@ fails before final fixed-SHA acceptance:
 30. allocate a post-timeout replacement before the original timeout terminal
     is delivered; and
 31. leave an otherwise eligible timed-out alias unavailable after its terminal
-    and confirmed old-tree death instead of starting baseline recovery.
+    and confirmed old-tree death instead of starting baseline recovery;
+32. treat `retry_after_ms` expiry as permission to dispatch or resubmit without
+    a later state snapshot satisfying the named readiness gate; and
+33. report `ready_for_effects=true` during containment, backoff, an active
+    attempt/bootstrap, circuit-open, an in-progress half-open probe, faulted,
+    quarantined, or recovery-unknown state; and
+34. mark any of the four proved-no-start codes nonretryable, emit a retryable
+    error without its phase/attempt/gate snapshot, or attach any retry metadata
+    to a nonretryable error;
+35. emit the wrong gate kind or alias for any operation in the closed gate
+    matrix;
+36. let a recovery error's phase/attempt differ from the atomic state snapshot
+    that produced it; and
+37. skip pre-write readiness/identity revalidation, or return safe-retry
+    guidance after any private request byte may have been written.
 
 ## Documentation and release dependency
 
