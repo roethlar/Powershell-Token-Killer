@@ -11,4 +11,15 @@
     <InternalsVisibleTo Include="PtkSiemReceiver.Tests" />
   </ItemGroup>
 
+  <ItemGroup>
+    <PackageReference Include="Google.Protobuf" Version="3.35.1" />
+    <PackageReference Include="Grpc.Tools" Version="2.82.0" PrivateAssets="all" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Protobuf Include="../../server/PtkMcpServer/Protos/audit_otlp.proto"
+              Link="Protos/audit_otlp.proto"
+              GrpcServices="None" />
+  </ItemGroup>
+
 </Project>

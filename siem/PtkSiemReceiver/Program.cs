@@ -1,5 +1,5 @@
-using PtkSiemReceiver;
 using PtkSiemReceiver.Configuration;
+using PtkSiemReceiver.Ingest;
 
 var configurationPath = Environment.GetEnvironmentVariable("PTK_SIEM_CONFIG");
 if (string.IsNullOrWhiteSpace(configurationPath))
@@ -21,9 +21,14 @@ catch (SiemReceiverConfigurationException exception)
     return 1;
 }
 
-var builder = Host.CreateApplicationBuilder(args);
-builder.Services.AddSingleton(options);
-builder.Services.AddHostedService<ReceiverLifecycleService>();
-using var host = builder.Build();
-await host.RunAsync();
-return 0;
+try
+{
+    await using var application = ReceiverApplication.Build(options, args);
+    await application.RunAsync();
+    return 0;
+}
+catch (SiemReceiverStartupException exception)
+{
+    Console.Error.WriteLine(exception.Message);
+    return 1;
+}

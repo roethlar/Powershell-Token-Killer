@@ -3,9 +3,8 @@ using PtkSiemReceiver.Configuration;
 namespace PtkSiemReceiver;
 
 /// <summary>
-/// S1 skeleton lifecycle service: proves the Generic Host composition and
-/// logs a secret-free startup summary. The ingest and operator endpoints
-/// land in later slices (S2+).
+/// Logs a secret-free startup summary. S2 activates the ingest listener;
+/// the operator endpoint remains gated to S5.
 /// </summary>
 internal sealed class ReceiverLifecycleService : BackgroundService
 {
@@ -23,9 +22,9 @@ internal sealed class ReceiverLifecycleService : BackgroundService
     protected override Task ExecuteAsync(CancellationToken stoppingToken)
     {
         _logger.LogInformation(
-            "PtkSiemReceiver skeleton started: ingest {IngestAddress}:{IngestPort}, " +
+            "PtkSiemReceiver started: ingest {IngestAddress}:{IngestPort}, " +
             "operator {OperatorAddress}:{OperatorPort}, store {SqlitePath}. " +
-            "Ingest/operator endpoints land in later slices.",
+            "Ingest is active; the operator endpoint is not yet active.",
             _options.IngestBindAddress,
             _options.IngestPort,
             _options.OperatorBindAddress,
