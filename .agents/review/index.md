@@ -2401,3 +2401,52 @@ transfer, public job IDs, reset/process replacement, and the atomic
 default-session proxy cutover remain later separately owner-gated sub-slices.
 This acceptance authorizes only presentation of the next boundary; it does not
 authorize push, history rewriting, landing, or live routing.
+
+---
+
+**AUDITED-HARNESS SLICE 7G OPERATION CODECS — ACCEPTED.** Claude Code
+2.1.210 (model `claude-opus-4-8[1m]`, isolated disposable worktree) reviewed
+exact committed range
+`a83e2e66c9eb65d4d3e103dc4da689e991865bcc..eef38cb1b1e5967fab6edf8a431639f869606fa0`
+and returned the required structured `accepted` verdict with
+`guard_confirmed=true` at 2026-07-15T14:32:56Z. The range adds strict,
+transport-kind-neutral value codecs for foreground `invoke`, the four
+job-control operations, and `state`; exact closed argument/result DTOs;
+strict logical UTF-8 script/result limits; content-free stable failures; and
+no production wiring.
+
+The reviewer independently applied all ten required one-at-a-time mutations:
+admitting `reset`, accepting duplicate nested fields, accepting unknown
+fields, normalizing route case/whitespace, counting UTF-16 code units instead
+of strict UTF-8 bytes, removing inbound and then outbound result limits,
+retaining each of the two content-bearing framework exceptions, and adding a
+production codec reference outside staging. Each failed its intended guard
+for the expected assertion rather than compilation or unrelated
+infrastructure. The coder separately applied the same ten mutation classes;
+an initially weak content-redaction assertion was strengthened when it failed
+to detect the retained invalid-code-unit detail, after which both independent
+exception-retention mutations failed the corrected no-inner-exception guard.
+
+Exact restoration matched codec blob
+`46f5ee9152c6cb12c53539af99728e90283298d9` and unchanged `Program.cs` blob
+`74e8380dd42da6ffe164ee983235e549b0cb8a3e`. The reviewer tree was clean at
+the exact head and passed the 7-test focused Slice 7g boundary suite,
+1,475/1,475 .NET tests, 141 Pester tests with two expected skips, the full
+stdio handshake, and `git diff --check`. The coder's restored broader
+worker-operation focus passed 38/38 and the same full battery. Two denied
+redundant `rtk`-prefixed reviewer probes contributed no evidence; ordinary
+checks supplied the recorded SHA, diff, and plan facts.
+
+The orchestrator matched the JSON `result` and `structured_output`, verified
+exit zero, exact base/head, literal guard confirmation, clean restored blobs,
+and removed the disposable worktree. The reviewer noted only two nonblocking
+pre-existing/minor observations: the dated example verification counts in
+`.agents/repo-guidance.md` await a deliberate `drift` pass, and one defensive
+null branch after a JSON string-kind guard is unreachable but harmless.
+
+Real runtime execution, `prepare`/`commit`/`abort`/`event`, background start,
+supervisor audit/output capability transfer, public job-ID allocation,
+reset/process replacement, proxy wiring, and the atomic default-session
+cutover remain separate owner-gated work. This acceptance authorizes the next
+approved sub-slice under the standing delegated local-branch workflow; it does
+not authorize push, history rewriting, or live routing.

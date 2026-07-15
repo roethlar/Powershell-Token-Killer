@@ -70,8 +70,11 @@ adds deliberately unwired strict request/cancel parsers, a response codec, and
 a standalone scheduler. Claude accepted exact range `3580e67..a9e757e` with
 `guard_confirmed=true` after independent mutation proof and the full battery
 on 2026-07-15. The Slice 7g transport-neutral operation-codec boundary below
-was owner-approved on 2026-07-15; implementation has not started at this plan
-head.
+was owner-approved on 2026-07-15. Slice 7g code head `eef38cb` adds the strict
+transport-neutral invoke/job-control/state value codecs while remaining
+deliberately unwired. Claude Code 2.1.210 accepted exact range
+`a83e2e6..eef38cb` with `guard_confirmed=true` after ten independent mutation
+proofs and the full battery on 2026-07-15.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
