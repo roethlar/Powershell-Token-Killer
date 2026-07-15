@@ -1,12 +1,15 @@
 # Plan: resilient MCP guardian and automatic backend recovery
 
-**Status:** PLANNING BOUNDARY OWNER-APPROVED 2026-07-15;
-IMPLEMENTATION NOT AUTHORIZED. The approved boundary is: add two recovery
+**Status:** PLANNING BOUNDARY OWNER-APPROVED 2026-07-15; R0 IMPLEMENTATION
+OWNER-AUTHORIZED 2026-07-15; R1-R7 NOT AUTHORIZED. The approved boundary is:
+add two recovery
 layers so the MCP host automatically replaces failed session workers and a
 minimal public-pipe guardian automatically restarts the host; neither layer
 replays uncertain calls, every recovery changes generation, only declared
 bootstrap state is recreated, and health reporting remains usable. This file
-records the implementation contract to review before a separate code go.
+records the implementation contract. The R0 authorization covers only its
+frozen contracts and disposable feasibility fixtures; it does not authorize
+live guardian/host recovery wiring.
 
 The owner additionally accepted on 2026-07-15 that the guardian is a small
 session-lifetime control-plane binary, not a general pipe relay. It owns audit
