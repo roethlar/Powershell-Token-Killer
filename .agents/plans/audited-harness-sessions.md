@@ -1826,10 +1826,13 @@ inventing a code sabotage.
   validates values supplied by its caller and never generates a plan ID.
 - A `commit` payload and an `abort` payload each contain exactly the same four
   correlation fields and have distinct DTO types despite their identical wire
-  shapes. Stateless validators require the prepared fragment to match all four
-  prepare correlation values and require commit or abort to match all four
-  prepared values exactly. Worker boot and request IDs remain solely in the
-  future outer-envelope binding and are not duplicated in these payloads.
+  shapes. Stateless comparisons require the prepared fragment to match all
+  four prepare correlation values and require commit or abort to match all four
+  prepared values exactly. They return a typed match/mismatch value rather than
+  a protocol parse failure; future commit binding maps mismatch to the required
+  no-execution `replan_required` result. Worker boot and request IDs remain
+  solely in the future outer-envelope binding and are not duplicated in these
+  payloads.
 - Commit and abort contain no script, operation, arguments, result, abort
   reason, retry flag, or timeout override. The codecs perform no current-worker
   identity, current-time, reservation, or replay lookup.
