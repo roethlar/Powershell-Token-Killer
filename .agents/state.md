@@ -5,6 +5,14 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **Audited-harness Slice 7f operation transport is active on an approved,
+  deliberately unwired boundary.** The sub-slice freezes strict private
+  request/cancel/response wrappers, bounded off-reader-thread scheduling,
+  targeted cancellation, and exactly-one terminal response ownership against
+  an injected executor. It must not admit a real `SessionRuntime` operation or
+  change `WorkerServer`, `WorkerProcessEntry`, `Program`, DI, MCP routing, or
+  supervisor audit/output ownership. The exact contract is canonical in
+  `.agents/plans/audited-harness-sessions.md`.
 - **Audited-harness Slices 7a-7e and the Windows wait-ownership prerequisite
   are complete locally at code head `12617cc`.**
   The strict bounded v1 worker protocol freezes all nine wire kinds, enforces

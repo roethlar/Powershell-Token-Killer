@@ -65,7 +65,10 @@ mapping, and bounded abnormal diagnostics while leaving default MCP routing
 unchanged. Claude accepted exact range `eec7ed1..12617cc` with
 `guard_confirmed=true` after eleven independent mutation proofs, and direct
 Windows validation passed. Operation dispatch and default-session cutover
-remain later sub-slices.
+remain later sub-slices. Slice 7f is owner-approved as a deliberately unwired
+operation-transport sub-slice: it freezes and tests request/cancel/response
+correlation against an injected executor without admitting a real
+`SessionRuntime` operation or changing MCP routing.
 
 This plan is the canonical implementation contract replacing the still-open
 security response, the unapproved durable/shared-session idea, and the
@@ -1673,6 +1676,63 @@ inventing a code sabotage.
   detail, no exception/data interpolation, no stdout infrastructure write, and
   write-failure invariance of the exit code. A mutation that interpolates an
   exception or emits a second line must fail its intended guard.
+
+#### Slice 7f staging boundary — owner-approved 2026-07-14
+
+- Land a deliberately unwired worker-operation transport and scheduler before
+  any real `SessionRuntime` dispatch, supervisor proxy, audit/output transfer,
+  or default-session cutover. Production `WorkerServer`, `WorkerProcessEntry`,
+  `Program`, DI, tool schemas, and the in-process `ISessionOperations`
+  registration remain unchanged; post-ready operation frames therefore remain
+  unsupported in the live worker.
+- This sub-slice owns only strict outer payloads for `request`, `cancel`, and
+  `response`. A request payload has exactly positive `generation`, positive
+  valid-UTC `deadlineUnixTimeMilliseconds`, an ASCII operation name matching
+  `[a-z][a-z0-9_]{0,63}`, and an object-valued `arguments`. Operation-specific
+  argument/result schemas remain mandatory later codecs and cannot reach a real
+  runtime through this staging seam.
+- A cancel uses the target operation's envelope `requestId` and has exactly one
+  positive `generation` field. It is a notification, not a second request: it
+  emits no response of its own. Unknown, duplicate, or late cancellation is a
+  benign no-op. Cancellation can only signal the named active request.
+- A terminal response echoes the worker boot ID and target request ID. Its
+  payload is one closed discriminated union: `completed` has exactly
+  `generation`, `status`, and an object-valued `result`; `failed`, `canceled`,
+  and `timed_out` have exactly `generation`, `status`, and a bounded ASCII
+  `detailCode` matching `[a-z][a-z0-9_]{0,63}`. No branch permits null or fields
+  from another branch. Operation-specific result codecs must enforce the frozen
+  131,072-byte logical inline-result limit before live wiring; the outer codec
+  continues to enforce the already-frozen frame/depth bounds.
+- The standalone scheduler receives the frozen worker boot ID, generation,
+  initial request-ID high-water mark, an injected operation executor, response
+  writer, clock/deadline wait, and task scheduler. It admits request envelopes
+  without awaiting execution, executes each admitted request exactly once off
+  the reader thread, and permits at most 64 outstanding requests. Request IDs
+  must increase strictly for that boot; reservation occurs before scheduling,
+  so duplicate/replayed/lower IDs never execute.
+- An already-expired request never enters the executor and returns one
+  `timed_out` terminal. Active deadlines and explicit cancellation signal only
+  their target. A cooperative owned cancellation returns `canceled`; an
+  unrelated `OperationCanceledException` is a redacted `failed`. If an executor
+  returns successfully after receiving cancellation, its completed result is
+  authoritative. Every request owns exactly one terminal response attempt after
+  executor termination; request cancellation never cancels that write.
+- A response-writer failure is attempted once, latches one scheduler-fatal
+  outcome, cancels/observes peer work, and rejects later admission. Shutdown of
+  the standalone scheduler is idempotent, blocks new admission, targets all
+  outstanding requests, and observes them before returning. This staging owner
+  never retries a write, emits exception text, or leaves a detached task.
+- Guards must cover closed DTO branches and bounds, identity/generation checks,
+  request-ID reservation, off-reader-thread dispatch, targeted and raced
+  cancellation, exactly-one terminal ownership, expired admission, capacity,
+  exception redaction, writer-failure latching, idempotent drain, and the absence
+  of production wiring or supervisor-owned audit/output/runtime capabilities.
+- `prepare`, `commit`, `abort`, job-terminal `event`, concrete invoke/job/state
+  argument/result DTOs, supervisor audit/output capability transfer, public job
+  IDs, reset/process replacement, and template bootstrap remain separate
+  owner-approved sub-slices. In particular, reset is never serialized as a
+  worker runtime call, and the initialize/ready bootstrap contract must be
+  reconciled before Slice 8 template work.
 
 ### Slice 8 — named harness-scoped sessions
 
