@@ -294,8 +294,12 @@ transition. The guardian:
 
 1. blocks backend-dependent admission and freezes the old generation's request
    terminals;
-2. records the host loss and every affected call/job outcome durably;
-3. closes the host generation's control channels and initiates containment;
+2. using the containment authority already committed by host/worker launch,
+   immediately closes the old control channels and initiates containment
+   without waiting for any fresh audit write;
+3. consumes the host's pre-reserved lifecycle capacity to append the observed
+   loss while containment proceeds; audit media failure degrades health but
+   never delays or cancels safety cleanup;
 4. waits for confirmed death of the host and every registered worker/broker/
    job containment identity;
 5. if confirmation fails within `timeoutContainmentGrace`, publishes
@@ -306,6 +310,12 @@ transition. The guardian:
    manifest; and
 7. recovers eligible sessions independently, then publishes the host ready
    even when one session remains faulted or recovery-unknown.
+
+Affected call/job terminals are classified when loss is observed but are
+finalized and durably appended only with the resulting containment certainty.
+All required terminal capacity was reserved before the corresponding effect;
+if the journal is unavailable, startup reconciliation retains the existing
+unclosed/outcome-unknown truth rather than inventing a successful terminal.
 
 The guardian is the sole managed owner of the outer host containment lease. On
 Windows the host generation and all descendants are inside one creation-time
