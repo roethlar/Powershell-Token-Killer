@@ -309,7 +309,7 @@
     "package-manifest.example.json": "b0450c9927a61f4d66e17609cc0eaf991bd16b85ad07cba2000e7f3e6acfafb5",
     "native-linux-acquisition.json": "bf9a29f3a61df4a79e93ba65059594429f2e3d51df6c371deb9f2fec831b14cc",
     "adapter-pins.json": "163c41eaa147c12993c4c2f9f57ab433654fa9d08c623b71ac56d708945d9a0c",
-    "adapter-live-validation.json": "a37a6e02355ed9651d2061cea0ae213a432e251307bff1fc0189006d666efc79",
+    "adapter-live-validation.json": "500e385ff211805c41d41e7465cc651505341f83f765ec117aeb22a299f8ad80",
     "splunk-hec-fixture.yaml": "0ebe4ecd4f12e198feaf3be24af76f088f40cc87b7b0569ed506d59b6676c3cc",
     "splunk-hec-event.jsonl": "5c92fa9073078016f3fd7cf4c3e05c37540b070b3efeb1eab6a2a98ef9b0c825",
     "sentinel-dcr.json": "da76a8e0c5d2cef25551e5ebfffe02927cc202ef585b4f0c4332552ab9f992d6",

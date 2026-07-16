@@ -9,7 +9,7 @@ namespace PtkMcpServer.Tests;
 
 public sealed class McpResilienceR0ContractTests
 {
-    private const string ContractSha256 = "7ef12384b74e892ad6d033b99198c006c5995654d5ac08cf9fdf258b772a5a2c";
+    private const string ContractSha256 = "201ed17d737b846a80ee8e2c6f1651b6b0008ed65c5ccd8b9b4eda342706d570";
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private static readonly Regex LowerSha256 = new("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
 
@@ -720,6 +720,114 @@ public sealed class McpResilienceR0ContractTests
     }
 
     [Fact]
+    public void Sentinel_static_vector_derives_every_column_from_raw_event()
+    {
+        using var validation = ReadStrictJson("adapter-live-validation.json");
+        var projection = validation.RootElement.GetProperty("sentinel_static_projection_validation");
+        Assert.Equal("passed", projection.GetProperty("status").GetString());
+        Assert.Equal("static_semantic_projection", projection.GetProperty("evidence_kind").GetString());
+        Assert.Equal(
+            "resolve_each_frozen_column_source_from_the_exact_RawEvent_and_compare_types_and_values",
+            projection.GetProperty("method").GetString());
+        Assert.Equal("all_19_DCR_columns_equal_the_frozen_source_mapping",
+            projection.GetProperty("result").GetString());
+
+        using var dcr = ReadStrictJson("sentinel-dcr.json");
+        using var table = ReadStrictJson("sentinel-table.json");
+        var dcrColumns = dcr.RootElement.GetProperty("properties").GetProperty("streamDeclarations")
+            .GetProperty("Custom-PtkAudit").GetProperty("columns").EnumerateArray().ToArray();
+        var tableColumns = table.RootElement.GetProperty("properties").GetProperty("schema")
+            .GetProperty("columns").EnumerateArray().ToArray();
+        Assert.Equal(19, dcrColumns.Length);
+        var columnNames = dcrColumns.Select(column => column.GetProperty("name").GetString()!).ToArray();
+        Assert.Equal(columnNames, tableColumns.Select(column => column.GetProperty("name").GetString()));
+        Assert.Equal(
+            [
+                "datetime", "datetime", "string", "string", "string", "string", "string", "string",
+                "string", "string", "long", "string", "long", "string", "long", "string", "string",
+                "string", "long",
+            ],
+            dcrColumns.Select(column => column.GetProperty("type").GetString()));
+        Assert.Equal(
+            [
+                "dateTime", "dateTime", "string", "string", "string", "string", "string", "string",
+                "string", "string", "long", "string", "long", "string", "long", "string", "string",
+                "string", "long",
+            ],
+            tableColumns.Select(column => column.GetProperty("type").GetString()));
+
+        var columnSources = projection.GetProperty("column_sources");
+        AssertPropertyOrder(columnSources, columnNames);
+        using var sentinel = ReadStrictJson("sentinel-event.json");
+        var mapped = Assert.Single(sentinel.RootElement.EnumerateArray());
+        AssertPropertyOrder(mapped, columnNames);
+
+        var exactAuditBytes = ReadWithoutFinalLf("audit-v3-host.jsonl");
+        var mappedRawEvent = mapped.GetProperty("RawEvent");
+        Assert.Equal(JsonValueKind.String, mappedRawEvent.ValueKind);
+        var mappedRawBytes = StrictUtf8.GetBytes(mappedRawEvent.GetString()!);
+        Assert.Equal(exactAuditBytes, mappedRawBytes);
+        using var rawEvent = JsonDocument.Parse(
+            mappedRawBytes,
+            new JsonDocumentOptions
+            {
+                AllowTrailingCommas = false,
+                CommentHandling = JsonCommentHandling.Disallow,
+                MaxDepth = 32,
+            });
+        AssertNoDuplicateProperties(rawEvent.RootElement);
+        Assert.Equal("contract-vector-λ", rawEvent.RootElement.GetProperty("actor")
+            .GetProperty("client_name").GetString());
+
+        foreach (var column in dcrColumns)
+        {
+            var name = column.GetProperty("name").GetString()!;
+            var type = column.GetProperty("type").GetString()!;
+            var destination = mapped.GetProperty(name);
+            var sourcePointer = columnSources.GetProperty(name).GetString()!;
+            if (sourcePointer == "$exact_audit_body_utf8_without_final_lf")
+            {
+                Assert.Equal("RawEvent", name);
+                Assert.Equal(JsonValueKind.String, destination.ValueKind);
+                continue;
+            }
+
+            var source = ResolveJsonPointer(rawEvent.RootElement, sourcePointer);
+            if (type is "string" or "datetime")
+            {
+                Assert.Equal(JsonValueKind.String, source.ValueKind);
+                Assert.Equal(JsonValueKind.String, destination.ValueKind);
+                Assert.Equal(source.GetString(), destination.GetString());
+                if (type == "datetime") Assert.True(destination.TryGetDateTimeOffset(out _));
+                continue;
+            }
+
+            Assert.Equal("long", type);
+            Assert.Equal(JsonValueKind.Number, source.ValueKind);
+            Assert.Equal(JsonValueKind.Number, destination.ValueKind);
+            Assert.True(source.TryGetInt64(out var sourceValue));
+            Assert.True(destination.TryGetInt64(out var destinationValue));
+            Assert.Equal(sourceValue, destinationValue);
+            Assert.Equal(source.GetRawText(), destination.GetRawText());
+        }
+
+        var live = validation.RootElement.GetProperty("sentinel_live_validation");
+        Assert.True(live.GetProperty("required_for_release").GetBoolean());
+        Assert.False(live.GetProperty("required_in_ordinary_offline_ci").GetBoolean());
+        Assert.Equal("not_run_no_azure_validation_tenant", live.GetProperty("last_status").GetString());
+        using var pins = ReadStrictJson("adapter-pins.json");
+        var sentinelPins = pins.RootElement.GetProperty("sentinel");
+        Assert.Contains($"api-version={sentinelPins.GetProperty("table_management_api_version").GetString()}",
+            live.GetProperty("table_put").GetString(), StringComparison.Ordinal);
+        Assert.Contains($"api-version={sentinelPins.GetProperty("dcr_management_api_version").GetString()}",
+            live.GetProperty("dcr_put").GetString(), StringComparison.Ordinal);
+        Assert.Contains($"api-version={sentinelPins.GetProperty("logs_ingestion_api_version").GetString()}",
+            live.GetProperty("ingestion_post").GetString(), StringComparison.Ordinal);
+        Assert.Contains(sentinelPins.GetProperty("stream").GetString()!,
+            live.GetProperty("ingestion_post").GetString(), StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Containment_native_and_adapter_pins_are_closed()
     {
         using var contract = ReadStrictJson("contract.json");
@@ -1196,6 +1304,19 @@ public sealed class McpResilienceR0ContractTests
             previous = alias;
         }
         return true;
+    }
+
+    private static JsonElement ResolveJsonPointer(JsonElement root, string pointer)
+    {
+        Assert.StartsWith("/", pointer, StringComparison.Ordinal);
+        var current = root;
+        foreach (var token in pointer.Split('/').Skip(1))
+        {
+            var property = token.Replace("~1", "/", StringComparison.Ordinal)
+                .Replace("~0", "~", StringComparison.Ordinal);
+            current = current.GetProperty(property);
+        }
+        return current;
     }
 
     private static string[] Strings(JsonElement array) =>

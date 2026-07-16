@@ -18,6 +18,35 @@
     "input_audit_body": "audit-v3-host.jsonl_without_lf",
     "result": "exact_expected_body_match_including_final_lf"
   },
+  "sentinel_static_projection_validation": {
+    "status": "passed",
+    "evidence_kind": "static_semantic_projection",
+    "method": "resolve_each_frozen_column_source_from_the_exact_RawEvent_and_compare_types_and_values",
+    "input_audit_body": "audit-v3-host.jsonl_without_lf",
+    "expected_body": "sentinel-event.json",
+    "column_sources": {
+      "TimeGenerated": "/occurred_utc",
+      "ObservedUtc": "/observed_utc",
+      "RawEvent": "$exact_audit_body_utf8_without_final_lf",
+      "EventId": "/event_id",
+      "EventType": "/event_type",
+      "SchemaVersion": "/schema_version",
+      "EventHash": "/event_hash",
+      "PreviousEventHash": "/previous_event_hash",
+      "SupervisorBootId": "/producer/supervisor_boot_id",
+      "HostBootId": "/host/boot_id",
+      "HostGeneration": "/host/generation",
+      "HostState": "/host/state",
+      "HostRecoveryAttempt": "/host/recovery_attempt",
+      "SessionName": "/session/name",
+      "SessionGeneration": "/session/generation",
+      "OutcomeState": "/outcome/state",
+      "OutcomeDetailCode": "/outcome/detail_code",
+      "TerminationCertainty": "/outcome/termination_certainty",
+      "Sequence": "/sequence"
+    },
+    "result": "all_19_DCR_columns_equal_the_frozen_source_mapping"
+  },
   "pinned_collector_live_validation": {
     "required_for_release": true,
     "required_in_ordinary_offline_ci": false,
