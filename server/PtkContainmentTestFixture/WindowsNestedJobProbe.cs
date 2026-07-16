@@ -258,10 +258,13 @@ internal static class WindowsNestedJobFixture
 
     private static void WriteMarker(string scratchDirectory, string name)
     {
+        var markerPath = Path.Combine(scratchDirectory, name);
+        var pendingPath = markerPath + ".pending";
         File.WriteAllText(
-            Path.Combine(scratchDirectory, name),
+            pendingPath,
             "entered\n",
             new UTF8Encoding(encoderShouldEmitUTF8Identifier: false));
+        File.Move(pendingPath, markerPath);
     }
 
     private static void WritePublicEvent(string line)
