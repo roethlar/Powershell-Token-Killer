@@ -33,6 +33,18 @@ internal static partial class Program
             {
                 ["worker", var markerPath, ExactArgument] => RunWorker(markerPath),
                 ["descendant"] => RunDescendant(),
+                ["nested-host", var encodedScratchPath, var outerJobHandle] =>
+                    WindowsNestedJobFixture.RunHost(encodedScratchPath, outerJobHandle),
+                ["nested-worker", var encodedScratchPath, var outerJobHandle, var innerJobHandle] =>
+                    WindowsNestedJobFixture.RunWorker(
+                        encodedScratchPath,
+                        outerJobHandle,
+                        innerJobHandle),
+                ["nested-descendant", var encodedScratchPath, var outerJobHandle, var innerJobHandle] =>
+                    WindowsNestedJobFixture.RunDescendant(
+                        encodedScratchPath,
+                        outerJobHandle,
+                        innerJobHandle),
                 _ => 64,
             };
         }
