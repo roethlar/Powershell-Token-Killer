@@ -23,7 +23,8 @@ short and update it when important repo facts change.
   receiver path remains unchanged. Producer-owned exact v1/v2 fixtures exist at
   `1f6d485`; the serialized v3 OTLP request fixture remains absent and is never
   invented from R0's JSONL vector. Local evidence and guard proofs are recorded
-  in `.agents/machines.md`; combined post-merge verification is pending.
+  in `.agents/machines.md`. Combined local verification of merge `374f164`
+  passed; the exact commands and counts are recorded there.
 - **Audited-harness Slices 7a-7f and the Windows wait-ownership prerequisite
   are complete and landed on local `master`; Slice 7f code head is
   `a9e757e`.**

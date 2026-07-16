@@ -558,3 +558,23 @@ conformance compatibility head `9f53831` on Darwin 25.5.0 arm64, dotnet
   separate startup filesystem-protection matrix remains unimplemented and is
   recorded as a scheduling conflict in `.agents/state.md`; these results do not
   claim acceptance row 7.
+
+## R0 + mini-SIEM S1-S3 integration verification (Mac, 2026-07-16)
+
+_Combined local verification of merge `374f164` on Darwin arm64. The worktree
+also contained unrelated, unstaged governance-only changes; those changes were
+excluded from the merge and did not alter the tested product or test sources._
+
+- `dotnet test server/PtkMcpServer.slnx`: 1532/1532 passed.
+- `dotnet test siem/PtkSiem.slnx`: 91/91 passed.
+- Producer conformance: 2/2 passed with
+  `PTK_SIEM_CONFORMANCE_MODE=in-process`, and 2/2 passed with the override
+  absent.
+- Existing PowerShell battery: 141 passed / 0 failed / 2 skipped; handshake
+  reported `HANDSHAKE PASSED` with zero warnings and zero errors.
+- `dotnet list siem/PtkSiem.slnx package --vulnerable --include-transitive`
+  reported no vulnerable direct or transitive packages.
+- This is local macOS evidence only. Hosted ubuntu/windows/macos CI and direct
+  Windows validation were not run. Mini-SIEM S4 remains gated on the absent
+  producer-owned serialized v3 OTLP request fixture, and startup filesystem
+  owner/mode/DACL plus symlink/reparse enforcement remains unimplemented.
