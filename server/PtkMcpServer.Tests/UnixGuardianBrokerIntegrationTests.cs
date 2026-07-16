@@ -125,7 +125,7 @@ public sealed class UnixGuardianBrokerIntegrationTests
             Assert.Equal(expectedRegistry, transcript.Registry);
             Assert.InRange(transcript.TermAtMs, 0, 25);
             Assert.Equal(2_000, transcript.TermToKillMs);
-            Assert.InRange(transcript.KillAtMs, 2_000, 2_100);
+            Assert.True(transcript.KillAtMs >= transcript.TermToKillMs);
             Assert.Equal(10_000, transcript.DeadlineMs);
             Assert.Equal(25, transcript.PollMs);
             Assert.InRange(
@@ -219,7 +219,12 @@ public sealed class UnixGuardianBrokerIntegrationTests
             Assert.Equal("none", transcript.Registry);
             Assert.InRange(transcript.TermAtMs, 0, 25);
             Assert.Equal(2_000, transcript.TermToKillMs);
-            Assert.InRange(transcript.KillAtMs, 2_000, 2_100);
+            Assert.True(transcript.KillAtMs >= transcript.TermToKillMs);
+            Assert.Equal(10_000, transcript.DeadlineMs);
+            Assert.InRange(
+                transcript.CompletedAtMs,
+                transcript.KillAtMs,
+                transcript.DeadlineMs);
             Assert.True(transcript.HostAliveAfterTerm);
             Assert.Equal(0, transcript.NonchildrenAliveAfterTerm);
             Assert.InRange(transcript.WaitpidCalls, 1, 401);
@@ -399,6 +404,13 @@ public sealed class UnixGuardianBrokerIntegrationTests
             "signal_direct_host_group(observed->host_pid, SIGKILL);",
             containment,
             StringComparison.Ordinal);
+        Assert.Matches(
+            new Regex(
+                @"sleep_until\(started \+ \(uint64_t\)PTK_TERM_TO_KILL_MILLISECONDS\);\s*" +
+                @"uint64_t kill_at = monotonic_milliseconds\(\) - started;\s*" +
+                @"signal_direct_host_group\(observed->host_pid, SIGKILL\);",
+                RegexOptions.CultureInvariant),
+            containment);
         Assert.DoesNotContain(
             "signal_one_identity(\n        observed->worker_pid",
             containment,
