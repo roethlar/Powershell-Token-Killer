@@ -618,3 +618,36 @@ NT 10.0.26200.0 x64, PowerShell 7.6.3, .NET SDK 10.0.302/runtime 10.0.10._
   and symlink/reparse acceptance matrix. Hosted Linux/Windows/macOS CI still has
   not run, and mini-SIEM S4 remains gated on producer-owned serialized v3 OTLP
   request bytes.
+
+## R0 + mini-SIEM S1-S3 integration verification (Linux, 2026-07-16)
+
+_Direct validation of exact snapshot `a473ca3` as ordinary user `michael` on a
+disposable Ubuntu 26.04 ARM64 checkout at `192.168.64.5`: kernel 7.0.0-27,
+.NET SDK 10.0.110/runtime 10.0.10, PowerShell 7.6.3, and Pester 5.8.0._
+
+- A `git archive` ZIP of the exact commit was transferred to a collision-checked
+  disposable directory. Local and Linux SHA-256 matched
+  `C8615684E1AC6680DBD19EB7EFA7A7D7B4C472AE3F840B2EDD4BD4BCCCC53DF6`.
+- The full server suite passed 1532/1532. The PowerShell module suite passed
+  141 / 0 failed / 2 platform skips. The complete stdio handshake reported
+  `HANDSHAKE PASSED`, including warm cross-call state, foreground/background
+  output recovery, audit attribution and outage refusal, and cleanup checks.
+- The mini-SIEM suite passed 91/91. Producer conformance passed 2/2 with
+  `PTK_SIEM_CONFORMANCE_MODE` truly absent and 2/2 in `in-process` mode.
+- A clean build exposed a Linux ARM64 tooling caveat: `Grpc.Tools` 2.82.0's
+  bundled `linux_arm64/protoc` exited 139 only when spawned by MSBuild. The same
+  binary reported `libprotoc 35.0` and completed the exact generated command
+  successfully when invoked directly; disabling build servers and interposing
+  transparent wrappers did not change the MSBuild-only crash. The test battery
+  above used that bundled binary to generate the normal intermediate files,
+  then ran the ordinary projects with `--no-restore`. No product or test source
+  was modified, no system `protoc` was installed, and this evidence therefore
+  validates behavior but not a clean ARM64 build path.
+- The archive, checkout, wrapper, diagnostic logs, and test-created temporary
+  job directories were removed. Process and scoped path checks found no PTK
+  residue. The only HTTPS development certificate in the user store predates
+  this validation (created 2026-07-11) and was preserved. No installed PTK
+  payload or existing checkout changed.
+- Hosted Linux/Windows/macOS CI still has not run. The receiver filesystem
+  protection matrix remains unimplemented, and mini-SIEM S4 remains gated on
+  producer-owned serialized v3 OTLP request bytes.

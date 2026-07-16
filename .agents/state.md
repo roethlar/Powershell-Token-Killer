@@ -24,9 +24,11 @@ short and update it when important repo facts change.
   `1f6d485`; the serialized v3 OTLP request fixture remains absent and is never
   invented from R0's JSONL vector. Local evidence and guard proofs are recorded
   in `.agents/machines.md`. Combined local verification of merge `374f164`
-  passed on macOS, and exact integration tip `1ad195e` passed direct Windows
-  checkout validation; the exact commands, contexts, and counts are recorded
-  there. Hosted Linux/Windows/macOS CI has not run.
+  passed on macOS, exact integration tip `1ad195e` passed direct Windows
+  checkout validation, and exact snapshot `a473ca3` passed the direct Linux
+  behavior battery after manual generation around an ARM64 MSBuild-only
+  `protoc` crash; the exact commands, contexts, counts, and clean-build caveat
+  are recorded there. Hosted Linux/Windows/macOS CI has not run.
 - **Audited-harness Slices 7a-7f and the Windows wait-ownership prerequisite
   are complete and landed on local `master`; Slice 7f code head is
   `a9e757e`.**
@@ -313,6 +315,15 @@ short and update it when important repo facts change.
   slice.
 
 ## Blockers
+
+- **Direct ARM64 Linux clean-build validation is blocked by a host-specific
+  `Grpc.Tools` launch failure.** On the Ubuntu 26.04 ARM64 VM, the bundled
+  `Grpc.Tools` 2.82.0 `protoc` succeeds when invoked directly with the exact
+  generated command but exits 139 only when MSBuild launches it. Manually
+  generating the identical intermediate files allowed every Linux behavior
+  suite to pass. This does not invalidate that behavior evidence, but a clean
+  ARM64 build must not be claimed until the launch failure is resolved or
+  independently disproved; see `.agents/machines.md`.
 
 - **The mini-SIEM plan does not consistently schedule startup filesystem
   enforcement.** Its architecture and acceptance row 7 assign owner-only
