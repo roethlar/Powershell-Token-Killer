@@ -1,14 +1,15 @@
 # Plan: CI portability repair after audited-harness Slice 6
 
-**Status:** IMPLEMENTED AND DIRECTLY VERIFIED 2026-07-16 for owner-approved
-Slices 11-12 at exact repair head `f658f21`; a new hosted matrix is still
-required before this reopened work is complete. GitHub Actions run
-`29520427103` exposed two independent Windows checkout/fixture defects at exact
-head `72c6103`. Slices 1-10 remain completed at test-only code head `6193ae4`;
-their final hosted evidence is green run `29331077331` at docs descendant
-`ccee469`. The reopened work does not change production runtime behavior,
-install RTK into ordinary unit-test jobs, or decide whether a future PTK
-release bundles a pinned RTK binary.
+**Status:** REOPENED 2026-07-16 for owner-approved Slices 13-16 after GitHub
+Actions run `29536074900` exposed four independent pre-existing test-harness
+races at exact head `af8189c`. Slices 11-12 remain implemented and directly
+verified at repair head `f658f21`; the follow-up run proved that their six R0
+checkout failures and nested-Job marker failure are closed. Slices 1-10 remain
+completed at test-only code head `6193ae4`, with green hosted evidence in run
+`29331077331` at docs descendant `ccee469`. The owner approved exactly four
+separate test-only commits, the complete battery, and a hosted rerun. This work
+does not change production runtime behavior, install RTK into ordinary unit-
+test jobs, or decide whether a future PTK release bundles a pinned RTK binary.
 
 ## Evidence and problem
 
@@ -138,6 +139,47 @@ Each numbered slice is one finding and one commit.
     reproduce the sharing violation while pending-file publication passes
     under the same hold. Remove the hold, run the focused integration test ten
     times, then run the complete battery.
+13. **Synchronize the scheduler peer before counting executions.** Add a
+    run-continuations-asynchronously `peerEntered` signal to
+    `Expired_request_never_executes_and_active_deadline_targets_only_it`, set it
+    immediately when the peer request enters the executor, and await it after
+    the two terminal responses before asserting the execution count. Preserve
+    the expired request's no-execution proof, the active request's targeted
+    deadline, the peer's lack of a terminal response before release, and every
+    final response assertion. The signal must strengthen the proof: once the
+    peer is known to have entered, exactly two executor calls proves that the
+    already-expired request did not. Run the focused test repeatedly.
+14. **Separate reprime setup mutation from the tested timeout.** Give only the
+    authorized module-file mutation call in
+    `Post_start_module_file_mutation_cannot_execute_during_repriming` an
+    explicit ten-second budget. Keep the host's 500-millisecond default and
+    the later `Start-Sleep` call unchanged so `timeout-rebuild` still exercises
+    the intended timeout and rebuild. Preserve authorization, exact on-disk
+    mutation, all three reprime paths, final refusal, and sentinel absence.
+    Under a deterministic delay of private output startup, the old setup
+    budget must fail before the subject while the explicit setup budget reaches
+    and preserves the subject assertion.
+15. **Treat Unix escalation as an absolute deadline, not a scheduler SLA.** In
+    both normal and deliberately stalled guardian-broker tests, keep the exact
+    two-second TERM-to-KILL configuration and require that KILL never occurs
+    before it, but remove the unprovable 100-millisecond upper scheduler bound.
+    Retain the exact ten-second containment deadline, completion bound, direct
+    host and worker hard-kill checks, identity polling, group-death, survivor,
+    and zombie assertions. Strengthen the native-source guard so the absolute
+    `sleep_until`, timestamp, and direct-host `SIGKILL` statements must remain
+    adjacent in that exact order. A temporary broker deschedule across the
+    deadline must exceed the old ceiling while still satisfying the corrected
+    containment proof.
+16. **Release the retained Windows flush handle in the retry callback.** In
+    `Windows_snapshot_retries_the_retained_post_flush_write_handle`, record the
+    sharing-violation observation and synchronously release the retained write
+    handle from that callback. Await the observation, replacement, and read
+    directly; remove the `Task.WhenAny` identity race and the scheduler-
+    dependent intermediate incompletion assertion. Keep the real Windows
+    handle, exact error-32 classifier, fixed production one-second retry
+    window, and final sequence-1 checkpoint assertion unchanged. Temporarily
+    disabling only the production error-32 classifier must make the corrected
+    guard fail before restoration; run it repeatedly on Windows.
 
 ## Verification
 
@@ -272,6 +314,41 @@ production change, weakened assertion, or uncovered current R0 artifact. Its
 only residual test-hygiene note is that the deterministic held-handle delay was
 a temporary mutation proof; the ordinary Windows integration guard remains
 committed. Hosted matrix evidence remains required.
+
+## Reopened Slices 13-16 evidence
+
+GitHub Actions run `29536074900` tested exact head `af8189c`. Pester passed on
+Ubuntu, macOS, and Windows, and all three SIEM jobs passed receiver and live
+producer-conformance checks. The server suite then failed four pre-existing
+test-harness assumptions and skipped each handshake. Exact comparison against
+the preceding head shows that none of the four affected tests or their product
+implementations changed in Slices 11-12.
+
+- Ubuntu observed one executor call after two terminal responses in
+  `Expired_request_never_executes_and_active_deadline_targets_only_it`.
+  Those responses belong to the already-expired and immediately-deadlined
+  requests; they do not prove that the independently admitted peer's executor
+  trampoline has run. An explicit peer-entry signal closes that ordering gap
+  while strengthening the no-execution proof for the expired request.
+- Ubuntu also failed the setup mutation in
+  `Post_start_module_file_mutation_cannot_execute_during_repriming` before it
+  reached the named timeout-rebuild behavior. The authorized user pipeline
+  completed, but its newly mandatory private output shaping contended on the
+  process-wide runspace creation lock and exceeded the test host's 500 ms
+  default. A ten-second budget belongs only to that setup operation; the actual
+  timeout/rebuild leg remains at 500 ms.
+- macOS recorded `killAtMs=2128` against a hard-coded 2,000-2,100 ms window.
+  Every containment outcome otherwise passed. The fixture schedules an
+  absolute two-second escalation but cannot require a non-real-time hosted
+  process to run within 100 ms. Direct sampling remained near 2,000 ms; a
+  temporary broker deschedule reproduced a later timestamp with both groups
+  gone and zero survivors or zombies.
+- Windows completed the real sharing-violation callback in
+  `Windows_snapshot_retries_the_retained_post_flush_write_handle`, but its
+  run-continuations-asynchronously notification lost a `Task.WhenAny` race to
+  the synchronous reader exhausting the fixed one-second retry window. Release
+  must occur synchronously in the callback; enlarging the production retry
+  window would hide the harness race and is out of scope.
 
 ## Non-goals
 
