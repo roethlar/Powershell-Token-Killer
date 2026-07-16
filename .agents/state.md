@@ -24,7 +24,9 @@ short and update it when important repo facts change.
   `1f6d485`; the serialized v3 OTLP request fixture remains absent and is never
   invented from R0's JSONL vector. Local evidence and guard proofs are recorded
   in `.agents/machines.md`. Combined local verification of merge `374f164`
-  passed; the exact commands and counts are recorded there.
+  passed on macOS, and exact integration tip `1ad195e` passed direct Windows
+  checkout validation; the exact commands, contexts, and counts are recorded
+  there. Hosted Linux/Windows/macOS CI has not run.
 - **Audited-harness Slices 7a-7f and the Windows wait-ownership prerequisite
   are complete and landed on local `master`; Slice 7f code head is
   `a9e757e`.**

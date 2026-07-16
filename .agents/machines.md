@@ -578,3 +578,43 @@ excluded from the merge and did not alter the tested product or test sources._
   Windows validation were not run. Mini-SIEM S4 remains gated on the absent
   producer-owned serialized v3 OTLP request fixture, and startup filesystem
   owner/mode/DACL plus symlink/reparse enforcement remains unimplemented.
+
+## R0 + mini-SIEM S1-S3 integration verification (Windows, 2026-07-16)
+
+_Direct validation of exact integration tip `1ad195e` on `NETWATCH-01`, Windows
+NT 10.0.26200.0 x64, PowerShell 7.6.3, .NET SDK 10.0.302/runtime 10.0.10._
+
+- A `git archive` ZIP of the exact commit was transferred to a collision-checked
+  disposable directory under `F:\dev`. Local and Windows SHA-256 matched
+  `9A18367007DA43E2D4535B90CC17265F7329A4607897EEEC4DFE13E00E2450FD`.
+- The .NET/TLS checks ran under a transient `SYSTEM` scheduled task because the
+  key-authenticated OpenSSH logon cannot use current-user DPAPI on this host:
+  `ProtectedData.Protect(..., CurrentUser)` returned `Access is denied`, causing
+  persisted PKCS#12 imports to fail before test behavior. In the service
+  context, `dotnet test server/PtkMcpServer.slnx` passed 1532/1532 and
+  `dotnet test siem/PtkSiem.slnx` passed 91/91.
+- Producer conformance passed 2/2 both with
+  `PTK_SIEM_CONFORMANCE_MODE=in-process` and with the variable truly absent.
+  The handshake reported `HANDSHAKE PASSED` after a zero-warning, zero-error
+  build.
+- The documented PowerShell command was reproduced in a nested `-NoProfile`
+  process under the ordinary `NETWATCH-01\michael` account: 142 passed / 0
+  failed / 1 skipped. The outer SSH shell loads `PSProfile`, whose real `source`
+  alias intentionally changes one dialect-detector expectation, so that shell
+  is not equivalent to the documented no-profile battery.
+- Two preliminary service-runner attempts incorrectly set the conformance mode
+  to an empty string while trying to remove it; the contract tests correctly
+  rejected that set-but-invalid value. A final runner asserted a null process
+  value before launching the green server and default-conformance batteries.
+- The scheduled task, archive, checkout, helper scripts, and logs were removed.
+  The isolated SYSTEM profile's first .NET invocation created ASP.NET
+  development certificate thumbprint
+  `35346EB43A9DCC683647EB3FEC9366AD60B8C57D`; cleanup verified its marker and
+  removed that exact certificate with its private key. Final task/path/wildcard
+  residue counts were zero. No existing checkout or installed PTK payload was
+  changed.
+- This validates the committed Windows source in a service context; it does not
+  satisfy the still-unimplemented dedicated receiver-account filesystem/DACL
+  and symlink/reparse acceptance matrix. Hosted Linux/Windows/macOS CI still has
+  not run, and mini-SIEM S4 remains gated on producer-owned serialized v3 OTLP
+  request bytes.
