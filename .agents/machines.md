@@ -120,6 +120,28 @@ update._
   payload or persistent host configuration changed. Live Windows validation
   of Slice 4 remains a later platform gate.
 
+### MCP resilience R0 contract and containment validation
+
+_Verified 2026-07-15 at exact corrected code head
+`46ff7fb96d2b9947576e9f22627665ac763459d2`; this was checkout validation,
+not an installed-payload update._
+
+- The host reported macOS 26.5.2 build 25F84 on ARM64, Apple clang 21.0.0
+  targeting `arm64-apple-darwin25.5.0`, .NET SDK 10.0.301, and PowerShell
+  7.6.3.
+- The native Darwin guardian-broker integration set passed 11/11. It exercised
+  the pending/armed/released process-group boundaries, guardian-liveness EOF,
+  identity-held containment, direct-host reaping, and the macOS prohibition on
+  waiting for nonchildren.
+- The exact head passed 1,531/1,531 .NET tests in 2m23s, 141 PowerShell tests
+  with two platform skips, and the complete stdio handshake with a zero-warning,
+  zero-error build. The focused fake guardian/private protocol/R0 contract set
+  also passed 34/34.
+- One separate exact-head full run observed a transient pre-existing
+  `AuditAnchoredRuntimeTests` assertion while an `.anchoring.*.script` rename
+  was still in flight. Its isolated guard passed 10/10 and the clean full rerun
+  above passed; this is not counted as a passing run or as R0 behavior evidence.
+
 ## `NETWATCH-01` — Michael's Windows machine
 
 _Verified 2026-07-11 for audited-session slice 0 at repo base `2a83723`._
@@ -409,6 +431,35 @@ changed._
   first .NET invocation also reported installing an ASP.NET Core HTTPS
   development certificate. It was not removed because certificate-wide
   cleanup could affect unrelated host state.
+
+### MCP resilience R0 contract and containment validation
+
+_Verified 2026-07-15 at exact corrected code head
+`46ff7fb96d2b9947576e9f22627665ac763459d2` in a disposable GUID-named
+directory under `F:\dev`; no installed payload or existing checkout changed._
+
+- The host reported Windows NT 10.0.26200.0 x64, .NET SDK 10.0.302, and
+  PowerShell 7.6.3. The exact 366-entry archive had SHA-256
+  `F785AC44B435BB9073DD1B486E2B28FFD066C569C329A3083499B8174F3D6EC0`
+  and contained no AppleDouble metadata.
+- The real nested Job Object proof passed 2/2. It confirmed the noninheritable
+  outer kill-on-close Job, creation-time nested host/worker membership before
+  resume, ordinary descendant membership, held process identities, and death
+  of host, worker, and descendant after closing the guardian's sole Job handle.
+- The focused fake guardian/private protocol/R0 contract set passed 34/34.
+  The original candidate had failed its single recovery diagnostic assertion
+  because the test expected LF while `Console.Error.WriteLine` emits CRLF on
+  Windows; exact correction `46ff7fb` made that same set green.
+- The PowerShell module suite passed 142 tests with one platform skip. The full
+  stdio handshake passed with zero build warnings or errors. Post-run checks
+  found no PTK fixture/server/testhost processes, and the remote archive,
+  harness, and disposable directory were absent.
+- A broader pre-correction Windows run passed 1,513/1,531 .NET tests. Besides
+  the corrected R0 newline assertion, the other 17 failures were pre-existing
+  certificate/HTTPS fixtures failing during PKCS#12 import or client-certificate
+  parsing on this SDK. That failed run is not claimed as a green Windows
+  battery; R0's required direct Windows topology and protocol evidence is the
+  focused exact-head evidence above.
 
 ## Disposable Ubuntu 26.04 ARM64 validation
 
