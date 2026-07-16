@@ -300,13 +300,18 @@ public sealed class WorkerOperationSchedulerTests
     public async Task Expired_request_never_executes_and_active_deadline_targets_only_it()
     {
         var calls = 0;
+        var peerEntered = new TaskCompletionSource(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         var peerRelease = new TaskCompletionSource(
             TaskCreationOptions.RunContinuationsAsynchronously);
         var executor = new DelegateExecutor(async (request, cancellationToken) =>
         {
             Interlocked.Increment(ref calls);
             if (request.Operation == "peer")
+            {
+                peerEntered.SetResult();
                 await peerRelease.Task.WaitAsync(cancellationToken);
+            }
             else
                 await Task.Delay(Timeout.InfiniteTimeSpan, cancellationToken);
             return Result(request.Operation);
@@ -324,6 +329,7 @@ public sealed class WorkerOperationSchedulerTests
         scheduler.Admit(Request(2, "deadline", Now.AddMinutes(1)));
         scheduler.Admit(Request(3, "peer", Now.AddMinutes(2)));
         await writer.WaitForCountAsync(2);
+        await peerEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
 
         Assert.Equal(2, calls);
         Assert.DoesNotContain(writer.Snapshot(), frame => frame.RequestId == 3);
