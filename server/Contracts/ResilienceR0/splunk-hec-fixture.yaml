@@ -1,0 +1,22 @@
+receivers:
+  otlp:
+    protocols:
+      http:
+        endpoint: 127.0.0.1:4318
+exporters:
+  splunk_hec/ptk:
+    endpoint: https://splunk.example.invalid:8088/services/collector/event
+    token: ${env:SPLUNK_HEC_TOKEN}
+    source: ptk
+    sourcetype: ptk:audit
+    index: ptk
+    otel_attrs_to_hec_metadata:
+      host: host.id
+service:
+  pipelines:
+    logs/ptk:
+      receivers: [otlp]
+      exporters: [splunk_hec/ptk]
+# Contract fixture: otelcol-contrib v0.156.0 only. The exact LogRecord body is
+# the authoritative ptk.audit JSON. HEC top-level floating `time` is not a
+# precision gate, and this transient exporter pipeline is not PTK's anchor.

@@ -1,0 +1,1402 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://powershell-token-killer.invalid/schemas/ptk-guardian-host-protocol-1.json",
+  "title": "PTK guardian-host private protocol v1 frame",
+  "oneOf": [
+    { "$ref": "#/$defs/hello" },
+    { "$ref": "#/$defs/initialize" },
+    { "$ref": "#/$defs/ready" },
+    { "$ref": "#/$defs/request" },
+    { "$ref": "#/$defs/cancel" },
+    { "$ref": "#/$defs/event" },
+    { "$ref": "#/$defs/response" },
+    { "$ref": "#/$defs/shutdown" }
+  ],
+  "x-ptk-transport": {
+    "encoding": "strict_utf8",
+    "bom": false,
+    "terminator": "exactly_one_lf",
+    "maximum_encoded_frame_bytes_excluding_lf": 1048576,
+    "maximum_json_depth": 32,
+    "duplicate_properties": "reject",
+    "unknown_properties": "reject"
+  },
+  "x-ptk-response-type-by-request": {
+    "initialize": "no_response; correlation is ready.initialize_request_id",
+    "manifest_header": "manifest_header_accepted",
+    "manifest_chunk": "manifest_chunk_accepted",
+    "manifest_seal": "manifest_sealed",
+    "operation": "operation_completed",
+    "worker_create_capability_grant": "control_acknowledged",
+    "worker_containment_pending_ack": "control_acknowledged",
+    "worker_containment_armed_ack": "control_acknowledged",
+    "worker_containment_remove_ack": "control_acknowledged",
+    "shutdown": "shutdown_accepted"
+  },
+  "$defs": {
+    "uuidv4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "uuidv7": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "alias": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "positive_int64": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "nonnegative_int64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "nullable_positive_int64": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/positive_int64" }]
+    },
+    "nullable_uuidv4": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/uuidv4" }]
+    },
+    "nullable_alias": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/alias" }]
+    },
+    "hello": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "host_pid", "host_executable_sha256", "host_build_sha256", "public_contract_sha256",
+        "configuration_sha256", "request_channel_owned", "event_channel_owned"
+      ],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "kind": { "const": "hello" },
+        "guardian_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_generation": { "$ref": "#/$defs/positive_int64" },
+        "host_pid": { "type": "integer", "minimum": 1, "maximum": 2147483647 },
+        "host_executable_sha256": { "$ref": "#/$defs/sha256" },
+        "host_build_sha256": { "$ref": "#/$defs/sha256" },
+        "public_contract_sha256": { "$ref": "#/$defs/sha256" },
+        "configuration_sha256": { "$ref": "#/$defs/sha256" },
+        "request_channel_owned": { "const": true },
+        "event_channel_owned": { "const": true }
+      },
+      "required": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "host_pid", "host_executable_sha256", "host_build_sha256", "public_contract_sha256",
+        "configuration_sha256", "request_channel_owned", "event_channel_owned"
+      ],
+      "additionalProperties": false
+    },
+    "initialize": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "request_id", "guardian_protocol_version", "host_protocol_version",
+        "host_executable_sha256", "host_build_sha256", "public_contract_sha256",
+        "configuration_sha256", "package_manifest_sha256", "maximum_manifest_bytes",
+        "maximum_manifest_chunk_raw_bytes", "maximum_aliases", "maximum_templates"
+      ],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "kind": { "const": "initialize" },
+        "guardian_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_generation": { "$ref": "#/$defs/positive_int64" },
+        "request_id": { "$ref": "#/$defs/positive_int64" },
+        "guardian_protocol_version": { "const": 1 },
+        "host_protocol_version": { "const": 1 },
+        "host_executable_sha256": { "$ref": "#/$defs/sha256" },
+        "host_build_sha256": { "$ref": "#/$defs/sha256" },
+        "public_contract_sha256": { "$ref": "#/$defs/sha256" },
+        "configuration_sha256": { "$ref": "#/$defs/sha256" },
+        "package_manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "maximum_manifest_bytes": { "const": 25165824 },
+        "maximum_manifest_chunk_raw_bytes": { "const": 524288 },
+        "maximum_aliases": { "const": 128 },
+        "maximum_templates": { "const": 128 }
+      },
+      "required": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "request_id", "guardian_protocol_version", "host_protocol_version",
+        "host_executable_sha256", "host_build_sha256", "public_contract_sha256",
+        "configuration_sha256", "package_manifest_sha256", "maximum_manifest_bytes",
+        "maximum_manifest_chunk_raw_bytes", "maximum_aliases", "maximum_templates"
+      ],
+      "additionalProperties": false
+    },
+    "ready": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "initialize_request_id", "manifest_id", "manifest_sha256", "host_pid"
+      ],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "kind": { "const": "ready" },
+        "guardian_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_generation": { "$ref": "#/$defs/positive_int64" },
+        "initialize_request_id": { "$ref": "#/$defs/positive_int64" },
+        "manifest_id": { "$ref": "#/$defs/uuidv4" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "host_pid": { "type": "integer", "minimum": 1, "maximum": 2147483647 }
+      },
+      "required": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "initialize_request_id", "manifest_id", "manifest_sha256", "host_pid"
+      ],
+      "additionalProperties": false
+    },
+    "request": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "request_id", "method", "deadline_unix_time_milliseconds", "session_alias",
+        "session_transition_version", "worker_boot_id", "worker_generation", "plan_id",
+        "operation_id", "payload"
+      ],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "kind": { "const": "request" },
+        "guardian_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_generation": { "$ref": "#/$defs/positive_int64" },
+        "request_id": { "$ref": "#/$defs/positive_int64" },
+        "method": {
+          "enum": [
+            "manifest_header", "manifest_chunk", "manifest_seal", "operation",
+            "worker_create_capability_grant", "worker_containment_pending_ack",
+            "worker_containment_armed_ack", "worker_containment_remove_ack"
+          ]
+        },
+        "deadline_unix_time_milliseconds": { "$ref": "#/$defs/nullable_positive_int64" },
+        "session_alias": { "$ref": "#/$defs/nullable_alias" },
+        "session_transition_version": { "$ref": "#/$defs/nullable_positive_int64" },
+        "worker_boot_id": { "$ref": "#/$defs/nullable_uuidv4" },
+        "worker_generation": { "$ref": "#/$defs/nullable_positive_int64" },
+        "plan_id": { "$ref": "#/$defs/nullable_uuidv4" },
+        "operation_id": { "$ref": "#/$defs/nullable_uuidv4" },
+        "payload": { "type": "object" }
+      },
+      "required": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "request_id", "method", "deadline_unix_time_milliseconds", "session_alias",
+        "session_transition_version", "worker_boot_id", "worker_generation", "plan_id",
+        "operation_id", "payload"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "worker_boot_id": { "type": "null" },
+                "worker_generation": { "type": "null" }
+              }
+            },
+            {
+              "properties": {
+                "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+                "worker_generation": { "$ref": "#/$defs/positive_int64" }
+              }
+            },
+            {
+              "properties": {
+                "method": { "const": "worker_create_capability_grant" },
+                "worker_boot_id": { "type": "null" },
+                "worker_generation": { "$ref": "#/$defs/positive_int64" }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "plan_id": { "type": "null" },
+                "operation_id": { "type": "null" }
+              }
+            },
+            {
+              "properties": {
+                "plan_id": { "$ref": "#/$defs/uuidv4" },
+                "operation_id": { "$ref": "#/$defs/uuidv4" }
+              }
+            }
+          ]
+        }
+      ],
+      "oneOf": [
+        {
+          "properties": {
+            "method": { "const": "manifest_header" },
+            "deadline_unix_time_milliseconds": { "type": "null" },
+            "session_alias": { "type": "null" },
+            "session_transition_version": { "type": "null" },
+            "worker_boot_id": { "type": "null" },
+            "worker_generation": { "type": "null" },
+            "plan_id": { "type": "null" },
+            "operation_id": { "type": "null" },
+            "payload": { "$ref": "#/$defs/manifest_header" }
+          }
+        },
+        {
+          "properties": {
+            "method": { "const": "manifest_chunk" },
+            "deadline_unix_time_milliseconds": { "type": "null" },
+            "session_alias": { "type": "null" },
+            "session_transition_version": { "type": "null" },
+            "worker_boot_id": { "type": "null" },
+            "worker_generation": { "type": "null" },
+            "plan_id": { "type": "null" },
+            "operation_id": { "type": "null" },
+            "payload": { "$ref": "#/$defs/manifest_chunk" }
+          }
+        },
+        {
+          "properties": {
+            "method": { "const": "manifest_seal" },
+            "deadline_unix_time_milliseconds": { "type": "null" },
+            "session_alias": { "type": "null" },
+            "session_transition_version": { "type": "null" },
+            "worker_boot_id": { "type": "null" },
+            "worker_generation": { "type": "null" },
+            "plan_id": { "type": "null" },
+            "operation_id": { "type": "null" },
+            "payload": { "$ref": "#/$defs/manifest_seal" }
+          }
+        },
+        {
+          "properties": {
+            "method": { "const": "operation" },
+            "deadline_unix_time_milliseconds": { "$ref": "#/$defs/positive_int64" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "payload": { "$ref": "#/$defs/operation_request" }
+          },
+          "oneOf": [
+            {
+              "properties": {
+                "payload": {
+                  "properties": {
+                    "operation": { "enum": ["invoke_foreground", "invoke_background"] }
+                  }
+                },
+                "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+                "worker_generation": { "$ref": "#/$defs/positive_int64" },
+                "plan_id": { "$ref": "#/$defs/uuidv4" },
+                "operation_id": { "$ref": "#/$defs/uuidv4" }
+              }
+            },
+            {
+              "properties": {
+                "payload": {
+                  "properties": {
+                    "operation": { "enum": ["job_list", "job_status", "job_output", "job_kill", "reset"] }
+                  }
+                },
+                "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+                "worker_generation": { "$ref": "#/$defs/positive_int64" },
+                "plan_id": { "type": "null" },
+                "operation_id": { "type": "null" }
+              }
+            },
+            {
+              "properties": {
+                "payload": {
+                  "properties": { "operation": { "const": "session_open" } }
+                },
+                "worker_boot_id": { "type": "null" },
+                "worker_generation": { "type": "null" },
+                "plan_id": { "type": "null" },
+                "operation_id": { "type": "null" }
+              }
+            },
+            {
+              "properties": {
+                "payload": {
+                  "properties": { "operation": { "enum": ["session_close", "session_restart"] } }
+                },
+                "plan_id": { "type": "null" },
+                "operation_id": { "type": "null" }
+              }
+            }
+          ]
+        },
+        {
+          "properties": {
+            "method": { "const": "worker_create_capability_grant" },
+            "deadline_unix_time_milliseconds": { "$ref": "#/$defs/positive_int64" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "type": "null" },
+            "worker_generation": { "$ref": "#/$defs/positive_int64" },
+            "plan_id": { "type": "null" },
+            "operation_id": { "type": "null" },
+            "payload": { "$ref": "#/$defs/worker_create_capability_grant" }
+          }
+        },
+        {
+          "properties": {
+            "method": { "const": "worker_containment_pending_ack" },
+            "deadline_unix_time_milliseconds": { "$ref": "#/$defs/positive_int64" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+            "worker_generation": { "$ref": "#/$defs/positive_int64" },
+            "plan_id": { "type": "null" },
+            "operation_id": { "type": "null" },
+            "payload": { "$ref": "#/$defs/source_event_ack" }
+          }
+        },
+        {
+          "properties": {
+            "method": { "const": "worker_containment_armed_ack" },
+            "deadline_unix_time_milliseconds": { "$ref": "#/$defs/positive_int64" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+            "worker_generation": { "$ref": "#/$defs/positive_int64" },
+            "plan_id": { "type": "null" },
+            "operation_id": { "type": "null" },
+            "payload": { "$ref": "#/$defs/source_event_ack" }
+          }
+        },
+        {
+          "properties": {
+            "method": { "const": "worker_containment_remove_ack" },
+            "deadline_unix_time_milliseconds": { "$ref": "#/$defs/positive_int64" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+            "worker_generation": { "$ref": "#/$defs/positive_int64" },
+            "plan_id": { "type": "null" },
+            "operation_id": { "type": "null" },
+            "payload": { "$ref": "#/$defs/source_event_ack" }
+          }
+        }
+      ]
+    },
+    "cancel": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "request_id", "target_request_id", "reason"
+      ],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "kind": { "const": "cancel" },
+        "guardian_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_generation": { "$ref": "#/$defs/positive_int64" },
+        "request_id": { "$ref": "#/$defs/positive_int64" },
+        "target_request_id": { "$ref": "#/$defs/positive_int64" },
+        "reason": { "enum": ["caller_canceled", "deadline_expired", "guardian_shutdown"] }
+      },
+      "required": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "request_id", "target_request_id", "reason"
+      ],
+      "additionalProperties": false
+    },
+    "event": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "event_sequence", "event_type", "request_id", "session_alias",
+        "session_transition_version", "worker_boot_id", "worker_generation", "plan_id",
+        "operation_id", "payload"
+      ],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "kind": { "const": "event" },
+        "guardian_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_generation": { "$ref": "#/$defs/positive_int64" },
+        "event_sequence": { "$ref": "#/$defs/positive_int64" },
+        "event_type": {
+          "enum": [
+            "worker_create_capability_requested", "worker_containment_pending",
+            "worker_containment_armed", "worker_containment_remove_requested",
+            "operation_delivery", "session_lifecycle", "worker_lost",
+            "worker_diagnostic_chunk", "worker_diagnostic_truncated",
+            "job_lifecycle", "output_chunk", "output_seal"
+          ]
+        },
+        "request_id": { "$ref": "#/$defs/nullable_positive_int64" },
+        "session_alias": { "$ref": "#/$defs/nullable_alias" },
+        "session_transition_version": { "$ref": "#/$defs/nullable_positive_int64" },
+        "worker_boot_id": { "$ref": "#/$defs/nullable_uuidv4" },
+        "worker_generation": { "$ref": "#/$defs/nullable_positive_int64" },
+        "plan_id": { "$ref": "#/$defs/nullable_uuidv4" },
+        "operation_id": { "$ref": "#/$defs/nullable_uuidv4" },
+        "payload": { "type": "object" }
+      },
+      "required": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "event_sequence", "event_type", "request_id", "session_alias",
+        "session_transition_version", "worker_boot_id", "worker_generation", "plan_id",
+        "operation_id", "payload"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "worker_boot_id": { "type": "null" },
+                "worker_generation": { "type": "null" }
+              }
+            },
+            {
+              "properties": {
+                "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+                "worker_generation": { "$ref": "#/$defs/positive_int64" }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "plan_id": { "type": "null" },
+                "operation_id": { "type": "null" }
+              }
+            },
+            {
+              "properties": {
+                "plan_id": { "$ref": "#/$defs/uuidv4" },
+                "operation_id": { "$ref": "#/$defs/uuidv4" }
+              }
+            }
+          ]
+        }
+      ],
+      "oneOf": [
+        {
+          "properties": {
+            "event_type": { "const": "worker_create_capability_requested" },
+            "request_id": { "type": "null" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "type": "null" },
+            "worker_generation": { "type": "null" },
+            "plan_id": { "type": "null" },
+            "operation_id": { "type": "null" },
+            "payload": { "$ref": "#/$defs/worker_create_capability_requested" }
+          }
+        },
+        {
+          "properties": {
+            "event_type": { "enum": ["worker_containment_pending", "worker_containment_armed", "worker_containment_remove_requested"] },
+            "request_id": { "type": "null" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+            "worker_generation": { "$ref": "#/$defs/positive_int64" },
+            "plan_id": { "type": "null" },
+            "operation_id": { "type": "null" }
+          },
+          "oneOf": [
+            { "properties": { "event_type": { "const": "worker_containment_pending" }, "payload": { "$ref": "#/$defs/worker_containment_pending" } } },
+            { "properties": { "event_type": { "const": "worker_containment_armed" }, "payload": { "$ref": "#/$defs/worker_containment_armed" } } },
+            { "properties": { "event_type": { "const": "worker_containment_remove_requested" }, "payload": { "$ref": "#/$defs/worker_containment_remove_requested" } } }
+          ]
+        },
+        {
+          "properties": {
+            "event_type": { "const": "operation_delivery" },
+            "request_id": { "$ref": "#/$defs/positive_int64" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+            "worker_generation": { "$ref": "#/$defs/positive_int64" },
+            "payload": { "$ref": "#/$defs/operation_delivery" }
+          }
+        },
+        {
+          "properties": {
+            "event_type": { "const": "session_lifecycle" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "plan_id": { "type": "null" },
+            "operation_id": { "type": "null" },
+            "payload": { "$ref": "#/$defs/session_lifecycle" }
+          }
+        },
+        {
+          "properties": {
+            "event_type": { "const": "worker_lost" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+            "worker_generation": { "$ref": "#/$defs/positive_int64" },
+            "payload": { "$ref": "#/$defs/worker_lost" }
+          }
+        },
+        {
+          "properties": {
+            "event_type": { "enum": ["worker_diagnostic_chunk", "worker_diagnostic_truncated"] },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+            "worker_generation": { "$ref": "#/$defs/positive_int64" }
+          },
+          "oneOf": [
+            { "properties": { "event_type": { "const": "worker_diagnostic_chunk" }, "payload": { "$ref": "#/$defs/worker_diagnostic_chunk" } } },
+            { "properties": { "event_type": { "const": "worker_diagnostic_truncated" }, "payload": { "$ref": "#/$defs/worker_diagnostic_truncated" } } }
+          ]
+        },
+        {
+          "properties": {
+            "event_type": { "const": "job_lifecycle" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+            "worker_generation": { "$ref": "#/$defs/positive_int64" },
+            "payload": { "$ref": "#/$defs/job_lifecycle" }
+          }
+        },
+        {
+          "properties": {
+            "event_type": { "enum": ["output_chunk", "output_seal"] },
+            "request_id": { "$ref": "#/$defs/positive_int64" },
+            "session_alias": { "$ref": "#/$defs/alias" },
+            "session_transition_version": { "$ref": "#/$defs/positive_int64" },
+            "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+            "worker_generation": { "$ref": "#/$defs/positive_int64" }
+          },
+          "oneOf": [
+            { "properties": { "event_type": { "const": "output_chunk" }, "payload": { "$ref": "#/$defs/output_chunk" } } },
+            { "properties": { "event_type": { "const": "output_seal" }, "payload": { "$ref": "#/$defs/output_seal" } } }
+          ]
+        }
+      ]
+    },
+    "response": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "request_id", "status", "payload", "error"
+      ],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "kind": { "const": "response" },
+        "guardian_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_generation": { "$ref": "#/$defs/positive_int64" },
+        "request_id": { "$ref": "#/$defs/positive_int64" },
+        "status": { "enum": ["ok", "error"] },
+        "payload": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/response_payload" }]
+        },
+        "error": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/private_error" }]
+        }
+      },
+      "required": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "request_id", "status", "payload", "error"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "status": { "const": "ok" },
+            "payload": { "$ref": "#/$defs/response_payload" },
+            "error": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "status": { "const": "error" },
+            "payload": { "type": "null" },
+            "error": { "$ref": "#/$defs/private_error" }
+          }
+        }
+      ]
+    },
+    "shutdown": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "request_id", "deadline_unix_time_milliseconds", "reason"
+      ],
+      "properties": {
+        "protocol_version": { "const": 1 },
+        "kind": { "const": "shutdown" },
+        "guardian_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_boot_id": { "$ref": "#/$defs/uuidv4" },
+        "host_generation": { "$ref": "#/$defs/positive_int64" },
+        "request_id": { "$ref": "#/$defs/positive_int64" },
+        "deadline_unix_time_milliseconds": { "$ref": "#/$defs/positive_int64" },
+        "reason": { "enum": ["guardian_eof", "guardian_shutdown", "host_recycle"] }
+      },
+      "required": [
+        "protocol_version", "kind", "guardian_boot_id", "host_boot_id", "host_generation",
+        "request_id", "deadline_unix_time_milliseconds", "reason"
+      ],
+      "additionalProperties": false
+    },
+    "manifest_header": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "manifest_id", "total_bytes", "chunk_count", "manifest_sha256", "alias_count", "template_count"
+      ],
+      "properties": {
+        "manifest_id": { "$ref": "#/$defs/uuidv4" },
+        "total_bytes": { "type": "integer", "minimum": 1, "maximum": 25165824 },
+        "chunk_count": { "type": "integer", "minimum": 1, "maximum": 48 },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "alias_count": { "type": "integer", "minimum": 1, "maximum": 128 },
+        "template_count": { "type": "integer", "minimum": 0, "maximum": 128 }
+      },
+      "required": ["manifest_id", "total_bytes", "chunk_count", "manifest_sha256", "alias_count", "template_count"],
+      "additionalProperties": false,
+      "x-ptk-invariants": [
+        "chunk_count=ceiling(total_bytes/524288)",
+        "exactly_one_manifest_header_per_host_generation"
+      ]
+    },
+    "manifest_chunk": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "manifest_id", "chunk_index", "offset", "raw_bytes", "raw_base64", "raw_sha256"
+      ],
+      "properties": {
+        "manifest_id": { "$ref": "#/$defs/uuidv4" },
+        "chunk_index": { "type": "integer", "minimum": 0, "maximum": 47 },
+        "offset": { "type": "integer", "minimum": 0, "maximum": 25165823 },
+        "raw_bytes": { "type": "integer", "minimum": 1, "maximum": 524288 },
+        "raw_base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 699052,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "raw_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "required": ["manifest_id", "chunk_index", "offset", "raw_bytes", "raw_base64", "raw_sha256"],
+      "additionalProperties": false,
+      "x-ptk-invariants": [
+        "manifest_id_matches_header",
+        "chunk_index_is_next_zero_based_index",
+        "offset=chunk_index*524288",
+        "decoded_raw_base64_length=raw_bytes",
+        "every_nonfinal_chunk_has_raw_bytes=524288",
+        "final_chunk_has_raw_bytes=total_bytes-offset",
+        "raw_sha256=sha256(decoded_raw_base64)"
+      ]
+    },
+    "manifest_seal": {
+      "type": "object",
+      "x-ptk-property-order": ["manifest_id", "total_bytes", "chunk_count", "manifest_sha256"],
+      "properties": {
+        "manifest_id": { "$ref": "#/$defs/uuidv4" },
+        "total_bytes": { "type": "integer", "minimum": 1, "maximum": 25165824 },
+        "chunk_count": { "type": "integer", "minimum": 1, "maximum": 48 },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "required": ["manifest_id", "total_bytes", "chunk_count", "manifest_sha256"],
+      "additionalProperties": false,
+      "x-ptk-invariants": [
+        "all_fields_match_header",
+        "all_chunks_and_acknowledgments_received",
+        "manifest_sha256=sha256(exact_reassembled_raw_bytes)"
+      ]
+    },
+    "dispatch_capability": {
+      "type": "object",
+      "x-ptk-property-order": ["token", "call_id", "expires_unix_time_milliseconds"],
+      "properties": {
+        "token": { "$ref": "#/$defs/token32" },
+        "call_id": { "$ref": "#/$defs/uuidv7" },
+        "expires_unix_time_milliseconds": { "$ref": "#/$defs/positive_int64" }
+      },
+      "required": ["token", "call_id", "expires_unix_time_milliseconds"],
+      "additionalProperties": false
+    },
+    "output_capability": {
+      "type": "object",
+      "x-ptk-property-order": ["token", "maximum_bytes", "expires_unix_time_milliseconds"],
+      "properties": {
+        "token": { "$ref": "#/$defs/token32" },
+        "maximum_bytes": { "type": "integer", "minimum": 1, "maximum": 8388608 },
+        "expires_unix_time_milliseconds": { "$ref": "#/$defs/positive_int64" }
+      },
+      "required": ["token", "maximum_bytes", "expires_unix_time_milliseconds"],
+      "additionalProperties": false
+    },
+    "token32": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9_-]{43}$"
+    },
+    "operation_request": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "operation", "call_id", "dispatch_capability", "output_capability", "arguments"
+      ],
+      "properties": {
+        "operation": {
+          "enum": [
+            "invoke_foreground", "invoke_background", "job_list", "job_status", "job_output", "job_kill",
+            "reset", "session_open", "session_close", "session_restart"
+          ]
+        },
+        "call_id": { "$ref": "#/$defs/uuidv7" },
+        "dispatch_capability": { "$ref": "#/$defs/dispatch_capability" },
+        "output_capability": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/output_capability" }]
+        },
+        "arguments": { "type": "object" }
+      },
+      "required": ["operation", "call_id", "dispatch_capability", "output_capability", "arguments"],
+      "additionalProperties": false,
+      "oneOf": [
+        { "properties": { "operation": { "const": "invoke_foreground" }, "output_capability": { "$ref": "#/$defs/output_capability" }, "arguments": { "$ref": "#/$defs/invoke_arguments" } } },
+        { "properties": { "operation": { "const": "invoke_background" }, "output_capability": { "$ref": "#/$defs/output_capability" }, "arguments": { "$ref": "#/$defs/invoke_background_arguments" } } },
+        { "properties": { "operation": { "const": "job_list" }, "output_capability": { "type": "null" }, "arguments": { "$ref": "#/$defs/empty_arguments" } } },
+        { "properties": { "operation": { "const": "job_status" }, "output_capability": { "type": "null" }, "arguments": { "$ref": "#/$defs/job_identity_arguments" } } },
+        { "properties": { "operation": { "const": "job_output" }, "output_capability": { "$ref": "#/$defs/output_capability" }, "arguments": { "$ref": "#/$defs/job_output_arguments" } } },
+        { "properties": { "operation": { "const": "job_kill" }, "output_capability": { "type": "null" }, "arguments": { "$ref": "#/$defs/job_identity_arguments" } } },
+        { "properties": { "operation": { "const": "reset" }, "output_capability": { "type": "null" }, "arguments": { "$ref": "#/$defs/reset_arguments" } } },
+        { "properties": { "operation": { "const": "session_open" }, "output_capability": { "type": "null" }, "arguments": { "$ref": "#/$defs/session_open_arguments" } } },
+        { "properties": { "operation": { "const": "session_close" }, "output_capability": { "type": "null" }, "arguments": { "$ref": "#/$defs/session_transition_arguments" } } },
+        { "properties": { "operation": { "const": "session_restart" }, "output_capability": { "type": "null" }, "arguments": { "$ref": "#/$defs/session_transition_arguments" } } }
+      ],
+      "x-ptk-public-tool-map": {
+        "invoke_foreground": "ptk_invoke:background=false",
+        "invoke_background": "ptk_invoke:background=true",
+        "job_list": "ptk_job:action=list:live",
+        "job_status": "ptk_job:action=status:live",
+        "job_output": "ptk_job:action=output:live",
+        "job_kill": "ptk_job:action=kill:live",
+        "reset": "ptk_reset",
+        "session_open": "ptk_session:action=open",
+        "session_close": "ptk_session:action=close",
+        "session_restart": "ptk_session:action=restart"
+      }
+    },
+    "empty_arguments": {
+      "type": "object",
+      "properties": {},
+      "additionalProperties": false
+    },
+    "invoke_arguments": {
+      "type": "object",
+      "x-ptk-property-order": ["script", "raw", "route"],
+      "properties": {
+        "script": { "type": "string", "maxLength": 131072, "x-ptk-maximum-strict-utf8-bytes": 131072 },
+        "raw": { "type": "boolean" },
+        "route": { "enum": ["auto", "pwsh", "rtk"] }
+      },
+      "required": ["script", "raw", "route"],
+      "additionalProperties": false
+    },
+    "invoke_background_arguments": {
+      "type": "object",
+      "x-ptk-property-order": ["script", "raw", "route", "public_job_id"],
+      "properties": {
+        "script": { "type": "string", "maxLength": 131072, "x-ptk-maximum-strict-utf8-bytes": 131072 },
+        "raw": { "type": "boolean" },
+        "route": { "enum": ["auto", "pwsh", "rtk"] },
+        "public_job_id": { "$ref": "#/$defs/positive_int64" }
+      },
+      "required": ["script", "raw", "route", "public_job_id"],
+      "additionalProperties": false
+    },
+    "job_identity_arguments": {
+      "type": "object",
+      "x-ptk-property-order": ["public_job_id", "job_capability"],
+      "properties": {
+        "public_job_id": { "$ref": "#/$defs/positive_int64" },
+        "job_capability": { "$ref": "#/$defs/token32" }
+      },
+      "required": ["public_job_id", "job_capability"],
+      "additionalProperties": false
+    },
+    "job_output_arguments": {
+      "type": "object",
+      "x-ptk-property-order": ["public_job_id", "job_capability", "offset"],
+      "properties": {
+        "public_job_id": { "$ref": "#/$defs/positive_int64" },
+        "job_capability": { "$ref": "#/$defs/token32" },
+        "offset": { "$ref": "#/$defs/nonnegative_int64" }
+      },
+      "required": ["public_job_id", "job_capability", "offset"],
+      "additionalProperties": false
+    },
+    "reset_arguments": {
+      "type": "object",
+      "x-ptk-property-order": ["expectedGeneration", "force"],
+      "properties": {
+        "expectedGeneration": { "$ref": "#/$defs/nonnegative_int64" },
+        "force": { "type": "boolean" }
+      },
+      "required": ["expectedGeneration", "force"],
+      "additionalProperties": false
+    },
+    "session_open_arguments": {
+      "type": "object",
+      "x-ptk-property-order": ["template", "allowColdBackground"],
+      "properties": {
+        "template": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/alias" }]
+        },
+        "allowColdBackground": { "type": "boolean" }
+      },
+      "required": ["template", "allowColdBackground"],
+      "additionalProperties": false
+    },
+    "session_transition_arguments": {
+      "type": "object",
+      "x-ptk-property-order": ["expectedGeneration", "force"],
+      "properties": {
+        "expectedGeneration": { "$ref": "#/$defs/nonnegative_int64" },
+        "force": { "type": "boolean" }
+      },
+      "required": ["expectedGeneration", "force"],
+      "additionalProperties": false
+    },
+    "worker_create_capability_grant": {
+      "type": "object",
+      "x-ptk-property-order": ["source_event_sequence", "token", "worker_generation"],
+      "properties": {
+        "source_event_sequence": { "$ref": "#/$defs/positive_int64" },
+        "token": { "$ref": "#/$defs/token32" },
+        "worker_generation": { "$ref": "#/$defs/positive_int64" }
+      },
+      "required": ["source_event_sequence", "token", "worker_generation"],
+      "additionalProperties": false
+    },
+    "source_event_ack": {
+      "type": "object",
+      "x-ptk-property-order": ["source_event_sequence"],
+      "properties": {
+        "source_event_sequence": { "$ref": "#/$defs/positive_int64" }
+      },
+      "required": ["source_event_sequence"],
+      "additionalProperties": false
+    },
+    "worker_create_capability_requested": {
+      "type": "object",
+      "x-ptk-property-order": ["binding_digest", "startup_deadline_unix_time_milliseconds"],
+      "properties": {
+        "binding_digest": { "$ref": "#/$defs/sha256" },
+        "startup_deadline_unix_time_milliseconds": { "$ref": "#/$defs/positive_int64" }
+      },
+      "required": ["binding_digest", "startup_deadline_unix_time_milliseconds"],
+      "additionalProperties": false
+    },
+    "containment_identity_pending": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "broker_pid", "broker_start_identity_high", "broker_start_identity_low",
+        "worker_pid", "worker_start_identity_high", "worker_start_identity_low", "intended_pgid"
+      ],
+      "properties": {
+        "broker_pid": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "broker_start_identity_high": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "broker_start_identity_low": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "worker_pid": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "worker_start_identity_high": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "worker_start_identity_low": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "intended_pgid": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+      },
+      "required": [
+        "broker_pid", "broker_start_identity_high", "broker_start_identity_low",
+        "worker_pid", "worker_start_identity_high", "worker_start_identity_low", "intended_pgid"
+      ],
+      "additionalProperties": false,
+      "x-ptk-invariant": "intended_pgid=worker_pid"
+    },
+    "containment_identity_armed": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "broker_pid", "broker_start_identity_high", "broker_start_identity_low",
+        "worker_pid", "worker_start_identity_high", "worker_start_identity_low", "pgid"
+      ],
+      "properties": {
+        "broker_pid": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "broker_start_identity_high": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "broker_start_identity_low": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "worker_pid": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "worker_start_identity_high": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "worker_start_identity_low": { "type": "integer", "minimum": 0, "maximum": 18446744073709551615 },
+        "pgid": { "type": "integer", "minimum": 1, "maximum": 4294967295 }
+      },
+      "required": [
+        "broker_pid", "broker_start_identity_high", "broker_start_identity_low",
+        "worker_pid", "worker_start_identity_high", "worker_start_identity_low", "pgid"
+      ],
+      "additionalProperties": false,
+      "x-ptk-invariant": "pgid=worker_pid"
+    },
+    "worker_containment_pending": { "$ref": "#/$defs/containment_identity_pending" },
+    "worker_containment_armed": { "$ref": "#/$defs/containment_identity_armed" },
+    "worker_containment_remove_requested": { "$ref": "#/$defs/containment_identity_armed" },
+    "operation_delivery": {
+      "type": "object",
+      "x-ptk-property-order": ["dispatch_token", "delivery_state", "worker_request_id"],
+      "properties": {
+        "dispatch_token": { "$ref": "#/$defs/token32" },
+        "delivery_state": { "enum": ["not_dispatched", "write_started", "terminal_decoded"] },
+        "worker_request_id": { "$ref": "#/$defs/nullable_positive_int64" }
+      },
+      "required": ["dispatch_token", "delivery_state", "worker_request_id"],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "delivery_state": { "const": "not_dispatched" },
+            "worker_request_id": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "delivery_state": { "enum": ["write_started", "terminal_decoded"] },
+            "worker_request_id": { "$ref": "#/$defs/positive_int64" }
+          }
+        }
+      ],
+      "x-ptk-transition-order": ["not_dispatched", "write_started", "terminal_decoded"]
+    },
+    "session_state": {
+      "enum": [
+        "cold", "starting", "ready", "resetting", "closing", "faulted", "lost", "quarantined",
+        "recovering", "backoff", "bootstrapping", "circuit_open", "half_open", "recovery_unknown"
+      ]
+    },
+    "session_lifecycle": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "previous_state", "state", "reason_code", "ready_for_effects", "warm_state_lost", "bootstrap_state"
+      ],
+      "properties": {
+        "previous_state": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/session_state" }]
+        },
+        "state": { "$ref": "#/$defs/session_state" },
+        "reason_code": {
+          "enum": [
+            "requested_open", "requested_close", "requested_restart", "requested_reset",
+            "automatic_recovery", "execution_timeout", "worker_exit", "broker_lost",
+            "bootstrap_failed", "containment_unconfirmed", "circuit_transition"
+          ]
+        },
+        "ready_for_effects": { "type": "boolean" },
+        "warm_state_lost": { "type": "boolean" },
+        "bootstrap_state": { "enum": ["not_applicable", "pending", "restored", "failed", "unknown"] }
+      },
+      "required": [
+        "previous_state", "state", "reason_code", "ready_for_effects", "warm_state_lost", "bootstrap_state"
+      ],
+      "additionalProperties": false
+    },
+    "worker_lost": {
+      "type": "object",
+      "x-ptk-property-order": ["reason_code", "exit_code", "termination_certainty", "effects_state"],
+      "properties": {
+        "reason_code": {
+          "enum": ["process_exit", "protocol_fatal", "broker_lost", "execution_timeout", "host_shutdown"]
+        },
+        "exit_code": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 }
+          ]
+        },
+        "termination_certainty": { "enum": ["confirmed", "unconfirmed"] },
+        "effects_state": { "enum": ["not_dispatched", "outcome_unknown", "terminal_known"] }
+      },
+      "required": ["reason_code", "exit_code", "termination_certainty", "effects_state"],
+      "additionalProperties": false
+    },
+    "diagnostic_stream": { "enum": ["stdout", "stderr"] },
+    "worker_diagnostic_chunk": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "stream", "chunk_index", "offset", "raw_bytes", "raw_base64", "raw_sha256", "end_of_stream"
+      ],
+      "properties": {
+        "stream": { "$ref": "#/$defs/diagnostic_stream" },
+        "chunk_index": { "$ref": "#/$defs/nonnegative_int64" },
+        "offset": { "type": "integer", "minimum": 0, "maximum": 65535 },
+        "raw_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "raw_base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 21848,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "raw_sha256": { "$ref": "#/$defs/sha256" },
+        "end_of_stream": { "type": "boolean" }
+      },
+      "required": ["stream", "chunk_index", "offset", "raw_bytes", "raw_base64", "raw_sha256", "end_of_stream"],
+      "additionalProperties": false,
+      "x-ptk-invariants": [
+        "offsets_are_contiguous_per_stream",
+        "decoded_raw_base64_length=raw_bytes",
+        "raw_sha256=sha256(decoded_raw_base64)",
+        "cumulative_raw_bytes_per_stream_per_worker_boot<=65536",
+        "end_of_stream=true permits no later chunk for that stream and worker boot"
+      ]
+    },
+    "worker_diagnostic_truncated": {
+      "type": "object",
+      "x-ptk-property-order": ["stream", "captured_bytes", "discarded_bytes"],
+      "properties": {
+        "stream": { "$ref": "#/$defs/diagnostic_stream" },
+        "captured_bytes": { "const": 65536 },
+        "discarded_bytes": { "$ref": "#/$defs/positive_int64" }
+      },
+      "required": ["stream", "captured_bytes", "discarded_bytes"],
+      "additionalProperties": false,
+      "x-ptk-invariant": "exactly_one_truncation_event_per_stream_per_worker_boot"
+    },
+    "job_lifecycle": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "public_job_id", "state", "exit_code", "output_state", "output_bytes", "output_sha256"
+      ],
+      "properties": {
+        "public_job_id": { "$ref": "#/$defs/positive_int64" },
+        "state": {
+          "enum": ["queued", "running", "completed", "failed", "canceled", "timed_out", "lost", "outcome_unknown"]
+        },
+        "exit_code": {
+          "oneOf": [
+            { "type": "null" },
+            { "type": "integer", "minimum": -2147483648, "maximum": 2147483647 }
+          ]
+        },
+        "output_state": { "enum": ["none", "streaming", "sealed", "sealed_incomplete", "unavailable"] },
+        "output_bytes": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+        "output_sha256": {
+          "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+        }
+      },
+      "required": ["public_job_id", "state", "exit_code", "output_state", "output_bytes", "output_sha256"],
+      "additionalProperties": false
+    },
+    "output_chunk": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "output_capability_token", "chunk_index", "offset", "raw_bytes", "raw_base64", "raw_sha256"
+      ],
+      "properties": {
+        "output_capability_token": { "$ref": "#/$defs/token32" },
+        "chunk_index": { "$ref": "#/$defs/nonnegative_int64" },
+        "offset": { "type": "integer", "minimum": 0, "maximum": 8388607 },
+        "raw_bytes": { "type": "integer", "minimum": 1, "maximum": 65536 },
+        "raw_base64": {
+          "type": "string",
+          "minLength": 4,
+          "maxLength": 87384,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        },
+        "raw_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "required": ["output_capability_token", "chunk_index", "offset", "raw_bytes", "raw_base64", "raw_sha256"],
+      "additionalProperties": false,
+      "x-ptk-invariants": [
+        "chunk_indices_and_offsets_are_contiguous_per_capability",
+        "decoded_raw_base64_length=raw_bytes",
+        "raw_sha256=sha256(decoded_raw_base64)",
+        "cumulative_raw_bytes<=capability.maximum_bytes"
+      ]
+    },
+    "output_seal": {
+      "type": "object",
+      "x-ptk-property-order": ["output_capability_token", "state", "total_bytes", "output_sha256"],
+      "properties": {
+        "output_capability_token": { "$ref": "#/$defs/token32" },
+        "state": { "enum": ["complete", "incomplete"] },
+        "total_bytes": { "type": "integer", "minimum": 0, "maximum": 8388608 },
+        "output_sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "required": ["output_capability_token", "state", "total_bytes", "output_sha256"],
+      "additionalProperties": false,
+      "x-ptk-invariant": "output_sha256=sha256(exact_concatenated_output_chunk_raw_bytes)"
+    },
+    "response_payload": {
+      "oneOf": [
+        { "$ref": "#/$defs/manifest_header_accepted" },
+        { "$ref": "#/$defs/manifest_chunk_accepted" },
+        { "$ref": "#/$defs/manifest_sealed" },
+        { "$ref": "#/$defs/operation_completed" },
+        { "$ref": "#/$defs/control_acknowledged" },
+        { "$ref": "#/$defs/shutdown_accepted" }
+      ]
+    },
+    "manifest_header_accepted": {
+      "type": "object",
+      "x-ptk-property-order": ["response_type", "manifest_id", "next_chunk_index", "next_offset"],
+      "properties": {
+        "response_type": { "const": "manifest_header_accepted" },
+        "manifest_id": { "$ref": "#/$defs/uuidv4" },
+        "next_chunk_index": { "const": 0 },
+        "next_offset": { "const": 0 }
+      },
+      "required": ["response_type", "manifest_id", "next_chunk_index", "next_offset"],
+      "additionalProperties": false
+    },
+    "manifest_chunk_accepted": {
+      "type": "object",
+      "x-ptk-property-order": ["response_type", "manifest_id", "chunk_index", "next_chunk_index", "next_offset"],
+      "properties": {
+        "response_type": { "const": "manifest_chunk_accepted" },
+        "manifest_id": { "$ref": "#/$defs/uuidv4" },
+        "chunk_index": { "type": "integer", "minimum": 0, "maximum": 47 },
+        "next_chunk_index": { "type": "integer", "minimum": 1, "maximum": 48 },
+        "next_offset": { "type": "integer", "minimum": 1, "maximum": 25165824 }
+      },
+      "required": ["response_type", "manifest_id", "chunk_index", "next_chunk_index", "next_offset"],
+      "additionalProperties": false,
+      "x-ptk-invariants": ["next_chunk_index=chunk_index+1", "next_offset=accepted_chunk_offset+accepted_chunk_raw_bytes"]
+    },
+    "manifest_sealed": {
+      "type": "object",
+      "x-ptk-property-order": ["response_type", "manifest_id", "manifest_sha256", "total_bytes"],
+      "properties": {
+        "response_type": { "const": "manifest_sealed" },
+        "manifest_id": { "$ref": "#/$defs/uuidv4" },
+        "manifest_sha256": { "$ref": "#/$defs/sha256" },
+        "total_bytes": { "type": "integer", "minimum": 1, "maximum": 25165824 }
+      },
+      "required": ["response_type", "manifest_id", "manifest_sha256", "total_bytes"],
+      "additionalProperties": false
+    },
+    "operation_completed": {
+      "type": "object",
+      "x-ptk-property-order": ["response_type", "operation", "result"],
+      "properties": {
+        "response_type": { "const": "operation_completed" },
+        "operation": {
+          "enum": [
+            "invoke_foreground", "invoke_background", "job_list", "job_status", "job_output", "job_kill",
+            "reset", "session_open", "session_close", "session_restart"
+          ]
+        },
+        "result": { "type": "object" }
+      },
+      "required": ["response_type", "operation", "result"],
+      "additionalProperties": false,
+      "oneOf": [
+        { "properties": { "operation": { "const": "invoke_foreground" }, "result": { "$ref": "#/$defs/text_result" } } },
+        { "properties": { "operation": { "const": "invoke_background" }, "result": { "$ref": "#/$defs/background_result" } } },
+        { "properties": { "operation": { "const": "job_list" }, "result": { "$ref": "#/$defs/text_result" } } },
+        { "properties": { "operation": { "const": "job_status" }, "result": { "$ref": "#/$defs/text_result" } } },
+        { "properties": { "operation": { "const": "job_output" }, "result": { "$ref": "#/$defs/text_result" } } },
+        { "properties": { "operation": { "const": "job_kill" }, "result": { "$ref": "#/$defs/text_result" } } },
+        { "properties": { "operation": { "const": "reset" }, "result": { "$ref": "#/$defs/session_operation_result" } } },
+        { "properties": { "operation": { "const": "session_open" }, "result": { "$ref": "#/$defs/session_operation_result" } } },
+        { "properties": { "operation": { "const": "session_close" }, "result": { "$ref": "#/$defs/session_operation_result" } } },
+        { "properties": { "operation": { "const": "session_restart" }, "result": { "$ref": "#/$defs/session_operation_result" } } }
+      ]
+    },
+    "text_result": {
+      "type": "object",
+      "x-ptk-property-order": ["text"],
+      "properties": {
+        "text": { "type": "string", "maxLength": 131072, "x-ptk-maximum-strict-utf8-bytes": 131072 }
+      },
+      "required": ["text"],
+      "additionalProperties": false
+    },
+    "background_result": {
+      "type": "object",
+      "x-ptk-property-order": ["public_job_id", "job_capability"],
+      "properties": {
+        "public_job_id": { "$ref": "#/$defs/positive_int64" },
+        "job_capability": { "$ref": "#/$defs/token32" }
+      },
+      "required": ["public_job_id", "job_capability"],
+      "additionalProperties": false
+    },
+    "session_operation_result": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "alias", "state", "worker_boot_id", "worker_generation", "transition_version",
+        "ready_for_effects", "warm_state_lost", "bootstrap_state"
+      ],
+      "properties": {
+        "alias": { "$ref": "#/$defs/alias" },
+        "state": { "$ref": "#/$defs/session_state" },
+        "worker_boot_id": { "$ref": "#/$defs/nullable_uuidv4" },
+        "worker_generation": { "$ref": "#/$defs/nullable_positive_int64" },
+        "transition_version": { "$ref": "#/$defs/nonnegative_int64" },
+        "ready_for_effects": { "type": "boolean" },
+        "warm_state_lost": { "type": "boolean" },
+        "bootstrap_state": { "enum": ["not_applicable", "pending", "restored", "failed", "unknown"] }
+      },
+      "required": [
+        "alias", "state", "worker_boot_id", "worker_generation", "transition_version",
+        "ready_for_effects", "warm_state_lost", "bootstrap_state"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "worker_boot_id": { "type": "null" },
+                "worker_generation": { "type": "null" }
+              }
+            },
+            {
+              "properties": {
+                "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+                "worker_generation": { "$ref": "#/$defs/positive_int64" }
+              }
+            }
+          ]
+        },
+        {
+          "if": { "properties": { "ready_for_effects": { "const": true } } },
+          "then": { "properties": { "state": { "const": "ready" } } }
+        }
+      ]
+    },
+    "control_acknowledged": {
+      "type": "object",
+      "x-ptk-property-order": ["response_type", "source_event_sequence"],
+      "properties": {
+        "response_type": { "const": "control_acknowledged" },
+        "source_event_sequence": { "$ref": "#/$defs/positive_int64" }
+      },
+      "required": ["response_type", "source_event_sequence"],
+      "additionalProperties": false
+    },
+    "shutdown_accepted": {
+      "type": "object",
+      "x-ptk-property-order": ["response_type"],
+      "properties": { "response_type": { "const": "shutdown_accepted" } },
+      "required": ["response_type"],
+      "additionalProperties": false
+    },
+    "private_error": {
+      "type": "object",
+      "x-ptk-property-order": ["detail_code", "message_code"],
+      "properties": {
+        "detail_code": {
+          "enum": [
+            "audit_capability_invalid", "bootstrap_failed", "capability_invalid", "containment_unconfirmed",
+            "expected_generation_mismatch", "invalid_operation_field", "invalid_operation_response",
+            "invalid_prepared_field", "job_capability_invalid", "manifest_bounds_exceeded",
+            "manifest_digest_mismatch", "manifest_invalid", "missing_operation_field", "missing_prepared_field",
+            "operation_argument_mismatch", "operation_kind_mismatch", "operation_not_dispatched",
+            "operation_result_mismatch", "operation_result_too_large", "operation_script_too_large",
+            "outcome_unknown", "output_capability_invalid", "prepared_script_digest_mismatch",
+            "replan_required", "request_canceled", "request_deadline_expired", "session_busy",
+            "session_faulted", "session_not_found", "session_quarantined", "unknown_operation_field",
+            "unknown_prepared_field", "unsupported_operation", "unsupported_prepared_operation",
+            "worker_boot_mismatch", "worker_generation_mismatch", "worker_lost"
+          ]
+        },
+        "message_code": {
+          "enum": [
+            "ambiguous_outcome", "canceled", "capability_failure", "containment_failure",
+            "deadline_expired", "invalid_request", "manifest_failure", "prepared_operation_failure",
+            "session_unavailable", "stale_generation", "unsupported_request", "worker_failure"
+          ]
+        }
+      },
+      "required": ["detail_code", "message_code"],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "detail_code": { "const": "outcome_unknown" },
+            "message_code": { "const": "ambiguous_outcome" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": { "const": "request_canceled" },
+            "message_code": { "const": "canceled" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": { "enum": ["audit_capability_invalid", "capability_invalid", "job_capability_invalid", "output_capability_invalid"] },
+            "message_code": { "const": "capability_failure" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": { "const": "containment_unconfirmed" },
+            "message_code": { "const": "containment_failure" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": { "const": "request_deadline_expired" },
+            "message_code": { "const": "deadline_expired" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": {
+              "enum": [
+                "invalid_operation_field", "missing_operation_field", "operation_argument_mismatch",
+                "operation_kind_mismatch", "operation_result_mismatch", "operation_result_too_large",
+                "operation_script_too_large", "unknown_operation_field"
+              ]
+            },
+            "message_code": { "const": "invalid_request" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": { "enum": ["manifest_bounds_exceeded", "manifest_digest_mismatch", "manifest_invalid"] },
+            "message_code": { "const": "manifest_failure" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": {
+              "enum": [
+                "invalid_prepared_field", "missing_prepared_field", "prepared_script_digest_mismatch",
+                "replan_required", "unknown_prepared_field"
+              ]
+            },
+            "message_code": { "const": "prepared_operation_failure" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": { "enum": ["bootstrap_failed", "session_busy", "session_faulted", "session_not_found", "session_quarantined"] },
+            "message_code": { "const": "session_unavailable" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": { "enum": ["expected_generation_mismatch", "worker_boot_mismatch", "worker_generation_mismatch"] },
+            "message_code": { "const": "stale_generation" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": { "enum": ["unsupported_operation", "unsupported_prepared_operation"] },
+            "message_code": { "const": "unsupported_request" }
+          }
+        },
+        {
+          "properties": {
+            "detail_code": { "enum": ["invalid_operation_response", "operation_not_dispatched", "worker_lost"] },
+            "message_code": { "const": "worker_failure" }
+          }
+        }
+      ]
+    }
+  }
+}

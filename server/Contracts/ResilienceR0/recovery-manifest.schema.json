@@ -1,0 +1,246 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://powershell-token-killer.invalid/schemas/ptk-recovery-manifest-1.json",
+  "title": "PTK guardian-to-host recovery manifest",
+  "type": "object",
+  "x-ptk-maximum-compact-utf8-bytes": 25165824,
+  "x-ptk-property-order": [
+    "schema_version",
+    "guardian_boot_id",
+    "host_generation",
+    "catalog_digest",
+    "configuration_sha256",
+    "templates",
+    "bindings",
+    "worker_generation_high_watermarks",
+    "host_generation_high_watermark"
+  ],
+  "properties": {
+    "schema_version": { "const": "ptk.recovery-manifest/1" },
+    "guardian_boot_id": { "$ref": "#/$defs/uuidv4" },
+    "host_generation": { "$ref": "#/$defs/positive_int64" },
+    "catalog_digest": { "$ref": "#/$defs/sha256" },
+    "configuration_sha256": { "$ref": "#/$defs/sha256" },
+    "templates": {
+      "type": "array",
+      "maxItems": 128,
+      "x-ptk-order": "name_ordinal_utf8_unique",
+      "items": { "$ref": "#/$defs/template" }
+    },
+    "bindings": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "x-ptk-order": "alias_ordinal_utf8_unique",
+      "items": { "$ref": "#/$defs/binding" }
+    },
+    "worker_generation_high_watermarks": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 128,
+      "x-ptk-order": "alias_ordinal_utf8_unique",
+      "items": { "$ref": "#/$defs/worker_generation_high_watermark" }
+    },
+    "host_generation_high_watermark": { "$ref": "#/$defs/positive_int64" }
+  },
+  "required": [
+    "schema_version",
+    "guardian_boot_id",
+    "host_generation",
+    "catalog_digest",
+    "configuration_sha256",
+    "templates",
+    "bindings",
+    "worker_generation_high_watermarks",
+    "host_generation_high_watermark"
+  ],
+  "additionalProperties": false,
+  "x-ptk-invariants": [
+    "host_generation=host_generation_high_watermark",
+    "bindings contains exactly one alias=default with binding_kind=default",
+    "every template binding names exactly one templates entry with matching template_digest and bootstrap_digest",
+    "every binding alias has exactly one worker_generation_high_watermarks entry",
+    "worker_generation_high_watermarks may retain aliases not present in bindings",
+    "configuration_sha256 matches initialize.configuration_sha256"
+  ],
+  "$defs": {
+    "uuidv4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "alias": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+    },
+    "positive_int64": {
+      "type": "integer",
+      "minimum": 1,
+      "maximum": 9223372036854775807
+    },
+    "nonnegative_int64": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 9223372036854775807
+    },
+    "nullable_alias": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/alias" }]
+    },
+    "nullable_sha256": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha256" }]
+    },
+    "template": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "name",
+        "description",
+        "startup_timeout_seconds",
+        "declared_target",
+        "declared_identity",
+        "allow_cold_background",
+        "template_digest",
+        "bootstrap_digest",
+        "bootstrap_raw_base64"
+      ],
+      "properties": {
+        "name": {
+          "allOf": [
+            { "$ref": "#/$defs/alias" },
+            { "not": { "const": "default" } }
+          ]
+        },
+        "description": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 512,
+          "x-ptk-length-unit": "unicode_scalar_values",
+          "x-ptk-forbid-unicode-category": "Cc"
+        },
+        "startup_timeout_seconds": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 86400
+        },
+        "declared_target": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "x-ptk-length-unit": "unicode_scalar_values",
+          "x-ptk-forbid-unicode-category": "Cc"
+        },
+        "declared_identity": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "x-ptk-length-unit": "unicode_scalar_values",
+          "x-ptk-forbid-unicode-category": "Cc"
+        },
+        "allow_cold_background": { "type": "boolean" },
+        "template_digest": { "$ref": "#/$defs/sha256" },
+        "bootstrap_digest": { "$ref": "#/$defs/sha256" },
+        "bootstrap_raw_base64": {
+          "type": "string",
+          "maxLength": 174764,
+          "pattern": "^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$"
+        }
+      },
+      "required": [
+        "name",
+        "description",
+        "startup_timeout_seconds",
+        "declared_target",
+        "declared_identity",
+        "allow_cold_background",
+        "template_digest",
+        "bootstrap_digest",
+        "bootstrap_raw_base64"
+      ],
+      "additionalProperties": false,
+      "x-ptk-invariants": [
+        "decoded bootstrap_raw_base64 length is 0..131072 raw bytes",
+        "bootstrap_digest=sha256(decoded bootstrap_raw_base64)",
+        "template_digest is the frozen catalog template digest"
+      ]
+    },
+    "binding": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "alias",
+        "binding_kind",
+        "template_name",
+        "template_digest",
+        "bootstrap_digest",
+        "allow_cold_background",
+        "desired_state",
+        "transition_version",
+        "binding_digest"
+      ],
+      "properties": {
+        "alias": { "$ref": "#/$defs/alias" },
+        "binding_kind": { "enum": ["default", "dynamic", "template"] },
+        "template_name": { "$ref": "#/$defs/nullable_alias" },
+        "template_digest": { "$ref": "#/$defs/nullable_sha256" },
+        "bootstrap_digest": { "$ref": "#/$defs/nullable_sha256" },
+        "allow_cold_background": { "type": "boolean" },
+        "desired_state": { "enum": ["cold", "ready"] },
+        "transition_version": { "$ref": "#/$defs/nonnegative_int64" },
+        "binding_digest": { "$ref": "#/$defs/sha256" }
+      },
+      "required": [
+        "alias",
+        "binding_kind",
+        "template_name",
+        "template_digest",
+        "bootstrap_digest",
+        "allow_cold_background",
+        "desired_state",
+        "transition_version",
+        "binding_digest"
+      ],
+      "additionalProperties": false,
+      "oneOf": [
+        {
+          "properties": {
+            "alias": { "const": "default" },
+            "binding_kind": { "const": "default" },
+            "template_name": { "type": "null" },
+            "template_digest": { "type": "null" },
+            "bootstrap_digest": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "alias": { "not": { "const": "default" } },
+            "binding_kind": { "const": "dynamic" },
+            "template_name": { "type": "null" },
+            "template_digest": { "type": "null" },
+            "bootstrap_digest": { "type": "null" }
+          }
+        },
+        {
+          "properties": {
+            "alias": { "not": { "const": "default" } },
+            "binding_kind": { "const": "template" },
+            "template_name": { "$ref": "#/$defs/alias" },
+            "template_digest": { "$ref": "#/$defs/sha256" },
+            "bootstrap_digest": { "$ref": "#/$defs/sha256" }
+          }
+        }
+      ],
+      "x-ptk-binding-digest": "guardian_authoritative_digest_of_the_frozen_binding; capability binding_digest must equal this field"
+    },
+    "worker_generation_high_watermark": {
+      "type": "object",
+      "x-ptk-property-order": ["alias", "generation"],
+      "properties": {
+        "alias": { "$ref": "#/$defs/alias" },
+        "generation": { "$ref": "#/$defs/nonnegative_int64" }
+      },
+      "required": ["alias", "generation"],
+      "additionalProperties": false
+    }
+  }
+}

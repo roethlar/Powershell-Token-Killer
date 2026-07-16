@@ -1,0 +1,31 @@
+{
+  "properties": {
+    "plan": "Analytics",
+    "retentionInDays": 30,
+    "totalRetentionInDays": 30,
+    "schema": {
+      "name": "PtkAudit_CL",
+      "columns": [
+        { "name": "TimeGenerated", "type": "dateTime" },
+        { "name": "ObservedUtc", "type": "dateTime" },
+        { "name": "RawEvent", "type": "string" },
+        { "name": "EventId", "type": "string" },
+        { "name": "EventType", "type": "string" },
+        { "name": "SchemaVersion", "type": "string" },
+        { "name": "EventHash", "type": "string" },
+        { "name": "PreviousEventHash", "type": "string" },
+        { "name": "SupervisorBootId", "type": "string" },
+        { "name": "HostBootId", "type": "string" },
+        { "name": "HostGeneration", "type": "long" },
+        { "name": "HostState", "type": "string" },
+        { "name": "HostRecoveryAttempt", "type": "long" },
+        { "name": "SessionName", "type": "string" },
+        { "name": "SessionGeneration", "type": "long" },
+        { "name": "OutcomeState", "type": "string" },
+        { "name": "OutcomeDetailCode", "type": "string" },
+        { "name": "TerminationCertainty", "type": "string" },
+        { "name": "Sequence", "type": "long" }
+      ]
+    }
+  }
+}

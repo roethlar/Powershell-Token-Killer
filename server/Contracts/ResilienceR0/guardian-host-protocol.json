@@ -1,0 +1,584 @@
+{
+  "schema_version": "ptk.guardian-host-contract/1",
+  "machine_schema": "guardian-host-protocol.schema.json",
+  "protocol_version": 1,
+  "transport": {
+    "encoding": "strict_utf8",
+    "bom": false,
+    "json_root": "object_only",
+    "framing": "ndjson_exactly_one_lf",
+    "carriage_return": "reject",
+    "empty_frame": "reject",
+    "unterminated_final_frame": "reject",
+    "maximum_encoded_frame_bytes_excluding_lf": 1048576,
+    "maximum_json_depth": 32,
+    "duplicate_properties": "reject",
+    "unknown_properties": "reject",
+    "writes": "serialized",
+    "pooled_sensitive_buffers": "clear_before_return",
+    "host_stdout_maximum_bytes_per_boot": 65536,
+    "host_stderr_maximum_bytes_per_boot": 65536,
+    "diagnostic_overflow": "continue_draining_and_emit_one_truncation_event_per_stream"
+  },
+  "identity": {
+    "uuid_text": "lowercase_canonical_rfc4122",
+    "guardian_boot_id_version": 4,
+    "host_boot_id_version": 4,
+    "host_generation_minimum": 1,
+    "host_generation_maximum": 9223372036854775807,
+    "request_id_minimum": 1,
+    "request_id_maximum": 9223372036854775807,
+    "request_id_allocation": "guardian_originated_monotonic_nonreusing",
+    "event_sequence_minimum": 1,
+    "event_sequence_maximum": 9223372036854775807,
+    "event_sequence_allocation": "host_originated_monotonic_nonreusing",
+    "exhaustion": "generation_fatal_without_wraparound"
+  },
+  "common_property_order": [
+    "protocol_version",
+    "kind",
+    "guardian_boot_id",
+    "host_boot_id",
+    "host_generation"
+  ],
+  "handshake": {
+    "sequence": [
+      "host_to_guardian:hello",
+      "guardian_to_host:initialize",
+      "guardian_to_host:request:manifest_header",
+      "host_to_guardian:response:manifest_header_accepted",
+      "guardian_to_host:request:manifest_chunk",
+      "host_to_guardian:response:manifest_chunk_accepted",
+      "repeat_manifest_chunk_request_then_acceptance_until_chunk_count",
+      "guardian_to_host:request:manifest_seal",
+      "host_to_guardian:response:manifest_sealed",
+      "host_to_guardian:ready"
+    ],
+    "operational_request_before_ready": "generation_fatal",
+    "initialize_exactly_once": true,
+    "ready_only_after_manifest_digest_validation": true
+  },
+  "kinds": [
+    {
+      "kind": "hello",
+      "direction": "host_to_guardian",
+      "property_order_after_common": [
+        "host_pid",
+        "host_executable_sha256",
+        "host_build_sha256",
+        "public_contract_sha256",
+        "configuration_sha256",
+        "request_channel_owned",
+        "event_channel_owned"
+      ],
+      "rules": {
+        "host_pid": "positive_int32",
+        "sha256": "64_lowercase_hex",
+        "request_channel_owned": true,
+        "event_channel_owned": true
+      }
+    },
+    {
+      "kind": "initialize",
+      "direction": "guardian_to_host",
+      "property_order_after_common": [
+        "request_id",
+        "guardian_protocol_version",
+        "host_protocol_version",
+        "host_executable_sha256",
+        "host_build_sha256",
+        "public_contract_sha256",
+        "configuration_sha256",
+        "package_manifest_sha256",
+        "maximum_manifest_bytes",
+        "maximum_manifest_chunk_raw_bytes",
+        "maximum_aliases",
+        "maximum_templates"
+      ],
+      "rules": {
+        "guardian_protocol_version": 1,
+        "host_protocol_version": 1,
+        "maximum_manifest_bytes": 25165824,
+        "maximum_manifest_chunk_raw_bytes": 524288,
+        "maximum_aliases": 128,
+        "maximum_templates": 128
+      }
+    },
+    {
+      "kind": "ready",
+      "direction": "host_to_guardian",
+      "property_order_after_common": [
+        "initialize_request_id",
+        "manifest_id",
+        "manifest_sha256",
+        "host_pid"
+      ],
+      "rules": {
+        "initialize_request_id": "matches_initialize_request_id",
+        "manifest_id": "lowercase_uuidv4",
+        "manifest_sha256": "matches_validated_manifest",
+        "host_pid": "matches_hello_host_pid"
+      }
+    },
+    {
+      "kind": "request",
+      "direction": "guardian_to_host",
+      "property_order_after_common": [
+        "request_id",
+        "method",
+        "deadline_unix_time_milliseconds",
+        "session_alias",
+        "session_transition_version",
+        "worker_boot_id",
+        "worker_generation",
+        "plan_id",
+        "operation_id",
+        "payload"
+      ],
+      "rules": {
+        "deadline_unix_time_milliseconds": "positive_int64_or_null",
+        "session_alias": "canonical_alias_or_null",
+        "session_transition_version": "positive_int64_or_null",
+        "worker_boot_id": "lowercase_uuidv4_or_null",
+        "worker_generation": "positive_int64_or_null",
+        "plan_id": "lowercase_uuidv4_or_null",
+        "operation_id": "lowercase_uuidv4_or_null",
+        "payload": "strict_object_with_method_specific_schema"
+      }
+    },
+    {
+      "kind": "cancel",
+      "direction": "guardian_to_host",
+      "property_order_after_common": [
+        "request_id",
+        "target_request_id",
+        "reason"
+      ],
+      "rules": {
+        "target_request_id": "original_request_in_same_host_generation",
+        "reason": ["caller_canceled", "deadline_expired", "guardian_shutdown"]
+      }
+    },
+    {
+      "kind": "event",
+      "direction": "host_to_guardian",
+      "property_order_after_common": [
+        "event_sequence",
+        "event_type",
+        "request_id",
+        "session_alias",
+        "session_transition_version",
+        "worker_boot_id",
+        "worker_generation",
+        "plan_id",
+        "operation_id",
+        "payload"
+      ],
+      "rules": {
+        "request_id": "positive_int64_or_null",
+        "correlation_fields": "nullable_but_all_present_and_valid_when_nonnull",
+        "payload": "strict_object_with_event_specific_schema"
+      }
+    },
+    {
+      "kind": "response",
+      "direction": "host_to_guardian",
+      "property_order_after_common": [
+        "request_id",
+        "status",
+        "payload",
+        "error"
+      ],
+      "rules": {
+        "request_id": "matches_one_live_request_in_same_host_generation",
+        "status": ["ok", "error"],
+        "payload": "strict_object_when_ok_else_null",
+        "error": "strict_error_object_when_error_else_null"
+      },
+      "error_property_order": ["detail_code", "message_code"]
+    },
+    {
+      "kind": "shutdown",
+      "direction": "guardian_to_host",
+      "property_order_after_common": [
+        "request_id",
+        "deadline_unix_time_milliseconds",
+        "reason"
+      ],
+      "rules": {
+        "reason": ["guardian_eof", "guardian_shutdown", "host_recycle"]
+      }
+    }
+  ],
+  "request_methods": [
+    {
+      "name": "manifest_header",
+      "direction": "guardian_to_host",
+      "allowed_before_ready": true,
+      "payload_property_order": [
+        "manifest_id",
+        "total_bytes",
+        "chunk_count",
+        "manifest_sha256",
+        "alias_count",
+        "template_count"
+      ],
+      "payload_rules": {
+        "manifest_id": "lowercase_uuidv4",
+        "total_bytes": "integer_1_to_25165824",
+        "chunk_count": "integer_1_to_48_and_exact_for_total_bytes",
+        "manifest_sha256": "64_lowercase_hex_of_exact_reassembled_raw_bytes",
+        "alias_count": "integer_1_to_128",
+        "template_count": "integer_0_to_128"
+      }
+    },
+    {
+      "name": "manifest_chunk",
+      "direction": "guardian_to_host",
+      "allowed_before_ready": true,
+      "payload_property_order": [
+        "manifest_id",
+        "chunk_index",
+        "offset",
+        "raw_bytes",
+        "raw_base64",
+        "raw_sha256"
+      ],
+      "payload_rules": {
+        "manifest_id": "matches_manifest_header",
+        "chunk_index": "zero_based_contiguous_integer_below_chunk_count",
+        "offset": "chunk_index_times_524288",
+        "raw_bytes": "524288_for_every_nonfinal_chunk_else_total_bytes_minus_offset",
+        "raw_base64": "canonical_rfc4648_padded_decoding_to_exactly_raw_bytes",
+        "raw_sha256": "64_lowercase_hex_of_exact_decoded_raw_bytes"
+      }
+    },
+    {
+      "name": "manifest_seal",
+      "direction": "guardian_to_host",
+      "allowed_before_ready": true,
+      "payload_property_order": [
+        "manifest_id",
+        "total_bytes",
+        "chunk_count",
+        "manifest_sha256"
+      ],
+      "payload_rules": {
+        "manifest_id": "matches_manifest_header",
+        "total_bytes": "matches_manifest_header_and_received_raw_bytes",
+        "chunk_count": "matches_manifest_header_and_received_chunks",
+        "manifest_sha256": "matches_header_and_exact_reassembled_raw_bytes"
+      }
+    },
+    {
+      "name": "operation",
+      "direction": "guardian_to_host",
+      "allowed_before_ready": false,
+      "payload_schema": "guardian-host-protocol.schema.json#/$defs/operation_request",
+      "operations": [
+        "invoke_foreground",
+        "invoke_background",
+        "job_list",
+        "job_status",
+        "job_output",
+        "job_kill",
+        "reset",
+        "session_open",
+        "session_close",
+        "session_restart"
+      ],
+      "guardian_local_public_operations": [
+        "ptk_output:read|search|status",
+        "ptk_state",
+        "ptk_session:list",
+        "ptk_job:status|output|list:sealed_or_tombstoned"
+      ]
+    },
+    {
+      "name": "worker_create_capability_grant",
+      "direction": "guardian_to_host",
+      "allowed_before_ready": false,
+      "payload_property_order": [
+        "source_event_sequence",
+        "token",
+        "worker_generation"
+      ],
+      "payload_rules": {
+        "source_event_sequence": "matches_one_unanswered_worker_create_capability_requested_event",
+        "token": "32_random_bytes_base64url_without_padding",
+        "worker_generation": "next_guardian_allocated_positive_int64_for_alias"
+      }
+    },
+    {
+      "name": "worker_containment_pending_ack",
+      "direction": "guardian_to_host",
+      "allowed_before_ready": false,
+      "payload_property_order": ["source_event_sequence"],
+      "payload_rules": {
+        "source_event_sequence": "matches_one_unanswered_worker_containment_pending_event"
+      }
+    },
+    {
+      "name": "worker_containment_armed_ack",
+      "direction": "guardian_to_host",
+      "allowed_before_ready": false,
+      "payload_property_order": ["source_event_sequence"],
+      "payload_rules": {
+        "source_event_sequence": "matches_one_unanswered_worker_containment_armed_event"
+      }
+    },
+    {
+      "name": "worker_containment_remove_ack",
+      "direction": "guardian_to_host",
+      "allowed_before_ready": false,
+      "payload_property_order": ["source_event_sequence"],
+      "payload_rules": {
+        "source_event_sequence": "matches_one_unanswered_worker_containment_remove_requested_event"
+      }
+    }
+  ],
+  "host_control_events": [
+    {
+      "name": "worker_create_capability_requested",
+      "direction": "host_to_guardian",
+      "payload_property_order": [
+        "binding_digest",
+        "startup_deadline_unix_time_milliseconds"
+      ],
+      "payload_rules": {
+        "binding_digest": "64_lowercase_hex_matching_frozen_binding",
+        "startup_deadline_unix_time_milliseconds": "positive_int64"
+      },
+      "envelope_nonnull": ["session_alias", "session_transition_version"],
+      "envelope_null": ["worker_boot_id", "worker_generation", "plan_id", "operation_id"]
+    },
+    {
+      "name": "worker_containment_pending",
+      "direction": "host_to_guardian",
+      "payload_property_order": [
+        "broker_pid",
+        "broker_start_identity_high",
+        "broker_start_identity_low",
+        "worker_pid",
+        "worker_start_identity_high",
+        "worker_start_identity_low",
+        "intended_pgid"
+      ],
+      "payload_rules": {
+        "broker_pid": "positive_uint32",
+        "broker_start_identity_high": "uint64",
+        "broker_start_identity_low": "uint64",
+        "worker_pid": "positive_uint32",
+        "worker_start_identity_high": "uint64",
+        "worker_start_identity_low": "uint64",
+        "intended_pgid": "positive_uint32_equal_to_worker_pid"
+      },
+      "envelope_nonnull": [
+        "session_alias",
+        "session_transition_version",
+        "worker_boot_id",
+        "worker_generation"
+      ],
+      "envelope_null": ["plan_id", "operation_id"]
+    },
+    {
+      "name": "worker_containment_armed",
+      "direction": "host_to_guardian",
+      "payload_property_order": [
+        "broker_pid",
+        "broker_start_identity_high",
+        "broker_start_identity_low",
+        "worker_pid",
+        "worker_start_identity_high",
+        "worker_start_identity_low",
+        "pgid"
+      ],
+      "payload_rules": {
+        "broker_pid": "positive_uint32",
+        "broker_start_identity_high": "uint64",
+        "broker_start_identity_low": "uint64",
+        "worker_pid": "positive_uint32",
+        "worker_start_identity_high": "uint64",
+        "worker_start_identity_low": "uint64",
+        "pgid": "positive_uint32_equal_to_worker_pid"
+      },
+      "envelope_nonnull": [
+        "session_alias",
+        "session_transition_version",
+        "worker_boot_id",
+        "worker_generation"
+      ],
+      "envelope_null": ["plan_id", "operation_id"]
+    },
+    {
+      "name": "worker_containment_remove_requested",
+      "direction": "host_to_guardian",
+      "payload_property_order": [
+        "broker_pid",
+        "broker_start_identity_high",
+        "broker_start_identity_low",
+        "worker_pid",
+        "worker_start_identity_high",
+        "worker_start_identity_low",
+        "pgid"
+      ],
+      "payload_rules": {
+        "broker_pid": "positive_uint32",
+        "broker_start_identity_high": "uint64",
+        "broker_start_identity_low": "uint64",
+        "worker_pid": "positive_uint32",
+        "worker_start_identity_high": "uint64",
+        "worker_start_identity_low": "uint64",
+        "pgid": "positive_uint32_equal_to_worker_pid"
+      },
+      "envelope_nonnull": [
+        "session_alias",
+        "session_transition_version",
+        "worker_boot_id",
+        "worker_generation"
+      ],
+      "envelope_null": ["plan_id", "operation_id"]
+    }
+  ],
+  "host_operational_events": [
+    "operation_delivery",
+    "session_lifecycle",
+    "worker_lost",
+    "worker_diagnostic_chunk",
+    "worker_diagnostic_truncated",
+    "job_lifecycle",
+    "output_chunk",
+    "output_seal"
+  ],
+  "operation_delivery_states": [
+    "not_dispatched",
+    "write_started",
+    "terminal_decoded"
+  ],
+  "response_payloads": [
+    "manifest_header_accepted",
+    "manifest_chunk_accepted",
+    "manifest_sealed",
+    "operation_completed",
+    "control_acknowledged",
+    "shutdown_accepted"
+  ],
+  "response_payload_schema": "guardian-host-protocol.schema.json#/$defs/response_payload",
+  "private_error_schema": "guardian-host-protocol.schema.json#/$defs/private_error",
+  "event_request_correlation": {
+    "source_event_sequence": "positive_host_event_sequence_in_same_host_generation",
+    "one_guardian_request_per_source_event": true,
+    "request_response_id_domain": "guardian_originated_only",
+    "response_request_id": "matches_the_guardian_request_id",
+    "pairs": [
+      {
+        "event": "worker_create_capability_requested",
+        "request": "worker_create_capability_grant"
+      },
+      {
+        "event": "worker_containment_pending",
+        "request": "worker_containment_pending_ack"
+      },
+      {
+        "event": "worker_containment_armed",
+        "request": "worker_containment_armed_ack"
+      },
+      {
+        "event": "worker_containment_remove_requested",
+        "request": "worker_containment_remove_ack"
+      }
+    ]
+  },
+  "manifest_transfer": {
+    "schema_version": "ptk.recovery-manifest/1",
+    "machine_schema": "recovery-manifest.schema.json",
+    "maximum_total_raw_bytes": 25165824,
+    "maximum_chunk_raw_bytes": 524288,
+    "maximum_chunks": 48,
+    "maximum_aliases": 128,
+    "maximum_templates": 128,
+    "chunk_encoding": "base64_rfc4648_with_padding",
+    "chunk_offsets": "zero_based_contiguous_no_overlap_no_gap",
+    "chunk_hash": "sha256_exact_raw_chunk",
+    "manifest_hash": "sha256_exact_reassembled_raw_manifest",
+    "commit": "manifest_seal_response_ok_then_ready",
+    "document_property_order": [
+      "schema_version",
+      "guardian_boot_id",
+      "host_generation",
+      "catalog_digest",
+      "configuration_sha256",
+      "templates",
+      "bindings",
+      "worker_generation_high_watermarks",
+      "host_generation_high_watermark"
+    ],
+    "template_property_order": [
+      "name",
+      "description",
+      "startup_timeout_seconds",
+      "declared_target",
+      "declared_identity",
+      "allow_cold_background",
+      "template_digest",
+      "bootstrap_digest",
+      "bootstrap_raw_base64"
+    ],
+    "binding_property_order": [
+      "alias",
+      "binding_kind",
+      "template_name",
+      "template_digest",
+      "bootstrap_digest",
+      "allow_cold_background",
+      "desired_state",
+      "transition_version",
+      "binding_digest"
+    ],
+    "worker_generation_high_watermark_property_order": [
+      "alias",
+      "generation"
+    ]
+  },
+  "worker_create_capability": {
+    "property_order": [
+      "token",
+      "guardian_boot_id",
+      "host_boot_id",
+      "host_generation",
+      "alias",
+      "alias_transition_version",
+      "worker_generation",
+      "binding_digest",
+      "startup_deadline_unix_time_milliseconds"
+    ],
+    "token": "32_random_bytes_base64url_without_padding",
+    "single_use": true,
+    "presentation_after_expiry": "proved_no_process_start"
+  },
+  "containment_identity": {
+    "property_order": [
+      "broker_pid",
+      "broker_start_identity_high",
+      "broker_start_identity_low",
+      "worker_pid",
+      "worker_start_identity_high",
+      "worker_start_identity_low",
+      "intended_pgid"
+    ],
+    "linux_start_identity": "high_zero_low_proc_stat_starttime_ticks",
+    "darwin_start_identity": "high_start_seconds_low_start_microseconds",
+    "intended_pgid": "equals_worker_pid"
+  },
+  "late_frame_validation_dimensions": [
+    "guardian_boot_id",
+    "host_boot_id",
+    "host_generation",
+    "request_id",
+    "session_transition_version",
+    "worker_boot_id",
+    "worker_generation",
+    "plan_id",
+    "operation_id"
+  ]
+}

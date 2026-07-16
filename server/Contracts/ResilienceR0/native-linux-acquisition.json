@@ -1,0 +1,113 @@
+{
+  "schema_version": "ptk.native-linux-acquisition/1",
+  "claim": "exact_revision_and_sha256_online_acquisition_from_mutable_signed_repository",
+  "base_image": {
+    "reference": "docker.io/library/alpine:3.21.3",
+    "oci_index_digest": "sha256:a8560b36e8b8210634f77d9f7f9efd7ffa463e380b75e2e74aff4511df3ef88c",
+    "oci_index_size": 9218,
+    "platforms": {
+      "linux-x64": {
+        "oci_architecture": "amd64",
+        "apk_architecture": "x86_64",
+        "manifest_digest": "sha256:1c4eef651f65e2f7daee7ee785882ac164b02b78fb74503052a26dc061c90474",
+        "manifest_size": 1022,
+        "config_digest": "sha256:aded1e1a5b3705116fa0a92ba074a5e0b0031647d9c315983ccba2ee5428ec8b",
+        "config_size": 581,
+        "layer_digest": "sha256:f18232174bc91741fdf3da96d85011092101a032a93a388b79e99e69c2d5c870",
+        "layer_size": 3642247,
+        "layer_diff_id": "sha256:08000c18d16dadf9553d747a58cf44023423a9ab010aab96cf263d2216b8b350"
+      },
+      "linux-arm64": {
+        "oci_architecture": "arm64",
+        "apk_architecture": "aarch64",
+        "manifest_digest": "sha256:757d680068d77be46fd1ea20fb21db16f150468c5e7079a08a2e4705aec096ac",
+        "manifest_size": 1025,
+        "config_digest": "sha256:8d591b0b7dea080ea3be9e12ae563eebf9869168ffced1cb25b2470a3d9fe15e",
+        "config_size": 597,
+        "layer_digest": "sha256:6e771e15690e2fabf2332d3a3b744495411d6e0b00b2aea64419b58b0066cf81",
+        "layer_size": 3993029,
+        "layer_diff_id": "sha256:a16e98724c05975ee8c40d8fe389c3481373d34ab20a1cf52ea2accc43f71f4c"
+      }
+    },
+    "installed_packages": [
+      "alpine-baselayout=3.6.8-r1",
+      "alpine-baselayout-data=3.6.8-r1",
+      "alpine-keys=2.5-r0",
+      "alpine-release=3.21.3-r0",
+      "apk-tools=2.14.6-r3",
+      "busybox=1.37.0-r12",
+      "busybox-binsh=1.37.0-r12",
+      "ca-certificates-bundle=20241121-r1",
+      "libcrypto3=3.3.3-r0",
+      "libssl3=3.3.3-r0",
+      "musl=1.2.5-r9",
+      "musl-utils=1.2.5-r9",
+      "scanelf=1.3.8-r1",
+      "ssl_client=1.37.0-r12",
+      "zlib=1.3.1-r2"
+    ]
+  },
+  "apk_provenance": {
+    "release_branch": "v3.21",
+    "repository": "main",
+    "source_url_template": "https://dl-cdn.alpinelinux.org/alpine/v3.21/main/{apk_architecture}/{filename}",
+    "repository_is_immutable": false,
+    "signed_apkindex_evidence": {
+      "x86_64": {
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.21/main/x86_64/APKINDEX.tar.gz",
+        "raw_apkindex_sha256": "71b7c3d99f48d54863ca7ea16782e871b621dc3fc4657d5f5f9f2eeee3d456c9",
+        "raw_apkindex_bytes": 487248,
+        "last_modified_utc": "2026-07-15T16:15:31Z",
+        "signing_key": "alpine-devel@lists.alpinelinux.org-6165ee59.rsa.pub",
+        "signing_key_sha256": "207e4696d3c05f7cb05966aee557307151f1f00217af4143c1bcaf33b8df733f",
+        "signature_verified": true
+      },
+      "aarch64": {
+        "url": "https://dl-cdn.alpinelinux.org/alpine/v3.21/main/aarch64/APKINDEX.tar.gz",
+        "raw_apkindex_sha256": "36959f6c976f7c81f6a3ea643190a88d34e842de197edbde06db486e798cd263",
+        "raw_apkindex_bytes": 487920,
+        "last_modified_utc": "2026-07-15T05:23:39Z",
+        "signing_key": "alpine-devel@lists.alpinelinux.org-616ae350.rsa.pub",
+        "signing_key_sha256": "d11f6b21c61b4274e182eb888883a8ba8acdbf820dcc7a6d82a7d9fc2fd2836d",
+        "signature_verified": true
+      }
+    }
+  },
+  "overlay_packages": [
+    { "name": "binutils", "version": "2.43.1-r3", "filename": "binutils-2.43.1-r3.apk", "x86_64": { "bytes": 3190603, "sha256": "eb1ae53b03b13c8e1ba7a97c23b7b64ef27c71080b9da5a21e7365188f48d361" }, "aarch64": { "bytes": 3314139, "sha256": "38be9d348884643c4e8dcd96e4f84180989fc8fc871c0dc4916049a5b5f5ea23" } },
+    { "name": "gcc", "version": "14.2.0-r4", "filename": "gcc-14.2.0-r4.apk", "x86_64": { "bytes": 53056269, "sha256": "6727367ddd0c58203ac4e9b96a30d371e92da64c4b0f7b1b2afbd512c80a61be" }, "aarch64": { "bytes": 50042603, "sha256": "f9fa19072d1f1a4f72631f3fd090a85a48b95fa08b2062630ea96813275e130f" } },
+    { "name": "gmp", "version": "6.3.0-r2", "filename": "gmp-6.3.0-r2.apk", "x86_64": { "bytes": 221446, "sha256": "4b2790276c2a652883302a4f43712f18a666bfa50edccd95b71ae5d5b9520591" }, "aarch64": { "bytes": 223151, "sha256": "4d447fa0868e4f88671da15bc39955c1d5caa0a13dc257a77f7b13c23e48f3ce" } },
+    { "name": "isl26", "version": "0.26-r1", "filename": "isl26-0.26-r1.apk", "x86_64": { "bytes": 885904, "sha256": "fad45095620e08c1410260cfef6723cc318dc9e554821cced49d263a9d1b4064" }, "aarch64": { "bytes": 859502, "sha256": "faf2077330d808b5f7d5ebfcff6164364f886ebe25fe14510f0dbedc3476f02b" } },
+    { "name": "jansson", "version": "2.14-r4", "filename": "jansson-2.14-r4.apk", "x86_64": { "bytes": 24902, "sha256": "ccfcfbe5940220c2224c1d5b4ee282994ebf1419af6455041fa850413e58632d" }, "aarch64": { "bytes": 26018, "sha256": "ed1a63e5cd4f89403272bd145e085acd631cf84d09944e81a7add95883f9e301" } },
+    { "name": "libatomic", "version": "14.2.0-r4", "filename": "libatomic-14.2.0-r4.apk", "x86_64": { "bytes": 10130, "sha256": "888fc0cd460a584258cbec9a9d5cdea31060a23f18cdc9c75ff0fb9d35ff7fc5" }, "aarch64": { "bytes": 10265, "sha256": "8afbb130d4b3499cbf07540ee20f5f0f163951c8fffa04e9a0e495d775c77aa0" } },
+    { "name": "libgcc", "version": "14.2.0-r4", "filename": "libgcc-14.2.0-r4.apk", "x86_64": { "bytes": 81487, "sha256": "8675867db77b5af11b88fd19186450333202d94cccd84a76a066dccd5b6e8cf1" }, "aarch64": { "bytes": 66943, "sha256": "7cfdc00f102d3b98fe563b31e7a59a7b7ab61850c1751915f34e419e83ef2653" } },
+    { "name": "libgomp", "version": "14.2.0-r4", "filename": "libgomp-14.2.0-r4.apk", "x86_64": { "bytes": 149473, "sha256": "86720fd442c4e48964d169769ad904fe3fc895b728767a9f2f79f2fb86bd3acb" }, "aarch64": { "bytes": 144977, "sha256": "d03f9901b5f262581d27c4f2ded5fe07d91e8857911020a6cce20c2dd2240532" } },
+    { "name": "libstdc++", "version": "14.2.0-r4", "filename": "libstdc++-14.2.0-r4.apk", "x86_64": { "bytes": 942494, "sha256": "5899f66390aba2ac908f0912fc62a49775830f523fa38fab406c1761821dfb07" }, "aarch64": { "bytes": 906144, "sha256": "93dded5af4e42ca59a2e981ffc5acc59c5d7110cec4adaeb15b84dc224526b63" } },
+    { "name": "make", "version": "4.4.1-r2", "filename": "make-4.4.1-r2.apk", "x86_64": { "bytes": 117686, "sha256": "a61bf1442fa3cdee6ea7188e28673dba7b36bf2f469ccaa6b119cb95c3338b43" }, "aarch64": { "bytes": 118317, "sha256": "913e44c7813fe70493cd96b293d2de6624bbc15f6cc7e6452fc50920ed04d797" } },
+    { "name": "mpc1", "version": "1.3.1-r1", "filename": "mpc1-1.3.1-r1.apk", "x86_64": { "bytes": 48515, "sha256": "a63431b3ae86d2b376d7b3a48bf3ead220983cf1d172b3339cfc899dbfdc6d2a" }, "aarch64": { "bytes": 53916, "sha256": "7f1597ae8ec8c4e2caa8eb5fbb26ff6914b03b7615f8db297c7908545027657f" } },
+    { "name": "mpfr4", "version": "4.2.1-r0", "filename": "mpfr4-4.2.1-r0.apk", "x86_64": { "bytes": 315230, "sha256": "2493390b05fcaed445ca4fdbf3508422cd9a0af5b7051c6a63a832a65b549ff2" }, "aarch64": { "bytes": 297580, "sha256": "9297f4c0bd68795a163411011bafb8b678f00ee16b82c07a141466cc25ddca96" } },
+    { "name": "musl", "version": "1.2.5-r11", "filename": "musl-1.2.5-r11.apk", "x86_64": { "bytes": 412204, "sha256": "61e84757a8bfbc0d7fa8f4ce6de9cd4d791714369d78f6a08e5b03510fb2a623" }, "aarch64": { "bytes": 417982, "sha256": "721010e6bff908878d9c527428598661be59dde0d9f013f8431d01fd4dd16652" } },
+    { "name": "musl-dev", "version": "1.2.5-r11", "filename": "musl-dev-1.2.5-r11.apk", "x86_64": { "bytes": 3428687, "sha256": "d3b5ab01046a92b9a168b790f516606e320f015cbd4deeb584c5e115a02124ba" }, "aarch64": { "bytes": 2556596, "sha256": "9c4ebdc7e2a29f12de5135cee8f1b92439bfff7c74839b4fb7b422680cf18db4" } },
+    { "name": "zstd-libs", "version": "1.5.6-r2", "filename": "zstd-libs-1.5.6-r2.apk", "x86_64": { "bytes": 375122, "sha256": "45a06bfc107f44502b7e0503fcd5c8d2d2e6cff255134ed959275eb99caf9979" }, "aarch64": { "bytes": 357295, "sha256": "2a15740cf272bf3babb438b675f0f894da0b4fa07b42dd86d0d07aee69378251" } }
+  ],
+  "closure_verification": {
+    "overlay_package_count_per_architecture": 15,
+    "x86_64_total_bytes": 63260152,
+    "aarch64_total_bytes": 59395428,
+    "combined_total_bytes": 122655580,
+    "package_signatures_verified": 30,
+    "signed_index_checksums_verified": 30,
+    "dependency_closure_verified_against_base_and_overlay": true,
+    "provider_choice": "isl26=0.26-r1 supplies so:libisl.so.23",
+    "base_provider": "zlib=1.3.1-r2 supplies so:libz.so.1"
+  },
+  "offline_rebuild": {
+    "bundle_materialized_in_repository": false,
+    "network_free_reproducibility_claim": false,
+    "required_preservation": "two complete platform OCI archives, all 30 APK files, and signed APKINDEX evidence",
+    "claim_after_preservation": "network_free_after_verified_bundle_materialization",
+    "verify_command": "apk --no-network verify /opt/ptk-toolchain/apks/*.apk",
+    "install_command": "apk --no-network --no-cache --repositories-file /dev/null add /opt/ptk-toolchain/apks/*.apk",
+    "release_guard": "build each native architecture with networking disabled, compile, and verify ELF static PIE"
+  }
+}

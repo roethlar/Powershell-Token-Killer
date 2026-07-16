@@ -1,0 +1,47 @@
+{
+  "location": "eastus",
+  "kind": "Direct",
+  "properties": {
+    "streamDeclarations": {
+      "Custom-PtkAudit": {
+        "columns": [
+          { "name": "TimeGenerated", "type": "datetime" },
+          { "name": "ObservedUtc", "type": "datetime" },
+          { "name": "RawEvent", "type": "string" },
+          { "name": "EventId", "type": "string" },
+          { "name": "EventType", "type": "string" },
+          { "name": "SchemaVersion", "type": "string" },
+          { "name": "EventHash", "type": "string" },
+          { "name": "PreviousEventHash", "type": "string" },
+          { "name": "SupervisorBootId", "type": "string" },
+          { "name": "HostBootId", "type": "string" },
+          { "name": "HostGeneration", "type": "long" },
+          { "name": "HostState", "type": "string" },
+          { "name": "HostRecoveryAttempt", "type": "long" },
+          { "name": "SessionName", "type": "string" },
+          { "name": "SessionGeneration", "type": "long" },
+          { "name": "OutcomeState", "type": "string" },
+          { "name": "OutcomeDetailCode", "type": "string" },
+          { "name": "TerminationCertainty", "type": "string" },
+          { "name": "Sequence", "type": "long" }
+        ]
+      }
+    },
+    "destinations": {
+      "logAnalytics": [
+        {
+          "workspaceResourceId": "/subscriptions/00000000-0000-4000-8000-000000000000/resourceGroups/ptk/providers/Microsoft.OperationalInsights/workspaces/ptk",
+          "name": "ptk-log-analytics"
+        }
+      ]
+    },
+    "dataFlows": [
+      {
+        "streams": ["Custom-PtkAudit"],
+        "destinations": ["ptk-log-analytics"],
+        "transformKql": "source",
+        "outputStream": "Custom-PtkAudit_CL"
+      }
+    ]
+  }
+}

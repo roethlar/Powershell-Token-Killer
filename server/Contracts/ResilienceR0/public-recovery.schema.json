@@ -1,0 +1,194 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://powershell-token-killer.invalid/schemas/ptk-public-recovery-1.json",
+  "title": "PTK public recovery refusal",
+  "type": "object",
+  "x-ptk-maximum-compact-utf8-bytes": 4096,
+  "x-ptk-property-order": [
+    "detail_code",
+    "retryable",
+    "retry_after_ms",
+    "recovery_phase",
+    "recovery_attempt",
+    "retry_gate"
+  ],
+  "properties": {
+    "detail_code": { "$ref": "#/$defs/detail_code" },
+    "retryable": { "type": "boolean" },
+    "retry_after_ms": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "integer", "minimum": 250, "maximum": 60000 }
+      ]
+    },
+    "recovery_phase": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/recovery_phase" }
+      ]
+    },
+    "recovery_attempt": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 }
+      ]
+    },
+    "retry_gate": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "#/$defs/host_ready_gate" },
+        { "$ref": "#/$defs/session_ready_gate" }
+      ]
+    }
+  },
+  "required": [
+    "detail_code",
+    "retryable",
+    "retry_after_ms",
+    "recovery_phase",
+    "recovery_attempt",
+    "retry_gate"
+  ],
+  "additionalProperties": false,
+  "oneOf": [
+    {
+      "properties": {
+        "detail_code": {
+          "enum": [
+            "backend_lost_before_dispatch",
+            "host_circuit_open",
+            "host_recovering",
+            "session_recovering"
+          ]
+        },
+        "retryable": { "const": true },
+        "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+        "recovery_phase": { "$ref": "#/$defs/recovery_phase" },
+        "recovery_attempt": {
+          "type": "integer",
+          "minimum": 1,
+          "maximum": 9223372036854775807
+        },
+        "retry_gate": {
+          "oneOf": [
+            { "$ref": "#/$defs/host_ready_gate" },
+            { "$ref": "#/$defs/session_ready_gate" }
+          ]
+        }
+      }
+    },
+    {
+      "properties": {
+        "detail_code": {
+          "enum": [
+            "host_containment_unconfirmed",
+            "host_contract_mismatch",
+            "host_start_failed",
+            "outcome_unknown",
+            "session_bootstrap_failed",
+            "session_recovery_unknown"
+          ]
+        },
+        "retryable": { "const": false },
+        "retry_after_ms": { "type": "null" },
+        "recovery_phase": { "type": "null" },
+        "recovery_attempt": { "type": "null" },
+        "retry_gate": { "type": "null" }
+      }
+    }
+  ],
+  "allOf": [
+    {
+      "if": {
+        "properties": { "detail_code": { "const": "session_recovering" } },
+        "required": ["detail_code"]
+      },
+      "then": {
+        "properties": {
+          "retry_gate": { "$ref": "#/$defs/session_ready_gate" }
+        }
+      }
+    }
+  ],
+  "x-ptk-detail-code-contract": {
+    "backend_lost_before_dispatch": {
+      "retryable": true,
+      "allowed_gate_kinds": ["host_ready", "session_ready"]
+    },
+    "host_circuit_open": {
+      "retryable": true,
+      "allowed_gate_kinds": ["host_ready", "session_ready"]
+    },
+    "host_recovering": {
+      "retryable": true,
+      "allowed_gate_kinds": ["host_ready", "session_ready"]
+    },
+    "session_recovering": {
+      "retryable": true,
+      "allowed_gate_kinds": ["session_ready"]
+    },
+    "host_containment_unconfirmed": { "retryable": false },
+    "host_contract_mismatch": { "retryable": false },
+    "host_start_failed": { "retryable": false },
+    "outcome_unknown": { "retryable": false },
+    "session_bootstrap_failed": { "retryable": false },
+    "session_recovery_unknown": { "retryable": false }
+  },
+  "x-ptk-operation-gate-map": {
+    "ptk_invoke": "session_ready:selected_alias",
+    "ptk_job:live_status": "session_ready:selected_alias",
+    "ptk_job:live_output": "session_ready:selected_alias",
+    "ptk_job:live_kill": "session_ready:selected_alias",
+    "ptk_job:live_list": "session_ready:selected_alias",
+    "ptk_reset": "host_ready",
+    "ptk_session:open": "host_ready",
+    "ptk_session:close": "host_ready",
+    "ptk_session:restart": "host_ready"
+  },
+  "$defs": {
+    "detail_code": {
+      "enum": [
+        "backend_lost_before_dispatch",
+        "host_circuit_open",
+        "host_containment_unconfirmed",
+        "host_contract_mismatch",
+        "host_recovering",
+        "host_start_failed",
+        "outcome_unknown",
+        "session_bootstrap_failed",
+        "session_recovering",
+        "session_recovery_unknown"
+      ]
+    },
+    "recovery_phase": {
+      "enum": [
+        "attempting",
+        "backoff",
+        "bootstrap",
+        "circuit_open",
+        "containment",
+        "half_open"
+      ]
+    },
+    "host_ready_gate": {
+      "type": "object",
+      "x-ptk-property-order": ["kind"],
+      "properties": { "kind": { "const": "host_ready" } },
+      "required": ["kind"],
+      "additionalProperties": false
+    },
+    "session_ready_gate": {
+      "type": "object",
+      "x-ptk-property-order": ["kind", "alias"],
+      "properties": {
+        "kind": { "const": "session_ready" },
+        "alias": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        }
+      },
+      "required": ["kind", "alias"],
+      "additionalProperties": false
+    }
+  }
+}

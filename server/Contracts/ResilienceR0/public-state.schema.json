@@ -1,0 +1,362 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://powershell-token-killer.invalid/schemas/ptk-public-state-1.json",
+  "title": "PTK normalized public resilience state",
+  "type": "object",
+  "x-ptk-property-order": ["schema_version", "guardian_boot_id", "host", "sessions"],
+  "properties": {
+    "schema_version": { "const": "ptk.public-state/1" },
+    "guardian_boot_id": { "$ref": "#/$defs/uuidv4" },
+    "host": { "$ref": "#/$defs/host" },
+    "sessions": {
+      "type": "array",
+      "maxItems": 128,
+      "x-ptk-order": "alias_ordinal_utf8",
+      "items": { "$ref": "#/$defs/session" }
+    }
+  },
+  "required": ["schema_version", "guardian_boot_id", "host", "sessions"],
+  "additionalProperties": false,
+  "$defs": {
+    "uuidv4": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "nullable_uuidv4": {
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/uuidv4" }]
+    },
+    "nullable_positive_int64": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "integer", "minimum": 1, "maximum": 9223372036854775807 }
+      ]
+    },
+    "nullable_failure_code": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "https://powershell-token-killer.invalid/schemas/ptk-public-recovery-1.json#/$defs/detail_code" }
+      ]
+    },
+    "recovery_phase": {
+      "oneOf": [
+        { "type": "null" },
+        { "$ref": "https://powershell-token-killer.invalid/schemas/ptk-public-recovery-1.json#/$defs/recovery_phase" }
+      ]
+    },
+    "retry_after_ms": {
+      "oneOf": [
+        { "type": "null" },
+        { "type": "integer", "minimum": 250, "maximum": 60000 }
+      ]
+    },
+    "host": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "boot_id",
+        "generation",
+        "state",
+        "recovery_phase",
+        "recovery_attempt",
+        "retry_after_ms",
+        "ready_for_effects",
+        "last_failure_code"
+      ],
+      "properties": {
+        "boot_id": { "$ref": "#/$defs/nullable_uuidv4" },
+        "generation": { "$ref": "#/$defs/nullable_positive_int64" },
+        "state": {
+          "enum": [
+            "absent",
+            "backoff",
+            "circuit_open",
+            "containment_unconfirmed",
+            "half_open",
+            "ready",
+            "recovering",
+            "starting",
+            "stopped"
+          ]
+        },
+        "recovery_phase": { "$ref": "#/$defs/recovery_phase" },
+        "recovery_attempt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "retry_after_ms": { "$ref": "#/$defs/retry_after_ms" },
+        "ready_for_effects": { "type": "boolean" },
+        "last_failure_code": { "$ref": "#/$defs/nullable_failure_code" }
+      },
+      "required": [
+        "boot_id",
+        "generation",
+        "state",
+        "recovery_phase",
+        "recovery_attempt",
+        "retry_after_ms",
+        "ready_for_effects",
+        "last_failure_code"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "boot_id": { "type": "null" },
+                "generation": { "type": "null" }
+              }
+            },
+            {
+              "properties": {
+                "boot_id": { "$ref": "#/$defs/uuidv4" },
+                "generation": { "type": "integer", "minimum": 1 }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "state": { "enum": ["absent", "containment_unconfirmed", "stopped"] },
+                "recovery_phase": { "type": "null" },
+                "retry_after_ms": { "type": "null" },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "starting" },
+                "recovery_phase": { "type": "null" },
+                "recovery_attempt": { "const": 0 },
+                "retry_after_ms": { "type": "null" },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "starting" },
+                "recovery_phase": { "const": "attempting" },
+                "recovery_attempt": { "type": "integer", "minimum": 1 },
+                "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "ready" },
+                "recovery_phase": { "type": "null" },
+                "retry_after_ms": { "type": "null" },
+                "ready_for_effects": { "const": true }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "recovering" },
+                "recovery_phase": { "enum": ["containment", "attempting", "bootstrap"] },
+                "recovery_attempt": { "type": "integer", "minimum": 1 },
+                "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "backoff" },
+                "recovery_phase": { "const": "backoff" },
+                "recovery_attempt": { "type": "integer", "minimum": 1 },
+                "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "circuit_open" },
+                "recovery_phase": { "const": "circuit_open" },
+                "recovery_attempt": { "type": "integer", "minimum": 1 },
+                "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "half_open" },
+                "recovery_phase": { "const": "half_open" },
+                "recovery_attempt": { "type": "integer", "minimum": 1 },
+                "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+                "ready_for_effects": { "const": false }
+              }
+            }
+          ]
+        }
+      ]
+    },
+    "session": {
+      "type": "object",
+      "x-ptk-property-order": [
+        "alias",
+        "desired_state",
+        "state",
+        "worker_boot_id",
+        "generation",
+        "transition_version",
+        "recovery_phase",
+        "recovery_attempt",
+        "retry_after_ms",
+        "ready_for_effects",
+        "last_failure_code",
+        "warm_state_lost",
+        "bootstrap_state"
+      ],
+      "properties": {
+        "alias": {
+          "type": "string",
+          "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+        },
+        "desired_state": { "enum": ["cold", "ready"] },
+        "state": {
+          "enum": [
+            "cold",
+            "starting",
+            "ready",
+            "resetting",
+            "closing",
+            "faulted",
+            "lost",
+            "quarantined",
+            "recovering",
+            "backoff",
+            "bootstrapping",
+            "circuit_open",
+            "half_open",
+            "recovery_unknown"
+          ]
+        },
+        "worker_boot_id": { "$ref": "#/$defs/nullable_uuidv4" },
+        "generation": { "$ref": "#/$defs/nullable_positive_int64" },
+        "transition_version": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "recovery_phase": { "$ref": "#/$defs/recovery_phase" },
+        "recovery_attempt": {
+          "type": "integer",
+          "minimum": 0,
+          "maximum": 9223372036854775807
+        },
+        "retry_after_ms": { "$ref": "#/$defs/retry_after_ms" },
+        "ready_for_effects": { "type": "boolean" },
+        "last_failure_code": { "$ref": "#/$defs/nullable_failure_code" },
+        "warm_state_lost": { "type": "boolean" },
+        "bootstrap_state": {
+          "enum": ["not_applicable", "pending", "restored", "failed", "unknown"]
+        }
+      },
+      "required": [
+        "alias",
+        "desired_state",
+        "state",
+        "worker_boot_id",
+        "generation",
+        "transition_version",
+        "recovery_phase",
+        "recovery_attempt",
+        "retry_after_ms",
+        "ready_for_effects",
+        "last_failure_code",
+        "warm_state_lost",
+        "bootstrap_state"
+      ],
+      "additionalProperties": false,
+      "allOf": [
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "worker_boot_id": { "type": "null" },
+                "generation": { "type": "null" }
+              }
+            },
+            {
+              "properties": {
+                "worker_boot_id": { "$ref": "#/$defs/uuidv4" },
+                "generation": { "type": "integer", "minimum": 1 }
+              }
+            }
+          ]
+        },
+        {
+          "oneOf": [
+            {
+              "properties": {
+                "state": {
+                  "enum": [
+                    "cold", "starting", "resetting", "closing", "faulted", "lost",
+                    "quarantined", "recovery_unknown"
+                  ]
+                },
+                "recovery_phase": { "type": "null" },
+                "retry_after_ms": { "type": "null" },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "ready" },
+                "recovery_phase": { "type": "null" },
+                "retry_after_ms": { "type": "null" },
+                "ready_for_effects": { "const": true }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "recovering" },
+                "recovery_phase": { "enum": ["containment", "attempting"] },
+                "recovery_attempt": { "type": "integer", "minimum": 1 },
+                "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "backoff" },
+                "recovery_phase": { "const": "backoff" },
+                "recovery_attempt": { "type": "integer", "minimum": 1 },
+                "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "bootstrapping" },
+                "recovery_phase": { "const": "bootstrap" },
+                "recovery_attempt": { "type": "integer", "minimum": 1 },
+                "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "circuit_open" },
+                "recovery_phase": { "const": "circuit_open" },
+                "recovery_attempt": { "type": "integer", "minimum": 1 },
+                "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+                "ready_for_effects": { "const": false }
+              }
+            },
+            {
+              "properties": {
+                "state": { "const": "half_open" },
+                "recovery_phase": { "const": "half_open" },
+                "recovery_attempt": { "type": "integer", "minimum": 1 },
+                "retry_after_ms": { "type": "integer", "minimum": 250, "maximum": 60000 },
+                "ready_for_effects": { "const": false }
+              }
+            }
+          ]
+        }
+      ]
+    }
+  }
+}

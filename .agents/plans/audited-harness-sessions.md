@@ -248,6 +248,18 @@ armed. Broker and child perform the race-safe `setpgid` checks only after the
 supervisor admits the gated identities; the broker retains reaper parentage
 and places no user code before the gate.
 
+The exact native build baseline is frozen in
+`server/Contracts/ResilienceR0/contract.json`: C17 plus its closed warning/
+hardening flag set; native `linux-x64` and `linux-arm64` static-PIE builds from
+the approved Alpine 3.21.3 OCI index and exact package revisions. The R0
+contract claims online acquisition from Alpine's mutable signed repository,
+not a durable network-free rebuild; a release may claim the latter only after
+preserving both platform OCI images and the verified APK bundle. Exact OCI,
+APKINDEX, package-revision, size, and SHA-256 evidence lives in
+`server/Contracts/ResilienceR0/native-linux-acquisition.json`. Native
+`osx-arm64` built with Xcode 16.4/Apple Clang 17, SDK 15.5, deployment target
+15.0, a verified Mach-O minimum, and only `libSystem` dynamically linked.
+
 The final resilience topology does not change this per-worker parentage: each
 worker broker remains a child of the private host. Its separate Unix
 `PtkGuardianBroker` is parent/reaper only for that host and owns the host's
@@ -273,14 +285,17 @@ Unix worker itself.
 The broker contract is fixed and contains no user/script data:
 
 - Resolve `PtkContainmentBroker` from the published server's sibling directory,
-  never PATH. A generated sibling
-  `ptk-containment-broker.manifest.json` contains exactly
-  `schemaVersion:1`, `protocolVersion:2`, runtime `rid`, `fileName`, and
-  lowercase SHA-256. Require the current RID, exact digest, a nonsymlink
-  regular executable owned by the effective UID, and no group/world write
-  bits before launch. A development/test override requires both an absolute
-  path and explicit expected SHA-256. "Authenticate" below means this package
-  identity/drift check, not resistance to a hostile same-user process.
+  never PATH. The sole binary identity authority is the matched package's
+  `bin/ptk-package-manifest.json`, frozen by
+  `server/Contracts/ResilienceR0/package-manifest.schema.json`; its current-RID
+  `containment_helper` entry supplies the exact relative path, byte length,
+  lowercase SHA-256, and Unix mode. This package manifest supersedes and
+  forbids the former helper-only `ptk-containment-broker.manifest.json`.
+  Require the exact digest, a nonsymlink regular executable owned by the
+  effective UID, and no group/world write bits before launch. A
+  development/test override requires both an absolute path and explicit
+  expected SHA-256. "Authenticate" below means this package identity/drift
+  check, not resistance to a hostile same-user process.
 - Map only these inherited descriptors into the broker: FD 3 liveness-read,
   FD 4 supervisor-control-read, FD 5 broker-event-write, FD 6 worker-protocol
   request-read, FD 7 worker-protocol event/write, FD 8 worker-stdout-write,
@@ -320,7 +335,9 @@ The broker contract is fixed and contains no user/script data:
   starttime ticks)`; Darwin identity is `(proc_bsdinfo start seconds, start
   microseconds)`. `RELEASED` is empty and is sent only after the child's
   CLOEXEC exec-error pipe proves successful `execve`. `START_FAILED` carries
-  stage `u8` and errno `u32`, after confirmed gated-child/group death.
+  stage `u8` and errno `u32`, after confirmed gated-child/group death. Its
+  closed stage values are `1=fork`, `2=child_setup`, `3=identity_capture`,
+  `4=group_arm`, `5=group_validate`, `6=gate_release`, and `7=exec`.
 - Broker exit codes are `0` for requested clean shutdown/reap, `64` protocol
   error, `70` internal failure before child creation, `71` arm/identity
   failure after confirmed child death, `72` exec failure after confirmed child
@@ -480,10 +497,14 @@ protocol version, worker boot ID, request ID where applicable, and a bounded
 payload. Requests carry an
 absolute UTC deadline computed at the MCP boundary; worker startup,
 bootstrap, queue wait, routing, execution, and shaping consume the same
-budget. A fixed startup-configured `timeoutContainmentGrace` is separate: it
+budget. `timeoutContainmentGrace` is fixed at 10000 ms and is separate: it
 permits no user work and may extend a post-launch startup-failure or post-start
 execution-timeout response only long enough to confirm process-tree death.
-Tool descriptions disclose the maximum deadline-plus-grace wall clock.
+Containment uses one absolute grace deadline: Unix sends TERM at elapsed 0,
+KILL at 2000 ms, then polls the stored identity every 25 ms; Windows closes
+the worker's `KILL_ON_JOB_CLOSE` Job Object at elapsed 0, then polls every
+25 ms. Neither platform starts another grace window. Tool descriptions
+disclose the maximum deadline-plus-grace wall clock.
 
 Every lifecycle action that may launch, replace, stop, or wait for a worker
 uses the same boundary deadline function as invoke:

@@ -1,0 +1,42 @@
+{
+  "schema_version": "ptk.audit-adapter-validation/1",
+  "recorded_utc": "2026-07-16T01:05:00Z",
+  "offline_contract_gate": {
+    "network_required": false,
+    "splunk_expected_body": "splunk-hec-event.jsonl",
+    "sentinel_expected_body": "sentinel-event.json",
+    "sentinel_dcr": "sentinel-dcr.json",
+    "sentinel_table": "sentinel-table.json"
+  },
+  "splunk_translator_validation": {
+    "status": "passed",
+    "collector_distribution": "otelcol-contrib",
+    "collector_version": "v0.156.0",
+    "translator_module": "github.com/open-telemetry/opentelemetry-collector-contrib/pkg/translator/splunk@v0.156.0",
+    "translator_source_commit": "41e24cd516dd69a5b4277465cdb2ff4ef0676f49",
+    "method": "execute_pinned_LogToSplunkEvent_and_goccy_go_json_encoder_then_byte_compare",
+    "input_audit_body": "audit-v3-host.jsonl_without_lf",
+    "result": "exact_expected_body_match_including_final_lf"
+  },
+  "pinned_collector_live_validation": {
+    "required_for_release": true,
+    "required_in_ordinary_offline_ci": false,
+    "binary_precondition": "select current RID archive from adapter-pins.json and verify its sha256 before launch",
+    "launch_argv": [
+      "${PTK_OTELCOL_CONTRIB}",
+      "--config=server/Contracts/ResilienceR0/splunk-hec-fixture.yaml"
+    ],
+    "required_environment": ["SPLUNK_HEC_TOKEN"],
+    "required_harness": "replace the fixture HEC origin with a TLS mock, submit one exact PTK OTLP record, and byte-compare the single received request body with splunk-hec-event.jsonl",
+    "last_status": "not_run_contract_slice_has_no_live_collector_harness"
+  },
+  "sentinel_live_validation": {
+    "required_for_release": true,
+    "required_in_ordinary_offline_ci": false,
+    "table_put": "PUT {workspaceResourceId}/tables/PtkAudit_CL?api-version=2025-07-01 using sentinel-table.json",
+    "dcr_put": "PUT {dcrResourceId}?api-version=2024-03-11 using sentinel-dcr.json",
+    "ingestion_post": "POST {dcr.properties.endpoints.logsIngestion}/dataCollectionRules/{dcr.immutableId}/streams/Custom-PtkAudit?api-version=2023-01-01 using sentinel-event.json",
+    "acceptance": "HTTP 204 followed by a query proving exact event, chain, schema, host, session, outcome, timestamp, and Unicode fields",
+    "last_status": "not_run_no_azure_validation_tenant"
+  }
+}

@@ -1,0 +1,137 @@
+{
+  "schema_version": "ptk.public-contract/1",
+  "server_identity": {
+    "name": "ptk",
+    "version": "0.2.0"
+  },
+  "instructions": "Use PTK for shell work and preserve its warm-session semantics. Recovery never replays uncertain work. A retryable recovery refusal proves that no work started: wait at least retry_after_ms, call ptk_state, and submit a fresh request only after the named ready_for_effects gate is true. Delay expiry alone never authorizes resubmission. For outcome_unknown or any retryable=false result, do not repeat the logical operation merely because of that terminal.",
+  "recovery_description": "No work started. PTK recovery is <phase> (attempt <n>). Check ptk_state in <NN> ms. Do not resubmit until <gate> is ready.",
+  "tools_list": {
+    "tools": [
+      {
+        "name": "ptk_invoke",
+        "description": "Run shell work through PTK with warm PowerShell state, internal RTK/Bash routing, bounded shaping, and same-invocation output recovery. Background work is cold and stateless. The total timeout includes queueing and execution. No work started. PTK recovery is <phase> (attempt <n>). Check ptk_state in <NN> ms. Do not resubmit until <gate> is ready.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "script": { "type": "string", "maxLength": 131072 },
+            "raw": { "type": "boolean", "default": false },
+            "route": { "type": "string", "enum": ["auto", "pwsh", "rtk"], "default": "auto" },
+            "background": { "type": "boolean", "default": false },
+            "timeoutSeconds": { "type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0 },
+            "session": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$", "default": "default" }
+          },
+          "required": ["script"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "ptk_job",
+        "description": "Manage cold background jobs started by ptk_invoke. Status, output, and list are reads; kill is backend-dependent. Sealed or tombstoned reads remain guardian-local. No work started. PTK recovery is <phase> (attempt <n>). Check ptk_state in <NN> ms. Do not resubmit until <gate> is ready.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "action": { "type": "string", "enum": ["status", "output", "kill", "list"] },
+            "id": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807, "default": 0 },
+            "offset": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807, "default": 0 },
+            "session": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$", "default": "default" }
+          },
+          "required": ["action"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "ptk_output",
+        "description": "Read or search one immutable guardian-owned output snapshot without executing or rerunning work.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "handle": { "type": "string", "minLength": 1, "maxLength": 256 },
+            "action": { "type": "string", "enum": ["read", "search", "status"], "default": "read" },
+            "offset": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807, "default": 0 },
+            "maxBytes": { "type": "integer", "minimum": 1, "maximum": 65536, "default": 16384 },
+            "pattern": { "type": ["string", "null"], "maxLength": 1024, "default": null }
+          },
+          "required": ["handle"],
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "ptk_reset",
+        "description": "Replace one session worker with a fresh declared baseline after generation and busy-state checks. timeoutSeconds=0 uses the operator-configured call default; a positive override is capped by the server maximum, and template-backed startup also stops at the earlier frozen template startup ceiling. After a launched worker misses that deadline, containment may extend the response by at most 10 seconds, so maximum wall time is the selected deadline plus 10 seconds. No work started. PTK recovery is <phase> (attempt <n>). Check ptk_state in <NN> ms. Do not resubmit until <gate> is ready.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "session": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$", "default": "default" },
+            "expectedGeneration": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807, "default": 0 },
+            "force": { "type": "boolean", "default": false },
+            "timeoutSeconds": { "type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0 }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "ptk_session",
+        "description": "List desired session bindings or explicitly open, close, or restart one named session. List is guardian-local; lifecycle actions require the host. For lifecycle actions, timeoutSeconds=0 uses the operator-configured call default and a positive override is capped by the server maximum; template-backed open/restart also stops at the earlier frozen template startup ceiling. After a launched worker misses that deadline, containment may extend the response by at most 10 seconds, so maximum wall time is the selected deadline plus 10 seconds. No work started. PTK recovery is <phase> (attempt <n>). Check ptk_state in <NN> ms. Do not resubmit until <gate> is ready.",
+        "inputSchema": {
+          "oneOf": [
+            {
+              "type": "object",
+              "properties": { "action": { "const": "list" } },
+              "required": ["action"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": { "const": "open" },
+                "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+                "template": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+                "allowColdBackground": { "type": "boolean" },
+                "timeoutSeconds": { "type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0 }
+              },
+              "required": ["action", "name"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": { "const": "close" },
+                "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+                "expectedGeneration": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807, "default": 0 },
+                "force": { "type": "boolean", "default": false },
+                "timeoutSeconds": { "type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0 }
+              },
+              "required": ["action", "name"],
+              "additionalProperties": false
+            },
+            {
+              "type": "object",
+              "properties": {
+                "action": { "const": "restart" },
+                "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+                "expectedGeneration": { "type": "integer", "minimum": 0, "maximum": 9223372036854775807, "default": 0 },
+                "force": { "type": "boolean", "default": false },
+                "timeoutSeconds": { "type": "integer", "minimum": 0, "maximum": 2147483647, "default": 0 }
+              },
+              "required": ["action", "name"],
+              "additionalProperties": false
+            }
+          ]
+        }
+      },
+      {
+        "name": "ptk_state",
+        "description": "Return prompt guardian, audit, host, and selected-session state. During recovery it is partial, performs no module scan, starts no process, and never changes recovery state.",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "listAvailable": { "type": "boolean", "default": false },
+            "session": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$", "default": "default" }
+          },
+          "additionalProperties": false
+        }
+      }
+    ]
+  }
+}

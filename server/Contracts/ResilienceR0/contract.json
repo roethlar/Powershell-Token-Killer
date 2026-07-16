@@ -1,0 +1,316 @@
+{
+  "schema_version": "ptk.resilience-r0/1",
+  "public_recovery": {
+    "representation": "one_compact_strict_utf8_json_text_content_block",
+    "call_tool_result_is_error": true,
+    "structured_content": false,
+    "maximum_utf8_bytes": 4096,
+    "property_order": [
+      "detail_code",
+      "retryable",
+      "retry_after_ms",
+      "recovery_phase",
+      "recovery_attempt",
+      "retry_gate"
+    ],
+    "additional_properties": false,
+    "detail_codes": [
+      "backend_lost_before_dispatch",
+      "host_circuit_open",
+      "host_containment_unconfirmed",
+      "host_contract_mismatch",
+      "host_recovering",
+      "host_start_failed",
+      "outcome_unknown",
+      "session_bootstrap_failed",
+      "session_recovering",
+      "session_recovery_unknown"
+    ],
+    "retryable_detail_codes": [
+      "backend_lost_before_dispatch",
+      "host_circuit_open",
+      "host_recovering",
+      "session_recovering"
+    ],
+    "retry_after_ms": {
+      "minimum": 250,
+      "maximum": 60000,
+      "null_when_retryable_is_false": true
+    },
+    "recovery_phases": [
+      "attempting",
+      "backoff",
+      "bootstrap",
+      "circuit_open",
+      "containment",
+      "half_open"
+    ],
+    "recovery_attempt": {
+      "minimum_when_retryable": 1,
+      "maximum": 9223372036854775807,
+      "null_when_retryable_is_false": true
+    },
+    "retry_gates": [
+      {
+        "kind": "host_ready"
+      },
+      {
+        "kind": "session_ready",
+        "alias_pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+      }
+    ],
+    "public_delivery_state": false
+  },
+  "public_state": {
+    "normalized_property_order": [
+      "state",
+      "recovery_phase",
+      "recovery_attempt",
+      "retry_after_ms",
+      "ready_for_effects"
+    ],
+    "host_states": [
+      "absent",
+      "backoff",
+      "circuit_open",
+      "containment_unconfirmed",
+      "half_open",
+      "ready",
+      "recovering",
+      "starting",
+      "stopped"
+    ],
+    "session_states": [
+      "cold",
+      "starting",
+      "ready",
+      "resetting",
+      "closing",
+      "faulted",
+      "lost",
+      "quarantined",
+      "recovering",
+      "backoff",
+      "bootstrapping",
+      "circuit_open",
+      "half_open",
+      "recovery_unknown"
+    ],
+    "maximum_aliases": 128,
+    "alias_pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+  },
+  "audit_v3": {
+    "schema_version": "ptk.audit/3",
+    "maximum_jsonl_bytes_including_lf": 65536,
+    "host_property_order": [
+      "boot_id",
+      "generation",
+      "state",
+      "recovery_attempt"
+    ],
+    "host_states": [
+      "absent",
+      "starting",
+      "ready",
+      "recovering",
+      "backoff",
+      "containment_unconfirmed",
+      "circuit_open",
+      "half_open",
+      "stopped"
+    ],
+    "added_event_types": [
+      "host.starting",
+      "host.ready",
+      "host.lost",
+      "host.containment_unconfirmed",
+      "host.recovery_scheduled",
+      "host.recovery_failed",
+      "host.recovered",
+      "host.circuit_open",
+      "host.circuit_half_open",
+      "host.stopped",
+      "worker.recovery_scheduled",
+      "worker.recovered",
+      "worker.recovery_failed"
+    ],
+    "permanent_failure_without_live_host_state": "stopped",
+    "otlp_host_attributes": [
+      "ptk.host.boot_id",
+      "ptk.host.generation",
+      "ptk.host.state",
+      "ptk.host.recovery_attempt"
+    ],
+    "golden_vectors": [
+      "audit-v3-null.jsonl",
+      "audit-v3-host.jsonl"
+    ]
+  },
+  "containment": {
+    "host_containment_grace_ms": 10000,
+    "timeout_containment_grace_ms": 10000,
+    "unix_term_at_ms": 0,
+    "unix_kill_at_ms": 2000,
+    "identity_poll_ms": 25,
+    "single_absolute_deadline": true,
+    "windows_close_outer_job_at_ms": 0,
+    "windows_terminate_job_object": false,
+    "windows_process_sweep": false,
+    "unix_nonchild_waitpid": false
+  },
+  "worker_broker_start_failed_stages": [
+    { "value": 1, "name": "fork" },
+    { "value": 2, "name": "child_setup" },
+    { "value": 3, "name": "identity_capture" },
+    { "value": 4, "name": "group_arm" },
+    { "value": 5, "name": "group_validate" },
+    { "value": 6, "name": "gate_release" },
+    { "value": 7, "name": "exec" }
+  ],
+  "worker_broker_unconfirmed_teardown_exit_code": 74,
+  "digests": {
+    "file": {
+      "algorithm": "SHA-256",
+      "input": "exact_raw_file_bytes",
+      "encoding": "lowercase_hex"
+    },
+    "package_manifest": {
+      "algorithm": "SHA-256",
+      "domain_ascii_nul": "ptk.package-manifest/1",
+      "input": "exact_raw_manifest_file_bytes_including_final_lf",
+      "serialization": "one_compact_strict_utf8_json_object_then_exactly_one_lf",
+      "parse_and_reserialize_before_hash": false,
+      "property_order": [
+        "schema_version",
+        "package_version",
+        "rid",
+        "private_protocol_version",
+        "public_contract_sha256",
+        "host_build_sha256",
+        "files"
+      ],
+      "file_property_order": ["path", "role", "bytes", "sha256", "unix_mode"],
+      "files_order": "ordinal_utf8_path",
+      "example_file": "package-manifest.example.json",
+      "example_raw_utf8_bytes": 2233,
+      "example_digest": "0a1a7b0d4b878a3d386471123d038120aa16749cdd9ea2cfdb4b729b41949c7a",
+      "manifest_is_not_a_file_entry": true
+    },
+    "public_contract": {
+      "algorithm": "SHA-256",
+      "domain_ascii_nul": "ptk.public-contract/1",
+      "input": "exact_public-tool-contract.json_utf8_excluding_lf"
+    },
+    "host_build": {
+      "algorithm": "SHA-256",
+      "domain_ascii_nul": "ptk.host-build/1",
+      "path_order": "ordinal_utf8",
+      "entry_encoding": "u32be_path_utf8_length_then_path_then_u64be_file_length_then_32_raw_sha256_bytes",
+      "roles": [
+        "containment_helper",
+        "guardian_helper",
+        "host_apphost",
+        "host_managed",
+        "host_runtime",
+        "shared_contract"
+      ]
+    }
+  },
+  "published_layout": {
+    "root": "~/.ptk",
+    "installer_owned_entries": ["bin", "src", "scripts", "VERSION"],
+    "package_manifest": "bin/ptk-package-manifest.json",
+    "manifest_is_single_binary_identity_authority": true,
+    "required_bin_roles": [
+      "guardian_apphost",
+      "guardian_managed",
+      "host_apphost",
+      "host_managed",
+      "shared_contract",
+      "host_runtime",
+      "audit_admin"
+    ],
+    "required_unix_bin_roles": [
+      "guardian_helper",
+      "containment_helper"
+    ],
+    "separate_containment_helper_manifest": false
+  },
+  "native_build": {
+    "language": "C17",
+    "common_flags": [
+      "-std=c17",
+      "-O2",
+      "-fno-common",
+      "-fstack-protector-strong",
+      "-Wall",
+      "-Wextra",
+      "-Werror",
+      "-Wpedantic",
+      "-Wshadow",
+      "-Wstrict-prototypes",
+      "-Wmissing-prototypes"
+    ],
+    "linux": {
+      "targets": ["linux-x64", "linux-arm64"],
+      "acquisition_lock": "native-linux-acquisition.json",
+      "acquisition_claim": "exact_revision_and_sha256_online_acquisition_from_mutable_signed_repository",
+      "network_free_reproducibility_claim": false,
+      "network_free_release_prerequisite": "preserve_both_platform_oci_images_and_the_verified_apk_bundle",
+      "linkage": "static_pie",
+      "link_flags": ["-static-pie"],
+      "native_build_per_architecture": true
+    },
+    "macos": {
+      "targets": ["osx-arm64"],
+      "xcode": "16.4",
+      "apple_clang": "17",
+      "sdk": "15.5",
+      "deployment_target": "15.0",
+      "required_dynamic_libraries": ["/usr/lib/libSystem.B.dylib"],
+      "verify_macho_minimum": true
+    }
+  },
+  "artifacts": [
+    "public-tool-contract.json",
+    "public-recovery.schema.json",
+    "public-state.schema.json",
+    "guardian-host-protocol.json",
+    "guardian-host-protocol.schema.json",
+    "recovery-manifest.schema.json",
+    "recovery-manifest.example.json",
+    "audit-v3-null.jsonl",
+    "audit-v3-host.jsonl",
+    "package-manifest.schema.json",
+    "package-manifest.example.json",
+    "native-linux-acquisition.json",
+    "adapter-pins.json",
+    "adapter-live-validation.json",
+    "splunk-hec-fixture.yaml",
+    "splunk-hec-event.jsonl",
+    "sentinel-dcr.json",
+    "sentinel-table.json",
+    "sentinel-event.json"
+  ],
+  "artifact_sha256": {
+    "public-tool-contract.json": "842dbeaaebb2f25404e1b042f26f3fde3a0b4240b91da31fbf81cf0cc7a8dd62",
+    "public-recovery.schema.json": "c5b5ae2cc710c62c23f5c564371fd8b743ad1056769424bf8cf4b4e85fe046ce",
+    "public-state.schema.json": "efe2ea29c741c4392a281ab70123684fdb2fd8db2c2e265084807b78f8a16592",
+    "guardian-host-protocol.json": "9d763b7dd0dd79a0b86ee884e1598cf899d46a3bb629fbb28948a14b2a13912c",
+    "guardian-host-protocol.schema.json": "2b13826bd6a2f6fe07ad31908341859609cf512d511c6820a3ed1737facafaf0",
+    "recovery-manifest.schema.json": "3bed14f63f5a3e30c6555dabee575c6fce497521efa1244cbc3d74c46ee06872",
+    "recovery-manifest.example.json": "b5e589198bac9d35138a1dc7c2839ebb5b52ae7e66b208eafa4a451d789e4f1e",
+    "audit-v3-null.jsonl": "515008d265bdf60594a091e734221b2555b53d5b0dda377eed7f7de76297f39b",
+    "audit-v3-host.jsonl": "c0bf4bf23f60cd60e524f3eb1628a9ab28d8cae59d922c541b1dc43c5e35a3e5",
+    "package-manifest.schema.json": "16eff921e0d3c3c93963c7d9eba26b300951fc02d0ab076e680ce6dcaf5bebb2",
+    "package-manifest.example.json": "c1bc90e7c2672bf047d6736a1d9e0a111bc5e6644fa9a60610781735665c356d",
+    "native-linux-acquisition.json": "bf9a29f3a61df4a79e93ba65059594429f2e3d51df6c371deb9f2fec831b14cc",
+    "adapter-pins.json": "163c41eaa147c12993c4c2f9f57ab433654fa9d08c623b71ac56d708945d9a0c",
+    "adapter-live-validation.json": "a37a6e02355ed9651d2061cea0ae213a432e251307bff1fc0189006d666efc79",
+    "splunk-hec-fixture.yaml": "be28a14a2886de4880855d1c4cbfa96b2bd80ae84386ac2626815f4fef22a397",
+    "splunk-hec-event.jsonl": "5c92fa9073078016f3fd7cf4c3e05c37540b070b3efeb1eab6a2a98ef9b0c825",
+    "sentinel-dcr.json": "da76a8e0c5d2cef25551e5ebfffe02927cc202ef585b4f0c4332552ab9f992d6",
+    "sentinel-table.json": "37360b57f62de3b08332d2bad0fbe344e26f1ba0b5a2ced75458b7f0d5c3387d",
+    "sentinel-event.json": "5157a750d2c39bfd5278cd09cdee67568c489a82145775f876b14eb3e04e6640"
+  }
+}

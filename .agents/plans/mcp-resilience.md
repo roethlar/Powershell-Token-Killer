@@ -249,6 +249,13 @@ and a deterministic byte-equivalent `tools/list` without consulting the host.
 A host restart never asks the client to initialize again and never emits a
 public tool-list change.
 
+R0's byte authority for the end-state server identity, instructions, recovery
+wording, ordered six-tool `tools/list`, descriptions, and input schemas is
+`server/Contracts/ResilienceR0/public-tool-contract.json`. The enclosing R0
+index and its exact-file digests are
+`server/Contracts/ResilienceR0/contract.json`; later implementation consumes
+these assets rather than reconstructing the contract from this prose.
+
 Before completing the initial public initialization, the guardian starts one
 host, completes private initialization, and proves that its exact build and
 contract digests match the guardian. Initial failure follows the configured
@@ -271,7 +278,12 @@ Every backend-dependent tool call arriving while its required host or session
 is not ready is admitted and terminally audited by the guardian, starts no
 backend/user effect, and returns one normalized tool error. Calls are never
 queued for later dispatch. A terminal error means the guardian retains no call
-object capable of starting a later effect. The stable detail codes are:
+object capable of starting a later effect. The `CallToolResult` has
+`isError=true`, no `structuredContent`, and exactly one text content block
+whose text is one compact strict-UTF-8 JSON object of at most 4096 bytes. Its
+only properties, in order, are `detail_code`, `retryable`, `retry_after_ms`,
+`recovery_phase`, `recovery_attempt`, and `retry_gate`; there is no public
+`delivery_state`. The stable detail codes are:
 
 ```text
 host_recovering
@@ -289,6 +301,7 @@ outcome_unknown
 Every normalized recovery error includes exact fields:
 
 ```text
+detail_code: one stable detail code
 retryable: boolean
 retry_after_ms: integer 250..60000 | null
 recovery_phase: "containment" | "backoff" | "attempting" | "bootstrap" |
@@ -411,15 +424,37 @@ pooled-buffer clearing rules. Every frame carries protocol version, guardian
 boot ID, host boot ID, host generation, and a positive monotonic private
 request ID where applicable.
 
+The exact v1 frame fields, directions, property order, correlation dimensions,
+and limits are frozen in
+`server/Contracts/ResilienceR0/guardian-host-protocol.json` and its strict
+`guardian-host-protocol.schema.json`. The transferred document is separately
+closed by `recovery-manifest.schema.json`; its compact default-only vector is
+`recovery-manifest.example.json`. A host `hello` is
+the first frame and guardian `initialize` is second. The guardian then sends a
+manifest header, contiguous requests carrying at most 524288 raw bytes per
+chunk, and a seal/commit; the reassembled manifest is at most 25165824 raw
+bytes and at most 48 chunks, 128 aliases, and 128 templates. The host emits
+`ready` only after exact digest validation, and any operational request before
+ready is generation-fatal.
+
+The guardian is the only private request-ID originator; its positive signed-
+64-bit IDs are monotonic and never reused within the guardian boot. The host
+originates sequenced `event` frames instead. Worker capability and containment
+event sequences are acknowledged by a new guardian request carrying
+`source_event_sequence`, and the host's ordinary response echoes that guardian
+request ID. The exact four event/request pairs and payload orders are frozen in
+the v1 asset; no bidirectional request-ID namespace exists.
+
 Private kinds are closed to:
 
 ```text
 hello | initialize | ready | request | cancel | event | response | shutdown
 ```
 
-Private initialization is first and occurs exactly once for each host
-generation. It proves the pinned executable digest, host/guardian protocol
-versions, public contract digest, guardian boot ID, host identity, frozen
+The host hello and guardian initialization each occur exactly once for each
+host generation. Together they prove the pinned executable digest,
+host/guardian protocol versions, public contract digest, guardian boot ID,
+host identity, frozen
 configuration identity, and inherited private-channel ownership before the
 host receives session data. Mismatch is generation-fatal and non-retryable for
 that guardian boot.
@@ -485,10 +520,15 @@ notification race through one exactly-once loss
 transition. Outer host-generation teardown uses a separate fixed startup-
 configured `hostContainmentGrace`; it begins when the guardian initiates host
 containment after loss, recycle, or terminal shutdown, permits no user work or
-replacement, and uses a monotonic deadline. R0 freezes its exact duration and
-the subordinate platform TERM/KILL/reap intervals before lifecycle wiring.
+replacement, and uses one monotonic absolute deadline. R0 fixes
+`hostContainmentGrace` at 10000 ms: on Unix send TERM at elapsed 0, KILL at
+2000 ms, and identity-poll every 25 ms until the same deadline; on Windows
+close the outer `KILL_ON_JOB_CLOSE` Job Object at elapsed 0 and identity-poll
+every 25 ms until that deadline. There is no second grace window, Windows
+`TerminateJobObject`/process sweep, or Unix nonparent `waitpid` fallback.
 It does not broaden or reuse the worker-only `timeoutContainmentGrace`, whose
-retained startup/execution-timeout meaning is unchanged. The guardian:
+retained startup/execution-timeout meaning is unchanged and whose exact R0
+value is also 10000 ms. The guardian:
 
 1. blocks backend-dependent admission and freezes the old generation's request
    terminals;
@@ -668,6 +708,12 @@ shape `worker.recovery_scheduled`, `worker.recovered`, and
 `worker.recovery_failed`. Readers accept exact v1, v2, or v3 shapes and never
 reserialize older bytes. Worker/session generation fields are never overloaded
 with host identity, and dynamic identity never enters a detail-code string.
+After a permanent start/recovery failure leaves no live host, the v3 host
+snapshot is exactly `state="stopped"`, `boot_id=null`, and `generation=null`;
+the failed attempted identity is retained only in the preceding lifecycle
+events. The exact null/live golden JSONL records are frozen in
+`server/Contracts/ResilienceR0/audit-v3-null.jsonl` and
+`server/Contracts/ResilienceR0/audit-v3-host.jsonl`.
 
 Audit v3 does not create a new SIEM transport. Anchored mode retains the exact
 one-record OTLP/HTTP protobuf request, acknowledgment, retry, checkpoint, and
@@ -736,7 +782,11 @@ or history rewriting.
 - Freeze the public recovery result shape, exact audit evolution, host protocol
   fields/limits, binary/contract digest computation, the exact
   `hostContainmentGrace` and subordinate platform stop/reap intervals,
-  platform containment design, and published artifact layout.
+  platform containment design, and published artifact layout. The canonical
+  exact assets live under `server/Contracts/ResilienceR0/`: one package
+  manifest supersedes any helper-only manifest; the index pins every artifact
+  byte, digest domain, native baseline, adapter version/archive hash, and
+  Splunk/Sentinel compatibility vector.
 - Build disposable fake guardian/host fixtures. Prove one public initialize,
   same guardian PID/pipes after forcibly killing an otherwise-idle host,
   guardian-local state during recovery, exact one-terminal behavior for every
@@ -941,9 +991,12 @@ or history rewriting.
   preserves every prior OTLP attribute and adds exactly the four typed
   `ptk.host.*` attributes; null host identity fields are omitted.
 - A Collector fixture receives PTK OTLP logs and maps the exact body, stable
-  event/chain identifiers, schema, and host fields into a Splunk HEC request.
-  A Sentinel adapter fixture maps the same record into the Azure Monitor Logs
-  Ingestion JSON/DCR shape without truncation or type loss.
+  event/chain identifiers, schema, and host fields into the frozen
+  `splunk-hec-event.jsonl` request. A Sentinel adapter fixture maps the same
+  record into the Azure Monitor Logs Ingestion JSON, Direct DCR, and custom
+  table shapes without truncation or type loss. `adapter-live-validation.json`
+  records the pinned translator proof and the credentialed release checks that
+  ordinary offline CI cannot perform.
 - Destination adapters tolerate identical at-least-once duplicates and fail
   their compatibility gate if event ID, event hash, previous hash, schema,
   host identity/generation/state, timestamp precision, or Unicode changes.

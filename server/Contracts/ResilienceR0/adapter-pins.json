@@ -1,0 +1,83 @@
+{
+  "schema_version": "ptk.audit-adapter-pins/1",
+  "otlp_wire": {
+    "opentelemetry_proto": "v1.10.0",
+    "google_protobuf": "3.35.1",
+    "grpc_tools": "2.82.0",
+    "source": "https://github.com/open-telemetry/opentelemetry-proto/releases/tag/v1.10.0"
+  },
+  "otelcol_contrib": {
+    "version": "v0.156.0",
+    "release_date": "2026-07-07",
+    "release_commit": "aa158b23c8f89d795b21a05a49b3978565dfebd4",
+    "contrib_source_commit": "41e24cd516dd69a5b4277465cdb2ff4ef0676f49",
+    "release": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/tag/v0.156.0",
+    "manifest": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector-releases/v0.156.0/distributions/otelcol-contrib/manifest.yaml",
+    "archives": {
+      "linux_amd64": {
+        "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.156.0/otelcol-contrib_0.156.0_linux_amd64.tar.gz",
+        "sha256": "ee70d7b1221be8a9cc4700f48bf985c04b1ab8aaeef24409fe79623849e2f9f2"
+      },
+      "linux_arm64": {
+        "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.156.0/otelcol-contrib_0.156.0_linux_arm64.tar.gz",
+        "sha256": "1f9afe1d245b4babbb4bcb7d6b57ba2836b3b23c5f61b38abc00ab461f049288"
+      },
+      "windows_amd64": {
+        "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.156.0/otelcol-contrib_0.156.0_windows_amd64.tar.gz",
+        "sha256": "85e9f2763cfc671da2f580393040f282f9539a052bd141cb8a6a2b7be77bc2da"
+      },
+      "windows_arm64": {
+        "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.156.0/otelcol-contrib_0.156.0_windows_arm64.tar.gz",
+        "sha256": "1775ef4290d82be7ff2af7570b67b363b1b82dfb74e9ec10e683ae65f4b1d308"
+      },
+      "darwin_amd64": {
+        "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.156.0/otelcol-contrib_0.156.0_darwin_amd64.tar.gz",
+        "sha256": "f463ace0f14f76607adc68cb265c2235e33db636ed99f7934b9699e462007d5e"
+      },
+      "darwin_arm64": {
+        "url": "https://github.com/open-telemetry/opentelemetry-collector-releases/releases/download/v0.156.0/otelcol-contrib_0.156.0_darwin_arm64.tar.gz",
+        "sha256": "f5e3a6fbc8cca5e9fc9ce642c5ca16da084b4b6fea3f38a8ad29eea69ddf8e0f"
+      }
+    }
+  },
+  "splunk": {
+    "exporter": "splunkhecexporter",
+    "exporter_stability": "beta",
+    "exporter_source": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector-contrib/v0.156.0/exporter/splunkhecexporter/README.md",
+    "conversion_source": "https://raw.githubusercontent.com/open-telemetry/opentelemetry-collector-contrib/v0.156.0/pkg/translator/splunk/logs_to_splunk.go",
+    "enterprise_contract": "10.2",
+    "hec_endpoint_path": "/services/collector/event",
+    "hec_documentation": "https://help.splunk.com/en/splunk-enterprise/get-data-in/get-started-with-getting-data-in/10.2/get-data-with-http-event-collector/use-curl-to-manage-http-event-collector-tokens-events-and-services",
+    "host_attribute": "host.id",
+    "authoritative_timestamp": "embedded_ptk_json_body",
+    "hec_top_level_time_is_precision_authority": false,
+    "exact_hec_vector": "splunk-hec-event.jsonl",
+    "collector_queue_is_ptk_anchor": false
+  },
+  "sentinel": {
+    "logs_ingestion_api_version": "2023-01-01",
+    "dcr_management_api_version": "2024-03-11",
+    "table_management_api_version": "2025-07-01",
+    "dcr_kind": "Direct",
+    "embedded_ingestion_endpoint": true,
+    "external_data_collection_endpoint_required": false,
+    "stream": "Custom-PtkAudit",
+    "table": "PtkAudit_CL",
+    "output_stream": "Custom-PtkAudit_CL",
+    "transform_kql": "source",
+    "logs_ingestion_overview": "https://learn.microsoft.com/en-us/azure/azure-monitor/logs/logs-ingestion-api-overview",
+    "logs_ingestion_upload": "https://learn.microsoft.com/en-us/rest/api/ingestion/upload/upload?view=rest-ingestion-2023-01-01",
+    "dcr_management": "https://learn.microsoft.com/en-us/rest/api/monitor/data-collection-rules/create?view=rest-monitor-2024-03-11",
+    "dcr_structure": "https://learn.microsoft.com/en-us/azure/azure-monitor/data-collection/data-collection-rule-structure",
+    "service_limits": "https://learn.microsoft.com/en-us/azure/azure-monitor/fundamentals/service-limits#logs-ingestion-api",
+    "stock_collector_dcr_exporter": false,
+    "azuremonitor_exporter_is_logs_ingestion_adapter": false,
+    "sentinel_native_connector_parity": false
+  },
+  "validation_record": "adapter-live-validation.json",
+  "mini_siem": {
+    "transport": "same_authenticated_one_record_otlp_http",
+    "receiver_specific_ptk_protocol": false,
+    "implementation_authorized": false
+  }
+}
