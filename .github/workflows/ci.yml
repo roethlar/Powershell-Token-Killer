@@ -43,3 +43,26 @@ jobs:
       - name: Stdio handshake
         shell: pwsh
         run: ./server/test-handshake.ps1
+
+  siem:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest, macos-latest]
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: actions/setup-dotnet@v5
+        with:
+          dotnet-version: 10.0.x
+
+      - name: SIEM receiver tests
+        run: dotnet test siem/PtkSiem.slnx
+
+      - name: Producer to SIEM conformance
+        env:
+          PTK_SIEM_CONFORMANCE_MODE: in-process
+        run: >-
+          dotnet test
+          server/PtkMcpServer.Tests/SiemConformance/PtkMcpServer.SiemConformance.Tests.csproj

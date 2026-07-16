@@ -1,0 +1,43 @@
+mini-SIEM S1 existing-battery baseline
+
+Captured: 2026-07-15T17:59:51.7800970-04:00 through
+2026-07-15T18:02:24.2321870-04:00
+SHA: 8b6d3bb642408521b78b1d6cfcd975050ce111ab
+Branch: plan/mini-siem-discovery
+Dirty files before run: 0
+Environment: Darwin 25.5.0 arm64; dotnet 10.0.301; pwsh 7.6.3
+
+1. pwsh -NoProfile -Command "Invoke-Pester -Path tests/PwshTokenCompressor.Tests.ps1 -Output Minimal"
+
+Running tests from 1 files.
+[+] tests/PwshTokenCompressor.Tests.ps1 19.63s
+Tests completed in 19.64s
+Tests Passed: 141, Failed: 0, Skipped: 2, Inconclusive: 0, NotRun: 0
+Exit code: 0
+
+2. dotnet test server/PtkMcpServer.slnx
+
+All projects were up-to-date for restore.
+PtkRtkTestFixture, PtkContainmentTestFixture, PtkMcpServer, and
+PtkMcpServer.Tests built for net10.0.
+Passed: 1484, Failed: 0, Skipped: 0, Total: 1484, Duration: 2m 2s
+Exit code: 0
+
+3. pwsh -NoProfile -File server/test-handshake.ps1
+
+Build succeeded with 0 warnings and 0 errors.
+initialize ok: PtkMcpServer 1.0.0.0
+tools/list ok: ptk_state, ptk_output, ptk_reset, ptk_invoke, ptk_job
+ptk_state ok: server header present
+ptk_invoke cross-call state ok: runtime token survived
+ptk_output recovery ok: advertised handle returned the runtime token with PowerShell-object provenance
+background recovery ok: ptk_job published a path-free handle and ptk_output returned the same direct invocation
+audit ok: boundary attribution, provided fields, evidence references, and core secrecy verified
+output cleanup ok: graceful main exit retained no artifact files
+audit outage ok: MCP diagnostic remains available and invoke stays fail-closed
+hard-kill output cleanup ok: anonymous live recovery left no named artifact before or after exit
+HANDSHAKE PASSED
+Exit code: 0
+
+This tracked transcript normalizes the original local ptk job log only by
+removing terminal color escape sequences and shortening build artifact paths.

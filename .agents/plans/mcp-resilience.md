@@ -61,10 +61,16 @@ matched guardian/host/helper package, register only the guardian, and remove
 the no-argument public server entry.
 
 The owner approved `ptk.audit/3` on 2026-07-15 conditional on preserving the
-existing Splunk, Microsoft Sentinel, and proposed mini-SIEM routes. The
+existing Splunk, Microsoft Sentinel, and separately authorized mini-SIEM routes. The
 compatibility contract below keeps OTLP/HTTP stable, uses destination adapters
-for current vendor APIs, and makes any future PTK receiver consume that same
-OTLP stream; the separate mini-SIEM build decision remains open.
+for current vendor APIs, and makes the PTK receiver consume that same OTLP
+stream; its build authority and remaining slices live in
+`.agents/plans/mini-siem-implementation.md`.
+
+R0's hash-pinned `adapter-pins.json` predates the later mini-SIEM S0 decision;
+its `implementation_authorized=false` field is a point-in-time freeze fact, not
+current policy. The later decision supersedes only that authorization status.
+It does not rewrite the frozen R0 artifact or change its wire contract.
 
 Claude Code 2.1.210 using `claude-fable-5` at maximum effort accepted the
 complete exact fixed range `5ae154c..b4a2c0c` with
@@ -764,11 +770,12 @@ DCR that preserves the PTK event ID, chain, schema, guardian, host, session,
 and outcome fields in a supported or custom Log Analytics table. Neither
 vendor hop changes what PTK treats as its acknowledged durable boundary.
 
-If the separately gated mini-SIEM decision later chooses a PTK receiver, that
-receiver must implement this same authenticated one-record OTLP/HTTP contract,
-validate exact v1/v2/v3 bodies, durably commit before a nonrejecting `200`, and
-tolerate duplicate event IDs with identical hashes. Audit v3 requires no
-receiver-specific PTK protocol and does not itself authorize that receiver.
+The separately authorized mini-SIEM receiver must implement this same
+authenticated one-record OTLP/HTTP contract, validate exact v1/v2/v3 bodies,
+durably commit before a nonrejecting `200`, and tolerate duplicate event IDs
+with identical hashes. Its completed S1-S3 slices do not satisfy the still-
+gated producer-owned v3 request-byte conformance barrier. Audit v3 requires no
+receiver-specific PTK protocol.
 
 Guardian death may leave accepted calls without terminals. Existing startup
 reconciliation records those as outcome-unknown on the next guardian boot, but
@@ -1031,9 +1038,10 @@ or history rewriting.
   than assumed from documentation. PTK's anchor advances only at its configured
   durable OTLP endpoint, never merely because a downstream adapter accepted a
   transient queue.
-- A future mini-SIEM conformance fixture can replace the fake receiver without
-  changing PTK bytes. The receiver itself remains unimplemented and separately
-  owner-gated.
+- The mini-SIEM conformance fixture can replace the fake receiver without
+  changing PTK bytes once its producer-owned v3 request-byte gate is satisfied.
+  Receiver S1-S3 are implemented; later product slices remain separately
+  plan-gated.
 
 ### Platform, security, and compatibility
 

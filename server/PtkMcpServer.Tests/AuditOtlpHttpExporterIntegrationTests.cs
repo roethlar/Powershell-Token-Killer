@@ -7,6 +7,12 @@ namespace PtkMcpServer.Tests;
 public sealed class AuditOtlpHttpExporterIntegrationTests
 {
     [Fact]
+    public void Siem_endpoint_override_is_opt_in_during_the_ordinary_battery()
+    {
+        Assert.Null(Environment.GetEnvironmentVariable("PTK_SIEM_CONFORMANCE_MODE"));
+    }
+
+    [Fact]
     public async Task Real_https_success_durably_flushes_exact_body_and_event_id_before_acknowledgment()
     {
         using var pki = FakeOtlpPki.Create();

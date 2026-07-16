@@ -1,0 +1,4 @@
+<Solution>
+  <Project Path="PtkSiemReceiver/PtkSiemReceiver.csproj" />
+  <Project Path="PtkSiemReceiver.Tests/PtkSiemReceiver.Tests.csproj" />
+</Solution>

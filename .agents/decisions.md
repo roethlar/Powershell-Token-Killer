@@ -338,3 +338,31 @@ created by exposing a network service.
 smallest existing durable OTLP deployment against a custom receiver using the
 criteria above. Build PTK-specific receiver code only if no supportable existing
 shape provides the required external boundary at acceptable operational cost.
+
+### DECIDED (2026-07-15): mini-SIEM — Option 1 approved; implementation authorized (S0)
+
+**Status:** Decided — the owner authorized implementation in-session on
+2026-07-15; this entry was recorded by the working session at explicit owner
+direction ("implementation is authorized. record it"). It resolves the OPEN
+(2026-07-14) entry above for this item only and does not release the hold on
+broader decision-log reconciliation.
+
+**Decision:** Option 1 — PTK ships and maintains a minimal OTLP receiver as a
+separate product under `siem/` (`siem/PtkSiem.slnx`), with the expanded product
+scope recorded in the approved plan.
+
+**Plan of record:** `.agents/plans/mini-siem-implementation.md` @ `87e4206`,
+approved by the owner as reviewed (codex review loop, 3 rounds; post-loop
+remediation of msi-7, msi-15, msi-20..msi-24 recorded in-document with explicit
+tradeoffs, including the msi-15 residual-risk acceptance).
+
+**Authorized shared-tree edits (exhaustive):** the CI job addition in
+`.github/workflows/ci.yml`, and one additive test-only commit under
+`server/PtkMcpServer.Tests` (opt-in exporter endpoint override + golden
+v1/v2/v3 fixture serializer), owner-approved before merge. All other work stays
+under `siem/`.
+
+**Effect:** Code slices S1+ are authorized as of this entry. The OPEN entry's
+acceptance questions are answered by the plan's S1-S7 sections and threat-model
+matrix; the standing "discovery first" recommendation was satisfied by
+`.agents/plans/mini-siem-discovery.md` before this authorization.

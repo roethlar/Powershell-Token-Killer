@@ -480,3 +480,81 @@ _Not verified by the 2026-07-11 containment probe._
   PTK files. The former combined Mac/Windows reinstall claim was falsified on
   the Mac and is not evidence for any Windows host; verify the target payload
   directly before taking install action.
+
+## mini-SIEM S1 baseline (Mac, 2026-07-15)
+
+_Fresh transcripted baseline of the existing battery, captured at S1 start of
+`.agents/plans/mini-siem-implementation.md` (plan Verification; the
+predecessor's author-reported counts are not baseline evidence)._
+
+- Head `8b6d3bb`, worktree `mini-siem`, branch `plan/mini-siem-discovery`,
+  clean tree. Darwin 25.5.0 arm64, dotnet 10.0.301, pwsh 7.6.3.
+- Exact repo-guidance commands: Pester 141 passed / 0 failed / 2 skipped;
+  `dotnet test server/PtkMcpServer.slnx` 1484/1484 passed; handshake
+  `HANDSHAKE PASSED`. All three exit codes 0.
+- Full normalized transcript:
+  `.agents/review/baselines/2026-07-15-mini-siem-s1.txt` (tracked copy of the
+  ptk job log with terminal color escapes removed).
+
+## mini-SIEM S2 verification (Mac, 2026-07-15)
+
+_Local verification of S2 receiver code `e761b75` plus producer conformance
+head `1f6d485` on Darwin 25.5.0 arm64, dotnet 10.0.301, pwsh 7.6.3._
+
+- `dotnet test siem/PtkSiem.slnx`: 77/77 passed, including live TLS negatives
+  for missing certificate, wrong CA, expired certificate, wrong EKU, explicit
+  online-revocation refusal, and old/new CA rotation.
+- Producer conformance project: 2/2 passed both with the override unset and
+  with `PTK_SIEM_CONFORMANCE_MODE=in-process`; the latter drove the real
+  exporter into the live SIEM Kestrel endpoint. The scoped formatter checks
+  for the SIEM solution, conformance project, and changed producer integration
+  file passed.
+- Existing battery: Pester 141 passed / 0 failed / 2 skipped;
+  `dotnet test server/PtkMcpServer.slnx` 1485/1485 passed; handshake
+  `HANDSHAKE PASSED`.
+- Required guard discrimination was exercised and restored independently:
+  false-ack production default, optional rather than required client cert,
+  skipped event-hash recomputation, non-200 success response, and raw-JSON
+  rather than OTLP golden output each made its focused test fail. Restored
+  trees passed the complete local battery above.
+- One pre-existing scheduler timing assertion failed in an intermediate full
+  run while an extra redundant TLS test was present. The redundant load was
+  removed without touching scheduler code; the exact scheduler test then
+  passed 20/20 focused runs and the final complete 1485-test run passed.
+- Hosted ubuntu/windows/macos CI was not run from this local branch; the SIEM
+  job is configured to exercise both receiver and live producer conformance
+  legs on all three when the branch is published.
+
+## mini-SIEM S3 verification (Mac, 2026-07-15)
+
+_Local verification of S3 durable-store head `eb51f2e` plus producer
+conformance compatibility head `9f53831` on Darwin 25.5.0 arm64, dotnet
+10.0.301, pwsh 7.6.3._
+
+- `dotnet test siem/PtkSiem.slnx`: 91/91 passed. Coverage includes migration
+  reopen, effective WAL/FULL writer assertions, exact raw event evidence,
+  deterministic custody framing and chaining, post-head duplicate replay,
+  mismatched duplicate quarantine, a controlled simultaneous fork, durable
+  strict-validator quarantine, unique `(boot_id, sequence)` backstop, simulated
+  `SQLITE_FULL`, interrupted event/quarantine transactions, and live mTLS
+  `200`/`400`/`503` storage paths.
+- `dotnet list siem/PtkSiem.slnx package --vulnerable --include-transitive`
+  reported no vulnerable direct or transitive package in either project. The
+  explicit native SQLite bundle override resolved to 2.1.12 throughout.
+- Producer conformance passed 2/2 both with the override absent and with
+  `PTK_SIEM_CONFORMANCE_MODE=in-process`; the compatibility adapter preserves
+  the original S2 fake-committer seam while production uses receipt metadata.
+- Existing battery: Pester 141 passed / 0 failed / 2 skipped;
+  `dotnet test server/PtkMcpServer.slnx` 1485/1485 passed; handshake
+  `HANDSHAKE PASSED` with a zero-warning build.
+- Six independent guard mutations failed for the intended reason and were
+  restored: `synchronous=OFF` tripped startup policy; moving the injected fault
+  after commit exposed a persisted partial transaction; rejecting a replay
+  broke post-head idempotence; bypassing quarantine left no attempt evidence;
+  removing the boot/sequence uniqueness allowed a fork insert; omitting remote
+  endpoint bytes changed the frozen custody digest. The restored tree passed
+  the complete battery above.
+- Hosted ubuntu/windows/macos CI was not run from this local branch. The plan's
+  separate startup filesystem-protection matrix remains unimplemented and is
+  recorded as a scheduling conflict in `.agents/state.md`; these results do not
+  claim acceptance row 7.

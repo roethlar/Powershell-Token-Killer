@@ -5,6 +5,25 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **mini-SIEM S1-S3 are complete and incorporated on local `master`; the S3 durable
+  store head is `eb51f2e` and its producer-conformance compatibility head is
+  `9f53831`.** S1 supplies the solution skeleton and strict startup config; S2
+  supplies the independently compiled canonical proto, bounded exact
+  one-record validator, real Kestrel mTLS, and frozen response table. S3 replaces
+  the fail-closed placeholder with a startup-migrated SQLite store: one
+  serialized nondeferred transaction re-reads and conditionally advances the
+  producer chain, stores exact raw request evidence, and atomically appends the
+  versioned custody ledger under asserted WAL/FULL writer policy. Byte-identical
+  replay is idempotent even after head advance; duplicate mismatch, chain
+  failure, and strict-validator failure commit quarantine evidence before a
+  permanent response; any commit/quarantine failure remains retryable and can
+  never false-ack. The SQLite package's vulnerable native minimum is overridden
+  to its patched bundle, and the dependency audit is clean. The isolated
+  producer conformance project remains source-compatible and its ordinary fake
+  receiver path remains unchanged. Producer-owned exact v1/v2 fixtures exist at
+  `1f6d485`; the serialized v3 OTLP request fixture remains absent and is never
+  invented from R0's JSONL vector. Local evidence and guard proofs are recorded
+  in `.agents/machines.md`; combined post-merge verification is pending.
 - **Audited-harness Slices 7a-7f and the Windows wait-ownership prerequisite
   are complete and landed on local `master`; Slice 7f code head is
   `a9e757e`.**
@@ -86,9 +105,9 @@ short and update it when important repo facts change.
   complete reconciled draft passed final independent fixed-SHA review at
   `b4a2c0c` and is landed on local `master` at review-record head `6ed0167`;
   R0 code, tests, independent contract audit, and platform evidence are
-  complete on `impl/mcp-resilience-r0` at `c1d809f`, and its required
-  fixed-SHA Fable implementation review is accepted; the branch is not yet
-  merged and R1-R7 are not authorized.** The
+  complete and landed on local `master` at `c1d809f`, and its required
+  fixed-SHA Fable implementation review is accepted at review-record head
+  `4f99fd5`; R1-R7 are not authorized.** The
   target keeps one public stdio guardian alive while it
   restarts an exact-version private host, and makes a healthy host replace an
   unexpectedly lost session worker. It never replays ambiguous work, changes
@@ -233,9 +252,9 @@ short and update it when important repo facts change.
 - **`.agents/decisions.md` is UNDER HOLD** (owner, 2026-07-10: do not
   update it until the discussion is complete). The security reframe and RTK
   routing direction still need durable entries after the owner releases the
-  hold. On 2026-07-14 the owner explicitly authorized only appending the new
-  mini-SIEM receiver question to the end of its open queue; that scoped addition
-  does not release the broader hold.
+  hold. The owner explicitly authorized two narrow mini-SIEM exceptions: the
+  open receiver question on 2026-07-14 and its S0 Option 1 implementation
+  decision on 2026-07-15. Neither releases the broader hold.
 - **Release distribution remains approved work.** Slices 0-2 are landed;
   slice 3 is blocked behind resilience R7 and `.github/workflows/release.yml`
   is still absent. The old 2026-07-25 calendar is superseded with no replacement
@@ -246,19 +265,26 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Locally merge the accepted resilience R0 branch. The implementation,
-   battery, independent audit, native evidence, and required Fable review are
-   complete. Do not begin R1 without separate explicit authorization.
-2. Release-distribution slice 3 is ordered after resilience R7 and consumes
+1. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
+   When producer-owned v3 request bytes land, execute S4 from the complete
+   producer corpus; do not substitute receiver-authored fixtures.
+2. Do not begin resilience R1 without separate explicit authorization.
+3. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
    slice 4.
-3. When the owner releases the decisions hold, reconcile the rejected
+4. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
 
 ## Open / Parked
 
+- Mini-SIEM S4's fixture gate remains intentionally closed: producer-owned
+  exact v1/v2/v3 OTLP byte corpora must all exist before S4 begins. The
+  producer-side serializer for current v1/v2 records is landed at `1f6d485`,
+  but R0 supplies only JSONL v3 contract vectors, not a producer-owned
+  serialized v3 OTLP request; do not synthesize one in the receiver or treat
+  its hand-authored S2 structural test as a golden producer fixture.
 - Warm-backend slice 7 is unblocked open work, currently unscheduled, and
   remains owner-run Windows validation: AD native import/warm reuse; Exchange
   implicit remoting with first-vs-repeated `Get-Queue` latency; EXO/Graph
@@ -284,6 +310,15 @@ short and update it when important repo facts change.
   slice.
 
 ## Blockers
+
+- **The mini-SIEM plan does not consistently schedule startup filesystem
+  enforcement.** Its architecture and acceptance row 7 assign owner-only
+  mode/DACL plus symlink/reparse refusal to S1/S3, but S1 explicitly deferred
+  that work and the S3 slice definition schedules only the durable store. The
+  current receiver still lacks that enforcement. S3's durable-store contract is
+  complete, but receiver-host storage protection and full product acceptance
+  must not be claimed until the plan placement is reconciled and the negative
+  cross-platform matrix lands.
 
 - **Windows wiring requires a hard supervisor/worker role cutover.**
   `Program.cs`, `BashProcessRunner`, `RtkProcessRunner`, and `JobManager` still
@@ -327,6 +362,8 @@ short and update it when important repo facts change.
 - `.agents/plans/release-distribution.md`
 - `.agents/plans/warm-runspace-mcp-server.md`
 - `.agents/plans/shared-persistent-runspace.md`
+- `.agents/plans/mini-siem-discovery.md`
+- `.agents/plans/mini-siem-implementation.md`
 - `.agents/review/index.md`
 - `.agents/machines.md`
 
