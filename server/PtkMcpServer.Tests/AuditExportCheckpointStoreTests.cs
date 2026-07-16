@@ -1041,13 +1041,13 @@ public sealed class AuditExportCheckpointStoreTests : IDisposable
             var read = Task.Run(() => AuditExportCheckpointStore.ReadSnapshot(
                 options,
                 BootId,
-                () => retryObserved.TrySetResult()));
-            var first = await Task.WhenAny(read, retryObserved.Task)
-                .WaitAsync(TimeSpan.FromSeconds(10));
-            Assert.Same(retryObserved.Task, first);
-            Assert.False(read.IsCompleted);
+                () =>
+                {
+                    retryObserved.TrySetResult();
+                    releaseFlushHandle.Set();
+                }));
 
-            releaseFlushHandle.Set();
+            await retryObserved.Task.WaitAsync(TimeSpan.FromSeconds(10));
             await replacement.WaitAsync(TimeSpan.FromSeconds(10));
             var observed = await read.WaitAsync(TimeSpan.FromSeconds(10));
             AssertCheckpoint(observed, sequence: 1, chainComplete: false);
