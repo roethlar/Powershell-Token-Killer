@@ -2554,3 +2554,24 @@ review scope, model, and effort after that transport was removed.
 Reviewed the complete amended resilience plan; no material issue found. This
 acceptance records plan quality only and does not authorize implementation,
 merge, push, history rewriting, or live routing.
+
+---
+
+**MCP RESILIENCE R0 IMPLEMENTATION — EXTERNAL REVIEW BLOCKED.** Claude Code
+2.1.211 was dispatched at exact fixed range
+`215e10fcfede9cf200b21b3c0cda95d4fc712ddd..c1d809f51b74b97a04a13fe32a5b72afeb4d15af`
+with model `claude-fable-5`, effort `max`, a schema-constrained verdict, and an
+isolated disposable-worktree requirement. A bounded smoke probe succeeded and
+its `modelUsage` contained `claude-fable-5` and no Opus model. The 30-minute
+review attempt and the playbook's one 45-minute retry both returned no output,
+so neither supplied a verdict, matching SHAs, or `guard_confirmed=true`; both
+are fail-closed and not accepted as of 2026-07-16T04:15:54Z. Each disposable
+reviewer tree was clean and removed after its process exited, and the coder
+tree remained clean.
+
+The separate in-repo contract audit accepted current head and the full/native
+verification is recorded in `.agents/machines.md`, but those facts do not
+replace the owner-required Fable implementation review. R0 therefore remains
+unmerged pending a successful fixed-SHA rerun or an explicit owner change to
+the review gate. Contested/blocker detail:
+`.agents/review/mcp-resilience-r0-review.contested.md`.

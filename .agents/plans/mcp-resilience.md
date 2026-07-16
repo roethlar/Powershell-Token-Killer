@@ -1,7 +1,10 @@
 # Plan: resilient MCP guardian and automatic backend recovery
 
 **Status:** PLANNING BOUNDARY OWNER-APPROVED 2026-07-15; R0 IMPLEMENTATION
-OWNER-AUTHORIZED 2026-07-15; R1-R7 NOT AUTHORIZED. The approved boundary is:
+OWNER-AUTHORIZED 2026-07-15; R0 CODE, TESTS, AND PLATFORM EVIDENCE COMPLETE AT
+`c1d809f`, BUT REQUIRED FIXED-SHA IMPLEMENTATION REVIEW NOT ACCEPTED BECAUSE
+CLAUDE FABLE RETURNED NO VERDICT BEFORE BOTH BOUNDED ATTEMPTS EXPIRED; R1-R7
+NOT AUTHORIZED. The approved boundary is:
 add two recovery
 layers so the MCP host automatically replaces failed session workers and a
 minimal public-pipe guardian automatically restarts the host; neither layer

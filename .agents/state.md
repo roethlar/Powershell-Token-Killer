@@ -85,8 +85,10 @@ short and update it when important repo facts change.
 - **The two-layer MCP resilience planning boundary is owner-approved; its
   complete reconciled draft passed final independent fixed-SHA review at
   `b4a2c0c` and is landed on local `master` at review-record head `6ed0167`;
-  R0 is owner-authorized and in progress on `impl/mcp-resilience-r0`, while
-  R1-R7 are not authorized.** The
+  R0 code, tests, independent contract audit, and platform evidence are
+  complete on `impl/mcp-resilience-r0` at `c1d809f`, but its required
+  fixed-SHA Fable implementation review is blocked and the branch is not
+  merged; R1-R7 are not authorized.** The
   target keeps one public stdio guardian alive while it
   restarts an exact-version private host, and makes a healthy host replace an
   unexpectedly lost session worker. It never replays ambiguous work, changes
@@ -114,6 +116,12 @@ short and update it when important repo facts change.
   readiness gate: delay expiry permits only `ptk_state`, and a fresh operation
   waits for readiness plus pre-write dispatch revalidation. After private
   write begins, the existing `outcome_unknown`/no-replay boundary still wins.
+  Exact R0 verification and direct macOS/Windows evidence are recorded in
+  `.agents/machines.md`. The in-repo independent audit found no R0 blocker.
+  Claude Code 2.1.211 was smoke-proved to route `claude-fable-5` with maximum
+  effort and no Opus usage, but the fixed-range review and its one permitted
+  retry each expired without any verdict envelope; fail-closed details live in
+  `.agents/review/mcp-resilience-r0-review.contested.md`.
 - **CI portability repair is complete at test-only code head `6193ae4`.**
   GitHub Actions run `29316766579` at docs-only descendant `e3b1dfd` failed
   Windows at Slice 8's newly introduced five-second overlap checkpoint and
@@ -232,9 +240,11 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Complete resilience R0's exact contract freeze and disposable native
-   feasibility proofs, run the full battery and fixed-SHA review, and do not
-   begin R1 without a separate explicit authorization.
+1. Obtain the required `claude-fable-5` maximum-effort fixed-SHA acceptance for
+   resilience R0 range `215e10f..c1d809f`, record it, then locally merge the
+   accepted branch. The implementation, battery, independent audit, and native
+   evidence are already complete. Do not begin R1 without separate explicit
+   authorization.
 2. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
@@ -257,8 +267,22 @@ short and update it when important repo facts change.
 - GitHub issue #3 remains open (verified 2026-07-11): item 1 landed; items
   2-4 are an unplanned follow-up candidate, while its permission-bypass
   concern belongs to the open security track.
+- A pre-existing `AuditAnchoredRuntimeTests` assertion can observe the short
+  interval between the final evidence-file publication and removal of its
+  `.anchoring.*.script` temporary. It passed an isolated 10/10 and a clean
+  complete rerun; repair the test synchronization in a separate scoped slice,
+  not by weakening R0.
 
 ## Blockers
+
+- **Resilience R0 fixed-SHA external review has no accepted verdict.** Claude
+  Code 2.1.211 was explicitly routed to `claude-fable-5` at effort `max`; the
+  model-identifying smoke probe succeeded, but the 30-minute review and its
+  one 45-minute fail-closed retry returned no output. Both disposable reviewer
+  trees were clean and removed. See
+  `.agents/review/mcp-resilience-r0-review.contested.md`; do not merge R0 or
+  start R1 until the mandated review succeeds or the owner explicitly changes
+  that gate.
 
 - **Windows wiring requires a hard supervisor/worker role cutover.**
   `Program.cs`, `BashProcessRunner`, `RtkProcessRunner`, and `JobManager` still
@@ -266,16 +290,6 @@ short and update it when important repo facts change.
   cannot race the Windows launcher's temporarily inheritable selected handles.
   The wired supervisor must not retain an in-process user-runtime or generic-
   spawn fallback.
-- **Unix containment contract is incomplete; Windows work is not blocked:**
-  the canonical audited-harness plan fixes `START_FAILED` as a stage byte plus
-  errno but does not enumerate stage values, and it requires bounded broker
-  TERM/KILL/reap without fixing those intervals or their relationship to
-  `timeoutContainmentGrace`. Resilience R0 must separately freeze outer-broker
-  intervals and `hostContainmentGrace`. The plan also does not pin native
-  macOS/Linux build baselines, so moving runners could emit authenticated but
-  incompatible binaries. Freeze these values before the Unix broker/build
-  sub-slices; do not invent them during implementation. The independent
-  Windows Job Object sub-slice can proceed without them.
 - **Decision-log conflict, correction blocked by the owner hold:**
   `.agents/decisions.md` still describes the policy-file gate as the open
   response after its criterion fires, while the later explicit owner call in
