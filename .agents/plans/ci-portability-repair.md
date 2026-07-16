@@ -1,15 +1,17 @@
 # Plan: CI portability repair after audited-harness Slice 6
 
-**Status:** REOPENED 2026-07-16 for owner-approved Slices 13-16 after GitHub
-Actions run `29536074900` exposed four independent pre-existing test-harness
-races at exact head `af8189c`. Slices 11-12 remain implemented and directly
-verified at repair head `f658f21`; the follow-up run proved that their six R0
-checkout failures and nested-Job marker failure are closed. Slices 1-10 remain
-completed at test-only code head `6193ae4`, with green hosted evidence in run
-`29331077331` at docs descendant `ccee469`. The owner approved exactly four
-separate test-only commits, the complete battery, and a hosted rerun. This work
-does not change production runtime behavior, install RTK into ordinary unit-
-test jobs, or decide whether a future PTK release bundles a pinned RTK binary.
+**Status:** IMPLEMENTED AND DIRECTLY VERIFIED 2026-07-16 at final test-only
+head `5642376`; the owner-approved hosted rerun remains pending. GitHub Actions
+run `29536074900` exposed four independent pre-existing test-harness races at
+exact head `af8189c`. Slices 13-16 each landed as a separate test-only commit;
+one additional test-only review-closure commit freezes the deadline helper
+that Slice 15 relies on. Slices 11-12 remain implemented and directly verified
+at repair head `f658f21`; the follow-up run proved that their six R0 checkout
+failures and nested-Job marker failure are closed. Slices 1-10 remain completed
+at test-only code head `6193ae4`, with green hosted evidence in run
+`29331077331` at docs descendant `ccee469`. This work does not change
+production runtime behavior, install RTK into ordinary unit-test jobs, or
+decide whether a future PTK release bundles a pinned RTK binary.
 
 ## Evidence and problem
 
@@ -349,6 +351,54 @@ implementations changed in Slices 11-12.
   the synchronous reader exhausting the fixed one-second retry window. Release
   must occur synchronously in the callback; enlarging the production retry
   window would hide the harness race and is out of scope.
+
+Slice 13 landed at `8364707`. The peer-entry signal makes the final execution
+count meaningful: after the peer executor has entered, exactly two calls prove
+that the expired request never executed. The focused test passed twenty
+consecutive repetitions after the hosted failure supplied the old red case.
+
+Slice 14 landed at `2e0d70a`. A temporary one-second private-output opening
+delay made the old 500 ms setup call fail for all three theory rows; the
+explicit ten-second setup budget passed all three under the same delay. After
+restoration, the final theory passed ten consecutive repetitions while the
+subject timeout and host default remained 500 ms.
+
+Slice 15 landed at `54c9c2b`. The native-source adjacency guard failed under a
+temporary intervening statement and passed after restoration; the runtime
+guardian cases then passed three consecutive eight-case runs. Independent
+review found that a future delay inside `sleep_until` could still violate the
+frozen 2,000 ms escalation while passing the corrected wall-clock assertion.
+Test-only follow-up `5642376` freezes the helper's monotonic comparison,
+unmodified remaining-time calculation, and 25 ms sleep cap. Adding 1,000 ms
+to that calculation made the guard fail; restoration passed the complete
+eleven-test guardian class. Targeted re-review accepted the closure with no
+remaining material finding.
+
+Slice 16 landed at `a031556`. On `NETWATCH-01`, disabling only the production
+error-32 classifier made the corrected test fail at its retained-handle
+timeout. The production source restored to its exact original hash and the
+committed test then passed 10/10. No production retry interval changed.
+
+The complete macOS battery passed at final head `5642376`: all 1,532 server
+tests, 141 Pester passes with two expected platform skips, and the full
+zero-warning handshake. Complete Linux and Windows batteries passed at
+`a031556`, whose only final-tip difference is the additional source assertion:
+Linux passed all 1,532 server tests, 141 Pester tests with two expected skips,
+and the handshake; Windows passed all 1,532 server tests under `SYSTEM`, 142
+Pester tests with one expected skip under the ordinary no-profile account,
+and the handshake. The final `5642376` source guard separately passed from
+exact disposable checkouts on both hosts. Linux retains its already-recorded
+ARM64 MSBuild-only `protoc` workaround, so that result is behavior evidence,
+not clean-build evidence. A first Windows full attempt transiently observed a
+pre-existing journal quota-lock DACL publication race and is not counted; its
+clean rerun passed. All scoped validation tasks, processes, archives,
+checkouts, scripts, and logs were removed, and no new validation certificate
+remained.
+
+Independent review of `af8189c..a031556` accepted Slices 13, 14, and 16 and
+raised only the Slice 15 helper gap closed by `5642376`. Targeted re-review
+accepted the final head with no remaining material finding, production change,
+or weakened contract. Hosted matrix evidence remains required.
 
 ## Non-goals
 

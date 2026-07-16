@@ -679,3 +679,44 @@ was disposable-checkout validation and did not update an installed payload._
   processes, checkouts, bundles, scripts, logs, and local proof directories
   were removed, with zero scoped residue afterward. Existing checkouts,
   installed payloads, and unrelated host configuration were unchanged.
+
+## CI portability Slices 13-16 verification (Mac, Linux, and Windows, 2026-07-16)
+
+_The four runtime-equivalent repairs were verified at exact head
+`a031556034ec41adf3f97de4248e6553f28ac90d`; the independent-review source-
+guard closure was verified at final head
+`5642376563fe9b0d1eb8c2512291fec45cf29bc6`._
+
+- On `nagatha.local`, final head `5642376` passed 1,532/1,532 server tests,
+  141 Pester tests with two expected platform skips, and the complete stdio
+  handshake with zero warnings and errors. Homebrew PowerShell 7.6.3 was
+  installed but not linked into the ordinary command path, so the passing
+  battery explicitly prepended `/opt/homebrew/opt/powershell/bin`. The first
+  diagnostic run without that directory failed 58 job-dependent tests solely
+  because `pwsh` was unresolved; it is not counted, and its fifteen exact
+  test-created job directories were removed. The SDK's first-use text referred
+  to its feature-band sentinel: the only local ASP.NET development identity
+  predates this validation and was preserved.
+- On the Ubuntu 26.04 ARM64 VM at `192.168.64.5`, exact head `a031556` passed
+  1,532/1,532 server tests, 141 Pester tests with two expected platform skips,
+  and the full zero-warning handshake. The final `5642376` deadline-helper
+  source guard then passed 1/1 from a new exact checkout. Both runs required
+  the already-recorded direct-protoc generation around the host's MSBuild-only
+  ARM64 `protoc` exit 139; they validate behavior, not a clean ARM64 build.
+  All scoped checkouts, job directories, and matching processes were removed.
+- On `NETWATCH-01`, disabling only the production Windows error-32 classifier
+  made the corrected checkpoint test fail at the retained-handle timeout. The
+  production file restored to its committed SHA-256 and the focused test then
+  passed 10/10. A first full `SYSTEM` run passed 1,531/1,532; its sole
+  non-counted failure transiently observed the pre-existing journal quota lock
+  before its owner-only DACL. A clean rerun passed 1,532/1,532. Under nested
+  no-profile `NETWATCH-01\michael`, Pester 5.8.0 passed 142 tests with one
+  expected skip and the full zero-warning handshake passed. The final
+  `5642376` deadline-helper source guard separately passed 1/1 under that
+  ordinary identity.
+- Windows production/test source hashes matched the committed bytes. The
+  `SYSTEM` certificate store was empty before and after the full run; one
+  pre-existing Michael ASP.NET development certificate was preserved. Final
+  checks found zero scoped tasks, processes, checkouts, archives, scripts, or
+  logs on either remote host. No existing repository or installed PTK payload
+  changed.

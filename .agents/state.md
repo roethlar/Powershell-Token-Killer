@@ -154,18 +154,18 @@ short and update it when important repo facts change.
   evidence is in `.agents/review/index.md`; the earlier fail-closed attempts
   and their resolution remain in
   `.agents/review/mcp-resilience-r0-review.contested.md`.
-- **CI portability Slices 11-12 are implemented and directly verified at
-  exact repair head `f658f21`; the hosted matrix rerun is pending.** Run
-  `29520427103` passed Ubuntu, macOS, and every SIEM job but exposed six
-  Windows CRLF conversions in byte-exact R0 fixtures plus one final-name
-  marker sharing race. The repair pins only the current R0 text-artifact
-  extensions to LF and publishes fixture markers only after the writer closes.
-  Focused red/green mutations, the complete macOS and direct Windows batteries,
-  and independent review all passed without a production runtime change or a
-  weakened assertion. Slices 1-10 remain complete at test-only head `6193ae4`
-  with green hosted run `29331077331`. Canonical evidence is in
-  `.agents/plans/ci-portability-repair.md` and `.agents/machines.md`; RTK
-  distribution remains a separate decision.
+- **CI portability Slices 11-16 are implemented and directly verified at final
+  test-only head `5642376`; the hosted matrix rerun is pending.** Run
+  `29536074900` proved Slices 11-12 closed their R0 checkout and marker races,
+  then exposed four older scheduler, reprime-setup, Unix deadline, and Windows
+  retry-notification assumptions. Each repair changes only its test; the
+  review closure additionally freezes the native deadline helper without
+  restoring a scheduler-latency ceiling. Focused red/green proofs, the complete
+  macOS battery, direct Linux/Windows batteries at the runtime-equivalent
+  preceding head, exact final-head platform guards, and independent review all
+  passed. Slices 1-10 remain complete with green hosted evidence. Canonical
+  details are in `.agents/plans/ci-portability-repair.md` and
+  `.agents/machines.md`; RTK distribution remains a separate decision.
 - **Audited-harness Slice 6 is complete locally.** Code
   head `7999328` moves invoke/job/state/reset behavior and session-lifetime
   caches behind one owning `SessionRuntime`, leaves audit and output
