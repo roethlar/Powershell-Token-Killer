@@ -296,7 +296,7 @@
   ],
   "artifact_sha256": {
     "public-tool-contract.json": "8906a9117fccb3fa7040f0ab8ba703256793278fbd22b2c674b8104fdbb88435",
-    "public-recovery.schema.json": "c5b5ae2cc710c62c23f5c564371fd8b743ad1056769424bf8cf4b4e85fe046ce",
+    "public-recovery.schema.json": "cf218e4a1617b79a0370ee0a62f000f565572d50b2709db4374e5724b41e7925",
     "public-state.schema.json": "b189cc62a991244c29a33bbc7ef5c2d4fe971098e0b3cdf5f8ace982c448c9f5",
     "guardian-host-protocol.json": "568cb9961bb54ca24c2b146d625f8f5678b30fdce61125efc13cd5a23dca925e",
     "guardian-host-protocol.schema.json": "bc69f121fe35eac37084982c7254232648a52c52aa13857c2e5afcd83a81fa08",

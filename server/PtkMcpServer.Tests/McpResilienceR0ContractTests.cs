@@ -9,7 +9,7 @@ namespace PtkMcpServer.Tests;
 
 public sealed class McpResilienceR0ContractTests
 {
-    private const string ContractSha256 = "06d722245ba23554818dafab683e6bb3af93d86925afbf674f5a2fd0f5e971a4";
+    private const string ContractSha256 = "b34b41480b65766331ccae62f3e96c3992bb56e80ad85f942e523ad4fe4e22a2";
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
     private static readonly Regex LowerSha256 = new("^[0-9a-f]{64}$", RegexOptions.CultureInvariant);
 
@@ -116,7 +116,9 @@ public sealed class McpResilienceR0ContractTests
             Strings(recovery.GetProperty("detail_codes")),
             Strings(recoverySchema.RootElement.GetProperty("$defs").GetProperty("detail_code").GetProperty("enum")));
         Assert.Equal(4096, recoverySchema.RootElement.GetProperty("x-ptk-maximum-compact-utf8-bytes").GetInt32());
-        var sessionRecoveryGuard = Assert.Single(recoverySchema.RootElement.GetProperty("allOf").EnumerateArray());
+        var sessionRecoveryGuard = recoverySchema.RootElement.GetProperty("allOf").EnumerateArray()
+            .Single(guard => guard.GetProperty("if").GetProperty("properties")
+                .GetProperty("detail_code").GetProperty("const").GetString() == "session_recovering");
         Assert.Equal("session_recovering", sessionRecoveryGuard.GetProperty("if").GetProperty("properties")
             .GetProperty("detail_code").GetProperty("const").GetString());
         Assert.Equal("#/$defs/session_ready_gate", sessionRecoveryGuard.GetProperty("then")
@@ -132,6 +134,32 @@ public sealed class McpResilienceR0ContractTests
                 .GetProperty("properties").GetProperty("state").GetProperty("enum")));
         AssertObjectSchemaClosed(stateSchema.RootElement.GetProperty("$defs").GetProperty("host"));
         AssertObjectSchemaClosed(stateSchema.RootElement.GetProperty("$defs").GetProperty("session"));
+    }
+
+    [Fact]
+    public void Public_recovery_schema_closes_detail_phase_pairs()
+    {
+        using var schema = ReadStrictJson("public-recovery.schema.json");
+        var phaseContract = schema.RootElement.GetProperty("x-ptk-detail-code-contract");
+        var allPhases = new[] { "attempting", "backoff", "bootstrap", "circuit_open", "containment", "half_open" };
+        Assert.Equal(allPhases, Strings(phaseContract.GetProperty("backend_lost_before_dispatch")
+            .GetProperty("allowed_recovery_phases")));
+        Assert.Equal(["circuit_open"], Strings(phaseContract.GetProperty("host_circuit_open")
+            .GetProperty("allowed_recovery_phases")));
+        var activeHostPhases = new[] { "attempting", "backoff", "bootstrap", "containment", "half_open" };
+        Assert.Equal(activeHostPhases, Strings(phaseContract.GetProperty("host_recovering")
+            .GetProperty("allowed_recovery_phases")));
+        Assert.Equal(allPhases, Strings(phaseContract.GetProperty("session_recovering")
+            .GetProperty("allowed_recovery_phases")));
+
+        var guards = schema.RootElement.GetProperty("allOf").EnumerateArray().ToArray();
+        Assert.Equal(3, guards.Length);
+        var circuit = guards.Single(guard => GuardDetailCode(guard) == "host_circuit_open");
+        Assert.Equal("circuit_open", circuit.GetProperty("then").GetProperty("properties")
+            .GetProperty("recovery_phase").GetProperty("const").GetString());
+        var host = guards.Single(guard => GuardDetailCode(guard) == "host_recovering");
+        Assert.Equal(activeHostPhases, Strings(host.GetProperty("then").GetProperty("properties")
+            .GetProperty("recovery_phase").GetProperty("enum")));
     }
 
     [Fact]
@@ -875,6 +903,9 @@ public sealed class McpResilienceR0ContractTests
         Assert.True(allOf.Length >= 2);
         return allOf[1].GetProperty("oneOf").EnumerateArray().ToArray();
     }
+
+    private static string GuardDetailCode(JsonElement guard) => guard.GetProperty("if")
+        .GetProperty("properties").GetProperty("detail_code").GetProperty("const").GetString()!;
 
     private static JsonElement[] IdentityRules(JsonElement definition)
     {

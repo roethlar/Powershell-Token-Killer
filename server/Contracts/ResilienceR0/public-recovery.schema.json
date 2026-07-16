@@ -100,6 +100,28 @@
   "allOf": [
     {
       "if": {
+        "properties": { "detail_code": { "const": "host_circuit_open" } },
+        "required": ["detail_code"]
+      },
+      "then": {
+        "properties": {
+          "recovery_phase": { "const": "circuit_open" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": { "detail_code": { "const": "host_recovering" } },
+        "required": ["detail_code"]
+      },
+      "then": {
+        "properties": {
+          "recovery_phase": { "enum": ["attempting", "backoff", "bootstrap", "containment", "half_open"] }
+        }
+      }
+    },
+    {
+      "if": {
         "properties": { "detail_code": { "const": "session_recovering" } },
         "required": ["detail_code"]
       },
@@ -113,18 +135,22 @@
   "x-ptk-detail-code-contract": {
     "backend_lost_before_dispatch": {
       "retryable": true,
+      "allowed_recovery_phases": ["attempting", "backoff", "bootstrap", "circuit_open", "containment", "half_open"],
       "allowed_gate_kinds": ["host_ready", "session_ready"]
     },
     "host_circuit_open": {
       "retryable": true,
+      "allowed_recovery_phases": ["circuit_open"],
       "allowed_gate_kinds": ["host_ready", "session_ready"]
     },
     "host_recovering": {
       "retryable": true,
+      "allowed_recovery_phases": ["attempting", "backoff", "bootstrap", "containment", "half_open"],
       "allowed_gate_kinds": ["host_ready", "session_ready"]
     },
     "session_recovering": {
       "retryable": true,
+      "allowed_recovery_phases": ["attempting", "backoff", "bootstrap", "circuit_open", "containment", "half_open"],
       "allowed_gate_kinds": ["session_ready"]
     },
     "host_containment_unconfirmed": { "retryable": false },
