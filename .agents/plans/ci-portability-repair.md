@@ -1,12 +1,13 @@
 # Plan: CI portability repair after audited-harness Slice 6
 
-**Status:** IMPLEMENTED AND DIRECTLY VERIFIED 2026-07-16 at final test-only
-head `5642376`; the owner-approved hosted rerun remains pending. GitHub Actions
-run `29536074900` exposed four independent pre-existing test-harness races at
-exact head `af8189c`. Slices 13-16 each landed as a separate test-only commit;
-one additional test-only review-closure commit freezes the deadline helper
-that Slice 15 relies on. Slices 11-12 remain implemented and directly verified
-at repair head `f658f21`; the follow-up run proved that their six R0 checkout
+**Status:** COMPLETE 2026-07-16. Direct verification passed at final test-only
+head `5642376`, and GitHub Actions run `29541559607` passed all six jobs at
+exact pushed documentation descendant `7bc08aa`. The preceding run
+`29536074900` exposed four independent pre-existing test-harness races at exact
+head `af8189c`. Slices 13-16 each landed as a separate test-only commit; one
+additional test-only review-closure commit freezes the deadline helper that
+Slice 15 relies on. Slices 11-12 remain implemented and directly verified at
+repair head `f658f21`; the follow-up run proved that their six R0 checkout
 failures and nested-Job marker failure are closed. Slices 1-10 remain completed
 at test-only code head `6193ae4`, with green hosted evidence in run
 `29331077331` at docs descendant `ccee469`. This work does not change
@@ -398,7 +399,9 @@ remained.
 Independent review of `af8189c..a031556` accepted Slices 13, 14, and 16 and
 raised only the Slice 15 helper gap closed by `5642376`. Targeted re-review
 accepted the final head with no remaining material finding, production change,
-or weakened contract. Hosted matrix evidence remains required.
+or weakened contract. GitHub Actions run `29541559607` then passed Ubuntu,
+macOS, and Windows product batteries plus all three SIEM jobs at exact pushed
+head `7bc08aa2ae6548bbc7a8f2bad434af57b833e8b8`.
 
 ## Non-goals
 

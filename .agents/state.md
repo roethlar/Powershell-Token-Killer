@@ -154,8 +154,9 @@ short and update it when important repo facts change.
   evidence is in `.agents/review/index.md`; the earlier fail-closed attempts
   and their resolution remain in
   `.agents/review/mcp-resilience-r0-review.contested.md`.
-- **CI portability Slices 11-16 are implemented and directly verified at final
-  test-only head `5642376`; the hosted matrix rerun is pending.** Run
+- **CI portability Slices 11-16 are complete at final test-only head
+  `5642376`; hosted run `29541559607` passed all six jobs at exact pushed
+  descendant `7bc08aa`.** Run
   `29536074900` proved Slices 11-12 closed their R0 checkout and marker races,
   then exposed four older scheduler, reprime-setup, Unix deadline, and Windows
   retry-notification assumptions. Each repair changes only its test; the
@@ -163,8 +164,9 @@ short and update it when important repo facts change.
   restoring a scheduler-latency ceiling. Focused red/green proofs, the complete
   macOS battery, direct Linux/Windows batteries at the runtime-equivalent
   preceding head, exact final-head platform guards, and independent review all
-  passed. Slices 1-10 remain complete with green hosted evidence. Canonical
-  details are in `.agents/plans/ci-portability-repair.md` and
+  passed, followed by green Ubuntu/macOS/Windows product and SIEM jobs. Slices
+  1-10 remain complete with green hosted evidence. Canonical details are in
+  `.agents/plans/ci-portability-repair.md` and
   `.agents/machines.md`; RTK distribution remains a separate decision.
 - **Audited-harness Slice 6 is complete locally.** Code
   head `7999328` moves invoke/job/state/reset behavior and session-lifetime
