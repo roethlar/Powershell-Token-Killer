@@ -285,11 +285,11 @@ short and update it when important repo facts change.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures.
 3. Do not begin resilience R1 without separate explicit authorization.
-3. Release-distribution slice 3 is ordered after resilience R7 and consumes
+4. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
    slice 4.
-4. When the owner releases the decisions hold, reconcile the rejected
+5. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
 
