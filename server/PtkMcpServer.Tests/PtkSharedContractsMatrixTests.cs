@@ -180,6 +180,15 @@ public sealed class PtkSharedContractsMatrixTests
     }
 
     [Fact]
+    public void Recovery_manifest_decoder_never_materializes_the_full_document_as_a_string()
+    {
+        var source = File.ReadAllText(RecoveryManifestCodecSourcePath());
+
+        Assert.DoesNotContain("StrictUtf8.GetString", source, StringComparison.Ordinal);
+        Assert.DoesNotContain("Encoding.UTF8.GetString", source, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public void Recovery_manifest_rejects_collection_order_count_null_and_coverage_failures()
     {
         var firstTemplate = Template("alpha", "a"u8.ToArray(), Digest('1'));
@@ -492,4 +501,14 @@ public sealed class PtkSharedContractsMatrixTests
         new(new CanonicalAlias(alias), new WorkerGenerationHighWatermark(generation));
 
     private static Sha256Digest Digest(char character) => new(new string(character, 64));
+
+    private static string RecoveryManifestCodecSourcePath(
+        [System.Runtime.CompilerServices.CallerFilePath] string testSourcePath = "") =>
+        Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(testSourcePath) ??
+                throw new InvalidOperationException("Test source path is unavailable."),
+            "..",
+            "PtkSharedContracts",
+            "Recovery",
+            "RecoveryManifestCodec.cs"));
 }

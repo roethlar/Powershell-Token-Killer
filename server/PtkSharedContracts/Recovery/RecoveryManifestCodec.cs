@@ -1,13 +1,10 @@
 using System.Security.Cryptography;
-using System.Text;
 using System.Text.Json;
 
 namespace PtkSharedContracts;
 
 public static class RecoveryManifestCodec
 {
-    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
-
     public static byte[] Encode(RecoveryManifest manifest, bool appendFinalLf = false)
     {
         ArgumentNullException.ThrowIfNull(manifest);
@@ -60,7 +57,6 @@ public static class RecoveryManifestCodec
         if (hasFinalLf) bytes = bytes[..^1];
         if (bytes.Span.IndexOf((byte)'\r') >= 0 || bytes.Span.IndexOf((byte)'\n') >= 0)
             throw new InvalidDataException("Recovery manifest must be one compact JSON object.");
-        _ = StrictUtf8.GetString(bytes.Span);
         using var document = JsonDocument.Parse(bytes, StrictJson.DocumentOptions);
         StrictJson.RejectDuplicateProperties(document.RootElement);
         var root = document.RootElement;
