@@ -258,25 +258,33 @@ short and update it when important repo facts change.
 - **Standing GitHub authority:** the owner granted persistent permission on
   2026-07-10 to comment, close, and triage issues in this repository as
   appropriate without per-action asks.
-- **Mini-SIEM S3H is complete at code head `c726a33`.** The receiver now
-  applies one SIEM-local, fail-closed protected-path boundary before parsing or
-  use: retained identity-stable config/TLS reads, exact numeric-UID POSIX
-  modes plus macOS ACL rejection, exact protected one-ACE Windows DACLs,
-  lexical link/reparse rejection, mutable-storage identity-collision checks,
-  and eager atomic owner-only DB/WAL/SHM startup with live identity
-  revalidation before Kestrel can bind. Existing insecure objects are never
-  repaired. The cross-platform matrix, guard mutations, independent audit,
-  and exact host evidence are recorded in `.agents/machines.md`. This closes
-  current config/TLS/SQLite enforcement; full acceptance row 7 still waits for
-  the later slice that introduces and protects the currently absent custody
-  checkpoint/anchor path.
+- **Mini-SIEM S3H is complete at code head `c726a33` (record head `3bacbc4`).**
+  The receiver now applies one SIEM-local, fail-closed protected-path boundary
+  before parsing or use: retained identity-stable config/TLS reads, exact
+  numeric-UID POSIX modes plus macOS ACL rejection, exact protected one-ACE
+  Windows DACLs, lexical link/reparse rejection, mutable-storage
+  identity-collision checks, and eager atomic owner-only DB/WAL/SHM startup
+  with live identity revalidation before Kestrel can bind. Existing insecure
+  objects are never repaired. The cross-platform matrix, guard mutations,
+  independent audit, and exact host evidence are recorded in
+  `.agents/machines.md`. This closes current config/TLS/SQLite enforcement;
+  full acceptance row 7 still waits for the later slice that introduces and
+  protects the currently absent custody checkpoint/anchor path.
+- **Session stop (2026-07-17 handoff after Grok Codex-resume):** branch
+  `plan/mini-siem-storage-hardening` is clean at `3bacbc4`, unmerged and
+  unpushed relative to `master`/`origin`. No further SIEM code work in flight.
+  Awaiting owner direction to review, merge, park, or push. Do not start S4–S6
+  or touch PTK runtime from this worktree without a new go.
 
 ## Next
 
-1. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
+1. Owner call only: review / merge this branch into `master` / park / push —
+   no agent-invented land path. After land, refresh main-checkout
+   `.agents/state.md` so S3H is no longer "branch-only."
+2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures.
-2. Do not begin resilience R1 without separate explicit authorization.
+3. Do not begin resilience R1 without separate explicit authorization.
 3. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
