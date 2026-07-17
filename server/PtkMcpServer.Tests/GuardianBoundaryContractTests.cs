@@ -277,10 +277,50 @@ public sealed class GuardianBoundaryContractTests
                 typeof(AuditCallContextAccessor),
                 typeof(OutputStore),
             ]);
+        var sessionInvokeBoundaries = typeof(SessionRuntime)
+            .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Where(method => method.Name == "InvokeAsync")
+            .ToArray();
         var sessionBoundary = Assert.Single(
-            typeof(SessionRuntime).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic),
-            method => method.Name == "InvokeAsync");
+            sessionInvokeBoundaries,
+            method => method.GetParameters()[0].ParameterType == typeof(string));
         Assert.Equal(typeof(OutputStore), sessionBoundary.GetParameters()[^1].ParameterType);
+        var privateInvokeBoundaries = sessionInvokeBoundaries
+            .Where(method => method.GetParameters()[0].ParameterType ==
+                typeof(SessionOperationAuthority))
+            .ToArray();
+        Assert.Equal(2, privateInvokeBoundaries.Length);
+        Assert.Contains(
+            privateInvokeBoundaries,
+            method => method.GetParameters()[1].ParameterType ==
+                typeof(InvokeForegroundOperation));
+        Assert.Contains(
+            privateInvokeBoundaries,
+            method => method.GetParameters()[1].ParameterType ==
+                typeof(InvokeBackgroundOperation));
+        Assert.All(
+            privateInvokeBoundaries,
+            method => Assert.Equal(
+                typeof(IOutputCaptureOwner),
+                method.GetParameters()[^1].ParameterType));
+        var privateJobBoundaries = typeof(SessionRuntime)
+            .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
+            .Where(method => method.Name == "JobAsync" &&
+                method.GetParameters()[0].ParameterType ==
+                    typeof(SessionOperationAuthority))
+            .ToArray();
+        Assert.Equal(4, privateJobBoundaries.Length);
+        Assert.Equal(
+            [
+                typeof(JobKillOperation),
+                typeof(JobListOperation),
+                typeof(JobOutputOperation),
+                typeof(JobStatusOperation),
+            ],
+            privateJobBoundaries
+                .Select(method => method.GetParameters()[1].ParameterType)
+                .OrderBy(type => type.Name)
+                .ToArray());
         var sessionCore = Assert.Single(
             typeof(SessionRuntime).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic),
             method => method.Name == "InvokeCoreAsync");

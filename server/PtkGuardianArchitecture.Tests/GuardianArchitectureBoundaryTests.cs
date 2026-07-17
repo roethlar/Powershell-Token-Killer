@@ -550,22 +550,32 @@ public sealed class GuardianArchitectureBoundaryTests
             prepareStart.DescendantNodes().OfType<InvocationExpressionSyntax>(),
             invocation => invocation.Expression.ToString() == "_publicJobIdAllocator.Allocate");
 
+        var reservedPrepares = jobManager.Members
+            .OfType<MethodDeclarationSyntax>()
+            .Where(method => method.Identifier.ValueText == "PrepareStartWithReservedId")
+            .ToArray();
+        Assert.Equal(2, reservedPrepares.Length);
+        Assert.All(
+            reservedPrepares,
+            reservedPrepare =>
+            {
+                Assert.Contains(
+                    reservedPrepare.ParameterList.Parameters,
+                    parameter => parameter.Type?.ToString() == "PublicJobId" &&
+                        parameter.Identifier.ValueText == "publicJobId");
+                Assert.Contains(
+                    reservedPrepare.ParameterList.Parameters,
+                    parameter => parameter.Type?.ToString() == "CapabilityToken" &&
+                        parameter.Identifier.ValueText == "jobCapability");
+                Assert.DoesNotContain(
+                    reservedPrepare.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+                    invocation => invocation.Expression.ToString().Contains(
+                        "Allocate",
+                        StringComparison.Ordinal));
+            });
         var reservedPrepare = Assert.Single(
-            jobManager.Members.OfType<MethodDeclarationSyntax>(),
-            method => method.Identifier.ValueText == "PrepareStartWithReservedId");
-        Assert.Contains(
-            reservedPrepare.ParameterList.Parameters,
-            parameter => parameter.Type?.ToString() == "PublicJobId" &&
-                parameter.Identifier.ValueText == "publicJobId");
-        Assert.Contains(
-            reservedPrepare.ParameterList.Parameters,
-            parameter => parameter.Type?.ToString() == "CapabilityToken" &&
-                parameter.Identifier.ValueText == "jobCapability");
-        Assert.DoesNotContain(
-            reservedPrepare.DescendantNodes().OfType<InvocationExpressionSyntax>(),
-            invocation => invocation.Expression.ToString().Contains(
-                "Allocate",
-                StringComparison.Ordinal));
+            reservedPrepares,
+            method => method.ParameterList.Parameters.Count == 3);
         var reservedCoreCall = Assert.Single(
             reservedPrepare.DescendantNodes().OfType<InvocationExpressionSyntax>(),
             invocation => invocation.Expression.ToString() == "PrepareStartCore");
@@ -575,6 +585,13 @@ public sealed class GuardianArchitectureBoundaryTests
         Assert.Contains(
             reservedCoreCall.ArgumentList.Arguments,
             argument => argument.Expression.ToString() == "jobCapability");
+        var boundReservedPrepare = Assert.Single(
+            reservedPrepares,
+            method => method.ParameterList.Parameters.Count == 4);
+        Assert.Single(
+            boundReservedPrepare.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString() ==
+                "PrepareStartWithReservedId");
 
         var startPlan = Assert.Single(
             jobManagerRoot.DescendantNodes().OfType<RecordDeclarationSyntax>(),
@@ -704,6 +721,234 @@ public sealed class GuardianArchitectureBoundaryTests
         Assert.Same(
             resolution,
             runtimeCreate.ArgumentList.Arguments[^1].Expression);
+    }
+
+    [Fact]
+    public void Private_session_authority_forwards_wire_deadlines_and_job_capabilities_without_recomputation()
+    {
+        static string WithoutWhitespace(SyntaxNode node) =>
+            string.Concat(node.ToString().Where(character =>
+                !char.IsWhiteSpace(character)));
+
+        var paths = RepositoryPaths.Create();
+        var authorityRoot = ParseSourceRoot(Path.Combine(
+            paths.ServerDirectory,
+            "PtkMcpServer",
+            "Sessions",
+            "SessionOperationAuthority.cs"));
+        var authority = Assert.Single(
+            authorityRoot.DescendantNodes().OfType<ClassDeclarationSyntax>(),
+            declaration => declaration.Identifier.ValueText ==
+                "SessionOperationAuthority");
+        var authorityConstructor = Assert.Single(
+            authority.Members.OfType<ConstructorDeclarationSyntax>());
+        var exactDeadlineAssignment = Assert.Single(
+            authorityConstructor.DescendantNodes()
+                .OfType<AssignmentExpressionSyntax>(),
+            assignment => assignment.Left.ToString() ==
+                "AbsoluteDeadlineUnixTimeMilliseconds");
+        Assert.Equal(
+            "deadlineUnixTimeMilliseconds",
+            exactDeadlineAssignment.Right.ToString());
+        var projectedDeadlineAssignment = Assert.Single(
+            authorityConstructor.DescendantNodes()
+                .OfType<AssignmentExpressionSyntax>(),
+            assignment => assignment.Left.ToString() == "AbsoluteDeadlineUtc");
+        Assert.Equal(
+            "ProjectDeadlineUtc(deadlineUnixTimeMilliseconds)",
+            WithoutWhitespace(projectedDeadlineAssignment.Right));
+        var deadlineProjection = Assert.Single(
+            authority.Members.OfType<MethodDeclarationSyntax>(),
+            method => method.Identifier.ValueText == "ProjectDeadlineUtc");
+        Assert.Equal(
+            "deadlineUnixTimeMilliseconds>DateTimeOffset.MaxValue.ToUnixTimeMilliseconds()?DateTimeOffset.MaxValue:DateTimeOffset.FromUnixTimeMilliseconds(deadlineUnixTimeMilliseconds)",
+            WithoutWhitespace(deadlineProjection.ExpressionBody!.Expression));
+        var deadlineGate = Assert.Single(
+            authority.Members.OfType<MethodDeclarationSyntax>(),
+            method => method.Identifier.ValueText == "ThrowIfExpired");
+        Assert.Contains(
+            "DateTimeOffset.UtcNow.ToUnixTimeMilliseconds()>=AbsoluteDeadlineUnixTimeMilliseconds",
+            WithoutWhitespace(deadlineGate),
+            StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            authority.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString().Contains(
+                "ComputeDeadline",
+                StringComparison.Ordinal));
+        var backgroundFactory = Assert.Single(
+            authority.Members.OfType<MethodDeclarationSyntax>(),
+            method => method.Identifier.ValueText == "CreateBackgroundInvoke");
+        Assert.Equal(
+            ["OperationRequest", "CapabilityToken"],
+            backgroundFactory.ParameterList.Parameters
+                .Select(parameter => parameter.Type!.ToString()));
+        Assert.Single(
+            backgroundFactory.DescendantNodes().OfType<ObjectCreationExpressionSyntax>(),
+            creation => creation.Type.ToString() ==
+                "SessionBackgroundJobIdentity");
+
+        var messagesRoot = ParseSourceRoot(Path.Combine(
+            paths.ServerDirectory,
+            "PtkSharedContracts",
+            "GuardianHost",
+            "GuardianHostMessages.cs"));
+        var backgroundOperation = Assert.Single(
+            messagesRoot.DescendantNodes().OfType<ClassDeclarationSyntax>(),
+            declaration => declaration.Identifier.ValueText ==
+                "InvokeBackgroundOperation");
+        var backgroundOperationConstructor = Assert.Single(
+            backgroundOperation.Members.OfType<ConstructorDeclarationSyntax>());
+        Assert.Contains(
+            backgroundOperationConstructor.ParameterList.Parameters,
+            parameter => parameter.Type?.ToString() == "PublicJobId");
+        Assert.DoesNotContain(
+            backgroundOperationConstructor.ParameterList.Parameters,
+            parameter => parameter.Type?.ToString() == "CapabilityToken");
+        Assert.DoesNotContain(
+            backgroundOperation.Members.OfType<PropertyDeclarationSyntax>(),
+            property => property.Identifier.ValueText == "JobCapability");
+
+        var runtimeRoot = ParseSourceRoot(Path.Combine(
+            paths.ServerDirectory,
+            "PtkMcpServer",
+            "Sessions",
+            "SessionRuntime.cs"));
+        var runtime = Assert.Single(
+            runtimeRoot.DescendantNodes().OfType<ClassDeclarationSyntax>(),
+            declaration => declaration.Identifier.ValueText == "SessionRuntime");
+        var invokeCore = Assert.Single(
+            runtime.Members.OfType<MethodDeclarationSyntax>(),
+            method => method.Identifier.ValueText == "InvokeCoreAsync");
+        var deadline = Assert.Single(
+            invokeCore.DescendantNodes().OfType<VariableDeclaratorSyntax>(),
+            variable => variable.Identifier.ValueText == "deadline");
+        Assert.Equal(
+            "operationAuthority?.AbsoluteDeadlineUtc??audit?.Metadata.Request.DeadlineUtc??host.ComputeDeadline(timeoutSeconds)",
+            WithoutWhitespace(deadline.Initializer!.Value));
+        var executionDeadline = Assert.Single(
+            invokeCore.DescendantNodes().OfType<VariableDeclaratorSyntax>(),
+            variable => variable.Identifier.ValueText == "executionDeadline");
+        Assert.Equal(
+            "operationAuthority?.AbsoluteDeadlineUtc",
+            executionDeadline.Initializer!.Value.ToString());
+
+        var backgroundPreparation = Assert.Single(
+            invokeCore.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString() ==
+                "host.PrepareBackgroundExecutionAsync");
+        Assert.Equal(
+            "deadline",
+            backgroundPreparation.ArgumentList.Arguments[3].Expression.ToString());
+        var commits = invokeCore.DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(invocation => invocation.Expression.ToString() ==
+                "jobs.CommitStartCore")
+            .ToArray();
+        Assert.Equal(2, commits.Length);
+        Assert.All(
+            commits,
+            commit => Assert.Equal(
+                "deadline",
+                commit.ArgumentList.Arguments[2].Expression.ToString()));
+        var reservedIntent = Assert.Single(
+            invokeCore.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString() ==
+                "jobs.PrepareStartWithReservedId");
+        Assert.Equal(
+            [
+                "backgroundJob.PublicJobId",
+                "backgroundJob.JobCapability",
+                "script",
+            ],
+            reservedIntent.ArgumentList.Arguments
+                .Select(argument => argument.Expression.ToString()));
+
+        foreach (var expression in new[]
+        {
+            "host.InvokeAsync",
+            "host.InvokeWithOutputCaptureAsync",
+        })
+        {
+            var foregroundCalls = invokeCore.DescendantNodes()
+                .OfType<InvocationExpressionSyntax>()
+                .Where(invocation => invocation.Expression.ToString() == expression)
+                .ToArray();
+            Assert.NotEmpty(foregroundCalls);
+            Assert.All(
+                foregroundCalls,
+                call => Assert.Contains(
+                    call.ArgumentList.Arguments,
+                    argument => argument.NameColon?.Name.Identifier.ValueText ==
+                        "deadline" &&
+                        argument.Expression.ToString().Contains(
+                            "executionDeadline",
+                            StringComparison.Ordinal)));
+        }
+
+        var jobCore = Assert.Single(
+            runtime.Members.OfType<MethodDeclarationSyntax>(),
+            method => method.Identifier.ValueText == "JobCoreAsync");
+        foreach (var accessor in new[] { "Snapshot", "ReadOutput", "RequestKill" })
+        {
+            Assert.Contains(
+                jobCore.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+                invocation => invocation.Expression.ToString() ==
+                        $"jobs.{accessor}" &&
+                    invocation.ArgumentList.Arguments[0].Expression.ToString() ==
+                        "privateJobId" &&
+                    invocation.ArgumentList.Arguments[1].Expression.ToString() ==
+                        "privateJobCapability!");
+        }
+
+        var listSection = Assert.Single(
+            jobCore.DescendantNodes().OfType<SwitchSectionSyntax>(),
+            section => section.Labels.Any(label => label.ToString() ==
+                "case \"list\":"));
+        Assert.Contains(
+            "operationAuthority?.ThrowIfExpired(cancellationToken);varall=jobs.List();",
+            WithoutWhitespace(listSection),
+            StringComparison.Ordinal);
+
+        var shapingDeadline = Assert.Single(
+            jobCore.DescendantNodes().OfType<VariableDeclaratorSyntax>(),
+            variable => variable.Identifier.ValueText == "shapingDeadline");
+        Assert.Equal(
+            "operationAuthority?.AbsoluteDeadlineUtc??audit?.Metadata.Request.DeadlineUtc",
+            WithoutWhitespace(shapingDeadline.Initializer!.Value));
+        foreach (var expression in new[]
+        {
+            "host.ShapeJobTextAsync",
+            "host.ShapeTextAuditedAsync",
+        })
+        {
+            var shapingCall = Assert.Single(
+                jobCore.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+                invocation => invocation.Expression.ToString() == expression);
+            Assert.Equal(
+                "shapingDeadline",
+                shapingCall.ArgumentList.Arguments[^1].Expression.ToString());
+        }
+
+        var runspaceRoot = ParseSourceRoot(Path.Combine(
+            paths.ServerDirectory,
+            "PtkMcpServer",
+            "RunspaceHost.cs"));
+        var shapeCore = Assert.Single(
+            runspaceRoot.DescendantNodes().OfType<MethodDeclarationSyntax>(),
+            method => method.Identifier.ValueText == "ShapeTextCoreAsync");
+        Assert.Contains(
+            shapeCore.ParameterList.Parameters,
+            parameter => parameter.Identifier.ValueText == "deadline" &&
+                parameter.Type?.ToString() == "DateTimeOffset?");
+        var callDeadline = Assert.Single(
+            shapeCore.DescendantNodes().OfType<VariableDeclaratorSyntax>(),
+            variable => variable.Identifier.ValueText == "callDeadline");
+        Assert.Equal(
+            "deadline??DateTimeOffset.UtcNow+_callTimeout",
+            WithoutWhitespace(callDeadline.Initializer!.Value));
+        Assert.DoesNotContain(
+            shapeCore.DescendantNodes().OfType<VariableDeclaratorSyntax>(),
+            variable => variable.Identifier.ValueText == "deadline");
     }
 
     [Fact]

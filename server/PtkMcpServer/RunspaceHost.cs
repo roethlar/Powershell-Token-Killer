@@ -4181,13 +4181,15 @@ public sealed class RunspaceHost : IDisposable
             elisionHint,
             OutputProvenance.DirectText,
             EffectiveRtkIdentity(),
-            runspaceRecycled: null)).Text;
+            runspaceRecycled: null,
+            deadline: null)).Text;
 
     internal async Task<string> ShapeJobTextAsync(
         string text,
         OutputProvenance inputProvenance,
         CancellationToken cancellationToken,
-        string elisionHint) =>
+        string elisionHint,
+        DateTimeOffset? deadline = null) =>
         (await ShapeTextCoreAsync(
             text,
             cancellationToken,
@@ -4196,7 +4198,8 @@ public sealed class RunspaceHost : IDisposable
             inputProvenance == OutputProvenance.DirectText
                 ? EffectiveRtkIdentity()
                 : null,
-            runspaceRecycled: null)).Text;
+            runspaceRecycled: null,
+            deadline)).Text;
 
     internal RtkExecutableIdentity? CaptureOutputShapingRtkIdentity() =>
         EffectiveRtkIdentity();
@@ -4207,14 +4210,16 @@ public sealed class RunspaceHost : IDisposable
         string? elisionHint,
         OutputProvenance inputProvenance,
         RtkExecutableIdentity? authorizedShapingRtk,
-        Action runspaceRecycled) =>
+        Action runspaceRecycled,
+        DateTimeOffset? deadline = null) =>
         ShapeTextCoreAsync(
             text,
             cancellationToken,
             elisionHint,
             inputProvenance,
             authorizedShapingRtk,
-            runspaceRecycled);
+            runspaceRecycled,
+            deadline);
 
     private async Task<ShapedTextResult> ShapeTextCoreAsync(
         string text,
@@ -4222,16 +4227,17 @@ public sealed class RunspaceHost : IDisposable
         string? elisionHint,
         OutputProvenance inputProvenance,
         RtkExecutableIdentity? authorizedShapingRtk,
-        Action? runspaceRecycled)
+        Action? runspaceRecycled,
+        DateTimeOffset? deadline)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         if (!ModuleLoaded || text.Length == 0) return new(text, null);
         LastActivityUtc = DateTimeOffset.UtcNow;
-        var deadline = DateTimeOffset.UtcNow + _callTimeout;
+        var callDeadline = deadline ?? DateTimeOffset.UtcNow + _callTimeout;
         // A poll must never block behind a long foreground call either: on a
         // gate that stays busy past the budget, return the text unshaped —
         // shaping must never fail (or stall) a poll.
-        if (!await TryEnterGateAsync(deadline, cancellationToken))
+        if (!await TryEnterGateAsync(callDeadline, cancellationToken))
         {
             return new(text, null);
         }
@@ -4239,7 +4245,7 @@ public sealed class RunspaceHost : IDisposable
         var handedOff = false;
         try
         {
-            var (primed, _) = await AwaitRunspaceReadyAsync(deadline, cancellationToken);
+            var (primed, _) = await AwaitRunspaceReadyAsync(callDeadline, cancellationToken);
             if (primed?.CompressCommand is null) return new(text, null);
             var runspace = primed.Runspace;
             ps.Runspace = runspace;
@@ -4263,7 +4269,10 @@ public sealed class RunspaceHost : IDisposable
 
             OutputShapingFailureForTests?.Invoke();
             var invokeTask = InvokeAsyncWithoutAmbientAudit(ps, input);
-            var outcome = await WaitForDeadlineAsync(invokeTask, deadline, cancellationToken);
+            var outcome = await WaitForDeadlineAsync(
+                invokeTask,
+                callDeadline,
+                cancellationToken);
             if (outcome != WaitOutcome.Completed)
             {
                 if (outcome == WaitOutcome.Canceled && await TryStopPipelineAsync(ps, invokeTask))

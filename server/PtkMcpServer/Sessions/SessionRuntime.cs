@@ -1,5 +1,6 @@
 using System.Text;
 using PtkMcpServer.Audit;
+using PtkSharedContracts;
 
 namespace PtkMcpServer.Sessions;
 
@@ -126,7 +127,64 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
             background,
             timeoutSeconds,
             audit,
+            operationAuthority: null,
             outputStore);
+
+    /// <summary>
+    /// Private foreground boundary. The exact typed operation supplies every
+    /// execution argument, while its authority supplies the immutable wire
+    /// deadline even when no audit call context exists.
+    /// </summary>
+    internal Task<string> InvokeAsync(
+        SessionOperationAuthority operationAuthority,
+        InvokeForegroundOperation operation,
+        CancellationToken cancellationToken,
+        int timeoutSeconds = 0,
+        IOutputCaptureOwner? outputCaptureOwner = null)
+    {
+        ArgumentNullException.ThrowIfNull(operationAuthority);
+        operationAuthority.RequireOperation(operation);
+        return InvokeCoreAsync(
+            operation.Script,
+            cancellationToken,
+            operation.Raw,
+            Route(operation.Route),
+            background: false,
+            timeoutSeconds,
+            audit: null,
+            operationAuthority,
+            outputCaptureOwner);
+    }
+
+    /// <summary>
+    /// Private background boundary. The guardian-reserved public ID and the
+    /// host-created return capability are consumed only from authority; the
+    /// host allocator is never consulted.
+    /// </summary>
+    internal Task<string> InvokeAsync(
+        SessionOperationAuthority operationAuthority,
+        InvokeBackgroundOperation operation,
+        CancellationToken cancellationToken,
+        int timeoutSeconds = 0,
+        IOutputCaptureOwner? outputCaptureOwner = null)
+    {
+        ArgumentNullException.ThrowIfNull(operationAuthority);
+        operationAuthority.RequireOperation(operation);
+        _ = operationAuthority.BackgroundJob ??
+            throw new ArgumentException(
+                "Background invocation authority has no bound job identity.",
+                nameof(operationAuthority));
+        return InvokeCoreAsync(
+            operation.Script,
+            cancellationToken,
+            operation.Raw,
+            Route(operation.Route),
+            background: true,
+            timeoutSeconds,
+            audit: null,
+            operationAuthority,
+            outputCaptureOwner);
+    }
 
     private async Task<string> InvokeCoreAsync(
         string script,
@@ -136,6 +194,7 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
         bool background,
         int timeoutSeconds,
         AuditCallContext? audit,
+        SessionOperationAuthority? operationAuthority,
         IOutputCaptureOwner? outputCaptureOwner)
     {
         var host = _host;
@@ -175,10 +234,16 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                 // the caller's timeoutSeconds, so a 1s-budget background
                 // retry could still block for minutes behind a busy runspace
                 // (plan finding i56p-3).
-                var deadline = audit?.Metadata.Request.DeadlineUtc
+                var deadline = operationAuthority?.AbsoluteDeadlineUtc
+                    ?? audit?.Metadata.Request.DeadlineUtc
                     ?? host.ComputeDeadline(timeoutSeconds);
 
-                activePlan = jobs.PrepareStart(script);
+                activePlan = operationAuthority?.BackgroundJob is { } backgroundJob
+                    ? jobs.PrepareStartWithReservedId(
+                        backgroundJob.PublicJobId,
+                        backgroundJob.JobCapability,
+                        script)
+                    : jobs.PrepareStart(script);
                 if (audit is not null && !audit.RecordJobStartRequest(activePlan.Id))
                     return AuditCallContext.NotStartedMessage;
 
@@ -506,26 +571,29 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
         using var outputCapture = outputCaptureOwner is null
             ? null
             : new ForegroundOutputCapture(outputCaptureOwner);
+        var executionDeadline = operationAuthority?.AbsoluteDeadlineUtc;
         var result = audit is null
             ? outputCapture is null
                 ? await host.InvokeAsync(
                     script,
                     cancellationToken: cancellationToken,
                     route: route,
-                    timeoutSeconds: timeoutSeconds)
+                    timeoutSeconds: timeoutSeconds,
+                    deadline: executionDeadline)
                 : await host.InvokeWithOutputCaptureAsync(
                     script,
                     outputCapture,
                     cancellationToken: cancellationToken,
                     route: route,
-                    timeoutSeconds: timeoutSeconds)
+                    timeoutSeconds: timeoutSeconds,
+                    deadline: executionDeadline)
             : await host.InvokeAsync(
                 script,
                 audit,
                 cancellationToken: cancellationToken,
                 route: route,
                 timeoutSeconds: timeoutSeconds,
-                deadline: audit.Metadata.Request.DeadlineUtc,
+                deadline: executionDeadline ?? audit.Metadata.Request.DeadlineUtc,
                 outputCapture: outputCapture);
 
         var sb = new StringBuilder();
@@ -594,6 +662,14 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
         return response;
     }
 
+    private static string Route(GuardianHostInvokeRoute route) => route switch
+    {
+        GuardianHostInvokeRoute.Auto => "auto",
+        GuardianHostInvokeRoute.Pwsh => "pwsh",
+        GuardianHostInvokeRoute.Rtk => "rtk",
+        _ => throw new ArgumentOutOfRangeException(nameof(route)),
+    };
+
     private static string RecordJobNotStarted(
         AuditCallContext? audit,
         string detailCode,
@@ -604,19 +680,121 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
         return response;
     }
 
-    internal async Task<string> JobAsync(
+    internal Task<string> JobAsync(
         string action,
         CancellationToken cancellationToken,
         long id = 0,
         long offset = 0,
         AuditCallContext? audit = null)
+        => JobCoreAsync(
+            action,
+            cancellationToken,
+            id,
+            offset,
+            audit,
+            operationAuthority: null,
+            privateJobId: null,
+            privateJobCapability: null);
+
+    internal Task<string> JobAsync(
+        SessionOperationAuthority operationAuthority,
+        JobListOperation operation,
+        CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(operationAuthority);
+        operationAuthority.RequireOperation(operation);
+        return JobCoreAsync(
+            "list",
+            cancellationToken,
+            id: 0,
+            offset: 0,
+            audit: null,
+            operationAuthority,
+            privateJobId: null,
+            privateJobCapability: null);
+    }
+
+    internal Task<string> JobAsync(
+        SessionOperationAuthority operationAuthority,
+        JobStatusOperation operation,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(operationAuthority);
+        operationAuthority.RequireOperation(operation);
+        return JobCoreAsync(
+            "status",
+            cancellationToken,
+            operation.PublicJobId.Value,
+            offset: 0,
+            audit: null,
+            operationAuthority,
+            operation.PublicJobId,
+            operation.JobCapability);
+    }
+
+    internal Task<string> JobAsync(
+        SessionOperationAuthority operationAuthority,
+        JobOutputOperation operation,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(operationAuthority);
+        operationAuthority.RequireOperation(operation);
+        return JobCoreAsync(
+            "output",
+            cancellationToken,
+            operation.PublicJobId.Value,
+            operation.Offset,
+            audit: null,
+            operationAuthority,
+            operation.PublicJobId,
+            operation.JobCapability);
+    }
+
+    internal Task<string> JobAsync(
+        SessionOperationAuthority operationAuthority,
+        JobKillOperation operation,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(operationAuthority);
+        operationAuthority.RequireOperation(operation);
+        return JobCoreAsync(
+            "kill",
+            cancellationToken,
+            operation.PublicJobId.Value,
+            offset: 0,
+            audit: null,
+            operationAuthority,
+            operation.PublicJobId,
+            operation.JobCapability);
+    }
+
+    private async Task<string> JobCoreAsync(
+        string action,
+        CancellationToken cancellationToken,
+        long id,
+        long offset,
+        AuditCallContext? audit,
+        SessionOperationAuthority? operationAuthority,
+        PublicJobId? privateJobId,
+        CapabilityToken? privateJobCapability)
+    {
+        if ((privateJobId is null) != (privateJobCapability is null) ||
+            operationAuthority is null && privateJobId is not null ||
+            operationAuthority is not null &&
+                privateJobId is null &&
+                !string.Equals(action, "list", StringComparison.OrdinalIgnoreCase))
+        {
+            throw new InvalidOperationException(
+                "Private job authority and identity must be supplied together.");
+        }
+
         var host = _host;
         var jobs = _jobs;
         switch (action?.ToLowerInvariant())
         {
             case "list":
                 {
+                    operationAuthority?.ThrowIfExpired(cancellationToken);
                     var all = jobs.List();
                     var response = all.Length == 0 ? "(no jobs)" : string.Join('\n', all.Select(Describe));
                     audit?.CommitReadOutcome("job.list_accessed", "completed", response);
@@ -624,7 +802,10 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                 }
             case "status":
                 {
-                    var snapshot = jobs.Snapshot(id);
+                    operationAuthority?.ThrowIfExpired(cancellationToken);
+                    var snapshot = privateJobId is null
+                        ? jobs.Snapshot(id)
+                        : jobs.Snapshot(privateJobId, privateJobCapability!);
                     var response = snapshot is null ? $"[no such job: {id}]" : Describe(snapshot);
                     audit?.CommitReadOutcome(
                         "job.status_accessed",
@@ -638,9 +819,16 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                 }
             case "kill":
                 {
+                    operationAuthority?.ThrowIfExpired(cancellationToken);
                     if (audit is not null && !audit.AuthorizeControl("job.kill_requested", id))
                         return AuditCallContext.NotStartedMessage;
-                    var result = jobs.RequestKill(id, JobTerminationReason.ExplicitKill);
+                    operationAuthority?.ThrowIfExpired(cancellationToken);
+                    var result = privateJobId is null
+                        ? jobs.RequestKill(id, JobTerminationReason.ExplicitKill)
+                        : jobs.RequestKill(
+                            privateJobId,
+                            privateJobCapability!,
+                            JobTerminationReason.ExplicitKill);
                     var (eventType, state, detailCode, response, callState) = result.Disposition switch
                     {
                         JobKillDisposition.Requested => (
@@ -665,9 +853,13 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                 }
             case "output":
                 {
+                    operationAuthority?.ThrowIfExpired(cancellationToken);
                     if (audit is not null && !audit.AuthorizeControl("job.output_requested", id))
                         return AuditCallContext.NotStartedMessage;
-                    var snapshot = jobs.Snapshot(id);
+                    operationAuthority?.ThrowIfExpired(cancellationToken);
+                    var snapshot = privateJobId is null
+                        ? jobs.Snapshot(id)
+                        : jobs.Snapshot(privateJobId, privateJobCapability!);
                     if (snapshot is null)
                     {
                         var missing = $"[no such job: {id}]";
@@ -677,9 +869,15 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                     // Snapshot BEFORE reading: a job that exits mid-poll reports
                     // "running" one poll late rather than losing tail output.
                     (string Text, long NextOffset, int BytesRead)? chunk;
+                    operationAuthority?.ThrowIfExpired(cancellationToken);
                     try
                     {
-                        chunk = jobs.ReadOutput(id, offset);
+                        chunk = privateJobId is null
+                            ? jobs.ReadOutput(id, offset)
+                            : jobs.ReadOutput(
+                                privateJobId,
+                                privateJobCapability!,
+                                offset);
                     }
                     catch (Exception exception) when (!IsFatal(exception))
                     {
@@ -752,6 +950,8 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                     // (ANSI stripping shortens without eliding, near-boundary
                     // elision lengthens).
                     var elisionHint = RecoveryElisionHint(snapshot);
+                    var shapingDeadline = operationAuthority?.AbsoluteDeadlineUtc
+                        ?? audit?.Metadata.Request.DeadlineUtc;
                     var shapedResult = text.Length == 0
                         ? new ShapedTextResult("(no new output)", null)
                         : audit is null
@@ -760,7 +960,8 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                                     text,
                                     provenance,
                                     cancellationToken,
-                                    elisionHint),
+                                    elisionHint,
+                                    shapingDeadline),
                                 null)
                             : await host.ShapeTextAuditedAsync(
                                 text,
@@ -772,7 +973,8 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                                     "runspace.recycled",
                                     "completed",
                                     detailCode: "job_output_shaping_timed_out",
-                                    warmStateLost: true));
+                                    warmStateLost: true),
+                                shapingDeadline);
                     if (shapedResult.Shaping is { } shaping)
                         audit?.RecordOutputShaping(shaping, provenance);
                     var shaped = shapedResult.Text;

@@ -566,6 +566,25 @@ public sealed class JobManager : IDisposable
     }
 
     /// <summary>
+    /// Retains a guardian-reserved public job ID with the host-created return
+    /// capability as a side-effect-free intent before cold execution planning.
+    /// </summary>
+    internal JobStartPlan PrepareStartWithReservedId(
+        PublicJobId publicJobId,
+        CapabilityToken jobCapability,
+        string script)
+    {
+        ArgumentNullException.ThrowIfNull(publicJobId);
+        ArgumentNullException.ThrowIfNull(jobCapability);
+        ArgumentNullException.ThrowIfNull(script);
+        return PrepareStartCore(
+            CreateCompatibilityDispatch(script),
+            workingDirectory: null,
+            publicJobId,
+            jobCapability);
+    }
+
+    /// <summary>
     /// Binds a guardian-reserved public job ID to one typed cold dispatch.
     /// The private host must never allocate or substitute a public ID.
     /// </summary>
@@ -578,11 +597,10 @@ public sealed class JobManager : IDisposable
         ArgumentNullException.ThrowIfNull(publicJobId);
         ArgumentNullException.ThrowIfNull(jobCapability);
         ArgumentNullException.ThrowIfNull(dispatch);
-        var reservation = PrepareStartCore(
-            CreateCompatibilityDispatch(dispatch.Plan.OriginalScript),
-            workingDirectory: null,
+        var reservation = PrepareStartWithReservedId(
             publicJobId,
-            jobCapability);
+            jobCapability,
+            dispatch.Plan.OriginalScript);
         return BindDispatch(reservation, dispatch, workingDirectory);
     }
 
@@ -669,7 +687,7 @@ public sealed class JobManager : IDisposable
         if ((reservedPublicJobId is null) != (reservedJobCapability is null))
         {
             throw new InvalidOperationException(
-                "A guardian-reserved job ID and its capability must be bound together.");
+                "A guardian-reserved job ID and host-created return capability must be bound together.");
         }
 
         long generation;
@@ -1972,7 +1990,7 @@ public sealed class JobManager : IDisposable
 
     /// <summary>
     /// Private-host status boundary. A public ID is usable only with the exact
-    /// capability bound to it by the guardian before process creation.
+    /// host-created return capability bound before process creation.
     /// </summary>
     internal JobSnapshot Snapshot(
         PublicJobId publicJobId,
