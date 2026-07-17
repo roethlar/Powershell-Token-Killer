@@ -832,10 +832,13 @@ Guardian/configuration/binary upgrades require a new public MCP connection.
 
 ## Implementation sequence
 
-Every code slice requires a separate owner go, one finding per corrective
-commit, mutation proof for each new guard, the full automated battery, and
-fixed-SHA reviewloop acceptance before the next slice. No slice authorizes push
-or history rewriting.
+R2-R7 are all owner-authorized as of 2026-07-17 and proceed sequentially without
+another per-slice go or a review stop. Keep one finding per corrective commit,
+prove every new guard by mutation, and run verification proportional to each
+slice. Opus or Grok may perform ordinary reviews while the owner-held Fable
+openreviews wait for capacity; deferred review does not block the next
+authorized slice. No slice authorizes push, main-branch merge, history
+rewriting, or public release publication.
 
 ### R0 — freeze contracts and real-process feasibility
 
