@@ -20,6 +20,10 @@
   </ItemGroup>
 
   <ItemGroup>
+    <Protobuf Include="Protos/audit_otlp.proto" GrpcServices="None" />
+  </ItemGroup>
+
+  <ItemGroup>
     <InternalsVisibleTo Include="PtkMcpGuardian.Tests" />
     <InternalsVisibleTo Include="PtkMcpServer" />
     <InternalsVisibleTo Include="PtkMcpServer.Tests" />

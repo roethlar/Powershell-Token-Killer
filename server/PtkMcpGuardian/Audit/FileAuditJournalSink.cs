@@ -948,17 +948,17 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
             else
             {
                 SecureAuditStorage.ProtectExistingFile(temporaryPath);
-                using var clone = new FileStream(
+                using var cloneStream = new FileStream(
                     temporaryPath,
                     FileMode.Open,
                     FileAccess.ReadWrite,
                     FileShare.None,
                     bufferSize: 16 * 1024,
                     FileOptions.WriteThrough);
-                if (clone.Length != logicalLength)
+                if (cloneStream.Length != logicalLength)
                     throw new IOException("The cloned audit segment changed logical EOF.");
-                ValidateExactMacClone(source, clone, logicalLength);
-                clone.Flush(flushToDisk: true);
+                ValidateExactMacClone(source, cloneStream, logicalLength);
+                cloneStream.Flush(flushToDisk: true);
             }
 
             if (_faultInjector?.Invoke(
@@ -1036,7 +1036,7 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
 
     private static void ValidateExactMacClone(
         FileStream source,
-        FileStream clone,
+        FileStream cloneStream,
         long logicalLength)
     {
         var sourceBuffer = ArrayPool<byte>.Shared.Rent(64 * 1024);
@@ -1052,7 +1052,7 @@ internal sealed class FileAuditJournalSink : IAuditJournalSink, IAuditCommittedS
                     sourceBuffer.AsSpan(0, requested),
                     offset);
                 ReadExactlyAt(
-                    clone.SafeFileHandle,
+                    cloneStream.SafeFileHandle,
                     cloneBuffer.AsSpan(0, requested),
                     offset);
                 if (!sourceBuffer.AsSpan(0, requested).SequenceEqual(

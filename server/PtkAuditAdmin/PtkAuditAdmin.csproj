@@ -9,7 +9,7 @@
   </PropertyGroup>
 
   <ItemGroup>
-    <ProjectReference Include="..\PtkMcpServer\PtkMcpServer.csproj" />
+    <ProjectReference Include="..\PtkMcpGuardian\PtkMcpGuardian.csproj" />
   </ItemGroup>
 
 </Project>

@@ -16,6 +16,62 @@ public sealed class GuardianArchitectureBoundaryTests
     private const string ServerAssemblyName = "PtkMcpServer";
     private const string GuardianSentinel = "Ownership/PublicJobIdAllocator.cs";
 
+    private static readonly string[] RequiredGuardianAuditCompileInputs =
+    [
+        "AuditAdminDispositionFailure.cs",
+        "AuditAdminFailure.cs",
+        "AuditAdminOperations.cs",
+        "AuditAnchoredSpoolPrefixRetention.cs",
+        "AuditAnchoredWriterPreparation.cs",
+        "AuditBootExportSource.cs",
+        "AuditCallMetadata.cs",
+        "AuditClosedSpoolChainReader.cs",
+        "AuditClosedSpoolExportPump.cs",
+        "AuditCompletedChainRetirement.cs",
+        "AuditEffectiveIdentity.cs",
+        "AuditEvent.cs",
+        "AuditEvidenceOrphanReconciler.cs",
+        "AuditEvidenceRetentionAudit.cs",
+        "AuditEvidenceSpoolScanner.cs",
+        "AuditExportAcknowledgmentObserver.cs",
+        "AuditExportCheckpoint.cs",
+        "AuditExportCheckpointStore.cs",
+        "AuditExportConfiguration.cs",
+        "AuditExportCoordinator.cs",
+        "AuditExportLoop.cs",
+        "AuditExportRetrySchedule.cs",
+        "AuditExportTransitionRecorder.cs",
+        "AuditHealth.cs",
+        "AuditJournal.cs",
+        "AuditJournalFactory.cs",
+        "AuditLiveSpoolReader.cs",
+        "AuditOperatorDispositionIntent.cs",
+        "AuditOperatorDispositionOutcome.cs",
+        "AuditOptions.cs",
+        "AuditOtlpHttpExporter.cs",
+        "AuditOtlpRecordMapper.cs",
+        "AuditOutputRequestProtector.cs",
+        "AuditRuntimeResources.cs",
+        "AuditServerLifecycle.cs",
+        "AuditSpoolQuotaLease.cs",
+        "AuditSpoolRecordCodec.cs",
+        "AuditSpoolSegmentIdentity.cs",
+        "AuditStartupConfiguration.cs",
+        "ExportConfigurationIdentity.cs",
+        "FileAuditJournalSink.cs",
+        "ScriptEvidenceStore.cs",
+        "ScriptEvidenceStoreProvider.cs",
+        "SecureAuditStorage.cs",
+    ];
+
+    private static readonly string[] RequiredServerAuditCompileInputs =
+    [
+        "AuditCallContext.cs",
+        "AuditCallFilter.cs",
+        "AuditCallMetadataCapture.cs",
+        "AuditRuntimeGate.cs",
+    ];
+
     private static readonly StringComparer PathComparer = OperatingSystem.IsWindows()
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
@@ -97,7 +153,41 @@ public sealed class GuardianArchitectureBoundaryTests
     // Native interop is fail-closed. R1 audit/storage extraction adds only the
     // exact module/entry-point pairs it proves necessary; a new import cannot
     // ride along merely because its name is absent from a launch blacklist.
-    private static readonly HashSet<NativeImport> AllowedNativeImports = [];
+    private static readonly HashSet<NativeImport> AllowedNativeImports =
+    [
+        new("advapi32.dll", "GetTokenInformation"),
+        new("advapi32.dll", "OpenProcessToken"),
+        new("advapi32.dll", "SetEntriesInAcl"),
+        new("advapi32.dll", "SetNamedSecurityInfo"),
+        new("kernel32.dll", "CloseHandle"),
+        new("kernel32.dll", "CreateFileW"),
+        new("kernel32.dll", "FlushFileBuffers"),
+        new("kernel32.dll", "GetCurrentProcess"),
+        new("kernel32.dll", "GetFileInformationByHandle"),
+        new("kernel32.dll", "GetFileInformationByHandleEx"),
+        new("kernel32.dll", "GetFinalPathNameByHandleW"),
+        new("kernel32.dll", "LocalFree"),
+        new("kernel32.dll", "MoveFileEx"),
+        new("kernel32.dll", "SetFileInformationByHandle"),
+        new("libc", "acl_free"),
+        new("libc", "acl_get_file"),
+        new("libc", "acl_init"),
+        new("libc", "acl_set_file"),
+        new("libc", "close"),
+        new("libc", "fallocate"),
+        new("libc", "fclonefileat"),
+        new("libc", "fstat"),
+        new("libc", "fstat$INODE64"),
+        new("libc", "fstatvfs"),
+        new("libc", "fsync"),
+        new("libc", "geteuid"),
+        new("libc", "link"),
+        new("libc", "lstat"),
+        new("libc", "lstat$INODE64"),
+        new("libc", "open"),
+        new("libc", "rename"),
+        new("libc", "statx"),
+    ];
 
     private static readonly HashSet<string> ForbiddenCatalogSourceIdentifiers = new(
         [
@@ -182,6 +272,25 @@ public sealed class GuardianArchitectureBoundaryTests
         foreach (var sentinel in RequiredSharedCompileInputs)
             AssertCompileSentinel(shared, sentinel);
 
+        AssertExactCompileDirectory(
+            guardian,
+            "Audit",
+            RequiredGuardianAuditCompileInputs,
+            "guardian audit ownership");
+        Assert.Empty(shared.ProtobufInputs);
+        AssertExactSet(
+            guardian.ProtobufInputs,
+            [NormalizePath(Path.Combine(guardian.ProjectDirectory, "Protos", "audit_otlp.proto"))],
+            "guardian protobuf ownership",
+            PathComparer);
+        Assert.All(
+            guardian.ProtobufInputs,
+            protobuf => Assert.True(File.Exists(protobuf), $"Protobuf source is absent: {protobuf}"));
+        Assert.True(File.Exists(Path.Combine(
+            guardian.ProjectDirectory,
+            "Protos",
+            "LICENSE.OpenTelemetry-Apache-2.0.txt")));
+
         AssertExactResources(paths, guardian, shared);
 
         var server = EvaluateProject(paths.ServerProject);
@@ -195,6 +304,33 @@ public sealed class GuardianArchitectureBoundaryTests
             PathComparer);
         Assert.DoesNotContain(paths.ServerProject, guardian.ProjectReferences, PathComparer);
         Assert.DoesNotContain(paths.ServerProject, shared.ProjectReferences, PathComparer);
+        AssertExactCompileDirectory(
+            server,
+            "Audit",
+            RequiredServerAuditCompileInputs,
+            "server audit adapters");
+        Assert.Empty(server.ProtobufInputs);
+        Assert.DoesNotContain(
+            server.PackageReferences,
+            package => package.Identity.Equals("Google.Protobuf", StringComparison.OrdinalIgnoreCase));
+        Assert.DoesNotContain(
+            server.PackageReferences,
+            package => package.Identity.Equals("Grpc.Tools", StringComparison.OrdinalIgnoreCase));
+        Assert.False(File.Exists(Path.Combine(
+            server.ProjectDirectory,
+            "Protos",
+            "audit_otlp.proto")));
+        Assert.False(File.Exists(Path.Combine(
+            server.ProjectDirectory,
+            "Protos",
+            "LICENSE.OpenTelemetry-Apache-2.0.txt")));
+
+        var auditAdmin = EvaluateProject(paths.AuditAdminProject);
+        AssertExactSet(
+            auditAdmin.ProjectReferences,
+            [paths.GuardianProject],
+            "PtkAuditAdmin project references",
+            PathComparer);
     }
 
     [Fact]
@@ -263,6 +399,7 @@ public sealed class GuardianArchitectureBoundaryTests
         var paths = RepositoryPaths.Create();
         var closure = EvaluateClosure(paths.GuardianProject);
         var violations = new List<string>();
+        var actualNativeImports = new HashSet<NativeImport>();
         var scannedAssemblies = 0;
         var scannedTypes = 0;
 
@@ -334,6 +471,7 @@ public sealed class GuardianArchitectureBoundaryTests
                 var import = method.GetImport();
                 var entryPoint = reader.GetString(import.Name);
                 var module = reader.GetString(reader.GetModuleReference(import.Module).Name);
+                actualNativeImports.Add(new NativeImport(module, entryPoint));
                 if (IsForbiddenNativeEntryPoint(entryPoint) ||
                     !AllowedNativeImports.Contains(new NativeImport(module, entryPoint)))
                 {
@@ -344,7 +482,53 @@ public sealed class GuardianArchitectureBoundaryTests
 
         Assert.Equal(2, scannedAssemblies);
         Assert.True(scannedTypes > 2, "No guardian-safe metadata types were scanned.");
+        AssertExactSet(
+            actualNativeImports,
+            AllowedNativeImports,
+            "compiled guardian native imports");
         AssertNoViolations(violations);
+    }
+
+    [Fact]
+    public void Native_interop_allowlist_is_exact_audit_storage_closure()
+    {
+        AssertExactSet(
+            AllowedNativeImports,
+            [
+                new NativeImport("advapi32.dll", "GetTokenInformation"),
+                new NativeImport("advapi32.dll", "OpenProcessToken"),
+                new NativeImport("advapi32.dll", "SetEntriesInAcl"),
+                new NativeImport("advapi32.dll", "SetNamedSecurityInfo"),
+                new NativeImport("kernel32.dll", "CloseHandle"),
+                new NativeImport("kernel32.dll", "CreateFileW"),
+                new NativeImport("kernel32.dll", "FlushFileBuffers"),
+                new NativeImport("kernel32.dll", "GetCurrentProcess"),
+                new NativeImport("kernel32.dll", "GetFileInformationByHandle"),
+                new NativeImport("kernel32.dll", "GetFileInformationByHandleEx"),
+                new NativeImport("kernel32.dll", "GetFinalPathNameByHandleW"),
+                new NativeImport("kernel32.dll", "LocalFree"),
+                new NativeImport("kernel32.dll", "MoveFileEx"),
+                new NativeImport("kernel32.dll", "SetFileInformationByHandle"),
+                new NativeImport("libc", "acl_free"),
+                new NativeImport("libc", "acl_get_file"),
+                new NativeImport("libc", "acl_init"),
+                new NativeImport("libc", "acl_set_file"),
+                new NativeImport("libc", "close"),
+                new NativeImport("libc", "fallocate"),
+                new NativeImport("libc", "fclonefileat"),
+                new NativeImport("libc", "fstat"),
+                new NativeImport("libc", "fstat$INODE64"),
+                new NativeImport("libc", "fstatvfs"),
+                new NativeImport("libc", "fsync"),
+                new NativeImport("libc", "geteuid"),
+                new NativeImport("libc", "link"),
+                new NativeImport("libc", "lstat"),
+                new NativeImport("libc", "lstat$INODE64"),
+                new NativeImport("libc", "open"),
+                new NativeImport("libc", "rename"),
+                new NativeImport("libc", "statx"),
+            ],
+            "guardian native import allowlist");
     }
 
     [Fact]
@@ -719,7 +903,7 @@ public sealed class GuardianArchitectureBoundaryTests
             "-verbosity:quiet",
             $"-property:Configuration={BuildConfiguration}",
             "-getProperty:AssemblyName;TargetPath;ProjectAssetsFile",
-            "-getItem:ProjectReference;PackageReference;Reference;FrameworkReference;Compile;EmbeddedResource");
+            "-getItem:ProjectReference;PackageReference;Reference;FrameworkReference;Compile;EmbeddedResource;Protobuf");
         Assert.True(
             result.ExitCode == 0,
             $"MSBuild evaluation failed for {projectPath}:{Environment.NewLine}{result.StandardError}{Environment.NewLine}{result.StandardOutput}");
@@ -747,7 +931,8 @@ public sealed class GuardianArchitectureBoundaryTests
             ReadItems(items, "Compile", item => NormalizePath(RequiredItem(item, "FullPath"))),
             ReadItems(items, "EmbeddedResource", item => new EmbeddedResource(
                 NormalizePath(RequiredItem(item, "FullPath")),
-                OptionalItem(item, "LogicalName"))));
+                OptionalItem(item, "LogicalName"))),
+            ReadItems(items, "Protobuf", item => NormalizePath(RequiredItem(item, "FullPath"))));
     }
 
     private static void AssertPackages(
@@ -776,6 +961,21 @@ public sealed class GuardianArchitectureBoundaryTests
             project.ProjectDirectory,
             relativePath.Replace('/', Path.DirectorySeparatorChar)));
         Assert.Contains(expected, project.CompileInputs, PathComparer);
+    }
+
+    private static void AssertExactCompileDirectory(
+        EvaluatedProject project,
+        string relativeDirectory,
+        IReadOnlyCollection<string> expected,
+        string label)
+    {
+        var directory = NormalizePath(Path.Combine(project.ProjectDirectory, relativeDirectory));
+        var actual = project.CompileInputs
+            .Where(path => IsWithin(directory, path))
+            .Select(path => Path.GetRelativePath(directory, path)
+                .Replace(Path.DirectorySeparatorChar, '/'))
+            .ToArray();
+        AssertExactSet(actual, expected, label, StringComparer.Ordinal);
     }
 
     private static void AssertExactResources(
@@ -1204,7 +1404,8 @@ public sealed class GuardianArchitectureBoundaryTests
         IReadOnlyList<string> ExplicitReferences,
         IReadOnlyList<string> FrameworkReferences,
         IReadOnlyList<string> CompileInputs,
-        IReadOnlyList<EmbeddedResource> EmbeddedResources)
+        IReadOnlyList<EmbeddedResource> EmbeddedResources,
+        IReadOnlyList<string> ProtobufInputs)
     {
         internal string ProjectDirectory => Path.GetDirectoryName(ProjectPath)!;
     }
@@ -1215,7 +1416,8 @@ public sealed class GuardianArchitectureBoundaryTests
         string ServerDirectory,
         string GuardianProject,
         string SharedProject,
-        string ServerProject)
+        string ServerProject,
+        string AuditAdminProject)
     {
         internal static RepositoryPaths Create()
         {
@@ -1231,7 +1433,8 @@ public sealed class GuardianArchitectureBoundaryTests
                 server,
                 NormalizePath(Path.Combine(server, "PtkMcpGuardian", "PtkMcpGuardian.csproj")),
                 NormalizePath(Path.Combine(server, "PtkSharedContracts", "PtkSharedContracts.csproj")),
-                NormalizePath(Path.Combine(server, "PtkMcpServer", "PtkMcpServer.csproj")));
+                NormalizePath(Path.Combine(server, "PtkMcpServer", "PtkMcpServer.csproj")),
+                NormalizePath(Path.Combine(server, "PtkAuditAdmin", "PtkAuditAdmin.csproj")));
         }
     }
 }

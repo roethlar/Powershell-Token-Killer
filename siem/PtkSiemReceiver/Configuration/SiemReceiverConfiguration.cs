@@ -19,7 +19,7 @@ internal sealed class SiemReceiverConfigurationException : Exception
 /// <summary>
 /// The frozen-at-startup receiver configuration. Loaded once from the file
 /// named by <c>PTK_SIEM_CONFIG</c>; never reloaded. Modeled on the producer's
-/// <c>AuditExportOptions</c> (`server/PtkMcpServer/Audit/AuditExportConfiguration.cs`).
+/// <c>AuditExportOptions</c> (`server/PtkMcpGuardian/Audit/AuditExportConfiguration.cs`).
 /// </summary>
 internal sealed class SiemReceiverOptions
 {
