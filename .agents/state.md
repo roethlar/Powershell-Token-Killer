@@ -279,15 +279,25 @@ short and update it when important repo facts change.
   deleted toolkit manifests, protect-governance hook, and AGENTS.md
   toolkit-owned wording. Leave it alone unless the owner directs a governance
   commit; do not fold it into product commits.
+- **Mini-SIEM S3H is complete on isolated branch `plan/mini-siem-storage-hardening`
+  (not on `master`).** Code head `c726a33`, durable record head `3bacbc4`, clean
+  worktree `.claude/worktrees/siem-storage-hardening`. Receiver enforces
+  SIEM-local protected config/TLS reads, POSIX owner/modes, Windows one-ACE
+  DACLs, link/reparse rejection, storage identity-collision checks, and atomic
+  owner-only DB/WAL/SHM startup. Platform matrix and guard evidence are in that
+  worktree's `.agents/machines.md`. S4–S6 and PTK runtime were not touched.
+  Branch is unmerged and unpushed; Grok session stopped after Codex resume
+  (2026-07-17) awaiting owner land/park/review direction.
 
 ## Next
 
-1. Implement the owner-approved mini-SIEM S3H amendment in
-   `.agents/plans/mini-siem-implementation.md`: startup filesystem hardening
-   under `siem/` only. Do not begin S4-S6 or modify PTK runtime code.
+1. Owner call on S3H: review, merge `plan/mini-siem-storage-hardening` into
+   `master`, park, or push — do not invent a land path. Work only in the SIEM
+   worktree for that branch; do not mix with main's governance WIP.
 2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
-   producer corpus; do not substitute receiver-authored fixtures.
+   producer corpus; do not substitute receiver-authored fixtures. Do not begin
+   S4–S6 or modify PTK runtime for SIEM work.
 3. Continue resilience R4 only in `.claude/worktrees/mcp-resilience-r1` on
    `feature/mcp-resilience-r1` from tip `9d897e5` plus the existing uncommitted
    WIP; then R5-R7 sequentially. Ordinary reviews may use Opus or Grok; hold
@@ -346,16 +356,11 @@ short and update it when important repo facts change.
   ARM64 build must not be claimed until the launch failure is resolved or
   independently disproved; see `.agents/machines.md`.
 
-- **Mini-SIEM startup filesystem enforcement is approved but not yet
-  implemented.** The S3H amendment in
-  `.agents/plans/mini-siem-implementation.md`, approved by the owner on
-  2026-07-16, corrects the former S1/S3
-  scheduling inconsistency for current config, TLS, database, and sidecar
-  paths while leaving the not-yet-existent custody-checkpoint path with its
-  later owning slice. The current receiver still lacks this enforcement. Do
-  not claim receiver-host storage protection or full product acceptance until
-  S3H's cross-platform negative matrix lands and the later checkpoint path is
-  protected before first use.
+- **Mini-SIEM S3H is implemented on `plan/mini-siem-storage-hardening` but not
+  yet on `master`.** Full product acceptance still waits for that branch to
+  land and for the later slice that introduces and protects the custody
+  checkpoint/anchor path before first use. Do not re-implement S3H on master
+  from scratch.
 
 - **Windows wiring requires a hard supervisor/worker role cutover.**
   `Program.cs`, `BashProcessRunner`, `RtkProcessRunner`, and `JobManager` still
