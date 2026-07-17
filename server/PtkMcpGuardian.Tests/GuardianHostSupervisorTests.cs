@@ -234,6 +234,38 @@ public sealed class GuardianHostSupervisorTests
     }
 
     [Fact]
+    public async Task Host_loss_projects_last_known_ready_session_as_unavailable()
+    {
+        await using var rig = new TestRig(
+            new AttemptPlan(HostBehavior.Respond, AutoConfirmContainment: false),
+            new AttemptPlan(HostBehavior.Respond));
+        await rig.StartAsync();
+        var old = rig.Factory.Resources[0];
+
+        old.Crash();
+        await WaitUntilAsync(() =>
+            rig.Supervisor.SnapshotState().Host is
+            {
+                State: PublicHostState.Recovering,
+                RecoveryPhase: RecoveryPhase.Containment,
+            });
+
+        var snapshot = rig.Supervisor.SnapshotState();
+        var session = Assert.Single(snapshot.Sessions);
+        Assert.Equal(PublicSessionState.Recovering, session.State);
+        Assert.False(session.ReadyForEffects);
+        Assert.Null(session.WorkerBootId);
+        Assert.Null(session.Generation);
+        Assert.Equal(snapshot.Host.RecoveryPhase, session.RecoveryPhase);
+        Assert.Equal(snapshot.Host.RecoveryAttempt, session.RecoveryAttempt);
+        Assert.Equal(snapshot.Host.RetryAfterMilliseconds, session.RetryAfterMilliseconds);
+        Assert.True(session.WarmStateLost);
+        Assert.Equal(BootstrapState.Pending, session.BootstrapState);
+
+        old.ConfirmContainment();
+    }
+
+    [Fact]
     public async Task Session_target_identity_is_re_read_under_authority_before_first_write()
     {
         await using var rig = new TestRig(new AttemptPlan(HostBehavior.Respond));

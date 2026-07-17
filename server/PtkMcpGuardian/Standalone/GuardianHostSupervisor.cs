@@ -165,7 +165,9 @@ internal sealed class GuardianHostSupervisor :
     internal PublicStateSnapshot SnapshotState()
     {
         var host = _lifecycle.Snapshot().Host;
-        var sessions = _sessionSource.SnapshotSessions();
+        var sessions = GuardianHostSessionStateProjection.Project(
+            host,
+            _sessionSource.SnapshotSessions());
         return new PublicStateSnapshot(_guardianBootId, host, sessions);
     }
 
