@@ -124,6 +124,33 @@ internal sealed record OutputSearchResult(
     OutputProvenance? Provenance,
     string? DetailCode);
 
+internal interface IOutputArtifactReader
+{
+    OutputArtifactStatus Status(string handle);
+
+    OutputReadResult Read(string handle, long offset, int maxBytes);
+
+    OutputSearchResult Search(
+        string handle,
+        string pattern,
+        long offset,
+        int maxBytes);
+}
+
+internal interface IOutputCaptureOwner
+{
+    long MaximumArtifactBytes { get; }
+
+    bool TryStartForegroundOperation<T>(
+        Func<T> work,
+        out Task<T>? operation);
+
+    bool TryReserve(
+        string sessionAlias,
+        out OutputCaptureReservation? reservation,
+        out string? failure);
+}
+
 /// <summary>A one-shot supervisor-issued write capability. The opaque public
 /// handle is returned only by a successful seal, never by the reservation.</summary>
 internal sealed class OutputCaptureReservation : IDisposable
@@ -230,7 +257,7 @@ internal sealed class ForegroundOutputCapture : IDisposable
         OutputCaptureReservation? Reservation,
         string? Failure);
 
-    private OutputStore? _store;
+    private IOutputCaptureOwner? _store;
     private OutputCaptureReservation? _reservation;
     private readonly Action? _sealCancellationRejectedForTests;
     private readonly Func<TimeSpan, Task>? _sealDelayForTests;
@@ -238,7 +265,7 @@ internal sealed class ForegroundOutputCapture : IDisposable
     private bool _prepared;
 
     internal ForegroundOutputCapture(
-        OutputStore store,
+        IOutputCaptureOwner store,
         Action? sealCancellationRejectedForTests = null,
         Func<TimeSpan, Task>? sealDelayForTests = null)
     {
@@ -426,7 +453,10 @@ internal sealed class ForegroundOutputCapture : IDisposable
 /// <summary>Supervisor-owned, harness-lifetime output artifact store. Public
 /// handles are random capabilities held only in this table; artifact paths
 /// and internal write identities are never model-facing.</summary>
-public sealed class OutputStore : IDisposable
+public sealed class OutputStore :
+    IDisposable,
+    IOutputArtifactReader,
+    IOutputCaptureOwner
 {
     internal const int DefaultReadBytes = 16 * 1024;
     internal const int MaximumReadBytes = 64 * 1024;
@@ -468,6 +498,35 @@ public sealed class OutputStore : IDisposable
 
     internal string RootPathForTests => _root;
     internal long MaximumArtifactBytes => _options.MaximumArtifactBytes;
+
+    OutputArtifactStatus IOutputArtifactReader.Status(string handle) =>
+        Status(handle);
+
+    OutputReadResult IOutputArtifactReader.Read(
+        string handle,
+        long offset,
+        int maximumBytes) =>
+        Read(handle, offset, maximumBytes);
+
+    OutputSearchResult IOutputArtifactReader.Search(
+        string handle,
+        string pattern,
+        long offset,
+        int maximumBytes) =>
+        Search(handle, pattern, offset, maximumBytes);
+
+    long IOutputCaptureOwner.MaximumArtifactBytes => MaximumArtifactBytes;
+
+    bool IOutputCaptureOwner.TryStartForegroundOperation<T>(
+        Func<T> work,
+        out Task<T>? operation) =>
+        TryStartForegroundOperation(work, out operation);
+
+    bool IOutputCaptureOwner.TryReserve(
+        string sessionAlias,
+        out OutputCaptureReservation? reservation,
+        out string? failure) =>
+        TryReserve(sessionAlias, out reservation, out failure);
 
     internal SafeFileHandle RetainedArtifactHandleForTests(string handle)
     {

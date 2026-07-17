@@ -414,6 +414,29 @@ public sealed class JobManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Commit_start_core_consumes_an_interface_only_capture_owner()
+    {
+        var owner = new BusyOutputCaptureOwner();
+        var plan = _jobs.PrepareStart("'interface-only capture owner'", Path.GetTempPath());
+
+        var started = _jobs.CommitStartCore(
+            plan,
+            onTerminal: null,
+            deadline: null,
+            CancellationToken.None,
+            owner);
+        Assert.True(_jobs.ConfirmStartRecorded(started.Id));
+
+        var final = await WaitForExitAsync(started.Id);
+        var recovery = Assert.IsType<OutputRecoverySummary>(final.OutputRecovery);
+        Assert.True(final.OutputRecoveryFinalized);
+        Assert.Equal("output_store_busy", recovery.DetailCode);
+        Assert.True(recovery.Advertise);
+        Assert.Equal(1, owner.TryStartCalls);
+        Assert.Equal(0, owner.TryReserveCalls);
+    }
+
+    [Fact]
     public async Task Killed_direct_job_seals_an_incomplete_recovery_prefix()
     {
         using var store = CreateOutputStore("killed-prefix");
@@ -2344,6 +2367,34 @@ public sealed class JobManagerTests : IDisposable
         OperatingSystem.IsWindows()
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
+
+    private sealed class BusyOutputCaptureOwner : IOutputCaptureOwner
+    {
+        internal int TryStartCalls { get; private set; }
+        internal int TryReserveCalls { get; private set; }
+
+        public long MaximumArtifactBytes => 4096;
+
+        public bool TryStartForegroundOperation<T>(
+            Func<T> work,
+            out Task<T>? operation)
+        {
+            TryStartCalls++;
+            operation = null;
+            return false;
+        }
+
+        public bool TryReserve(
+            string sessionAlias,
+            out OutputCaptureReservation? reservation,
+            out string? failure)
+        {
+            TryReserveCalls++;
+            reservation = null;
+            failure = "unexpected";
+            return false;
+        }
+    }
 
     [Fact]
     public void Missing_job_reads_as_null()

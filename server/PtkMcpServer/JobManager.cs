@@ -268,7 +268,7 @@ public sealed class JobManager : IDisposable
         public string? OutputFailureCode;
         public string? ExecutionOutcomeFailureCode;
         public OutputCaptureReservation? OutputRecoveryReservation;
-        public OutputStore? OutputRecoveryStore;
+        public IOutputCaptureOwner? OutputRecoveryStore;
         public OutputRecoverySummary? OutputRecovery;
         public int OutputRecoveryFinalized;
         public long OutputRecoveryMaximumBytes;
@@ -657,6 +657,19 @@ public sealed class JobManager : IDisposable
         DateTimeOffset? deadline = null,
         CancellationToken cancellationToken = default,
         OutputStore? outputStore = null)
+        => CommitStartCore(
+            plan,
+            onTerminal,
+            deadline,
+            cancellationToken,
+            outputStore);
+
+    internal JobSnapshot CommitStartCore(
+        JobStartPlan plan,
+        Func<JobSnapshot, Task>? onTerminal,
+        DateTimeOffset? deadline,
+        CancellationToken cancellationToken,
+        IOutputCaptureOwner? outputCaptureOwner)
     {
         ArgumentNullException.ThrowIfNull(plan);
         if (!_allowColdBackground)
@@ -673,7 +686,7 @@ public sealed class JobManager : IDisposable
                 onTerminal,
                 deadline,
                 cancellationToken,
-                outputStore);
+                outputCaptureOwner);
             FinishStartAttempt(plan, provenFallbackReason: null);
             return snapshot;
         }
@@ -698,7 +711,7 @@ public sealed class JobManager : IDisposable
         Func<JobSnapshot, Task>? onTerminal,
         DateTimeOffset? deadline,
         CancellationToken cancellationToken,
-        OutputStore? outputStore)
+        IOutputCaptureOwner? outputCaptureOwner)
     {
         ThrowIfStartBudgetExpired(deadline, cancellationToken);
         ProcessStartInfo startInfo;
@@ -766,7 +779,7 @@ public sealed class JobManager : IDisposable
         };
         var recovery = PrepareOutputRecovery(
             plan,
-            outputStore,
+            outputCaptureOwner,
             deadline,
             cancellationToken);
         entry = new JobEntry
@@ -780,7 +793,7 @@ public sealed class JobManager : IDisposable
             OnTerminal = onTerminal,
             OutputWriter = outputWriter,
             OutputRecoveryReservation = recovery.Reservation,
-            OutputRecoveryStore = recovery.Reservation is null ? null : outputStore,
+            OutputRecoveryStore = recovery.Reservation is null ? null : outputCaptureOwner,
             OutputRecovery = recovery.Summary,
             OutputRecoveryFinalized = recovery.Finalized ? 1 : 0,
             OutputRecoveryMaximumBytes = recovery.MaximumBytes,
@@ -868,7 +881,7 @@ public sealed class JobManager : IDisposable
 
     private JobOutputRecoveryPreparation PrepareOutputRecovery(
         JobStartPlan plan,
-        OutputStore? outputStore,
+        IOutputCaptureOwner? outputCaptureOwner,
         DateTimeOffset? deadline,
         CancellationToken cancellationToken)
     {
@@ -884,7 +897,7 @@ public sealed class JobManager : IDisposable
                 MaximumBytes: 0);
         }
 
-        if (outputStore is null)
+        if (outputCaptureOwner is null)
         {
             return new JobOutputRecoveryPreparation(
                 null,
@@ -901,10 +914,10 @@ public sealed class JobManager : IDisposable
             // Reservation can touch retention storage. Reuse the store's
             // single anti-wedge lane so a filesystem stall consumes at most
             // one worker across foreground and background capture.
-            if (!outputStore.TryStartForegroundOperation(
+            if (!outputCaptureOwner.TryStartForegroundOperation(
                     () =>
                     {
-                        if (!outputStore.TryReserve(
+                        if (!outputCaptureOwner.TryReserve(
                                 "default",
                                 out var reservation,
                                 out var failure))
@@ -930,8 +943,8 @@ public sealed class JobManager : IDisposable
                                 OutputRecoverySummary.Unavailable("capture_pending"),
                                 Finalized: false,
                                 OutputRecoverySnapshotMaximumBytesForTests is { } testMaximum
-                                    ? Math.Min(testMaximum, outputStore.MaximumArtifactBytes)
-                                    : outputStore.MaximumArtifactBytes);
+                                    ? Math.Min(testMaximum, outputCaptureOwner.MaximumArtifactBytes)
+                                    : outputCaptureOwner.MaximumArtifactBytes);
                         }
 
                         reservation!.Dispose();

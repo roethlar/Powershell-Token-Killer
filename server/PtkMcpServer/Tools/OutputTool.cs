@@ -43,6 +43,28 @@ public static class OutputTool
         AuditCallContextAccessor? auditContext = null)
     {
         ArgumentNullException.ThrowIfNull(store);
+        return OutputCore(
+            store,
+            handle,
+            action,
+            offset,
+            maxBytes,
+            pattern,
+            cancellationToken,
+            auditContext);
+    }
+
+    internal static string OutputCore(
+        IOutputArtifactReader reader,
+        string handle,
+        string action,
+        long offset,
+        int maxBytes,
+        string? pattern,
+        CancellationToken cancellationToken,
+        AuditCallContextAccessor? auditContext)
+    {
+        ArgumentNullException.ThrowIfNull(reader);
         cancellationToken.ThrowIfCancellationRequested();
         action = action?.ToLowerInvariant() ?? "read";
         var audit = auditContext?.Current;
@@ -51,7 +73,7 @@ public static class OutputTool
         {
             case "status":
             {
-                var status = store.Status(handle);
+                var status = reader.Status(handle);
                 var response = FormatStatus(status);
                 audit?.CommitReadOutcome(
                     "output.status_accessed",
@@ -67,7 +89,7 @@ public static class OutputTool
                 OutputSearchResult result;
                 try
                 {
-                    result = store.Search(handle, pattern, offset, maxBytes);
+                    result = reader.Search(handle, pattern, offset, maxBytes);
                 }
                 catch (ArgumentOutOfRangeException)
                 {
@@ -87,7 +109,7 @@ public static class OutputTool
                 OutputReadResult result;
                 try
                 {
-                    result = store.Read(handle, offset, maxBytes);
+                    result = reader.Read(handle, offset, maxBytes);
                 }
                 catch (ArgumentOutOfRangeException)
                 {

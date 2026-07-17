@@ -109,7 +109,7 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
         }
     }
 
-    internal async Task<string> InvokeAsync(
+    internal Task<string> InvokeAsync(
         string script,
         CancellationToken cancellationToken,
         bool raw = false,
@@ -118,6 +118,25 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
         int timeoutSeconds = 0,
         AuditCallContext? audit = null,
         OutputStore? outputStore = null)
+        => InvokeCoreAsync(
+            script,
+            cancellationToken,
+            raw,
+            route,
+            background,
+            timeoutSeconds,
+            audit,
+            outputStore);
+
+    private async Task<string> InvokeCoreAsync(
+        string script,
+        CancellationToken cancellationToken,
+        bool raw,
+        string route,
+        bool background,
+        int timeoutSeconds,
+        AuditCallContext? audit,
+        IOutputCaptureOwner? outputCaptureOwner)
     {
         var host = _host;
         var jobs = _jobs;
@@ -327,12 +346,12 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                     : terminalLease.CompleteAsync;
                 try
                 {
-                    job = jobs.CommitStart(
+                    job = jobs.CommitStartCore(
                         activePlan,
                         onTerminal,
                         deadline,
                         cancellationToken,
-                        outputStore);
+                        outputCaptureOwner);
                 }
                 catch (JobStartException exception) when (
                     exception.ProcessStarted is false &&
@@ -374,12 +393,12 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                             "Nothing was executed. Retry, or raise timeoutSeconds.");
                     }
 
-                    job = jobs.CommitStart(
+                    job = jobs.CommitStartCore(
                         activePlan,
                         onTerminal,
                         deadline,
                         cancellationToken,
-                        outputStore);
+                        outputCaptureOwner);
                 }
                 terminalCallbackOwnedByJob = true;
 
@@ -484,9 +503,9 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                 }
             }
         }
-        using var outputCapture = outputStore is null
+        using var outputCapture = outputCaptureOwner is null
             ? null
-            : new ForegroundOutputCapture(outputStore);
+            : new ForegroundOutputCapture(outputCaptureOwner);
         var result = audit is null
             ? outputCapture is null
                 ? await host.InvokeAsync(

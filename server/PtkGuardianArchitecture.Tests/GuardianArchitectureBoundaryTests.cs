@@ -86,6 +86,8 @@ public sealed class GuardianArchitectureBoundaryTests
         "PtkMcpServer.Audit.IAuditAdmissionOwner",
         "PtkMcpServer.Audit.IAuditBoundaryCall",
         "PtkMcpServer.Audit.IAuditRuntimeResources",
+        "PtkMcpServer.IOutputArtifactReader",
+        "PtkMcpServer.IOutputCaptureOwner",
     ];
 
     private static readonly string[] RequiredGuardianOutputCompileInputs =
@@ -98,6 +100,8 @@ public sealed class GuardianArchitectureBoundaryTests
     private static readonly string[] RequiredGuardianOutputTypeDefinitions =
     [
         "PtkMcpServer.ForegroundOutputCapture",
+        "PtkMcpServer.IOutputArtifactReader",
+        "PtkMcpServer.IOutputCaptureOwner",
         "PtkMcpServer.OutputArtifactContent",
         "PtkMcpServer.OutputArtifactState",
         "PtkMcpServer.OutputArtifactStateCodes",
