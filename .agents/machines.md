@@ -769,4 +769,18 @@ exact `git archive` whose SHA-256 was
 
 R1 therefore has exact-head behavior evidence on all three target platforms.
 The required fixed-SHA Fable openreview remains a separate acceptance gate;
-R2-R7 remain unauthorized.
+the owner subsequently authorized R2-R7 and held that review for Fable
+capacity rather than blocking implementation.
+
+## MCP resilience R2 verification (Mac, 2026-07-17)
+
+_Exact R2 code head `eaef85f` on `feature/mcp-resilience-r1`._
+
+- On `nagatha.local`, the focused session-recovery suite passed 99/99, the
+  Guardian suite passed 196/196, the Guardian architecture suite passed 68/68,
+  and the complete server suite passed 1,693/1,693. Ten independent mutation
+  points made the intended guards fail before their exact bytes were restored.
+- The repository PowerShell suite passed 141 / 0 failed / 2 skipped, and the
+  complete stdio handshake passed after a zero-warning, zero-error build.
+- R2 remains deliberately unwired. Direct Windows and Unix process validation
+  resumes in the later slices that connect this state machine to live workers.
