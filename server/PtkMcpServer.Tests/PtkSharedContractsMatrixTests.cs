@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.Json;
 using PtkSharedContracts;
 
 namespace PtkMcpServer.Tests;
@@ -141,6 +142,41 @@ public sealed class PtkSharedContractsMatrixTests
         Assert.Throws<InvalidDataException>(() => RecoveryManifestCodec.DecodeForInitialize(
             compact,
             Digest('c')));
+    }
+
+    [Fact]
+    public void Recovery_manifest_decoder_zeroes_temporary_bootstrap_bytes()
+    {
+        using var document = JsonDocument.Parse(
+            """{"bootstrap_raw_base64":"Ym9vdHN0cmFw"}""");
+        byte[]? successfulBuffer = null;
+
+        var length = RecoveryManifestCodec.DecodeBootstrapBytes(
+            document.RootElement,
+            bootstrap =>
+            {
+                successfulBuffer = bootstrap;
+                Assert.Equal("bootstrap"u8.ToArray(), bootstrap);
+                return bootstrap.Length;
+            });
+
+        Assert.Equal(9, length);
+        Assert.NotNull(successfulBuffer);
+        Assert.All(successfulBuffer, value => Assert.Equal(0, value));
+
+        byte[]? failedBuffer = null;
+        var failure = Assert.Throws<InvalidOperationException>(() =>
+            RecoveryManifestCodec.DecodeBootstrapBytes<int>(
+                document.RootElement,
+                bootstrap =>
+                {
+                    failedBuffer = bootstrap;
+                    throw new InvalidOperationException("Injected template failure.");
+                }));
+
+        Assert.Equal("Injected template failure.", failure.Message);
+        Assert.NotNull(failedBuffer);
+        Assert.All(failedBuffer, value => Assert.Equal(0, value));
     }
 
     [Fact]

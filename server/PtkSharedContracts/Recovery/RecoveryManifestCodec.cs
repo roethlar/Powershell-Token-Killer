@@ -1,3 +1,4 @@
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -110,21 +111,41 @@ public static class RecoveryManifestCodec
         StrictJson.RequirePropertyOrder(value, "name", "description", "startup_timeout_seconds",
             "declared_target", "declared_identity", "allow_cold_background", "template_digest",
             "bootstrap_digest", "bootstrap_raw_base64");
+        return DecodeBootstrapBytes(
+            value,
+            bootstrap => new RecoveryTemplate(
+                new CanonicalAlias(StrictJson.RequiredString(value, "name")),
+                StrictJson.RequiredString(value, "description"),
+                checked((int)RequiredLong(value, "startup_timeout_seconds")),
+                StrictJson.RequiredString(value, "declared_target"),
+                StrictJson.RequiredString(value, "declared_identity"),
+                value.GetProperty("allow_cold_background").GetBoolean(),
+                new Sha256Digest(StrictJson.RequiredString(value, "template_digest")),
+                new Sha256Digest(StrictJson.RequiredString(value, "bootstrap_digest")),
+                bootstrap));
+    }
+
+    internal static T DecodeBootstrapBytes<T>(
+        JsonElement value,
+        Func<byte[], T> materialize)
+    {
+        ArgumentNullException.ThrowIfNull(materialize);
         byte[] bootstrap;
         try { bootstrap = Convert.FromBase64String(value.GetProperty("bootstrap_raw_base64").GetString()!); }
         catch (FormatException exception) { throw new InvalidDataException("Bootstrap is not canonical base64.", exception); }
-        if (Convert.ToBase64String(bootstrap) != value.GetProperty("bootstrap_raw_base64").GetString())
-            throw new InvalidDataException("Bootstrap is not canonical base64.");
-        return new RecoveryTemplate(
-            new CanonicalAlias(StrictJson.RequiredString(value, "name")),
-            StrictJson.RequiredString(value, "description"),
-            checked((int)RequiredLong(value, "startup_timeout_seconds")),
-            StrictJson.RequiredString(value, "declared_target"),
-            StrictJson.RequiredString(value, "declared_identity"),
-            value.GetProperty("allow_cold_background").GetBoolean(),
-            new Sha256Digest(StrictJson.RequiredString(value, "template_digest")),
-            new Sha256Digest(StrictJson.RequiredString(value, "bootstrap_digest")),
-            bootstrap);
+        try
+        {
+            if (Convert.ToBase64String(bootstrap) !=
+                value.GetProperty("bootstrap_raw_base64").GetString())
+            {
+                throw new InvalidDataException("Bootstrap is not canonical base64.");
+            }
+            return materialize(bootstrap);
+        }
+        finally
+        {
+            CryptographicOperations.ZeroMemory(bootstrap);
+        }
     }
 
     private static void WriteBinding(Utf8JsonWriter writer, RecoveryBinding value)
