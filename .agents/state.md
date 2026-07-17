@@ -261,10 +261,9 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Review the proposed mini-SIEM S3H amendment in
-   `.agents/plans/mini-siem-implementation.md`. If the owner approves it,
-   implement only startup filesystem hardening under `siem/`; do not begin
-   S4-S6 or modify PTK runtime code. Until approval, make no S3H code change.
+1. Implement the owner-approved mini-SIEM S3H amendment in
+   `.agents/plans/mini-siem-implementation.md`: startup filesystem hardening
+   under `siem/` only. Do not begin S4-S6 or modify PTK runtime code.
 2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures.
@@ -320,15 +319,16 @@ short and update it when important repo facts change.
   ARM64 build must not be claimed until the launch failure is resolved or
   independently disproved; see `.agents/machines.md`.
 
-- **Mini-SIEM startup filesystem enforcement is planned but not yet approved
-  or implemented.** The proposed S3H amendment in
-  `.agents/plans/mini-siem-implementation.md` corrects the former S1/S3
+- **Mini-SIEM startup filesystem enforcement is approved but not yet
+  implemented.** The S3H amendment in
+  `.agents/plans/mini-siem-implementation.md`, approved by the owner on
+  2026-07-16, corrects the former S1/S3
   scheduling inconsistency for current config, TLS, database, and sidecar
   paths while leaving the not-yet-existent custody-checkpoint path with its
   later owning slice. The current receiver still lacks this enforcement. Do
   not claim receiver-host storage protection or full product acceptance until
-  the owner approves S3H, its cross-platform negative matrix lands, and the
-  later checkpoint path is protected before first use.
+  S3H's cross-platform negative matrix lands and the later checkpoint path is
+  protected before first use.
 
 - **Windows wiring requires a hard supervisor/worker role cutover.**
   `Program.cs`, `BashProcessRunner`, `RtkProcessRunner`, and `JobManager` still
