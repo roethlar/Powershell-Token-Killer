@@ -544,11 +544,30 @@ public sealed class GuardianArchitectureBoundaryTests
             prepareStart.DescendantNodes().OfType<VariableDeclaratorSyntax>(),
             variable => variable.Identifier.ValueText == "id");
         Assert.Equal(
-            "_publicJobIdAllocator.Allocate().Value",
+            "reservedPublicJobId?.Value ?? _publicJobIdAllocator.Allocate().Value",
             idDeclaration.Initializer!.Value.ToString());
         Assert.Single(
             prepareStart.DescendantNodes().OfType<InvocationExpressionSyntax>(),
             invocation => invocation.Expression.ToString() == "_publicJobIdAllocator.Allocate");
+
+        var reservedPrepare = Assert.Single(
+            jobManager.Members.OfType<MethodDeclarationSyntax>(),
+            method => method.Identifier.ValueText == "PrepareStartWithReservedId");
+        Assert.Contains(
+            reservedPrepare.ParameterList.Parameters,
+            parameter => parameter.Type?.ToString() == "PublicJobId" &&
+                parameter.Identifier.ValueText == "publicJobId");
+        Assert.DoesNotContain(
+            reservedPrepare.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString().Contains(
+                "Allocate",
+                StringComparison.Ordinal));
+        var reservedCoreCall = Assert.Single(
+            reservedPrepare.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString() == "PrepareStartCore");
+        Assert.Contains(
+            reservedCoreCall.ArgumentList.Arguments,
+            argument => argument.Expression.ToString() == "publicJobId");
 
         var factoryRoot = ParseSourceRoot(Path.Combine(
             paths.ServerDirectory,
