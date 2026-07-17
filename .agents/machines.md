@@ -784,3 +784,49 @@ _Exact R2 code head `eaef85f` on `feature/mcp-resilience-r1`._
   complete stdio handshake passed after a zero-warning, zero-error build.
 - R2 remains deliberately unwired. Direct Windows and Unix process validation
   resumes in the later slices that connect this state machine to live workers.
+
+## MCP resilience R3 verification (Mac, Windows, and Linux, 2026-07-17)
+
+_Exact R3 apphost code/test head
+`1eb69d64f6475dec79e3e4f4f36a38283df0a473`, tree
+`40447c97f6b54ffc60f047dff7687155a60dae61`; the macOS full-battery test-
+synchronization descendant is `d238a80`._
+
+- On `nagatha.local`, the real copied `PtkMcpGuardian` apphost process test
+  passed 2/2. It performed one initialize/initialized sequence, verified the
+  exact six-tool catalog, called guardian job/state surfaces, proved JSON-only
+  stdout with empty stderr, closed stdin, and observed exit zero; the invalid
+  `--fake-host extra` mode proved exit 64, empty stdout, and exact bounded
+  stderr. The full Guardian suite passed 264/264 and Guardian architecture
+  passed 69/69. One first complete server run at `1eb69d6` passed 1,761/1,762:
+  an older recovery test assumed a scheduled shutdown would publish state
+  within 20 ms. Its two theory cases then passed 20/20 in isolation. Test-only
+  `d238a80` replaced that scheduler sleep with a condition-based bounded wait;
+  the exact descendant passed Guardian 264/264, Architecture 69/69, and Server
+  1,762/1,762. The PowerShell battery passed 141 / 0 failed / 2 skipped, and
+  the complete stdio handshake passed after a zero-warning, zero-error build.
+- On `NETWATCH-01` (Windows 11 Pro 10.0.26200 build 26200, win-x64, .NET SDK
+  10.0.302/runtime 10.0.10), a disposable exact archive matched SHA-256
+  `E5CC17D04C1693B0EEE62400D5346942C79F502B4A2E5A1BFC51F4D3FCEF64E3`
+  locally and remotely. The apphost process test passed 2/2, full Guardian
+  passed 264/264, and Guardian architecture passed 69/69. All commands exited
+  zero; the archive and disposable checkout were removed without changing an
+  existing checkout or installed payload.
+- On the disposable Ubuntu 26.04 ARM64 VM at `192.168.64.5` (kernel
+  7.0.0-27, .NET SDK 10.0.110/runtime 10.0.10, VSTest 18.0.2), the transferred
+  source reproduced the exact commit and tree above; its tar SHA-256 was
+  `e558f7b3851d3cbf8e2549c017b0a7555b2fb62f5fb78bb199afff45bda18d65`.
+  The apphost process test passed 2/2, full Guardian passed 264/264, and
+  Guardian architecture passed 69/69, including the same stdout/stderr, EOF,
+  and invalid-mode assertions. The existing ARM64 clean-build blocker
+  reproduced: Grpc.Tools 2.82.0's bundled `protoc` (`libprotoc 35.0`) exits 139
+  only when MSBuild invokes it through an `@responsefile`; the exact direct
+  arguments exit zero. Manually generating `AuditOtlp.cs` and its protodep
+  allowed the ordinary `--no-restore` behavior suites to pass. No OS package is
+  missing, but this remains behavior evidence rather than a clean ARM64 build
+  claim. The disposable tree was removed and the VM returned to stopped state.
+
+R3 therefore has direct same-source apphost behavior evidence on macOS,
+Windows, and Linux. Hosted CI remains unrun because this authorized local
+implementation sequence does not itself authorize a push; the owner-held
+fixed-head Fable review also remains separate from continued R4 work.

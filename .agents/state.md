@@ -120,8 +120,12 @@ short and update it when important repo facts change.
   at the owner's 2026-07-17 direction until Fable capacity returns; the owner
   explicitly authorized every remaining slice R2-R7 on 2026-07-17 and directed
   implementation to continue without stopping for reviews; R2's deterministic
-  unwired per-alias recovery core is complete at `eaef85f`, and R3 is
-  active.** The target keeps one public stdio guardian alive while it
+  unwired per-alias recovery core is complete at `eaef85f`; R3's standalone
+  guardian, crashable fake-host recovery, race/soak closure, real OS-process
+  apphost coverage, and direct macOS/Windows/Linux behavior validation are
+  complete at code/test head `1eb69d6` with the test-only scheduler closure at
+  `d238a80`; R4 private real-host and control-plane transfer is active.** The
+  target keeps one public stdio guardian alive while it
   restarts an exact-version private host, and makes a healthy host replace an
   unexpectedly lost session worker. It never replays ambiguous work, changes
   generation on every replacement, recreates only frozen declared bootstrap
