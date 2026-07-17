@@ -512,7 +512,7 @@ public sealed class GuardianArchitectureBoundaryTests
     }
 
     [Fact]
-    public void Public_job_id_allocation_is_guardian_owned_and_forwarded_without_replacement()
+    public void Private_job_identity_is_guardian_owned_and_forwarded_without_replacement()
     {
         var paths = RepositoryPaths.Create();
         var jobManagerRoot = ParseSourceRoot(Path.Combine(
@@ -557,6 +557,10 @@ public sealed class GuardianArchitectureBoundaryTests
             reservedPrepare.ParameterList.Parameters,
             parameter => parameter.Type?.ToString() == "PublicJobId" &&
                 parameter.Identifier.ValueText == "publicJobId");
+        Assert.Contains(
+            reservedPrepare.ParameterList.Parameters,
+            parameter => parameter.Type?.ToString() == "CapabilityToken" &&
+                parameter.Identifier.ValueText == "jobCapability");
         Assert.DoesNotContain(
             reservedPrepare.DescendantNodes().OfType<InvocationExpressionSyntax>(),
             invocation => invocation.Expression.ToString().Contains(
@@ -568,6 +572,62 @@ public sealed class GuardianArchitectureBoundaryTests
         Assert.Contains(
             reservedCoreCall.ArgumentList.Arguments,
             argument => argument.Expression.ToString() == "publicJobId");
+        Assert.Contains(
+            reservedCoreCall.ArgumentList.Arguments,
+            argument => argument.Expression.ToString() == "jobCapability");
+
+        var startPlan = Assert.Single(
+            jobManagerRoot.DescendantNodes().OfType<RecordDeclarationSyntax>(),
+            declaration => declaration.Identifier.ValueText == "JobStartPlan");
+        var planCapability = Assert.Single(
+            startPlan.Members.OfType<PropertyDeclarationSyntax>(),
+            property => property.Identifier.ValueText == "JobCapability");
+        Assert.Equal("CapabilityToken?", planCapability.Type.ToString());
+
+        var jobEntry = Assert.Single(
+            jobManager.Members.OfType<ClassDeclarationSyntax>(),
+            declaration => declaration.Identifier.ValueText == "JobEntry");
+        var entryCapability = Assert.Single(
+            jobEntry.Members.OfType<PropertyDeclarationSyntax>(),
+            property => property.Identifier.ValueText == "JobCapability");
+        Assert.Equal("CapabilityToken?", entryCapability.Type.ToString());
+        Assert.Contains(
+            entryCapability.Modifiers,
+            modifier => modifier.IsKind(SyntaxKind.RequiredKeyword));
+
+        Assert.Single(
+            jobManagerRoot.DescendantNodes().OfType<AssignmentExpressionSyntax>(),
+            assignment => assignment.Left.ToString() == "JobCapability" &&
+                assignment.Right.ToString() == "reservedJobCapability");
+        Assert.Single(
+            jobManagerRoot.DescendantNodes().OfType<AssignmentExpressionSyntax>(),
+            assignment => assignment.Left.ToString() == "JobCapability" &&
+                assignment.Right.ToString() == "plan.JobCapability");
+
+        foreach (var accessorName in new[] { "Snapshot", "ReadOutput", "RequestKill" })
+        {
+            var accessor = Assert.Single(
+                jobManager.Members.OfType<MethodDeclarationSyntax>(),
+                method => method.Identifier.ValueText == accessorName &&
+                    method.ParameterList.Parameters.FirstOrDefault()?.Type?.ToString() ==
+                        "PublicJobId");
+            Assert.Equal(
+                ["PublicJobId", "CapabilityToken"],
+                accessor.ParameterList.Parameters.Take(2)
+                    .Select(parameter => parameter.Type!.ToString()));
+            Assert.Single(
+                accessor.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+                invocation => invocation.Expression.ToString() ==
+                    "RequireJobCapabilityLocked");
+        }
+
+        var fixedTimeComparison = Assert.Single(
+            jobManager.Members.OfType<MethodDeclarationSyntax>(),
+            method => method.Identifier.ValueText == "FixedTimeCapabilityEquals");
+        Assert.Single(
+            fixedTimeComparison.DescendantNodes().OfType<InvocationExpressionSyntax>(),
+            invocation => invocation.Expression.ToString() ==
+                "CryptographicOperations.FixedTimeEquals");
 
         var factoryRoot = ParseSourceRoot(Path.Combine(
             paths.ServerDirectory,

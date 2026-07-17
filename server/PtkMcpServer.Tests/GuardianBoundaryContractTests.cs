@@ -163,12 +163,58 @@ public sealed class GuardianBoundaryContractTests
 
         Assert.Equal(
             typeof(long),
-            typeof(JobManager).GetMethod(nameof(JobManager.Snapshot))!
+            Assert.Single(
+                typeof(JobManager).GetMethods(BindingFlags.Public | BindingFlags.Instance),
+                method => method.Name == nameof(JobManager.Snapshot))
                 .GetParameters().Single().ParameterType);
         Assert.Equal(
             typeof(long),
             typeof(JobManager).GetMethod(nameof(JobManager.Kill))!
                 .GetParameters().First().ParameterType);
+    }
+
+    [Fact]
+    public void Guardian_reserved_job_identity_is_retained_and_private_access_is_capability_aware()
+    {
+        var planCapability = typeof(JobStartPlan).GetProperty(
+            "JobCapability",
+            BindingFlags.Instance | BindingFlags.NonPublic)!;
+        Assert.Equal(typeof(CapabilityToken), planCapability.PropertyType);
+
+        var jobEntry = typeof(JobManager).GetNestedType(
+            "JobEntry",
+            BindingFlags.NonPublic)!;
+        var entryCapability = jobEntry.GetProperty(
+            "JobCapability",
+            BindingFlags.Instance | BindingFlags.Public)!;
+        Assert.Equal(typeof(CapabilityToken), entryCapability.PropertyType);
+
+        var privateMethods = typeof(JobManager).GetMethods(
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        AssertParameterContract(
+            Assert.Single(
+                privateMethods,
+                method => method.Name == nameof(JobManager.Snapshot)),
+            ["publicJobId", "jobCapability"],
+            [typeof(PublicJobId), typeof(CapabilityToken)]);
+        AssertParameterContract(
+            Assert.Single(
+                privateMethods,
+                method => method.Name == nameof(JobManager.ReadOutput)),
+            ["publicJobId", "jobCapability", "offset", "maxBytes"],
+            [typeof(PublicJobId), typeof(CapabilityToken), typeof(long), typeof(int)]);
+        AssertParameterContract(
+            Assert.Single(
+                privateMethods,
+                method => method.Name == nameof(JobManager.RequestKill)),
+            ["publicJobId", "jobCapability", "reason"],
+            [typeof(PublicJobId), typeof(CapabilityToken), typeof(JobTerminationReason)]);
+
+        var capabilityFailure = new JobCapabilityException();
+        Assert.Equal(
+            GuardianHostPrivateDetailCode.JobCapabilityInvalid,
+            capabilityFailure.DetailCode);
+        Assert.Equal("The job capability is invalid.", capabilityFailure.Message);
     }
 
     [Fact]

@@ -133,19 +133,134 @@ public sealed class JobManagerTests : IDisposable
             cwd,
             DirectCommand("echo guardian-reserved"),
             originalScript: "guardian-reserved intent");
+        var jobCapability = Capability(1);
 
         var plan = jobs.PrepareStartWithReservedId(
             new PublicJobId(41),
+            jobCapability,
             dispatch,
             cwd);
 
         Assert.Equal(41, plan.Id);
+        Assert.Same(jobCapability, plan.JobCapability);
         Assert.Same(dispatch, plan.Dispatch);
         Assert.True(plan.DispatchBound);
         Assert.Equal(0, allocator.AllocationAttempts);
         Assert.Empty(jobs.List());
         Assert.False(Directory.Exists(root));
         Assert.False(File.Exists(plan.OutputPath));
+    }
+
+    [Fact]
+    public async Task Private_status_requires_the_exact_bound_job_capability()
+    {
+        var publicJobId = new PublicJobId(41);
+        var jobCapability = Capability(1);
+        var staleCapability = Capability(2);
+        var started = StartPrivateJob(
+            publicJobId,
+            jobCapability,
+            "Start-Sleep -Seconds 300");
+
+        try
+        {
+            var snapshot = _jobs.Snapshot(publicJobId, jobCapability);
+            Assert.Equal(publicJobId.Value, snapshot.Id);
+            Assert.True(snapshot.Running);
+
+            AssertCapabilityRejected(() =>
+                _jobs.Snapshot(publicJobId, staleCapability));
+            AssertCapabilityRejected(() =>
+                _jobs.Snapshot(publicJobId, null!));
+            AssertCapabilityRejected(() =>
+                _jobs.Snapshot(new PublicJobId(999), jobCapability));
+        }
+        finally
+        {
+            _jobs.Kill(started.Id);
+            await WaitForExitAsync(started.Id);
+        }
+
+        var transitional = _jobs.Start("'transitional job'");
+        await WaitForExitAsync(transitional.Id);
+        AssertCapabilityRejected(() =>
+            _jobs.Snapshot(new PublicJobId(transitional.Id), jobCapability));
+    }
+
+    [Fact]
+    public async Task Private_output_rejects_invalid_capabilities_before_any_read_observation()
+    {
+        var publicJobId = new PublicJobId(42);
+        var jobCapability = Capability(3);
+        var staleCapability = Capability(4);
+        var started = StartPrivateJob(
+            publicJobId,
+            jobCapability,
+            "'private output'; Start-Sleep -Seconds 300");
+        var observedReads = 0;
+        _jobs.BeforePollingOutputReadForTests = _ =>
+            Interlocked.Increment(ref observedReads);
+
+        try
+        {
+            AssertCapabilityRejected(() =>
+                _jobs.ReadOutput(publicJobId, staleCapability, offset: 0));
+            AssertCapabilityRejected(() =>
+                _jobs.ReadOutput(publicJobId, null!, offset: 0));
+            AssertCapabilityRejected(() =>
+                _jobs.ReadOutput(new PublicJobId(999), jobCapability, offset: 0));
+            Assert.Equal(0, Volatile.Read(ref observedReads));
+
+            _jobs.ReadOutput(publicJobId, jobCapability, offset: 0);
+            Assert.Equal(1, Volatile.Read(ref observedReads));
+        }
+        finally
+        {
+            _jobs.BeforePollingOutputReadForTests = null;
+            _jobs.Kill(started.Id);
+            await WaitForExitAsync(started.Id);
+        }
+    }
+
+    [Fact]
+    public async Task Private_kill_rejects_invalid_capabilities_before_requesting_termination()
+    {
+        var publicJobId = new PublicJobId(43);
+        var jobCapability = Capability(5);
+        var staleCapability = Capability(6);
+        var started = StartPrivateJob(
+            publicJobId,
+            jobCapability,
+            "Start-Sleep -Seconds 300");
+        var observedKills = 0;
+        _jobs.BeforeKillForTests = _ =>
+            Interlocked.Increment(ref observedKills);
+
+        try
+        {
+            AssertCapabilityRejected(() =>
+                _jobs.RequestKill(publicJobId, staleCapability));
+            AssertCapabilityRejected(() =>
+                _jobs.RequestKill(publicJobId, null!));
+            AssertCapabilityRejected(() =>
+                _jobs.RequestKill(new PublicJobId(999), jobCapability));
+            Assert.Equal(0, Volatile.Read(ref observedKills));
+            Assert.True(_jobs.Snapshot(started.Id)!.Running);
+
+            var result = _jobs.RequestKill(publicJobId, jobCapability);
+            Assert.Equal(JobKillDisposition.Requested, result.Disposition);
+            Assert.Equal(1, Volatile.Read(ref observedKills));
+            await WaitForExitAsync(started.Id);
+        }
+        finally
+        {
+            _jobs.BeforeKillForTests = null;
+            if (_jobs.Snapshot(started.Id) is { Running: true })
+            {
+                _jobs.Kill(started.Id);
+                await WaitForExitAsync(started.Id);
+            }
+        }
     }
 
     [Fact]
@@ -2358,6 +2473,55 @@ public sealed class JobManagerTests : IDisposable
         Assert.NotEqual(0, final.ExitCode);
         Assert.True(read.Text.Length > 0,
             "the parse error must land in the job log, not vanish on the child's stderr");
+    }
+
+    private JobSnapshot StartPrivateJob(
+        PublicJobId publicJobId,
+        CapabilityToken jobCapability,
+        string script)
+    {
+        Directory.CreateDirectory(_fixtureDir);
+        var execution = new ExecutionPlan(
+            originalScript: script,
+            executionScript: script,
+            ExecutionDomain.PowerShell,
+            ExecutionPath.PowerShellDirect,
+            PreExecutionValidation.None,
+            ResolutionContext.Cold,
+            RequestedExecutionRoute.PowerShell,
+            OutputProvenance.DirectText,
+            ImmutableArray<ExecutionPath>.Empty,
+            fallbackReason: null,
+            rtkExecutableIdentity: null);
+        var plan = _jobs.PrepareStartWithReservedId(
+            publicJobId,
+            jobCapability,
+            ExecutionDispatch.FromPlan(execution),
+            Path.GetFullPath(_fixtureDir));
+        var started = _jobs.CommitStart(plan);
+        Assert.True(_jobs.ConfirmStartRecorded(plan.Id));
+        return started;
+    }
+
+    private static void AssertCapabilityRejected(Action action)
+    {
+        var failure = Assert.Throws<JobCapabilityException>(action);
+        Assert.Equal(
+            GuardianHostPrivateDetailCode.JobCapabilityInvalid,
+            failure.DetailCode);
+        Assert.Equal("The job capability is invalid.", failure.Message);
+        Assert.DoesNotContain("job-", failure.Message, StringComparison.Ordinal);
+    }
+
+    private static CapabilityToken Capability(byte value)
+    {
+        var bytes = Enumerable.Repeat(
+            value,
+            ContractLimits.CapabilityTokenBytes).ToArray();
+        return new CapabilityToken(Convert.ToBase64String(bytes)
+            .TrimEnd('=')
+            .Replace('+', '-')
+            .Replace('/', '_'));
     }
 
     private ExecutionDispatch CreateRtkDispatch(

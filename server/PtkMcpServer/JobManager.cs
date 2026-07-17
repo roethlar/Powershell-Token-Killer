@@ -2,6 +2,7 @@ using System.Buffers;
 using System.Collections.Concurrent;
 using System.Collections.Immutable;
 using System.Diagnostics;
+using System.Security.Cryptography;
 using System.Text;
 using PtkMcpGuardian.Ownership;
 using PtkSharedContracts;
@@ -144,6 +145,22 @@ internal sealed class JobStartException : InvalidOperationException
     internal ExecutionFallbackReason? ProvenPreStartFallbackReason { get; }
 }
 
+/// <summary>
+/// Uniform private-boundary failure for a missing, unbound, wrong, or stale
+/// job capability. The message deliberately contains neither the public job ID
+/// nor either capability value.
+/// </summary>
+internal sealed class JobCapabilityException : InvalidOperationException
+{
+    internal JobCapabilityException()
+        : base("The job capability is invalid.")
+    {
+    }
+
+    internal GuardianHostPrivateDetailCode DetailCode =>
+        GuardianHostPrivateDetailCode.JobCapabilityInvalid;
+}
+
 public sealed record JobSnapshot(
     long Id,
     int Pid,
@@ -185,6 +202,7 @@ public sealed record JobStartPlan(
 {
     internal ExecutionDispatch Dispatch { get; init; } = null!;
     internal JobExecutionMetadata Execution { get; init; } = null!;
+    internal CapabilityToken? JobCapability { get; init; }
     internal bool DispatchBound { get; init; }
     internal string? AuthorizedWorkingDirectory { get; init; }
     internal ExecutionPath ExecutionPath =>
@@ -249,6 +267,7 @@ public sealed class JobManager : IDisposable
         public required DateTimeOffset StartedUtc { get; init; }
         public required JobStartPlan StartPlan { get; init; }
         public required JobExecutionMetadata Execution { get; init; }
+        public required CapabilityToken? JobCapability { get; init; }
         public Func<JobSnapshot, Task>? OnTerminal { get; init; }
         public TaskCompletionSource<bool> StartRecordPublished { get; } =
             new(TaskCreationOptions.RunContinuationsAsynchronously);
@@ -511,7 +530,8 @@ public sealed class JobManager : IDisposable
         return PrepareStartCore(
             CreateCompatibilityDispatch(script),
             workingDirectory,
-            reservedPublicJobId: null);
+            reservedPublicJobId: null,
+            reservedJobCapability: null);
     }
 
     private static ExecutionDispatch CreateCompatibilityDispatch(string script)
@@ -551,15 +571,18 @@ public sealed class JobManager : IDisposable
     /// </summary>
     internal JobStartPlan PrepareStartWithReservedId(
         PublicJobId publicJobId,
+        CapabilityToken jobCapability,
         ExecutionDispatch dispatch,
         string workingDirectory)
     {
         ArgumentNullException.ThrowIfNull(publicJobId);
+        ArgumentNullException.ThrowIfNull(jobCapability);
         ArgumentNullException.ThrowIfNull(dispatch);
         var reservation = PrepareStartCore(
             CreateCompatibilityDispatch(dispatch.Plan.OriginalScript),
             workingDirectory: null,
-            publicJobId);
+            publicJobId,
+            jobCapability);
         return BindDispatch(reservation, dispatch, workingDirectory);
     }
 
@@ -640,8 +663,15 @@ public sealed class JobManager : IDisposable
     private JobStartPlan PrepareStartCore(
         ExecutionDispatch dispatch,
         string? workingDirectory,
-        PublicJobId? reservedPublicJobId)
+        PublicJobId? reservedPublicJobId,
+        CapabilityToken? reservedJobCapability)
     {
+        if ((reservedPublicJobId is null) != (reservedJobCapability is null))
+        {
+            throw new InvalidOperationException(
+                "A guardian-reserved job ID and its capability must be bound together.");
+        }
+
         long generation;
         lock (_shutdownGate)
         {
@@ -667,6 +697,7 @@ public sealed class JobManager : IDisposable
         {
             Dispatch = dispatch,
             Execution = execution,
+            JobCapability = reservedJobCapability,
             AuthorizedWorkingDirectory = workingDirectory,
         };
     }
@@ -836,6 +867,7 @@ public sealed class JobManager : IDisposable
             StartedUtc = DateTimeOffset.UtcNow,
             StartPlan = plan,
             Execution = plan.Execution,
+            JobCapability = plan.JobCapability,
             OnTerminal = onTerminal,
             OutputWriter = outputWriter,
             OutputRecoveryReservation = recovery.Reservation,
@@ -1938,6 +1970,53 @@ public sealed class JobManager : IDisposable
         }
     }
 
+    /// <summary>
+    /// Private-host status boundary. A public ID is usable only with the exact
+    /// capability bound to it by the guardian before process creation.
+    /// </summary>
+    internal JobSnapshot Snapshot(
+        PublicJobId publicJobId,
+        CapabilityToken jobCapability)
+    {
+        lock (_shutdownGate)
+        {
+            var entry = RequireJobCapabilityLocked(publicJobId, jobCapability);
+            return SnapshotLocked(entry.StartPlan.Id, entry);
+        }
+    }
+
+    private JobEntry RequireJobCapabilityLocked(
+        PublicJobId? publicJobId,
+        CapabilityToken? jobCapability)
+    {
+        JobEntry? entry = null;
+        if (publicJobId is not null)
+            _jobs.TryGetValue(publicJobId.Value, out entry);
+
+        if (!FixedTimeCapabilityEquals(entry?.JobCapability, jobCapability))
+            throw new JobCapabilityException();
+        return entry!;
+    }
+
+    private static bool FixedTimeCapabilityEquals(
+        CapabilityToken? expected,
+        CapabilityToken? supplied)
+    {
+        Span<byte> expectedBytes =
+            stackalloc byte[ContractLimits.CapabilityTokenCharacters];
+        Span<byte> suppliedBytes =
+            stackalloc byte[ContractLimits.CapabilityTokenCharacters];
+        if (expected is not null)
+            Encoding.ASCII.GetBytes(expected.Value.AsSpan(), expectedBytes);
+        if (supplied is not null)
+            Encoding.ASCII.GetBytes(supplied.Value.AsSpan(), suppliedBytes);
+
+        var equal = CryptographicOperations.FixedTimeEquals(
+            expectedBytes,
+            suppliedBytes);
+        return expected is not null && supplied is not null && equal;
+    }
+
     private static JobSnapshot SnapshotLocked(long id, JobEntry entry)
     {
         var running = Volatile.Read(ref entry.RootExited) == 0 ||
@@ -1993,40 +2072,70 @@ public sealed class JobManager : IDisposable
         long id,
         JobTerminationReason reason = JobTerminationReason.ExplicitKill)
     {
-        if (reason == JobTerminationReason.None || !Enum.IsDefined(reason))
-            throw new ArgumentOutOfRangeException(nameof(reason));
+        ValidateTerminationReason(reason);
 
         lock (_shutdownGate)
         {
             if (!_jobs.TryGetValue(id, out var entry))
                 return new JobKillResult(id, JobKillDisposition.NotFound, reason);
-            if (Volatile.Read(ref entry.RootExited) != 0)
-            {
-                return new JobKillResult(
-                    id,
-                    Volatile.Read(ref entry.RootTerminationConfirmed) != 0
-                        ? JobKillDisposition.AlreadyExited
-                        : JobKillDisposition.Failed,
-                    reason);
-            }
-
-            var existingReason = (JobTerminationReason)Volatile.Read(ref entry.TerminationReason);
-            if (existingReason != JobTerminationReason.None)
-                return new JobKillResult(id, JobKillDisposition.AlreadyRequested, existingReason);
-
-            Interlocked.Exchange(ref entry.TerminationReason, (int)reason);
-            try
-            {
-                BeforeKillForTests?.Invoke(entry.Process);
-                entry.Process.Kill(entireProcessTree: true);
-                return new JobKillResult(id, JobKillDisposition.Requested, reason);
-            }
-            catch
-            {
-                Interlocked.Exchange(ref entry.TerminationReason, (int)JobTerminationReason.None);
-                return new JobKillResult(id, JobKillDisposition.Failed, reason);
-            }
+            return RequestKillLocked(id, entry, reason);
         }
+    }
+
+    /// <summary>
+    /// Private-host termination boundary. Capability validation and the first
+    /// termination request are serialized under the same manager lock.
+    /// </summary>
+    internal JobKillResult RequestKill(
+        PublicJobId publicJobId,
+        CapabilityToken jobCapability,
+        JobTerminationReason reason = JobTerminationReason.ExplicitKill)
+    {
+        lock (_shutdownGate)
+        {
+            var entry = RequireJobCapabilityLocked(publicJobId, jobCapability);
+            ValidateTerminationReason(reason);
+            return RequestKillLocked(entry.StartPlan.Id, entry, reason);
+        }
+    }
+
+    private JobKillResult RequestKillLocked(
+        long id,
+        JobEntry entry,
+        JobTerminationReason reason)
+    {
+        if (Volatile.Read(ref entry.RootExited) != 0)
+        {
+            return new JobKillResult(
+                id,
+                Volatile.Read(ref entry.RootTerminationConfirmed) != 0
+                    ? JobKillDisposition.AlreadyExited
+                    : JobKillDisposition.Failed,
+                reason);
+        }
+
+        var existingReason = (JobTerminationReason)Volatile.Read(ref entry.TerminationReason);
+        if (existingReason != JobTerminationReason.None)
+            return new JobKillResult(id, JobKillDisposition.AlreadyRequested, existingReason);
+
+        Interlocked.Exchange(ref entry.TerminationReason, (int)reason);
+        try
+        {
+            BeforeKillForTests?.Invoke(entry.Process);
+            entry.Process.Kill(entireProcessTree: true);
+            return new JobKillResult(id, JobKillDisposition.Requested, reason);
+        }
+        catch
+        {
+            Interlocked.Exchange(ref entry.TerminationReason, (int)JobTerminationReason.None);
+            return new JobKillResult(id, JobKillDisposition.Failed, reason);
+        }
+    }
+
+    private static void ValidateTerminationReason(JobTerminationReason reason)
+    {
+        if (reason == JobTerminationReason.None || !Enum.IsDefined(reason))
+            throw new ArgumentOutOfRangeException(nameof(reason));
     }
 
     /// <summary>Compatibility boolean for callers that only need effect admission.</summary>
@@ -2109,6 +2218,31 @@ public sealed class JobManager : IDisposable
         int maxBytes = 131072)
     {
         if (!_jobs.TryGetValue(id, out var entry)) return null;
+        return ReadOutputCore(id, entry, offset, maxBytes);
+    }
+
+    /// <summary>
+    /// Private-host output boundary. The capability is checked before the
+    /// polling hook, output path, filesystem metadata, or bytes are observed.
+    /// </summary>
+    internal (string Text, long NextOffset, int BytesRead) ReadOutput(
+        PublicJobId publicJobId,
+        CapabilityToken jobCapability,
+        long offset,
+        int maxBytes = 131072)
+    {
+        JobEntry entry;
+        lock (_shutdownGate)
+            entry = RequireJobCapabilityLocked(publicJobId, jobCapability);
+        return ReadOutputCore(entry.StartPlan.Id, entry, offset, maxBytes);
+    }
+
+    private (string Text, long NextOffset, int BytesRead) ReadOutputCore(
+        long id,
+        JobEntry entry,
+        long offset,
+        int maxBytes)
+    {
         BeforePollingOutputReadForTests?.Invoke(id);
         if (!File.Exists(entry.OutputPath)) return (string.Empty, Math.Max(0, offset), 0);
 
