@@ -1,0 +1,39 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <Nullable>enable</Nullable>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <EmbeddedResource Include="..\Contracts\ResilienceR0\public-tool-contract.json"
+                      Link="Contracts\public-tool-contract.json"
+                      LogicalName="PtkSharedContracts.Contracts.public-tool-contract.json" />
+    <EmbeddedResource Include="..\Contracts\ResilienceR0\public-recovery.schema.json"
+                      Link="Contracts\public-recovery.schema.json"
+                      LogicalName="PtkSharedContracts.Contracts.public-recovery.schema.json" />
+    <EmbeddedResource Include="..\Contracts\ResilienceR0\public-state.schema.json"
+                      Link="Contracts\public-state.schema.json"
+                      LogicalName="PtkSharedContracts.Contracts.public-state.schema.json" />
+    <EmbeddedResource Include="..\Contracts\ResilienceR0\guardian-host-protocol.json"
+                      Link="Contracts\guardian-host-protocol.json"
+                      LogicalName="PtkSharedContracts.Contracts.guardian-host-protocol.json" />
+    <EmbeddedResource Include="..\Contracts\ResilienceR0\guardian-host-protocol.schema.json"
+                      Link="Contracts\guardian-host-protocol.schema.json"
+                      LogicalName="PtkSharedContracts.Contracts.guardian-host-protocol.schema.json" />
+    <EmbeddedResource Include="..\Contracts\ResilienceR0\recovery-manifest.schema.json"
+                      Link="Contracts\recovery-manifest.schema.json"
+                      LogicalName="PtkSharedContracts.Contracts.recovery-manifest.schema.json" />
+    <EmbeddedResource Include="..\Contracts\ResilienceR0\recovery-manifest.example.json"
+                      Link="Contracts\recovery-manifest.example.json"
+                      LogicalName="PtkSharedContracts.Contracts.recovery-manifest.example.json" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <InternalsVisibleTo Include="PtkMcpServer" />
+    <InternalsVisibleTo Include="PtkMcpServer.Tests" />
+    <InternalsVisibleTo Include="PtkResilienceTestFixture" />
+  </ItemGroup>
+
+</Project>

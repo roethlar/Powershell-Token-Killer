@@ -2,6 +2,7 @@
   <Project Path="PtkContainmentTestFixture/PtkContainmentTestFixture.csproj" />
   <Project Path="PtkMcpServer.Tests/PtkMcpServer.Tests.csproj" />
   <Project Path="PtkMcpServer/PtkMcpServer.csproj" />
+  <Project Path="PtkSharedContracts/PtkSharedContracts.csproj" />
   <Project Path="PtkAuditAdmin/PtkAuditAdmin.csproj" />
   <Project Path="PtkResilienceTestFixture/PtkResilienceTestFixture.csproj" />
   <Project Path="PtkRtkTestFixture/PtkRtkTestFixture.csproj" />

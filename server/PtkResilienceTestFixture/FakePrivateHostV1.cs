@@ -3,6 +3,7 @@ using System.Globalization;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using PtkSharedContracts;
 
 namespace PtkResilienceTestFixture;
 
@@ -40,7 +41,7 @@ internal static class FakePrivateHostV1
     {
         AllowTrailingCommas = false,
         CommentHandling = JsonCommentHandling.Disallow,
-        MaxDepth = FakePrivateProtocol.MaximumJsonDepth,
+        MaxDepth = GuardianHostRawProtocol.MaximumJsonDepth,
     };
 
     internal static async Task<int> RunAsync(
@@ -60,7 +61,7 @@ internal static class FakePrivateHostV1
             return await RunCoreAsync(controlRoot, generation, guardianBootId)
                 .ConfigureAwait(false);
         }
-        catch (FakePrivateProtocolException)
+        catch (GuardianHostProtocolException)
         {
             return ProtocolViolationExitCode;
         }
@@ -94,11 +95,11 @@ internal static class FakePrivateHostV1
         var hostBootId = Guid.NewGuid();
         await using var input = Console.OpenStandardInput();
         await using var output = Console.OpenStandardOutput();
-        var reader = new FakePrivateProtocolReader(input, FakePrivatePeer.Guardian);
-        var writer = new FakePrivateProtocolWriter(output, FakePrivatePeer.Host);
+        var reader = new GuardianHostRawProtocolReader(input, GuardianHostPeer.Guardian);
+        var writer = new GuardianHostRawProtocolWriter(output, GuardianHostPeer.Host);
 
-        await writer.WriteAsync(FakePrivateProtocol.Create(
-            FakePrivateMessageKind.Hello,
+        await writer.WriteAsync(GuardianHostRawProtocol.Create(
+            GuardianHostMessageKind.Hello,
             guardianBootId,
             hostBootId,
             generation,
@@ -113,7 +114,7 @@ internal static class FakePrivateHostV1
         var initialize = await reader.ReadAsync().ConfigureAwait(false);
         if (initialize is null) return 0;
         if (!MatchesIdentity(initialize, guardianBootId, hostBootId, generation) ||
-            initialize.Kind != FakePrivateMessageKind.Initialize ||
+            initialize.Kind != GuardianHostMessageKind.Initialize ||
             !MatchesInitialize(initialize))
         {
             return ProtocolViolationExitCode;
@@ -261,8 +262,8 @@ internal static class FakePrivateHostV1
                     payloadWriter.WriteNumber("total_bytes", totalBytes);
                 })).ConfigureAwait(false);
 
-            await writer.WriteAsync(FakePrivateProtocol.Create(
-                FakePrivateMessageKind.Ready,
+            await writer.WriteAsync(GuardianHostRawProtocol.Create(
+                GuardianHostMessageKind.Ready,
                 guardianBootId,
                 hostBootId,
                 generation,
@@ -297,8 +298,8 @@ internal static class FakePrivateHostV1
         Guid guardianBootId,
         Guid hostBootId,
         long lastGuardianRequestId,
-        FakePrivateProtocolReader reader,
-        FakePrivateProtocolWriter writer,
+        GuardianHostRawProtocolReader reader,
+        GuardianHostRawProtocolWriter writer,
         Stream output)
     {
         Guid? expectedWorkerBootId = null;
@@ -307,7 +308,7 @@ internal static class FakePrivateHostV1
             var request = await reader.ReadAsync().ConfigureAwait(false);
             if (request is null) return 0;
             if (!MatchesIdentity(request, guardianBootId, hostBootId, generation) ||
-                request.Kind != FakePrivateMessageKind.Request ||
+                request.Kind != GuardianHostMessageKind.Request ||
                 !MatchesFixtureOperationCorrelations(request, generation) ||
                 request.Value("method").GetString() != "operation")
             {
@@ -342,7 +343,7 @@ internal static class FakePrivateHostV1
                 return ProtocolViolationExitCode;
             }
 
-            var encodedRequest = FakePrivateProtocol.Encode(request, FakePrivatePeer.Guardian);
+            var encodedRequest = GuardianHostRawProtocol.Encode(request, GuardianHostPeer.Guardian);
             try
             {
                 Program.WriteControlFile(
@@ -431,8 +432,8 @@ internal static class FakePrivateHostV1
         }
     }
 
-    private static async Task<FakePrivateEnvelope?> ReadManifestRequestAsync(
-        FakePrivateProtocolReader reader,
+    private static async Task<GuardianHostRawEnvelope?> ReadManifestRequestAsync(
+        GuardianHostRawProtocolReader reader,
         Guid guardianBootId,
         Guid hostBootId,
         long generation,
@@ -442,7 +443,7 @@ internal static class FakePrivateHostV1
         var request = await reader.ReadAsync().ConfigureAwait(false);
         if (request is null) return null;
         if (!MatchesIdentity(request, guardianBootId, hostBootId, generation) ||
-            request.Kind != FakePrivateMessageKind.Request ||
+            request.Kind != GuardianHostMessageKind.Request ||
             !HasNullRequestCorrelations(request) ||
             request.Value("method").GetString() != expectedMethod ||
             request.Value("request_id").GetInt64() <= lastGuardianRequestId)
@@ -452,9 +453,9 @@ internal static class FakePrivateHostV1
         return request;
     }
 
-    private static bool MatchesInitialize(FakePrivateEnvelope initialize) =>
-        initialize.Value("guardian_protocol_version").GetInt32() == FakePrivateProtocol.Version &&
-        initialize.Value("host_protocol_version").GetInt32() == FakePrivateProtocol.Version &&
+    private static bool MatchesInitialize(GuardianHostRawEnvelope initialize) =>
+        initialize.Value("guardian_protocol_version").GetInt32() == GuardianHostRawProtocol.Version &&
+        initialize.Value("host_protocol_version").GetInt32() == GuardianHostRawProtocol.Version &&
         initialize.Value("host_executable_sha256").GetString() ==
             FakePrivateFixtureIdentity.HostExecutableSha256 &&
         initialize.Value("host_build_sha256").GetString() ==
@@ -467,7 +468,7 @@ internal static class FakePrivateHostV1
             FakePrivateFixtureIdentity.PackageManifestSha256;
 
     private static bool MatchesIdentity(
-        FakePrivateEnvelope envelope,
+        GuardianHostRawEnvelope envelope,
         Guid guardianBootId,
         Guid hostBootId,
         long generation) =>
@@ -475,7 +476,7 @@ internal static class FakePrivateHostV1
         envelope.HostBootId == hostBootId &&
         envelope.HostGeneration == generation;
 
-    private static bool HasNullRequestCorrelations(FakePrivateEnvelope request) =>
+    private static bool HasNullRequestCorrelations(GuardianHostRawEnvelope request) =>
         request.Value("deadline_unix_time_milliseconds").ValueKind == JsonValueKind.Null &&
         request.Value("session_alias").ValueKind == JsonValueKind.Null &&
         request.Value("session_transition_version").ValueKind == JsonValueKind.Null &&
@@ -485,7 +486,7 @@ internal static class FakePrivateHostV1
         request.Value("operation_id").ValueKind == JsonValueKind.Null;
 
     private static bool MatchesFixtureOperationCorrelations(
-        FakePrivateEnvelope request,
+        GuardianHostRawEnvelope request,
         long generation) =>
         request.Value("deadline_unix_time_milliseconds").ValueKind == JsonValueKind.Number &&
         request.Value("deadline_unix_time_milliseconds").TryGetInt64(out var deadline) &&
@@ -694,7 +695,7 @@ internal static class FakePrivateHostV1
     }
 
     private static async ValueTask WriteOkResponseAsync(
-        FakePrivateProtocolWriter writer,
+        GuardianHostRawProtocolWriter writer,
         Guid guardianBootId,
         Guid hostBootId,
         long generation,
@@ -709,14 +710,14 @@ internal static class FakePrivateHostV1
             payload)).ConfigureAwait(false);
     }
 
-    private static FakePrivateEnvelope CreateOkResponse(
+    private static GuardianHostRawEnvelope CreateOkResponse(
         Guid guardianBootId,
         Guid hostBootId,
         long generation,
         long requestId,
         JsonElement payload) =>
-        FakePrivateProtocol.Create(
-            FakePrivateMessageKind.Response,
+        GuardianHostRawProtocol.Create(
+            GuardianHostMessageKind.Response,
             guardianBootId,
             hostBootId,
             generation,
@@ -820,7 +821,7 @@ internal static class FakePrivateHostV1
         using (var json = new Utf8JsonWriter(stream))
         {
             json.WriteStartObject();
-            json.WriteNumber("protocol_version", FakePrivateProtocol.Version);
+            json.WriteNumber("protocol_version", GuardianHostRawProtocol.Version);
             json.WriteString("kind", "response");
             json.WriteString("guardian_boot_id", guardianBootId.ToString("D"));
             json.WriteString("host_boot_id", hostBootId.ToString("D"));
@@ -841,7 +842,7 @@ internal static class FakePrivateHostV1
         Stream output,
         ReadOnlyMemory<byte> encodedFrame)
     {
-        if (encodedFrame.Length > FakePrivateProtocol.MaximumEncodedFrameBytes)
+        if (encodedFrame.Length > GuardianHostRawProtocol.MaximumEncodedFrameBytes)
             throw new InvalidDataException("The deliberate malformed frame exceeded the transport bound.");
 
         var frame = GC.AllocateUninitializedArray<byte>(encodedFrame.Length + 1);

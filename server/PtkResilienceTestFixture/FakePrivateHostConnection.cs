@@ -3,6 +3,7 @@ using System.Diagnostics;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using PtkSharedContracts;
 
 namespace PtkResilienceTestFixture;
 
@@ -27,10 +28,10 @@ internal sealed class FakePrivateHostConnection : IDisposable
     private readonly StreamWriter _standardInput;
     private readonly StreamReader _standardOutput;
     private readonly StreamReader _standardError;
-    private readonly FakePrivateProtocolReader _reader;
-    private readonly FakePrivateProtocolWriter _writer;
+    private readonly GuardianHostRawProtocolReader _reader;
+    private readonly GuardianHostRawProtocolWriter _writer;
     private readonly object _responseSync = new();
-    private readonly Dictionary<long, TaskCompletionSource<FakePrivateEnvelope>> _pendingResponses = [];
+    private readonly Dictionary<long, TaskCompletionSource<GuardianHostRawEnvelope>> _pendingResponses = [];
     private readonly object _diagnosticSync = new();
 
     private Guid _hostBootId;
@@ -62,12 +63,12 @@ internal sealed class FakePrivateHostConnection : IDisposable
         _standardInput = process.StandardInput;
         _standardOutput = process.StandardOutput;
         _standardError = process.StandardError;
-        _reader = new FakePrivateProtocolReader(
+        _reader = new GuardianHostRawProtocolReader(
             _standardOutput.BaseStream,
-            FakePrivatePeer.Host);
-        _writer = new FakePrivateProtocolWriter(
+            GuardianHostPeer.Host);
+        _writer = new GuardianHostRawProtocolWriter(
             _standardInput.BaseStream,
-            FakePrivatePeer.Guardian);
+            GuardianHostPeer.Guardian);
 
         ResponseReaderTask = Task.CompletedTask;
         DiagnosticTask = DrainStandardErrorAsync();
@@ -144,14 +145,14 @@ internal sealed class FakePrivateHostConnection : IDisposable
             _hostBootId = hello.HostBootId;
 
             var initializeRequestId = NextRequestId(nextGuardianRequestId);
-            await _writer.WriteAsync(FakePrivateProtocol.Create(
-                FakePrivateMessageKind.Initialize,
+            await _writer.WriteAsync(GuardianHostRawProtocol.Create(
+                GuardianHostMessageKind.Initialize,
                 _guardianBootId,
                 _hostBootId,
                 Generation,
                 ("request_id", initializeRequestId),
-                ("guardian_protocol_version", FakePrivateProtocol.Version),
-                ("host_protocol_version", FakePrivateProtocol.Version),
+                ("guardian_protocol_version", GuardianHostRawProtocol.Version),
+                ("host_protocol_version", GuardianHostRawProtocol.Version),
                 ("host_executable_sha256", FakePrivateFixtureIdentity.HostExecutableSha256),
                 ("host_build_sha256", FakePrivateFixtureIdentity.HostBuildSha256),
                 ("public_contract_sha256", FakePrivateFixtureIdentity.PublicContractSha256),
@@ -259,7 +260,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
 
             var ready = await ReadRequiredAsync("ready", cancellationToken).ConfigureAwait(false);
             ValidateIdentity(ready);
-            if (ready.Kind != FakePrivateMessageKind.Ready ||
+            if (ready.Kind != GuardianHostMessageKind.Ready ||
                 ready.Value("initialize_request_id").GetInt64() != initializeRequestId ||
                 ready.Value("manifest_id").GetGuid() != manifestId ||
                 !string.Equals(
@@ -288,7 +289,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
         }
     }
 
-    internal Task<FakePrivateEnvelope> RegisterResponse(long requestId)
+    internal Task<GuardianHostRawEnvelope> RegisterResponse(long requestId)
     {
         ThrowIfDisposed();
         if (requestId <= 0) throw new ArgumentOutOfRangeException(nameof(requestId));
@@ -296,7 +297,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
         lock (_responseSync)
         {
             if (_generationFailure is { } failure)
-                return Task.FromException<FakePrivateEnvelope>(failure);
+                return Task.FromException<GuardianHostRawEnvelope>(failure);
             if (Volatile.Read(ref _initializeCompleted) == 0)
             {
                 throw new InvalidOperationException("The private host is not initialized.");
@@ -309,7 +310,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
             }
 
             _lastGuardianRequestId = requestId;
-            var completion = new TaskCompletionSource<FakePrivateEnvelope>(
+            var completion = new TaskCompletionSource<GuardianHostRawEnvelope>(
                 TaskCreationOptions.RunContinuationsAsynchronously);
             _pendingResponses.Add(requestId, completion);
             return completion.Task;
@@ -321,7 +322,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
         ThrowIfDisposed();
         if (requestId <= 0) throw new ArgumentOutOfRangeException(nameof(requestId));
 
-        TaskCompletionSource<FakePrivateEnvelope>? completion;
+        TaskCompletionSource<GuardianHostRawEnvelope>? completion;
         lock (_responseSync)
         {
             if (!_pendingResponses.Remove(requestId, out completion))
@@ -336,7 +337,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
     /// advance their delivery truth before invoking this first possibly-writing API.
     /// </summary>
     internal async ValueTask WriteAsync(
-        FakePrivateEnvelope envelope,
+        GuardianHostRawEnvelope envelope,
         bool injectWriterFailure = false,
         CancellationToken cancellationToken = default)
     {
@@ -360,7 +361,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
                     "The private host generation is already unusable.",
                     failure);
             }
-            if (envelope.Kind == FakePrivateMessageKind.Request &&
+            if (envelope.Kind == GuardianHostMessageKind.Request &&
                 !_pendingResponses.ContainsKey(envelope.Value("request_id").GetInt64()))
             {
                 throw new InvalidOperationException(
@@ -415,8 +416,8 @@ internal sealed class FakePrivateHostConnection : IDisposable
         JsonElement payload,
         CancellationToken cancellationToken)
     {
-        await _writer.WriteAsync(FakePrivateProtocol.Create(
-            FakePrivateMessageKind.Request,
+        await _writer.WriteAsync(GuardianHostRawProtocol.Create(
+            GuardianHostMessageKind.Request,
             _guardianBootId,
             _hostBootId,
             Generation,
@@ -438,7 +439,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
     {
         var response = await ReadRequiredAsync("response", cancellationToken).ConfigureAwait(false);
         ValidateIdentity(response);
-        if (response.Kind != FakePrivateMessageKind.Response ||
+        if (response.Kind != GuardianHostMessageKind.Response ||
             response.Value("request_id").GetInt64() != requestId ||
             response.Value("status").GetString() != "ok" ||
             response.Value("error").ValueKind != JsonValueKind.Null ||
@@ -451,7 +452,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
         return response.Value("payload");
     }
 
-    private async Task<FakePrivateEnvelope> ReadRequiredAsync(
+    private async Task<GuardianHostRawEnvelope> ReadRequiredAsync(
         string expectedKind,
         CancellationToken cancellationToken)
     {
@@ -461,9 +462,9 @@ internal sealed class FakePrivateHostConnection : IDisposable
             $"The private host closed before its required {expectedKind} frame.");
     }
 
-    private void ValidateHello(FakePrivateEnvelope hello)
+    private void ValidateHello(GuardianHostRawEnvelope hello)
     {
-        if (hello.Kind != FakePrivateMessageKind.Hello ||
+        if (hello.Kind != GuardianHostMessageKind.Hello ||
             hello.GuardianBootId != _guardianBootId ||
             hello.HostGeneration != Generation ||
             hello.HostBootId == Guid.Empty ||
@@ -485,7 +486,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
         }
     }
 
-    private void ValidateIdentity(FakePrivateEnvelope envelope)
+    private void ValidateIdentity(GuardianHostRawEnvelope envelope)
     {
         if (envelope.GuardianBootId != _guardianBootId ||
             envelope.HostBootId != _hostBootId ||
@@ -512,7 +513,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
                 }
 
                 ValidateIdentity(response);
-                if (response.Kind != FakePrivateMessageKind.Response)
+                if (response.Kind != GuardianHostMessageKind.Response)
                 {
                     throw ProtocolFailure(
                         "unexpected_kind",
@@ -520,7 +521,7 @@ internal sealed class FakePrivateHostConnection : IDisposable
                 }
 
                 var requestId = response.Value("request_id").GetInt64();
-                TaskCompletionSource<FakePrivateEnvelope>? completion;
+                TaskCompletionSource<GuardianHostRawEnvelope>? completion;
                 lock (_responseSync)
                 {
                     if (!_pendingResponses.Remove(requestId, out completion))
@@ -548,13 +549,13 @@ internal sealed class FakePrivateHostConnection : IDisposable
 
     private void FailGeneration(Exception exception)
     {
-        TaskCompletionSource<FakePrivateEnvelope>[] pending;
+        TaskCompletionSource<GuardianHostRawEnvelope>[] pending;
         Exception failure;
         lock (_responseSync)
         {
             if (_generationFailure is null)
             {
-                _generationFailure = exception is FakePrivateProtocolException
+                _generationFailure = exception is GuardianHostProtocolException
                     ? exception
                     : ProtocolFailure(
                         "generation_failed",
@@ -711,11 +712,11 @@ internal sealed class FakePrivateHostConnection : IDisposable
         }
     }
 
-    private static FakePrivateProtocolException ProtocolFailure(
+    private static GuardianHostProtocolException ProtocolFailure(
         string detailCode,
         string message) => new(detailCode, message);
 
-    private static FakePrivateProtocolException ProtocolFailure(
+    private static GuardianHostProtocolException ProtocolFailure(
         string detailCode,
         string message,
         Exception innerException) => new(detailCode, message, innerException);

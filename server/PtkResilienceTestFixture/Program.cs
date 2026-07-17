@@ -5,6 +5,7 @@ using System.Reflection;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using PtkSharedContracts;
 
 namespace PtkResilienceTestFixture;
 
@@ -382,8 +383,8 @@ internal sealed class FakeGuardian : IAsyncDisposable
                 ["output_capability"] = null,
                 ["arguments"] = new Dictionary<string, object?>(),
             }, JsonOptions);
-            var privateRequest = FakePrivateProtocol.Create(
-                FakePrivateMessageKind.Request,
+            var privateRequest = GuardianHostRawProtocol.Create(
+                GuardianHostMessageKind.Request,
                 _guardianBootId,
                 host.Connection.HostBootId,
                 host.Generation,
@@ -467,7 +468,7 @@ internal sealed class FakeGuardian : IAsyncDisposable
                 return BackendOutcome.Error(OutcomeUnknown());
             }
 
-            FakePrivateEnvelope terminal;
+            GuardianHostRawEnvelope terminal;
             try
             {
                 var completed = await Task.WhenAny(privateResponse, host.Lost.Task)
@@ -495,7 +496,7 @@ internal sealed class FakeGuardian : IAsyncDisposable
                 return BackendOutcome.Error(OutcomeUnknown());
             }
 
-            if (terminal.Kind != FakePrivateMessageKind.Response ||
+            if (terminal.Kind != GuardianHostMessageKind.Response ||
                 terminal.Value("request_id").GetInt64() != privateRequestId ||
                 terminal.Value("status").GetString() != "ok" ||
                 terminal.Value("error").ValueKind != JsonValueKind.Null ||
@@ -851,8 +852,14 @@ internal sealed class FakeGuardian : IAsyncDisposable
             }
             catch (Exception exception)
             {
+                // Preserve the disposable R0 fixture's asserted diagnostic
+                // surface while its implementation consumes the extracted
+                // production shared codec.
+                var exceptionName = exception is GuardianHostProtocolException
+                    ? "FakePrivateProtocolException"
+                    : exception.GetType().Name;
                 await Console.Error.WriteLineAsync(
-                    $"resilience-fixture:recovery:{exception.GetType().Name}").ConfigureAwait(false);
+                    $"resilience-fixture:recovery:{exceptionName}").ConfigureAwait(false);
                 lock (_sync)
                 {
                     if (!_stopping)

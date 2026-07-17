@@ -2,23 +2,24 @@ using System.Buffers;
 using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
+using PtkSharedContracts;
 using PtkResilienceTestFixture;
 
 namespace PtkMcpServer.Tests;
 
-public sealed class FakePrivateProtocolTests
+public sealed class GuardianHostProtocolTests
 {
     [Fact]
     public async Task Fixture_v1_codec_is_strict_bounded_directional_and_preserves_validated_raw_bytes()
     {
-        Assert.Equal(1, FakePrivateProtocol.Version);
-        Assert.Equal(1_048_576, FakePrivateProtocol.MaximumEncodedFrameBytes);
-        Assert.Equal(32, FakePrivateProtocol.MaximumJsonDepth);
+        Assert.Equal(1, GuardianHostRawProtocol.Version);
+        Assert.Equal(1_048_576, GuardianHostRawProtocol.MaximumEncodedFrameBytes);
+        Assert.Equal(32, GuardianHostRawProtocol.MaximumJsonDepth);
 
         var envelope = Hello();
-        var encoded = FakePrivateProtocol.Encode(envelope, FakePrivatePeer.Host);
-        var decoded = FakePrivateProtocol.Decode(encoded, FakePrivatePeer.Host);
-        Assert.Equal(FakePrivateMessageKind.Hello, decoded.Kind);
+        var encoded = GuardianHostRawProtocol.Encode(envelope, GuardianHostPeer.Host);
+        var decoded = GuardianHostRawProtocol.Decode(encoded, GuardianHostPeer.Host);
+        Assert.Equal(GuardianHostMessageKind.Hello, decoded.Kind);
         Assert.Equal(envelope.GuardianBootId, decoded.GuardianBootId);
         Assert.Equal(envelope.HostBootId, decoded.HostBootId);
         Assert.Equal(envelope.HostGeneration, decoded.HostGeneration);
@@ -32,19 +33,19 @@ public sealed class FakePrivateProtocolTests
         Assert.DoesNotContain('\n', exact);
 
         AssertProtocolFailure("wrong_direction", () =>
-            FakePrivateProtocol.Decode(encoded, FakePrivatePeer.Guardian));
+            GuardianHostRawProtocol.Decode(encoded, GuardianHostPeer.Guardian));
         AssertProtocolFailure("bom_forbidden", () =>
-            FakePrivateProtocol.Decode(
+            GuardianHostRawProtocol.Decode(
                 new byte[] { 0xef, 0xbb, 0xbf }.Concat(encoded).ToArray(),
-                FakePrivatePeer.Host));
+                GuardianHostPeer.Host));
         AssertProtocolFailure("invalid_utf8", () =>
-            FakePrivateProtocol.Decode(new byte[] { 0xff }, FakePrivatePeer.Host));
+            GuardianHostRawProtocol.Decode(new byte[] { 0xff }, GuardianHostPeer.Host));
         AssertProtocolFailure("invalid_framing", () =>
-            FakePrivateProtocol.Decode(encoded.Append((byte)'\r').ToArray(), FakePrivatePeer.Host));
+            GuardianHostRawProtocol.Decode(encoded.Append((byte)'\r').ToArray(), GuardianHostPeer.Host));
         AssertProtocolFailure("frame_too_large", () =>
-            FakePrivateProtocol.Decode(
-                new byte[FakePrivateProtocol.MaximumEncodedFrameBytes + 1],
-                FakePrivatePeer.Host));
+            GuardianHostRawProtocol.Decode(
+                new byte[GuardianHostRawProtocol.MaximumEncodedFrameBytes + 1],
+                GuardianHostPeer.Host));
 
         var duplicate = exact.Replace(
             "\"host_pid\":4242",
@@ -52,7 +53,7 @@ public sealed class FakePrivateProtocolTests
             StringComparison.Ordinal);
         Assert.NotEqual(exact, duplicate);
         AssertProtocolFailure("duplicate_field", () =>
-            FakePrivateProtocol.Decode(Encoding.UTF8.GetBytes(duplicate), FakePrivatePeer.Host));
+            GuardianHostRawProtocol.Decode(Encoding.UTF8.GetBytes(duplicate), GuardianHostPeer.Host));
 
         var outOfOrder = exact.Replace(
             "{\"protocol_version\":1,\"kind\":\"hello\"",
@@ -60,52 +61,104 @@ public sealed class FakePrivateProtocolTests
             StringComparison.Ordinal);
         Assert.NotEqual(exact, outOfOrder);
         AssertProtocolFailure("property_order", () =>
-            FakePrivateProtocol.Decode(Encoding.UTF8.GetBytes(outOfOrder), FakePrivatePeer.Host));
+            GuardianHostRawProtocol.Decode(Encoding.UTF8.GetBytes(outOfOrder), GuardianHostPeer.Host));
 
         var unknownVersion = exact.Replace(
             "\"protocol_version\":1",
             "\"protocol_version\":2",
             StringComparison.Ordinal);
         AssertProtocolFailure("unknown_version", () =>
-            FakePrivateProtocol.Decode(
+            GuardianHostRawProtocol.Decode(
                 Encoding.UTF8.GetBytes(unknownVersion),
-                FakePrivatePeer.Host));
+                GuardianHostPeer.Host));
 
         var unknownKind = exact.Replace(
             "\"kind\":\"hello\"",
             "\"kind\":\"unknown\"",
             StringComparison.Ordinal);
         AssertProtocolFailure("unknown_kind", () =>
-            FakePrivateProtocol.Decode(
+            GuardianHostRawProtocol.Decode(
                 Encoding.UTF8.GetBytes(unknownKind),
-                FakePrivatePeer.Host));
+                GuardianHostPeer.Host));
 
         await using (var truncated = new MemoryStream(encoded, writable: false))
         {
-            var failure = await Assert.ThrowsAsync<FakePrivateProtocolException>(async () =>
-                await FakePrivateProtocol.ReadAsync(
+            var failure = await Assert.ThrowsAsync<GuardianHostProtocolException>(async () =>
+                await GuardianHostRawProtocol.ReadAsync(
                     truncated,
-                    FakePrivatePeer.Host));
+                    GuardianHostPeer.Host));
             Assert.Equal("truncated_frame", failure.DetailCode);
         }
 
         await using var output = new MemoryStream();
-        var writer = new FakePrivateProtocolWriter(output, FakePrivatePeer.Host);
+        var writer = new GuardianHostRawProtocolWriter(output, GuardianHostPeer.Host);
         await writer.WriteRawAsync(encoded);
         Assert.Equal([.. encoded, (byte)'\n'], output.ToArray());
     }
 
     [Fact]
+    public async Task Direct_and_incremental_framing_enforce_empty_lf_and_exact_one_mebibyte_boundaries()
+    {
+        var empty = Assert.Throws<GuardianHostProtocolException>(() =>
+            GuardianHostRawProtocol.Decode(Array.Empty<byte>(), GuardianHostPeer.Host));
+        Assert.Equal("empty_frame", empty.DetailCode);
+
+        var rawLf = Assert.Throws<GuardianHostProtocolException>(() =>
+            GuardianHostRawProtocol.Decode("{}\n"u8.ToArray(), GuardianHostPeer.Host));
+        Assert.Equal("invalid_framing", rawLf.DetailCode);
+
+        var exact = new byte[ContractLimits.MaximumEncodedFrameBytes];
+        exact.AsSpan().Fill((byte)' ');
+        exact[0] = (byte)'{';
+        exact[1] = (byte)'}';
+        var exactFailure = Assert.Throws<GuardianHostProtocolException>(() =>
+            GuardianHostRawProtocol.Decode(exact, GuardianHostPeer.Host));
+        Assert.NotEqual("frame_too_large", exactFailure.DetailCode);
+
+        var over = Assert.Throws<GuardianHostProtocolException>(() =>
+            GuardianHostRawProtocol.Decode(
+                new byte[ContractLimits.MaximumEncodedFrameBytes + 1],
+                GuardianHostPeer.Host));
+        Assert.Equal("frame_too_large", over.DetailCode);
+
+        await using (var emptyFrame = new MemoryStream([(byte)'\n'], writable: false))
+        {
+            var reader = new GuardianHostRawProtocolReader(emptyFrame, GuardianHostPeer.Host);
+            var failure = await Assert.ThrowsAsync<GuardianHostProtocolException>(async () =>
+                await reader.ReadAsync());
+            Assert.Equal("empty_frame", failure.DetailCode);
+        }
+
+        await using (var exactFrame = new MemoryStream([.. exact, (byte)'\n'], writable: false))
+        {
+            var reader = new GuardianHostRawProtocolReader(exactFrame, GuardianHostPeer.Host);
+            var failure = await Assert.ThrowsAsync<GuardianHostProtocolException>(async () =>
+                await reader.ReadAsync());
+            Assert.NotEqual("frame_too_large", failure.DetailCode);
+        }
+
+        await using (var overFrame = new MemoryStream(
+            [.. new byte[ContractLimits.MaximumEncodedFrameBytes + 1], (byte)'\n'],
+            writable: false))
+        {
+            var reader = new GuardianHostRawProtocolReader(overFrame, GuardianHostPeer.Host);
+            var failure = await Assert.ThrowsAsync<GuardianHostProtocolException>(async () =>
+                await reader.ReadAsync());
+            Assert.Equal("frame_too_large", failure.DetailCode);
+        }
+    }
+
+    [Fact]
     public void Encode_rejects_payload_beyond_the_frozen_json_depth()
     {
-        const int nesting = FakePrivateProtocol.MaximumJsonDepth + 8;
+        const int nesting = GuardianHostRawProtocol.MaximumJsonDepth + 8;
         var deepJson = "{\"value\":" + new string('[', nesting) + "0" +
             new string(']', nesting) + "}";
         using var document = JsonDocument.Parse(
             deepJson,
             new JsonDocumentOptions { MaxDepth = nesting + 8 });
-        var envelope = FakePrivateProtocol.Create(
-            FakePrivateMessageKind.Response,
+        var envelope = GuardianHostRawProtocol.Create(
+            GuardianHostMessageKind.Response,
             Guid.Parse("11111111-1111-4111-8111-111111111111"),
             Guid.Parse("22222222-2222-4222-8222-222222222222"),
             1,
@@ -115,7 +168,7 @@ public sealed class FakePrivateProtocolTests
             ("error", null));
 
         AssertProtocolFailure("invalid_json", () =>
-            FakePrivateProtocol.Encode(envelope, FakePrivatePeer.Host));
+            GuardianHostRawProtocol.Encode(envelope, GuardianHostPeer.Host));
     }
 
     [Fact]
@@ -179,18 +232,18 @@ public sealed class FakePrivateProtocolTests
     {
         foreach (var (envelope, sender) in AllEnvelopeKinds())
         {
-            var encoded = FakePrivateProtocol.Encode(envelope, sender);
-            var decoded = FakePrivateProtocol.Decode(encoded, sender);
+            var encoded = GuardianHostRawProtocol.Encode(envelope, sender);
+            var decoded = GuardianHostRawProtocol.Decode(encoded, sender);
             Assert.Equal(envelope.Kind, decoded.Kind);
             Assert.Equal(envelope.GuardianBootId, decoded.GuardianBootId);
             Assert.Equal(envelope.HostBootId, decoded.HostBootId);
             Assert.Equal(envelope.HostGeneration, decoded.HostGeneration);
 
-            var wrongSender = sender == FakePrivatePeer.Guardian
-                ? FakePrivatePeer.Host
-                : FakePrivatePeer.Guardian;
+            var wrongSender = sender == GuardianHostPeer.Guardian
+                ? GuardianHostPeer.Host
+                : GuardianHostPeer.Guardian;
             AssertProtocolFailure("wrong_direction", () =>
-                FakePrivateProtocol.Decode(encoded, wrongSender));
+                GuardianHostRawProtocol.Decode(encoded, wrongSender));
         }
     }
 
@@ -199,8 +252,8 @@ public sealed class FakePrivateProtocolTests
     {
         var raw = "fixture manifest chunk"u8.ToArray();
         var valid = ManifestChunk(raw, raw.Length);
-        var encoded = FakePrivateProtocol.Encode(valid, FakePrivatePeer.Guardian);
-        var decoded = FakePrivateProtocol.Decode(encoded, FakePrivatePeer.Guardian);
+        var encoded = GuardianHostRawProtocol.Encode(valid, GuardianHostPeer.Guardian);
+        var decoded = GuardianHostRawProtocol.Decode(encoded, GuardianHostPeer.Guardian);
         var payload = decoded.Value("payload");
         Assert.Equal(raw.Length, payload.GetProperty("raw_bytes").GetInt32());
 
@@ -211,9 +264,9 @@ public sealed class FakePrivateProtocolTests
                 .GetProperty("x-ptk-property-order"),
             payload);
 
-        AssertProtocolFailure("invalid_field", () => FakePrivateProtocol.Encode(
+        AssertProtocolFailure("invalid_field", () => GuardianHostRawProtocol.Encode(
             ManifestChunk(raw, raw.Length - 1),
-            FakePrivatePeer.Guardian));
+            GuardianHostPeer.Guardian));
 
         var missingRawBytes = Request(
             "manifest_chunk",
@@ -225,9 +278,9 @@ public sealed class FakePrivateProtocolTests
                 ["raw_base64"] = Convert.ToBase64String(raw),
                 ["raw_sha256"] = Sha256Hex(raw),
             }));
-        AssertProtocolFailure("invalid_field", () => FakePrivateProtocol.Encode(
+        AssertProtocolFailure("invalid_field", () => GuardianHostRawProtocol.Encode(
             missingRawBytes,
-            FakePrivatePeer.Guardian));
+            GuardianHostPeer.Guardian));
     }
 
     [Fact]
@@ -268,9 +321,9 @@ public sealed class FakePrivateProtocolTests
         var requestId = 1L;
         foreach (var (definition, payload) in handshakePayloads)
         {
-            _ = FakePrivateProtocol.Encode(
+            _ = GuardianHostRawProtocol.Encode(
                 Response(requestId++, payload),
-                FakePrivatePeer.Host);
+                GuardianHostPeer.Host);
             AssertPropertyOrder(
                 schema.RootElement.GetProperty("$defs").GetProperty(definition)
                     .GetProperty("x-ptk-property-order"),
@@ -278,21 +331,21 @@ public sealed class FakePrivateProtocolTests
         }
 
         var operationRequest = OperationRequest(requestId++);
-        _ = FakePrivateProtocol.Encode(operationRequest, FakePrivatePeer.Guardian);
+        _ = GuardianHostRawProtocol.Encode(operationRequest, GuardianHostPeer.Guardian);
         AssertPropertyOrder(
             schema.RootElement.GetProperty("$defs").GetProperty("operation_request")
                 .GetProperty("x-ptk-property-order"),
             operationRequest.Value("payload"));
 
         var operationResponse = Response(requestId++);
-        _ = FakePrivateProtocol.Encode(operationResponse, FakePrivatePeer.Host);
+        _ = GuardianHostRawProtocol.Encode(operationResponse, GuardianHostPeer.Host);
         AssertPropertyOrder(
             schema.RootElement.GetProperty("$defs").GetProperty("operation_completed")
                 .GetProperty("x-ptk-property-order"),
             operationResponse.Value("payload"));
 
-        var oldOperation = FakePrivateProtocol.Create(
-            FakePrivateMessageKind.Request,
+        var oldOperation = GuardianHostRawProtocol.Create(
+            GuardianHostMessageKind.Request,
             GuardianBootId,
             HostBootId,
             1,
@@ -310,34 +363,34 @@ public sealed class FakePrivateProtocolTests
                 ["barrier"] = "normal",
                 ["token"] = "fixture",
             })));
-        AssertProtocolFailure("invalid_field", () => FakePrivateProtocol.Encode(
+        AssertProtocolFailure("invalid_field", () => GuardianHostRawProtocol.Encode(
             oldOperation,
-            FakePrivatePeer.Guardian));
+            GuardianHostPeer.Guardian));
 
         var oldEmptyResponse = Response(
             requestId,
             JsonSerializer.SerializeToElement(new Dictionary<string, object?>()));
-        AssertProtocolFailure("invalid_field", () => FakePrivateProtocol.Encode(
+        AssertProtocolFailure("invalid_field", () => GuardianHostRawProtocol.Encode(
             oldEmptyResponse,
-            FakePrivatePeer.Host));
+            GuardianHostPeer.Host));
     }
 
     [Fact]
     public async Task Incremental_reader_preserves_fragmented_and_coalesced_frames_and_clears_pool_buffers()
     {
-        var first = FakePrivateProtocol.Encode(Hello(), FakePrivatePeer.Host);
-        var second = FakePrivateProtocol.Encode(Hello(), FakePrivatePeer.Host);
+        var first = GuardianHostRawProtocol.Encode(Hello(), GuardianHostPeer.Host);
+        var second = GuardianHostRawProtocol.Encode(Hello(), GuardianHostPeer.Host);
         var combined = first.Concat([(byte)'\n']).Concat(second).Concat([(byte)'\n']).ToArray();
 
         var coalescedPool = new TrackingArrayPool();
         await using (var coalesced = new MemoryStream(combined, writable: false))
         {
-            var reader = new FakePrivateProtocolReader(
+            var reader = new GuardianHostRawProtocolReader(
                 coalesced,
-                FakePrivatePeer.Host,
+                GuardianHostPeer.Host,
                 coalescedPool);
-            Assert.Equal(FakePrivateMessageKind.Hello, (await reader.ReadAsync())!.Kind);
-            Assert.Equal(FakePrivateMessageKind.Hello, (await reader.ReadAsync())!.Kind);
+            Assert.Equal(GuardianHostMessageKind.Hello, (await reader.ReadAsync())!.Kind);
+            Assert.Equal(GuardianHostMessageKind.Hello, (await reader.ReadAsync())!.Kind);
             Assert.Null(await reader.ReadAsync());
         }
         Assert.Equal(3, coalescedPool.ReturnCount);
@@ -346,12 +399,12 @@ public sealed class FakePrivateProtocolTests
         var fragmentedPool = new TrackingArrayPool();
         await using (var fragmented = new FragmentingReadStream(combined, maximumChunkBytes: 3))
         {
-            var reader = new FakePrivateProtocolReader(
+            var reader = new GuardianHostRawProtocolReader(
                 fragmented,
-                FakePrivatePeer.Host,
+                GuardianHostPeer.Host,
                 fragmentedPool);
-            Assert.Equal(FakePrivateMessageKind.Hello, (await reader.ReadAsync())!.Kind);
-            Assert.Equal(FakePrivateMessageKind.Hello, (await reader.ReadAsync())!.Kind);
+            Assert.Equal(GuardianHostMessageKind.Hello, (await reader.ReadAsync())!.Kind);
+            Assert.Equal(GuardianHostMessageKind.Hello, (await reader.ReadAsync())!.Kind);
             Assert.Null(await reader.ReadAsync());
         }
         Assert.Equal(3, fragmentedPool.ReturnCount);
@@ -362,7 +415,7 @@ public sealed class FakePrivateProtocolTests
     public async Task Writer_serializes_concurrent_frames_and_latches_ambiguous_failure()
     {
         var interleaving = new InterleavingWriteStream();
-        var writer = new FakePrivateProtocolWriter(interleaving, FakePrivatePeer.Host);
+        var writer = new GuardianHostRawProtocolWriter(interleaving, GuardianHostPeer.Host);
         var writes = Enumerable.Range(1, 16)
             .Select(requestId => writer.WriteAsync(Response(requestId)).AsTask())
             .ToArray();
@@ -373,17 +426,17 @@ public sealed class FakePrivateProtocolTests
         Assert.Equal(16, lines.Length);
         Assert.Equal(
             Enumerable.Range(1, 16).Select(value => (long)value),
-            lines.Select(line => FakePrivateProtocol.Decode(
+            lines.Select(line => GuardianHostRawProtocol.Decode(
                     Encoding.UTF8.GetBytes(line),
-                    FakePrivatePeer.Host)
+                    GuardianHostPeer.Host)
                 .Value("request_id").GetInt64())
                 .Order());
 
         var failing = new FailingWriteStream();
-        var faultingWriter = new FakePrivateProtocolWriter(failing, FakePrivatePeer.Host);
+        var faultingWriter = new GuardianHostRawProtocolWriter(failing, GuardianHostPeer.Host);
         await Assert.ThrowsAsync<IOException>(async () =>
             await faultingWriter.WriteAsync(Response(1)));
-        var latched = await Assert.ThrowsAsync<FakePrivateProtocolException>(async () =>
+        var latched = await Assert.ThrowsAsync<GuardianHostProtocolException>(async () =>
             await faultingWriter.WriteAsync(Response(2)));
         Assert.Equal("writer_faulted", latched.DetailCode);
         Assert.Equal(1, failing.WriteCount);
@@ -395,8 +448,8 @@ public sealed class FakePrivateProtocolTests
     private static readonly Guid HostBootId =
         Guid.Parse("22222222-2222-4222-8222-222222222222");
 
-    private static FakePrivateEnvelope Hello() => FakePrivateProtocol.Create(
-        FakePrivateMessageKind.Hello,
+    private static GuardianHostRawEnvelope Hello() => GuardianHostRawProtocol.Create(
+        GuardianHostMessageKind.Hello,
         GuardianBootId,
         HostBootId,
         1,
@@ -408,7 +461,7 @@ public sealed class FakePrivateProtocolTests
         ("request_channel_owned", true),
         ("event_channel_owned", true));
 
-    private static FakePrivateEnvelope Response(long requestId) => Response(
+    private static GuardianHostRawEnvelope Response(long requestId) => Response(
         requestId,
         JsonSerializer.SerializeToElement(new Dictionary<string, object?>
         {
@@ -420,9 +473,9 @@ public sealed class FakePrivateProtocolTests
             },
         }));
 
-    private static FakePrivateEnvelope Response(long requestId, JsonElement payload) =>
-        FakePrivateProtocol.Create(
-        FakePrivateMessageKind.Response,
+    private static GuardianHostRawEnvelope Response(long requestId, JsonElement payload) =>
+        GuardianHostRawProtocol.Create(
+        GuardianHostMessageKind.Response,
         GuardianBootId,
         HostBootId,
         1,
@@ -431,11 +484,11 @@ public sealed class FakePrivateProtocolTests
         ("payload", payload),
         ("error", null));
 
-    private static FakePrivateEnvelope OperationRequest(long requestId)
+    private static GuardianHostRawEnvelope OperationRequest(long requestId)
     {
         var callId = "01890f2e-9b5a-7cc1-98b7-5e510d65e4d2";
-        return FakePrivateProtocol.Create(
-            FakePrivateMessageKind.Request,
+        return GuardianHostRawProtocol.Create(
+            GuardianHostMessageKind.Request,
             GuardianBootId,
             HostBootId,
             1,
@@ -463,7 +516,7 @@ public sealed class FakePrivateProtocolTests
             })));
     }
 
-    private static FakePrivateEnvelope ManifestChunk(byte[] raw, int rawBytes) => Request(
+    private static GuardianHostRawEnvelope ManifestChunk(byte[] raw, int rawBytes) => Request(
         "manifest_chunk",
         JsonSerializer.SerializeToElement(new Dictionary<string, object?>
         {
@@ -475,9 +528,9 @@ public sealed class FakePrivateProtocolTests
             ["raw_sha256"] = Sha256Hex(raw),
         }));
 
-    private static FakePrivateEnvelope Request(string method, JsonElement payload) =>
-        FakePrivateProtocol.Create(
-            FakePrivateMessageKind.Request,
+    private static GuardianHostRawEnvelope Request(string method, JsonElement payload) =>
+        GuardianHostRawProtocol.Create(
+            GuardianHostMessageKind.Request,
             GuardianBootId,
             HostBootId,
             1,
@@ -495,7 +548,7 @@ public sealed class FakePrivateProtocolTests
     private static string Sha256Hex(byte[] bytes) =>
         Convert.ToHexString(SHA256.HashData(bytes)).ToLowerInvariant();
 
-    private static (FakePrivateEnvelope Envelope, FakePrivatePeer Sender)[] AllEnvelopeKinds()
+    private static (GuardianHostRawEnvelope Envelope, GuardianHostPeer Sender)[] AllEnvelopeKinds()
     {
         var guardian = Guid.Parse("11111111-1111-4111-8111-111111111111");
         var host = Guid.Parse("22222222-2222-4222-8222-222222222222");
@@ -509,9 +562,9 @@ public sealed class FakePrivateProtocolTests
 
         return
         [
-            (Hello(), FakePrivatePeer.Host),
-            (FakePrivateProtocol.Create(
-                FakePrivateMessageKind.Initialize,
+            (Hello(), GuardianHostPeer.Host),
+            (GuardianHostRawProtocol.Create(
+                GuardianHostMessageKind.Initialize,
                 guardian,
                 host,
                 1,
@@ -526,27 +579,27 @@ public sealed class FakePrivateProtocolTests
                 ("maximum_manifest_bytes", 25_165_824),
                 ("maximum_manifest_chunk_raw_bytes", 524_288),
                 ("maximum_aliases", 128),
-                ("maximum_templates", 128)), FakePrivatePeer.Guardian),
-            (FakePrivateProtocol.Create(
-                FakePrivateMessageKind.Ready,
+                ("maximum_templates", 128)), GuardianHostPeer.Guardian),
+            (GuardianHostRawProtocol.Create(
+                GuardianHostMessageKind.Ready,
                 guardian,
                 host,
                 1,
                 ("initialize_request_id", 1L),
                 ("manifest_id", manifest),
                 ("manifest_sha256", digest),
-                ("host_pid", 4242)), FakePrivatePeer.Host),
-            (OperationRequest(2L), FakePrivatePeer.Guardian),
-            (FakePrivateProtocol.Create(
-                FakePrivateMessageKind.Cancel,
+                ("host_pid", 4242)), GuardianHostPeer.Host),
+            (OperationRequest(2L), GuardianHostPeer.Guardian),
+            (GuardianHostRawProtocol.Create(
+                GuardianHostMessageKind.Cancel,
                 guardian,
                 host,
                 1,
                 ("request_id", 3L),
                 ("target_request_id", 2L),
-                ("reason", "caller_canceled")), FakePrivatePeer.Guardian),
-            (FakePrivateProtocol.Create(
-                FakePrivateMessageKind.Event,
+                ("reason", "caller_canceled")), GuardianHostPeer.Guardian),
+            (GuardianHostRawProtocol.Create(
+                GuardianHostMessageKind.Event,
                 guardian,
                 host,
                 1,
@@ -559,22 +612,22 @@ public sealed class FakePrivateProtocolTests
                 ("worker_generation", null),
                 ("plan_id", null),
                 ("operation_id", null),
-                ("payload", eventPayload)), FakePrivatePeer.Host),
-            (Response(4), FakePrivatePeer.Host),
-            (FakePrivateProtocol.Create(
-                FakePrivateMessageKind.Shutdown,
+                ("payload", eventPayload)), GuardianHostPeer.Host),
+            (Response(4), GuardianHostPeer.Host),
+            (GuardianHostRawProtocol.Create(
+                GuardianHostMessageKind.Shutdown,
                 guardian,
                 host,
                 1,
                 ("request_id", 5L),
                 ("deadline_unix_time_milliseconds", 1L),
-                ("reason", "guardian_shutdown")), FakePrivatePeer.Guardian),
+                ("reason", "guardian_shutdown")), GuardianHostPeer.Guardian),
         ];
     }
 
     private static void AssertProtocolFailure(string detailCode, Action action)
     {
-        var failure = Assert.Throws<FakePrivateProtocolException>(action);
+        var failure = Assert.Throws<GuardianHostProtocolException>(action);
         Assert.Equal(detailCode, failure.DetailCode);
     }
 

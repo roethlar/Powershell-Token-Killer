@@ -28,6 +28,7 @@
     <ProjectReference Include="..\PtkMcpServer\PtkMcpServer.csproj" />
     <ProjectReference Include="..\PtkResilienceTestFixture\PtkResilienceTestFixture.csproj" />
     <ProjectReference Include="..\PtkRtkTestFixture\PtkRtkTestFixture.csproj" />
+    <ProjectReference Include="..\PtkSharedContracts\PtkSharedContracts.csproj" />
   </ItemGroup>
 
 </Project>
