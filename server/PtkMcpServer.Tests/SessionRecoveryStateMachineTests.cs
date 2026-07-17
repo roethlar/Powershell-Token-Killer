@@ -2143,7 +2143,9 @@ public sealed class SessionRecoveryStateMachineTests
         Assert.Null(snapshot.Session.WorkerBootId);
         var shutdownCall = Task.Run(async () =>
             await harness.Machine.ShutdownAsync());
-        await Task.Delay(20);
+        Assert.True(SpinWait.SpinUntil(
+            () => harness.Machine.Snapshot().TerminalShutdown,
+            TimeSpan.FromSeconds(10)));
         Assert.False(shutdownCall.IsCompleted);
         Assert.True(harness.Machine.Snapshot().TerminalShutdown);
         seamRelease.Set();
