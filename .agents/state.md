@@ -271,10 +271,11 @@ short and update it when important repo facts change.
   full acceptance row 7 still waits for the later slice that introduces and
   protects the currently absent custody checkpoint/anchor path.
 - **Session stop (2026-07-17 handoff after Grok Codex-resume):** branch
-  `plan/mini-siem-storage-hardening` is clean at `c7345d9`, unmerged and
-  unpushed relative to `master`/`origin`. No further SIEM code work in flight.
-  Awaiting owner direction to review, merge, park, or push. Do not start S4–S6
-  or touch PTK runtime from this worktree without a new go.
+  `plan/mini-siem-storage-hardening` is clean (code `c726a33` plus later
+  handoff-doc commits), unmerged and unpushed relative to `master`/`origin`.
+  No further SIEM code work in flight. Awaiting owner direction to review,
+  merge, park, or push. Do not start S4–S6 or touch PTK runtime from this
+  worktree without a new go.
 
 ## Next
 
