@@ -74,6 +74,62 @@ public sealed class GuardianHostSupervisorTests
     }
 
     [Fact]
+    public async Task Contract_mismatch_during_recovery_is_permanent()
+    {
+        await using var rig = new TestRig(
+            new AttemptPlan(
+                HostBehavior.ContractMismatchHello,
+                AutoConfirmContainment: false));
+
+        await Assert.ThrowsAsync<InvalidOperationException>(() => rig.StartAsync());
+        await WaitUntilAsync(() =>
+            rig.Supervisor.SnapshotState().Host is
+            {
+                State: PublicHostState.Recovering,
+                LastFailureCode: PublicRecoveryDetailCode.HostContractMismatch,
+            });
+
+        var error = DecodeRecovery(
+            await rig.DispatchJobListAsync().WaitAsync(TestTimeout));
+        Assert.Equal(PublicRecoveryDetailCode.HostContractMismatch, error.DetailCode);
+        Assert.False(error.Retryable);
+        Assert.Null(error.RetryAfterMilliseconds);
+        Assert.Null(error.RecoveryPhase);
+        Assert.Null(error.RecoveryAttempt);
+        Assert.Null(error.RetryGate);
+    }
+
+    [Fact]
+    public async Task Contract_mismatch_during_prewrite_loss_beats_retry_guidance()
+    {
+        await using var rig = new TestRig(
+            new AttemptPlan(HostBehavior.Respond, AutoConfirmContainment: false));
+        await rig.StartAsync();
+        var current = rig.Factory.Resources[0];
+        var blocked = rig.Observer.BlockNextAuthorization();
+
+        var dispatch = rig.DispatchJobListAsync();
+        await blocked.WaitAsync(TestTimeout);
+        await current.InjectContractMismatchAsync();
+        await WaitUntilAsync(() =>
+            rig.Supervisor.SnapshotState().Host is
+            {
+                State: PublicHostState.Recovering,
+                LastFailureCode: PublicRecoveryDetailCode.HostContractMismatch,
+            });
+        rig.Observer.ReleaseAuthorization();
+
+        var error = DecodeRecovery(await dispatch.WaitAsync(TestTimeout));
+        Assert.Equal(PublicRecoveryDetailCode.HostContractMismatch, error.DetailCode);
+        Assert.False(error.Retryable);
+        Assert.Null(error.RetryAfterMilliseconds);
+        Assert.Null(error.RecoveryPhase);
+        Assert.Null(error.RecoveryAttempt);
+        Assert.Null(error.RetryGate);
+        Assert.Equal(0, current.OperationCount);
+    }
+
+    [Fact]
     public async Task Loss_after_private_write_is_outcome_unknown_and_never_replayed()
     {
         await using var rig = new TestRig(
@@ -655,6 +711,7 @@ public sealed class GuardianHostSupervisorTests
     private enum HostBehavior
     {
         Respond,
+        ContractMismatchHello,
         CrashAfterRequest,
         Hold,
         ProvedNoChild,
@@ -737,6 +794,9 @@ public sealed class GuardianHostSupervisorTests
         internal int OperationCount => _peer.OperationCount;
         internal IReadOnlyList<long> RequestIds => _peer.RequestIds;
 
+        internal Task InjectContractMismatchAsync() =>
+            _peer.InjectContractMismatchAsync();
+
         public Stream RequestStream => _requests;
         public Stream EventStream => _events;
         public int HostProcessId { get; }
@@ -818,6 +878,17 @@ public sealed class GuardianHostSupervisorTests
         internal void Start(HostBehavior behavior) =>
             _ = Task.Run(() => RunAsync(behavior));
 
+        internal Task InjectContractMismatchAsync() =>
+            _writer.WriteAsync(new GuardianHostHello(
+                new GuardianBootId(Guid.Parse("99999999-9999-4999-8999-999999999999")),
+                _owner.Identity.HostBootId,
+                _owner.Identity.HostGeneration,
+                _owner.HostProcessId,
+                _pins.HostExecutableDigest,
+                _pins.HostBuildDigest,
+                _pins.PublicContractDigest,
+                _pins.ConfigurationDigest)).AsTask();
+
         private async Task RunAsync(HostBehavior behavior)
         {
             try
@@ -830,8 +901,12 @@ public sealed class GuardianHostSupervisorTests
                     _owner.HostProcessId,
                     _pins.HostExecutableDigest,
                     _pins.HostBuildDigest,
-                    _pins.PublicContractDigest,
+                    behavior == HostBehavior.ContractMismatchHello
+                        ? new Sha256Digest(new string('8', 64))
+                        : _pins.PublicContractDigest,
                     _pins.ConfigurationDigest));
+                if (behavior == HostBehavior.ContractMismatchHello)
+                    return;
 
                 var initialize = Assert.IsType<GuardianHostInitialize>(await ReadAsync());
                 Record(initialize.RequestId);

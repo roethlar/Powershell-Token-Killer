@@ -946,6 +946,17 @@ internal sealed class GuardianHostSupervisor :
         bool backendLostBeforeDispatch,
         CanonicalAlias alias)
     {
+        if (host.LastFailureCode == PublicRecoveryDetailCode.HostContractMismatch)
+        {
+            return RecoveryTerminal(new PublicRecoveryError(
+                PublicRecoveryDetailCode.HostContractMismatch,
+                retryable: false,
+                retryAfterMilliseconds: null,
+                recoveryPhase: null,
+                recoveryAttempt: null,
+                retryGate: null));
+        }
+
         if (backendLostBeforeDispatch &&
             host.RecoveryPhase is { } lostPhase &&
             host.RecoveryAttempt > 0 &&
@@ -979,9 +990,7 @@ internal sealed class GuardianHostSupervisor :
 
         var permanent = host.State == PublicHostState.ContainmentUnconfirmed
             ? PublicRecoveryDetailCode.HostContainmentUnconfirmed
-            : host.LastFailureCode == PublicRecoveryDetailCode.HostContractMismatch
-                ? PublicRecoveryDetailCode.HostContractMismatch
-                : PublicRecoveryDetailCode.HostStartFailed;
+            : PublicRecoveryDetailCode.HostStartFailed;
         return RecoveryTerminal(new PublicRecoveryError(
             permanent,
             retryable: false,
