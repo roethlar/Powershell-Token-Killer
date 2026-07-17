@@ -256,7 +256,12 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
         ArgumentNullException.ThrowIfNull(attempt);
         if (!Enum.IsDefined(reason))
             throw new ArgumentOutOfRangeException(nameof(reason));
-
+        if (reason == GuardianHostLossReason.TerminalShutdown)
+        {
+            throw new ArgumentException(
+                "Terminal host shutdown must use the ordered ShutdownAsync edge.",
+                nameof(reason));
+        }
         lock (_gate)
         {
             if (!ReferenceEquals(_current, attempt))

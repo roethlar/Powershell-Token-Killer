@@ -858,6 +858,28 @@ public sealed class GuardianHostLifecycleControllerTests
     }
 
     [Fact]
+    public async Task Terminal_shutdown_reason_cannot_bypass_the_ordered_shutdown_edge()
+    {
+        var rig = new TestRig();
+        var attempt = StartReady(rig);
+
+        Assert.Throws<ArgumentException>(() => rig.Controller.ReportLoss(
+            attempt,
+            GuardianHostLossReason.TerminalShutdown));
+        Assert.Equal(PublicHostState.Ready, rig.Controller.Snapshot().Host.State);
+        Assert.Equal(0, rig.Factory.Resources[0].BeginContainmentCount);
+
+        var shutdown = rig.Controller.ShutdownAsync();
+        Assert.False(shutdown.IsCompleted);
+        Assert.Equal(
+            GuardianHostContainmentDisposition.Confirmed,
+            rig.Controller.ConfirmContainment(attempt).Disposition);
+        await shutdown.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.True(rig.Controller.Snapshot().TerminalShutdown);
+        Assert.Equal(PublicHostState.Stopped, rig.Controller.Snapshot().Host.State);
+    }
+
+    [Fact]
     public void Old_generation_callbacks_are_inert_after_replacement()
     {
         var rig = new TestRig();
