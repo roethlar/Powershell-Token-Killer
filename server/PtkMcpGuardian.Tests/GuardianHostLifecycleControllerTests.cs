@@ -287,6 +287,130 @@ public sealed class GuardianHostLifecycleControllerTests
     }
 
     [Fact]
+    public void Pre_stability_loss_does_not_become_stable_during_containment()
+    {
+        var rig = new TestRig();
+        var initial = StartReady(rig);
+        var firstRecovery = LoseAndConfirm(rig, initial);
+        Assert.Equal(
+            GuardianHostLifecycleLossDisposition.BeganContainment,
+            rig.Controller.ReportLoss(firstRecovery, GuardianHostLossReason.Exit));
+        Assert.Null(rig.Controller.ConfirmContainment(firstRecovery).StartedAttempt);
+        rig.Clock.Advance(TimeSpan.FromMilliseconds(250));
+        var secondRecovery = Assert.IsType<GuardianHostAttemptLease>(
+            rig.Controller.TryStartDueRecovery().Attempt);
+        Assert.True(rig.Controller.MarkReady(secondRecovery));
+
+        rig.Clock.Advance(TimeSpan.FromSeconds(59));
+        Assert.Equal(
+            GuardianHostLifecycleLossDisposition.BeganContainment,
+            rig.Controller.ReportLoss(secondRecovery, GuardianHostLossReason.Exit));
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+
+        var confirmed = rig.Controller.ConfirmContainment(secondRecovery);
+        Assert.Null(confirmed.StartedAttempt);
+        var backoff = rig.Controller.Snapshot().Host;
+        Assert.Equal(PublicHostState.Backoff, backoff.State);
+        Assert.Equal(3, backoff.RecoveryAttempt);
+        Assert.Equal(1_000, backoff.RetryAfterMilliseconds);
+    }
+
+    [Fact]
+    public void Pre_stability_recycle_preserves_history_across_containment_time()
+    {
+        var rig = new TestRig();
+        var initial = StartReady(rig);
+        var firstRecovery = LoseAndConfirm(rig, initial);
+        Assert.Equal(
+            GuardianHostLifecycleLossDisposition.BeganContainment,
+            rig.Controller.ReportLoss(firstRecovery, GuardianHostLossReason.Exit));
+        Assert.Null(rig.Controller.ConfirmContainment(firstRecovery).StartedAttempt);
+        rig.Clock.Advance(TimeSpan.FromMilliseconds(250));
+        var secondRecovery = Assert.IsType<GuardianHostAttemptLease>(
+            rig.Controller.TryStartDueRecovery().Attempt);
+        Assert.True(rig.Controller.MarkReady(secondRecovery));
+
+        rig.Clock.Advance(TimeSpan.FromSeconds(59));
+        Assert.Equal(
+            GuardianHostLifecycleLossDisposition.BeganContainment,
+            rig.Controller.ReportLoss(
+                secondRecovery,
+                GuardianHostLossReason.OperatorRecycle));
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+
+        var replacement = Assert.IsType<GuardianHostAttemptLease>(
+            rig.Controller.ConfirmContainment(secondRecovery).StartedAttempt);
+        Assert.Equal(2, replacement.RecoveryLease!.AttemptOrdinal);
+        Assert.Equal(2, rig.Controller.Snapshot().Host.RecoveryAttempt);
+    }
+
+    [Fact]
+    public void Stable_recycle_publishes_attempt_one_from_the_containment_edge()
+    {
+        var rig = new TestRig();
+        var initial = StartReady(rig);
+        var firstRecovery = LoseAndConfirm(rig, initial);
+        Assert.Equal(
+            GuardianHostLifecycleLossDisposition.BeganContainment,
+            rig.Controller.ReportLoss(firstRecovery, GuardianHostLossReason.Exit));
+        Assert.Null(rig.Controller.ConfirmContainment(firstRecovery).StartedAttempt);
+        rig.Clock.Advance(TimeSpan.FromMilliseconds(250));
+        var secondRecovery = Assert.IsType<GuardianHostAttemptLease>(
+            rig.Controller.TryStartDueRecovery().Attempt);
+        Assert.True(rig.Controller.MarkReady(secondRecovery));
+        rig.Clock.Advance(TimeSpan.FromSeconds(60));
+
+        Assert.Equal(
+            GuardianHostLifecycleLossDisposition.BeganContainment,
+            rig.Controller.ReportLoss(
+                secondRecovery,
+                GuardianHostLossReason.OperatorRecycle));
+        var containing = rig.Controller.Snapshot().Host;
+        Assert.Equal(PublicHostState.Recovering, containing.State);
+        Assert.Equal(RecoveryPhase.Containment, containing.RecoveryPhase);
+        Assert.Equal(1, containing.RecoveryAttempt);
+
+        var replacement = Assert.IsType<GuardianHostAttemptLease>(
+            rig.Controller.ConfirmContainment(secondRecovery).StartedAttempt);
+        Assert.Equal(1, replacement.RecoveryLease!.AttemptOrdinal);
+    }
+
+    [Fact]
+    public void Pre_stability_half_open_loss_reopens_the_circuit_after_slow_containment()
+    {
+        var rig = new TestRig();
+        var current = LoseAndConfirm(rig, StartReady(rig));
+        for (var failure = 0; failure < 6; failure++)
+        {
+            Assert.Equal(
+                GuardianHostLifecycleLossDisposition.BeganContainment,
+                rig.Controller.ReportLoss(current, GuardianHostLossReason.Exit));
+            Assert.Null(rig.Controller.ConfirmContainment(current).StartedAttempt);
+            if (failure == 5) break;
+            rig.Clock.Advance(ExactBackoffs[failure]);
+            current = Assert.IsType<GuardianHostAttemptLease>(
+                rig.Controller.TryStartDueRecovery().Attempt);
+        }
+
+        rig.Clock.Advance(TimeSpan.FromSeconds(60));
+        var halfOpen = Assert.IsType<GuardianHostAttemptLease>(
+            rig.Controller.TryStartDueRecovery().Attempt);
+        Assert.True(halfOpen.RecoveryLease!.IsHalfOpen);
+        Assert.True(rig.Controller.MarkReady(halfOpen));
+        rig.Clock.Advance(TimeSpan.FromSeconds(59));
+        Assert.Equal(
+            GuardianHostLifecycleLossDisposition.BeganContainment,
+            rig.Controller.ReportLoss(halfOpen, GuardianHostLossReason.Exit));
+        rig.Clock.Advance(TimeSpan.FromSeconds(1));
+
+        Assert.Null(rig.Controller.ConfirmContainment(halfOpen).StartedAttempt);
+        var reopened = rig.Controller.Snapshot().Host;
+        Assert.Equal(PublicHostState.CircuitOpen, reopened.State);
+        Assert.Equal(8, reopened.RecoveryAttempt);
+        Assert.Equal(60_000, reopened.RetryAfterMilliseconds);
+    }
+
+    [Fact]
     public void Six_confirmed_failed_generations_open_one_circuit_and_one_half_open_probe()
     {
         var rig = new TestRig();

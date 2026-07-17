@@ -315,14 +315,17 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
             {
                 var replacementLease = attempt.RecoveryLease is null
                     ? _recoveryCircuit.BeginRecovery()
-                    : _recoveryCircuit.BeginIntentionalReplacement(attempt.RecoveryLease);
+                    : _recoveryCircuit.BeginIntentionalReplacementAfterFrozenStability(
+                        attempt.RecoveryLease);
                 start = replacementLease is null
                     ? StopForRecoveryExhaustionLocked()
                     : StartAttemptLocked(replacementLease, isInitialAttempt: false);
             }
             else
             {
-                start = ContinueAfterFailedGenerationLocked(attempt.RecoveryLease);
+                start = ContinueAfterFailedGenerationLocked(
+                    attempt.RecoveryLease,
+                    recoveryStabilityFrozen: true);
             }
 
             return new(
@@ -477,7 +480,8 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
     }
 
     private GuardianHostStartTransition ContinueAfterFailedGenerationLocked(
-        RecoveryAttemptLease? failedLease)
+        RecoveryAttemptLease? failedLease,
+        bool recoveryStabilityFrozen = false)
     {
         if (failedLease is null)
         {
@@ -487,7 +491,9 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
                 : StartAttemptLocked(immediate, isInitialAttempt: false);
         }
 
-        var failure = _recoveryCircuit.ReportGenerationFailure(failedLease);
+        var failure = recoveryStabilityFrozen
+            ? _recoveryCircuit.ReportGenerationFailureAfterFrozenStability(failedLease)
+            : _recoveryCircuit.ReportGenerationFailure(failedLease);
         if (!failure.Accepted || failure.Exhausted)
             return StopForRecoveryExhaustionLocked();
         if (failure.ImmediateAttempt is { } immediateAttempt)
@@ -501,6 +507,9 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
         GuardianHostAttemptLease attempt,
         GuardianHostLossReason reason)
     {
+        if (attempt.RecoveryLease is { } recoveryLease)
+            _recoveryCircuit.FreezeReadyStability(recoveryLease);
+
         _lastLossReason = reason;
         attempt.Stage = GuardianHostAttemptStage.Containing;
         _pendingContainmentAction = PendingActionForLocked(attempt, reason);

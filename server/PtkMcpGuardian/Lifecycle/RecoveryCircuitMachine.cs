@@ -178,6 +178,24 @@ internal sealed class RecoveryCircuitMachine
     /// </summary>
     internal RecoveryAttemptLease? BeginIntentionalReplacement(
         RecoveryAttemptLease lease)
+        => BeginIntentionalReplacementCore(
+            lease,
+            recognizeElapsedStability: true);
+
+    /// <summary>
+    /// Starts an intentional replacement after the owning lifecycle gate
+    /// already froze stability at the transition into containment. Time spent
+    /// containing the old generation cannot make that generation stable.
+    /// </summary>
+    internal RecoveryAttemptLease? BeginIntentionalReplacementAfterFrozenStability(
+        RecoveryAttemptLease lease)
+        => BeginIntentionalReplacementCore(
+            lease,
+            recognizeElapsedStability: false);
+
+    private RecoveryAttemptLease? BeginIntentionalReplacementCore(
+        RecoveryAttemptLease lease,
+        bool recognizeElapsedStability)
     {
         ArgumentNullException.ThrowIfNull(lease);
         lock (_sync)
@@ -188,7 +206,9 @@ internal sealed class RecoveryCircuitMachine
                 return null;
             }
 
-            if (!_stabilityReset && DelayElapsedLocked())
+            if (recognizeElapsedStability &&
+                !_stabilityReset &&
+                DelayElapsedLocked())
                 ResetStabilityHistoryLocked();
 
             if (_stabilityReset)
@@ -199,12 +219,52 @@ internal sealed class RecoveryCircuitMachine
     }
 
     /// <summary>
+    /// Atomically recognizes only stability already earned at a lifecycle
+    /// transition. The caller must later use a frozen-stability completion
+    /// method so containment time cannot contribute to the window.
+    /// </summary>
+    internal bool FreezeReadyStability(RecoveryAttemptLease lease)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        lock (_sync)
+        {
+            if (_state != RecoveryCircuitState.Ready ||
+                !OwnsActiveLeaseLocked(lease))
+            {
+                return false;
+            }
+
+            if (!_stabilityReset && DelayElapsedLocked())
+                ResetStabilityHistoryLocked();
+
+            return true;
+        }
+    }
+
+    /// <summary>
     /// Records failure or pre-stability loss of exactly the leased generation.
     /// A stable ready generation begins a new cycle and returns its immediate
     /// attempt-one lease. Stale and duplicate reports are inert.
     /// </summary>
     internal RecoveryFailureTransition ReportGenerationFailure(
         RecoveryAttemptLease lease)
+        => ReportGenerationFailureCore(
+            lease,
+            recognizeElapsedStability: true);
+
+    /// <summary>
+    /// Records a generation failure after stability was frozen when
+    /// containment began. Elapsed containment time cannot reset history.
+    /// </summary>
+    internal RecoveryFailureTransition ReportGenerationFailureAfterFrozenStability(
+        RecoveryAttemptLease lease)
+        => ReportGenerationFailureCore(
+            lease,
+            recognizeElapsedStability: false);
+
+    private RecoveryFailureTransition ReportGenerationFailureCore(
+        RecoveryAttemptLease lease,
+        bool recognizeElapsedStability)
     {
         ArgumentNullException.ThrowIfNull(lease);
         lock (_sync)
@@ -218,7 +278,8 @@ internal sealed class RecoveryCircuitMachine
                 return new RecoveryFailureTransition(false, null);
             }
 
-            if (_state == RecoveryCircuitState.Ready &&
+            if (recognizeElapsedStability &&
+                _state == RecoveryCircuitState.Ready &&
                 !_stabilityReset &&
                 DelayElapsedLocked())
             {
