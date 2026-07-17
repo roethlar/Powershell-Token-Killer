@@ -1,9 +1,8 @@
 # Plan: resilient MCP guardian and automatic backend recovery
 
-**Status:** PLANNING BOUNDARY OWNER-APPROVED 2026-07-15; R0 IMPLEMENTATION
-OWNER-AUTHORIZED 2026-07-15; R0 CODE, TESTS, PLATFORM EVIDENCE, AND REQUIRED
-FIXED-SHA FABLE IMPLEMENTATION REVIEW COMPLETE AT `c1d809f`; R0 AWAITS LOCAL
-MERGE; R1-R7 NOT AUTHORIZED. The approved boundary is:
+**Status:** PLANNING BOUNDARY OWNER-APPROVED 2026-07-15; R0 COMPLETE AND
+LANDED AT `c1d809f`; R1 IMPLEMENTATION OWNER-AUTHORIZED 2026-07-16; R2-R7 NOT
+AUTHORIZED. The approved boundary is:
 add two recovery
 layers so the MCP host automatically replaces failed session workers and a
 minimal public-pipe guardian automatically restarts the host; neither layer
@@ -88,6 +87,12 @@ red-to-green, then restored and removed its clean detached worktree. Its model
 metadata reported Fable plus Claude Code's Haiku helper and no Opus model.
 Canonical detail and the one non-blocking fixture-hygiene advisory are in
 `.agents/review/index.md`. Acceptance does not authorize R1-R7.
+
+The owner explicitly authorized R1 implementation in-session on 2026-07-16.
+That authorization is limited to the behavior-preserving shared-contract and
+guardian-safe ownership extraction plus its dependency/source guards described
+under R1. It does not authorize R2 lifecycle cores, runtime wiring, public
+registration changes, or any later resilience slice.
 
 `.agents/decisions.md` remains under the owner's existing hold and is not
 amended by this plan. This plan is the canonical source for MCP transport and

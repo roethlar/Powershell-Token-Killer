@@ -114,7 +114,8 @@ short and update it when important repo facts change.
   R0 code, tests, independent contract audit, and platform evidence are
   complete and landed on local `master` at `c1d809f`, and its required
   fixed-SHA Fable implementation review is accepted at review-record head
-  `4f99fd5`; R1-R7 are not authorized.** The
+  `4f99fd5`; R1 implementation was owner-authorized on 2026-07-16 and is
+  active on `feature/mcp-resilience-r1`; R2-R7 are not authorized.** The
   target keeps one public stdio guardian alive while it
   restarts an exact-version private host, and makes a healthy host replace an
   unexpectedly lost session worker. It never replays ambiguous work, changes
@@ -267,7 +268,9 @@ short and update it when important repo facts change.
 2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures.
-3. Do not begin resilience R1 without separate explicit authorization.
+3. Implement only resilience R1 from `.agents/plans/mcp-resilience.md` on its
+   isolated feature branch. Do not begin R2 without separate explicit
+   authorization.
 4. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
