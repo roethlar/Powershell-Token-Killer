@@ -347,6 +347,13 @@ internal sealed class R3FakeHostPeer : IDisposable
             responseGeneration,
             request.RequestId,
             new OperationCompleted(new JobListResult(plan.ResponseText)));
+        if (plan.Behavior == R3FakeHostOperationBehavior.PartialResponseThenCrash)
+        {
+            await _writer.WritePrefixThenFailAsync(response, cancellationToken)
+                .ConfigureAwait(false);
+            throw new InvalidOperationException(
+                "The injected partial response unexpectedly completed.");
+        }
         await _writer.WriteAsync(response, cancellationToken).ConfigureAwait(false);
         plan.ResponseSent.Reach();
         if (plan.Behavior == R3FakeHostOperationBehavior.DuplicateResponse)

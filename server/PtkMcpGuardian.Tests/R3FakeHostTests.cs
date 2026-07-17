@@ -159,6 +159,33 @@ public sealed class R3FakeHostTests
         resources.Dispose();
     }
 
+    [Fact]
+    public async Task Partial_response_has_one_effect_and_never_decodes_a_terminal()
+    {
+        var operation = new R3FakeHostOperationPlan
+        {
+            Behavior = R3FakeHostOperationBehavior.PartialResponseThenCrash,
+        };
+        var control = new R3FakeHostControl();
+        control.EnqueueOperation(operation);
+        var (_, resources) = CreateAttempt(control: control);
+        Assert.Equal(GuardianHostLaunchOutcome.Started, resources.Launch());
+        await using var client = CreateClient(resources);
+        await client.InitializeAsync(CreateManifest()).WaitAsync(TestTimeout);
+
+        var pending = client.SendRequestAsync(CreateJobListRequest);
+
+        await Assert.ThrowsAnyAsync<IOException>(() =>
+            pending.WaitAsync(TestTimeout));
+        await resources.HostExited.WaitAsync(TestTimeout);
+        Assert.Equal(1, resources.Peer.JobListEffectCount);
+        Assert.True(operation.Received.IsReached);
+        Assert.False(operation.ResponseSent.IsReached);
+        resources.BeginContainment(new GuardianHostContainmentDeadline(1, 2));
+        await resources.ContainmentConfirmed.WaitAsync(TestTimeout);
+        resources.Dispose();
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]

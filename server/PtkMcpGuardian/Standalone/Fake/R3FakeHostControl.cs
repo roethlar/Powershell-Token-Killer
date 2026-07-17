@@ -97,6 +97,7 @@ internal enum R3FakeHostOperationBehavior
     HoldBeforeResponse,
     DuplicateResponse,
     WrongGenerationResponse,
+    PartialResponseThenCrash,
 }
 
 internal sealed record R3FakeHostAttemptPlan

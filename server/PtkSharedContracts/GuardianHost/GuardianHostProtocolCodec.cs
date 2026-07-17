@@ -1073,4 +1073,18 @@ public sealed class GuardianHostProtocolWriter
             throw new ArgumentException("Message direction does not match the writer.", nameof(message));
         return _writer.WriteAsync(GuardianHostProtocolCodec.ToRaw(message), cancellationToken);
     }
+
+    internal ValueTask WritePrefixThenFailAsync(
+        GuardianHostMessage message,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        if (message.Sender != _sender)
+            throw new ArgumentException(
+                "Message direction does not match the writer.",
+                nameof(message));
+        return _writer.WritePrefixThenFailAsync(
+            GuardianHostProtocolCodec.ToRaw(message),
+            cancellationToken);
+    }
 }
