@@ -81,7 +81,7 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
             cancellationToken,
             auditContext?.Current);
 
-    Task ISessionLifetime.ShutdownAsync() => ShutdownAsync();
+    Task PtkMcpGuardian.Ownership.IOrderedOwnedLifetime.ShutdownAsync() => ShutdownAsync();
 
     internal async Task ShutdownAsync()
     {

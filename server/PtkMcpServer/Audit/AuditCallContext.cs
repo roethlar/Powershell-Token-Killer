@@ -7,7 +7,7 @@ namespace PtkMcpServer.Audit;
 /// tool is resolved; tools may obtain effect authorization only through the
 /// durable event methods below. No submitted script text enters core events.
 /// </summary>
-internal sealed class AuditCallContext : IInvocationAuthorizer
+internal sealed class AuditCallContext : IInvocationAuthorizer, IAuditBoundaryCall
 {
     private static readonly UTF8Encoding Utf8 = new(false);
 
@@ -59,6 +59,11 @@ internal sealed class AuditCallContext : IInvocationAuthorizer
 
     internal bool TerminalWritten => _terminalWritten;
 
+    bool IAuditBoundaryCall.AuthorizationPersistenceFailed => AuthorizationPersistenceFailed;
+
+    bool IAuditBoundaryCall.UserExecutionStarted => UserExecutionStarted;
+
+    bool IAuditBoundaryCall.TerminalWritten => TerminalWritten;
 
     internal AuditCallMetadata Metadata =>
         _metadata ?? throw new InvalidOperationException("Audit call has not been initialized.");
@@ -1070,6 +1075,9 @@ internal sealed class AuditCallContext : IInvocationAuthorizer
     {
         CompleteCall(state, string.Empty, bytesReturnedOverride: bytesReturned);
     }
+
+    void IAuditBoundaryCall.CompleteFromFilter(string state, long bytesReturned) =>
+        CompleteFromFilter(state, bytesReturned);
 
     internal void Abandon()
     {

@@ -51,7 +51,7 @@ builder.Services.AddSingleton(sp =>
 {
     var options = sp.GetRequiredService<AuditOptions>();
     var health = sp.GetRequiredService<AuditHealth>();
-    Func<AuditRuntimeResources>? openRuntime = auditExporter is null
+    Func<IAuditRuntimeResources>? openRuntime = auditExporter is null
         ? null
         : () => AuditRuntimeResources.OpenAnchored(
             options,
@@ -66,6 +66,8 @@ builder.Services.AddSingleton(sp =>
         producerVersion,
         openRuntime: openRuntime);
 });
+builder.Services.AddSingleton<IAuditAdmissionOwner>(
+    sp => sp.GetRequiredService<AuditRuntimeGate>());
 builder.Services.AddSingleton<IHostedService>(sp => sp.GetRequiredService<AuditRuntimeGate>());
 
 // Harness-lifetime recovery belongs to the supervisor service provider, not

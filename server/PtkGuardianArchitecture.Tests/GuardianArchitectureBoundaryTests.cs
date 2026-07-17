@@ -18,6 +18,7 @@ public sealed class GuardianArchitectureBoundaryTests
 
     private static readonly string[] RequiredGuardianAuditCompileInputs =
     [
+        "AuditAdmissionContracts.cs",
         "AuditAdminDispositionFailure.cs",
         "AuditAdminFailure.cs",
         "AuditAdminOperations.cs",
@@ -70,6 +71,21 @@ public sealed class GuardianArchitectureBoundaryTests
         "AuditCallFilter.cs",
         "AuditCallMetadataCapture.cs",
         "AuditRuntimeGate.cs",
+    ];
+
+    private static readonly string[] RequiredGuardianOwnershipCompileInputs =
+    [
+        "FrozenSessionCatalog.cs",
+        "IOrderedOwnedLifetime.cs",
+        "PublicJobIdAllocator.cs",
+    ];
+
+    private static readonly string[] RequiredGuardianBoundaryTypeDefinitions =
+    [
+        "PtkMcpGuardian.Ownership.IOrderedOwnedLifetime",
+        "PtkMcpServer.Audit.IAuditAdmissionOwner",
+        "PtkMcpServer.Audit.IAuditBoundaryCall",
+        "PtkMcpServer.Audit.IAuditRuntimeResources",
     ];
 
     private static readonly string[] RequiredGuardianOutputCompileInputs =
@@ -305,6 +321,11 @@ public sealed class GuardianArchitectureBoundaryTests
             "guardian audit ownership");
         AssertExactCompileDirectory(
             guardian,
+            "Ownership",
+            RequiredGuardianOwnershipCompileInputs,
+            "guardian lifetime and identity ownership");
+        AssertExactCompileDirectory(
+            guardian,
             "Output",
             RequiredGuardianOutputCompileInputs,
             "guardian output ownership");
@@ -375,6 +396,53 @@ public sealed class GuardianArchitectureBoundaryTests
     }
 
     [Fact]
+    public void Program_aliases_one_existing_audit_gate_under_each_host_contract()
+    {
+        var paths = RepositoryPaths.Create();
+        var programPath = Path.Combine(
+            paths.ServerDirectory,
+            "PtkMcpServer",
+            "Program.cs");
+        var tree = CSharpSyntaxTree.ParseText(
+            File.ReadAllText(programPath),
+            path: programPath);
+        var root = tree.GetRoot();
+        Assert.DoesNotContain(
+            tree.GetDiagnostics(),
+            diagnostic => diagnostic.Severity == DiagnosticSeverity.Error);
+
+        var singletonRegistrations = root
+            .DescendantNodes()
+            .OfType<InvocationExpressionSyntax>()
+            .Where(invocation =>
+                invocation.Expression is MemberAccessExpressionSyntax
+                {
+                    Name: GenericNameSyntax { Identifier.ValueText: "AddSingleton" },
+                })
+            .ToArray();
+
+        AssertExistingGateAlias(
+            Assert.Single(
+                singletonRegistrations,
+                registration => RegistrationServiceType(registration) == "IAuditAdmissionOwner"));
+        AssertExistingGateAlias(
+            Assert.Single(
+                singletonRegistrations,
+                registration => RegistrationServiceType(registration) == "IHostedService"));
+
+        var gateCreation = Assert.Single(
+            root.DescendantNodes().OfType<ObjectCreationExpressionSyntax>(),
+            creation => creation.Type.ToString() == "AuditRuntimeGate");
+        var concreteRegistration = Assert.Single(
+            gateCreation.Ancestors().OfType<InvocationExpressionSyntax>());
+        var registrationAccess = Assert.IsType<MemberAccessExpressionSyntax>(
+            concreteRegistration.Expression);
+        var registrationName = Assert.IsType<IdentifierNameSyntax>(
+            registrationAccess.Name);
+        Assert.Equal("AddSingleton", registrationName.Identifier.ValueText);
+    }
+
+    [Fact]
     public void Output_definitions_are_compiled_only_by_guardian()
     {
         var paths = RepositoryPaths.Create();
@@ -384,6 +452,22 @@ public sealed class GuardianArchitectureBoundaryTests
         var serverDefinitions = ReadSourceTypeDefinitions(server);
 
         foreach (var typeName in RequiredGuardianOutputTypeDefinitions)
+        {
+            Assert.Contains(typeName, guardianDefinitions, StringComparer.Ordinal);
+            Assert.DoesNotContain(typeName, serverDefinitions, StringComparer.Ordinal);
+        }
+    }
+
+    [Fact]
+    public void Guardian_boundary_interfaces_are_compiled_only_by_guardian()
+    {
+        var paths = RepositoryPaths.Create();
+        var guardian = EvaluateProject(paths.GuardianProject);
+        var server = EvaluateProject(paths.ServerProject);
+        var guardianDefinitions = ReadCompiledTypeDefinitions(guardian);
+        var serverDefinitions = ReadSourceTypeDefinitions(server);
+
+        foreach (var typeName in RequiredGuardianBoundaryTypeDefinitions)
         {
             Assert.Contains(typeName, guardianDefinitions, StringComparer.Ordinal);
             Assert.DoesNotContain(typeName, serverDefinitions, StringComparer.Ordinal);
@@ -1033,6 +1117,35 @@ public sealed class GuardianArchitectureBoundaryTests
                 .Replace(Path.DirectorySeparatorChar, '/'))
             .ToArray();
         AssertExactSet(actual, expected, label, StringComparer.Ordinal);
+    }
+
+    private static string? RegistrationServiceType(InvocationExpressionSyntax registration)
+    {
+        if (registration.Expression is not MemberAccessExpressionSyntax
+            {
+                Name: GenericNameSyntax generic,
+            } || generic.TypeArgumentList.Arguments.Count != 1)
+        {
+            return null;
+        }
+
+        return generic.TypeArgumentList.Arguments[0].ToString();
+    }
+
+    private static void AssertExistingGateAlias(InvocationExpressionSyntax registration)
+    {
+        var alias = Assert.IsType<SimpleLambdaExpressionSyntax>(
+            Assert.Single(registration.ArgumentList.Arguments).Expression);
+        var resolver = Assert.IsType<InvocationExpressionSyntax>(alias.Body);
+        var access = Assert.IsType<MemberAccessExpressionSyntax>(resolver.Expression);
+        var method = Assert.IsType<GenericNameSyntax>(access.Name);
+
+        Assert.Equal("GetRequiredService", method.Identifier.ValueText);
+        Assert.Equal(
+            "AuditRuntimeGate",
+            Assert.Single(method.TypeArgumentList.Arguments).ToString());
+        Assert.Equal(alias.Parameter.Identifier.ValueText, access.Expression.ToString());
+        Assert.Empty(alias.DescendantNodes().OfType<ObjectCreationExpressionSyntax>());
     }
 
     private static void AssertExactResources(

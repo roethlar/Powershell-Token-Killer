@@ -8,7 +8,16 @@ namespace PtkMcpServer.Audit;
 /// after server.started is durable and stops it before server.stopped so the
 /// lifecycle terminal remains the final record written by this process.
 /// </summary>
-internal sealed class AuditRuntimeResources : IDisposable
+internal interface IAuditRuntimeResources : IDisposable
+{
+    AuditJournal Journal { get; }
+
+    void StartExporter();
+
+    Task StopExporterAsync();
+}
+
+internal sealed class AuditRuntimeResources : IAuditRuntimeResources
 {
     private readonly bool _ownsJournal;
     private readonly AuditExportLoop? _exportLoop;
@@ -31,6 +40,8 @@ internal sealed class AuditRuntimeResources : IDisposable
     }
 
     internal AuditJournal Journal { get; }
+
+    AuditJournal IAuditRuntimeResources.Journal => Journal;
 
     internal AuditExportLoopSnapshot? ExportSnapshot => _exportLoop?.Snapshot;
 
@@ -203,6 +214,8 @@ internal sealed class AuditRuntimeResources : IDisposable
         _exportCompletion = _exportLoop.Start();
     }
 
+    void IAuditRuntimeResources.StartExporter() => StartExporter();
+
     internal async Task StopExporterAsync()
     {
         if (_exportLoop is null || Volatile.Read(ref _exportStarted) == 0) return;
@@ -210,6 +223,8 @@ internal sealed class AuditRuntimeResources : IDisposable
         if (_exportCompletion is not null)
             await _exportCompletion.ConfigureAwait(false);
     }
+
+    Task IAuditRuntimeResources.StopExporterAsync() => StopExporterAsync();
 
     public void Dispose()
     {

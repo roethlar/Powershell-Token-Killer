@@ -1,6 +1,7 @@
 using System.Text.Json;
 using Microsoft.Extensions.DependencyInjection;
 using ModelContextProtocol.Protocol;
+using PtkMcpGuardian.Ownership;
 using PtkMcpServer.Audit;
 using PtkMcpServer.Sessions;
 
@@ -44,7 +45,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         Assert.Equal(0, factoryCalls);
 
         using var services = new ServiceCollection()
-            .AddSingleton(runtime)
+            .AddSingleton<IAuditAdmissionOwner>(runtime)
             .AddSingleton(new AuditCallContextAccessor())
             .BuildServiceProvider();
         var handlerCalls = 0;
@@ -165,7 +166,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         using var runtime = CreateRuntime(options, health);
         await runtime.StartAsync(CancellationToken.None);
         using var services = new ServiceCollection()
-            .AddSingleton(runtime)
+            .AddSingleton<IAuditAdmissionOwner>(runtime)
             .AddSingleton(new AuditCallContextAccessor())
             .BuildServiceProvider();
 
@@ -211,7 +212,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         await runtime.StartAsync(CancellationToken.None);
         File.WriteAllText(options.EvidenceDirectory, "not a directory");
         using var services = new ServiceCollection()
-            .AddSingleton(runtime)
+            .AddSingleton<IAuditAdmissionOwner>(runtime)
             .AddSingleton(new AuditCallContextAccessor())
             .BuildServiceProvider();
 
@@ -291,7 +292,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
             OpenJournal);
         await runtime.StartAsync(CancellationToken.None);
         using var services = new ServiceCollection()
-            .AddSingleton(runtime)
+            .AddSingleton<IAuditAdmissionOwner>(runtime)
             .AddScoped<AuditCallContextAccessor>()
             .BuildServiceProvider();
         var handlerCalls = 0;
@@ -401,7 +402,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         Assert.Equal(0, factoryCalls);
 
         using var services = new ServiceCollection()
-            .AddSingleton(runtime)
+            .AddSingleton<IAuditAdmissionOwner>(runtime)
             .AddSingleton(new AuditCallContextAccessor())
             .BuildServiceProvider();
         var handlerCalls = 0;
@@ -437,7 +438,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         using var runtime = CreateRuntime(options, health);
         await runtime.StartAsync(CancellationToken.None);
         using var services = new ServiceCollection()
-            .AddSingleton(runtime)
+            .AddSingleton<IAuditAdmissionOwner>(runtime)
             .AddSingleton(new AuditCallContextAccessor())
             .BuildServiceProvider();
         var handlerEntered = new TaskCompletionSource<bool>(
@@ -567,6 +568,9 @@ public sealed class AuditRuntimeGateTests : IDisposable
         var tracked = runtime.RunSessionAfterStarted(() => session);
 
         Assert.Same(session, tracked);
+        var activeSpool = Assert.Single(
+            Directory.EnumerateFiles(options.SpoolDirectory, "*.jsonl"));
+        var durableLengthBeforeStop = new FileInfo(activeSpool).Length;
         Task? stop = null;
         try
         {
@@ -574,6 +578,9 @@ public sealed class AuditRuntimeGateTests : IDisposable
             await session.ShutdownEntered.Task.WaitAsync(TimeSpan.FromSeconds(10));
             Assert.Equal(1, session.ShutdownCount);
             Assert.False(stop.IsCompleted, "server shutdown overtook the owned session lifetime");
+            var blockedSpool = new FileInfo(activeSpool);
+            blockedSpool.Refresh();
+            Assert.Equal(durableLengthBeforeStop, blockedSpool.Length);
             session.ReleaseShutdown.TrySetResult();
             await stop.WaitAsync(TimeSpan.FromSeconds(10));
             runtime.Dispose();
@@ -717,7 +724,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         await runtime.StartAsync(CancellationToken.None);
         File.WriteAllText(options.EvidenceDirectory, "not a directory");
         using var services = new ServiceCollection()
-            .AddSingleton(runtime)
+            .AddSingleton<IAuditAdmissionOwner>(runtime)
             .AddScoped<AuditCallContextAccessor>()
             .BuildServiceProvider();
 
@@ -819,7 +826,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         using var runtime = CreateRuntime(options, health);
         await runtime.StartAsync(CancellationToken.None);
         using var services = new ServiceCollection()
-            .AddSingleton(runtime)
+            .AddSingleton<IAuditAdmissionOwner>(runtime)
             .AddSingleton(new AuditCallContextAccessor())
             .BuildServiceProvider();
         var handlerCalls = 0;
@@ -928,7 +935,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
                 "runtime factory never entered");
             health.MarkUnavailable("evidence.storage");
             using var services = new ServiceCollection()
-                .AddSingleton(runtime)
+                .AddSingleton<IAuditAdmissionOwner>(runtime)
                 .AddSingleton(new AuditCallContextAccessor())
                 .BuildServiceProvider();
             var handlerCalls = 0;
@@ -1050,7 +1057,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
         public void Dispose() => Interlocked.Exchange(ref _onDispose, null)?.Invoke();
     }
 
-    private sealed class BlockingSessionLifetime : ISessionLifetime
+    private sealed class BlockingSessionLifetime : IOrderedOwnedLifetime
     {
         internal int ShutdownCount { get; private set; }
 

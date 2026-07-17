@@ -1,5 +1,5 @@
 using Microsoft.Extensions.Hosting;
-using PtkMcpServer.Sessions;
+using PtkMcpGuardian.Ownership;
 
 namespace PtkMcpServer.Audit;
 
@@ -10,7 +10,7 @@ namespace PtkMcpServer.Audit;
 /// durable. A later request may repair first-start failure under this gate;
 /// an already-published journal is never hot-swapped.
 /// </summary>
-internal sealed class AuditRuntimeGate : IHostedService, IDisposable
+internal sealed class AuditRuntimeGate : IHostedService, IAuditAdmissionOwner, IDisposable
 {
     private readonly object _gate = new();
     private readonly object _admissionGate = new();
@@ -19,12 +19,12 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
     private readonly AuditHealth _health;
     private readonly ScriptEvidenceStoreProvider _evidence;
     private readonly string _producerVersion;
-    private readonly Func<AuditRuntimeResources> _openRuntime;
+    private readonly Func<IAuditRuntimeResources> _openRuntime;
 
-    private AuditRuntimeResources? _resources;
+    private IAuditRuntimeResources? _resources;
     private AuditJournal? _journal;
     private AuditServerLifecycle? _lifecycle;
-    private ISessionLifetime? _sessionLifetime;
+    private IOrderedOwnedLifetime? _ownedLifetime;
     private Task? _stopTask;
     private TaskCompletionSource<bool>? _activeCallsDrained;
     private int _activeCalls;
@@ -39,7 +39,7 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
         ScriptEvidenceStoreProvider evidence,
         string producerVersion,
         Func<AuditJournal>? openJournal = null,
-        Func<AuditRuntimeResources>? openRuntime = null)
+        Func<IAuditRuntimeResources>? openRuntime = null)
     {
         ArgumentNullException.ThrowIfNull(options);
         ArgumentNullException.ThrowIfNull(health);
@@ -89,6 +89,8 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
 
     internal AuditHealth Health => _health;
 
+    AuditHealth IAuditAdmissionOwner.Health => Health;
+
     internal DateTimeOffset LastActivityUtc
     {
         get
@@ -103,6 +105,8 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
         lock (_gate)
             _lastActivityUtc = DateTimeOffset.UtcNow;
     }
+
+    void IAuditAdmissionOwner.Touch() => Touch();
 
     internal bool TryCreateCallContext(
         int upcomingRecordSlots,
@@ -240,6 +244,24 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
         }
     }
 
+    bool IAuditAdmissionOwner.TryBeginCall(
+        AuditCallMetadata metadata,
+        string? exactSubmittedScript,
+        out IAuditBoundaryCall? call,
+        out IDisposable? callLease,
+        out string? failureClass)
+    {
+        var admitted = TryBeginCall(
+            metadata,
+            exactSubmittedScript,
+            out var concreteCall,
+            out var concreteLease,
+            out failureClass);
+        call = concreteCall;
+        callLease = concreteLease;
+        return admitted;
+    }
+
     internal T RunAfterStarted<T>(Func<T> downstreamFactory)
         => RunAfterStarted(downstreamFactory, publish: null);
 
@@ -272,8 +294,8 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
 
     internal TSession RunSessionAfterStarted<TSession>(
         Func<TSession> downstreamFactory)
-        where TSession : class, ISessionLifetime
-        => RunAfterStarted(downstreamFactory, lifetime => _sessionLifetime = lifetime);
+        where TSession : class, IOrderedOwnedLifetime
+        => RunAfterStarted(downstreamFactory, lifetime => _ownedLifetime = lifetime);
 
     public Task StartAsync(CancellationToken cancellationToken)
     {
@@ -303,7 +325,7 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
                         : _activeCallsDrained!.Task;
                     _stopTask = StopCoreAsync(
                         activeCalls,
-                        _sessionLifetime,
+                        _ownedLifetime,
                         _lifecycle,
                         _resources);
                     return _stopTask;
@@ -349,13 +371,13 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
 
     private async Task StopCoreAsync(
         Task activeCalls,
-        ISessionLifetime? sessionLifetime,
+        IOrderedOwnedLifetime? ownedLifetime,
         AuditServerLifecycle? lifecycle,
-        AuditRuntimeResources? resources)
+        IAuditRuntimeResources? resources)
     {
         await activeCalls.ConfigureAwait(false);
-        if (sessionLifetime is not null)
-            await sessionLifetime.ShutdownAsync().ConfigureAwait(false);
+        if (ownedLifetime is not null)
+            await ownedLifetime.ShutdownAsync().ConfigureAwait(false);
         if (resources is not null)
             await resources.StopExporterAsync().ConfigureAwait(false);
         lifecycle?.Stop();
@@ -389,7 +411,7 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
 
     private bool TryInitializeSerialized(int upcomingRecordSlots)
     {
-        AuditRuntimeResources? candidateResources = null;
+        IAuditRuntimeResources? candidateResources = null;
         AuditServerLifecycle? candidateLifecycle = null;
         try
         {

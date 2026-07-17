@@ -1,4 +1,5 @@
 using PtkMcpServer.Audit;
+using PtkMcpGuardian.Ownership;
 
 namespace PtkMcpServer.Sessions;
 
@@ -42,7 +43,6 @@ public interface ISessionOperations
 /// Ordered owned-session drain used by the supervisor lifecycle. This remains
 /// separate from tool operations so request code cannot initiate shutdown.
 /// </summary>
-internal interface ISessionLifetime : IDisposable
+internal interface ISessionLifetime : IOrderedOwnedLifetime
 {
-    Task ShutdownAsync();
 }

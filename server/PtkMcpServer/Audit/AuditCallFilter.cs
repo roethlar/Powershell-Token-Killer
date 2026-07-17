@@ -81,18 +81,19 @@ internal static class AuditCallFilter
             return Refusal("audit_boundary_invalid");
         }
 
-        AuditCallContext? audit;
-        AuditRuntimeCallLease? callLease;
+        IAuditBoundaryCall? audit = null;
+        IDisposable? callLease = null;
         AuditHealth health;
-        AuditRuntimeGate runtime;
+        IAuditAdmissionOwner admissionOwner;
         AuditCallContextAccessor accessor;
         try
         {
-            // Resolve only the nonthrowing supervisor gate. Tool/runtime
-            // dependencies remain unresolved until audit admission succeeds.
-            runtime = requestServices.GetRequiredService<AuditRuntimeGate>();
-            runtime.Touch();
-            health = runtime.Health;
+            // Resolve only the guardian-safe audit owner. Tool/runtime
+            // dependencies and the concrete supervisor gate remain unresolved
+            // until audit admission succeeds.
+            admissionOwner = requestServices.GetRequiredService<IAuditAdmissionOwner>();
+            admissionOwner.Touch();
+            health = admissionOwner.Health;
             accessor = requestServices.GetRequiredService<AuditCallContextAccessor>();
         }
         catch (Exception exception) when (!IsFatal(exception))
@@ -103,13 +104,19 @@ internal static class AuditCallFilter
         string? admissionFailure;
         try
         {
-            if (!runtime.TryBeginCall(
+            if (!admissionOwner.TryBeginCall(
                     metadata!,
                     submittedScript,
                     out audit,
                     out callLease,
                     out admissionFailure))
             {
+                if (audit is not null || callLease is not null)
+                {
+                    CompleteInvalidBoundary(audit);
+                    DisposeInvalidLease(callLease);
+                    return Refusal("audit_boundary_invalid");
+                }
                 if (string.Equals(admissionFailure, "evidence.limit", StringComparison.Ordinal))
                     return Refusal("audit_boundary_invalid");
                 if (string.Equals(admissionFailure, "journal.closed", StringComparison.Ordinal))
@@ -121,17 +128,26 @@ internal static class AuditCallFilter
         }
         catch (Exception exception) when (!IsFatal(exception))
         {
+            CompleteInvalidBoundary(audit);
+            DisposeInvalidLease(callLease);
             MarkUnavailable(health, "audit.boundary");
             return call.Name == "ptk_state"
                 ? EmergencyState(health)
                 : Refusal(null);
         }
 
-        using var activeCall = callLease!;
-        var admittedAudit = audit!;
+        var admittedBoundary = audit;
+        if (admittedBoundary is not AuditCallContext admittedAudit || callLease is null)
+        {
+            CompleteInvalidBoundary(admittedBoundary);
+            DisposeInvalidLease(callLease);
+            return Refusal("audit_boundary_invalid");
+        }
+
+        using var activeCall = callLease;
         if (accessor.Current is not null)
         {
-            admittedAudit.CompleteFromFilter("failed", 0);
+            admittedBoundary.CompleteFromFilter("failed", 0);
             return Refusal("audit_boundary_invalid");
         }
         accessor.Current = admittedAudit;
@@ -140,17 +156,17 @@ internal static class AuditCallFilter
             var result = await next(cancellationToken).ConfigureAwait(false);
             if (result is null)
             {
-                admittedAudit.CompleteFromFilter("failed", 0);
+                admittedBoundary.CompleteFromFilter("failed", 0);
                 throw new InvalidOperationException("The MCP tool returned no result.");
             }
 
             var authorizationRefused =
-                admittedAudit.AuthorizationPersistenceFailed &&
-                !admittedAudit.UserExecutionStarted;
-            if (!admittedAudit.TerminalWritten)
+                admittedBoundary.AuthorizationPersistenceFailed &&
+                !admittedBoundary.UserExecutionStarted;
+            if (!admittedBoundary.TerminalWritten)
             {
                 var terminal = ResolveFallbackTerminal(result, authorizationRefused);
-                admittedAudit.CompleteFromFilter(terminal.State, terminal.BytesReturned);
+                admittedBoundary.CompleteFromFilter(terminal.State, terminal.BytesReturned);
             }
 
             if (authorizationRefused)
@@ -160,14 +176,14 @@ internal static class AuditCallFilter
         }
         catch (OperationCanceledException)
         {
-            if (!admittedAudit.TerminalWritten)
-                admittedAudit.CompleteFromFilter("canceled", 0);
+            if (!admittedBoundary.TerminalWritten)
+                admittedBoundary.CompleteFromFilter("canceled", 0);
             throw;
         }
         catch
         {
-            if (!admittedAudit.TerminalWritten)
-                admittedAudit.CompleteFromFilter("failed", 0);
+            if (!admittedBoundary.TerminalWritten)
+                admittedBoundary.CompleteFromFilter("failed", 0);
             throw;
         }
         finally
@@ -259,6 +275,34 @@ internal static class AuditCallFilter
             ? string.Empty
             : sanitizedFailure + ": ";
         return TextResult(prefix + AuditCallContext.NotStartedMessage, isError: true);
+    }
+
+    private static void CompleteInvalidBoundary(IAuditBoundaryCall? call)
+    {
+        if (call is null) return;
+        try
+        {
+            call.CompleteFromFilter("failed", 0);
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            // Admission returned an unusable boundary. Keep the stable refusal
+            // and still release any lease rather than trusting another member.
+        }
+    }
+
+    private static void DisposeInvalidLease(IDisposable? callLease)
+    {
+        if (callLease is null) return;
+        try
+        {
+            callLease.Dispose();
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            // The call was never dispatched. Its invalid ownership boundary
+            // cannot replace the stable fail-closed response.
+        }
     }
 
     private static CallToolResult TextResult(string text, bool isError) => new()

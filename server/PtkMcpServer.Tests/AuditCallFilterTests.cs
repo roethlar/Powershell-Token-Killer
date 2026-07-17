@@ -220,6 +220,8 @@ public sealed class AuditCallFilterTests : IDisposable
     {
         using var fixture = CreateFixture(slots: 6);
         Assert.Null(fixture.Accessor.Current);
+        Assert.Null(fixture.Services.GetService<AuditRuntimeGate>());
+        Assert.NotNull(fixture.Services.GetService<IAuditAdmissionOwner>());
         AuditCallContext? observed = null;
 
         var result = await Invoke(
@@ -252,6 +254,146 @@ public sealed class AuditCallFilterTests : IDisposable
         using var terminal = Parse(fixture.Sink.Lines[1]);
         Assert.Equal("call.completed", terminal.RootElement.GetProperty("event_type").GetString());
         Assert.Equal(2, terminal.RootElement.GetProperty("outcome").GetProperty("bytes_returned").GetInt64());
+    }
+
+    [Fact]
+    public async Task Incompatible_boundary_refuses_without_dispatch_and_releases_once()
+    {
+        using var fixture = CreateFixture(slots: 6);
+        var boundary = new RecordingBoundaryCall();
+        var lease = new RecordingCallLease();
+        var owner = new StubAdmissionOwner(
+            fixture.Health,
+            (_, _) => new AdmissionResult(true, boundary, lease, null));
+        var handlerCalls = 0;
+
+        var result = await InvokeWithOwner(
+            owner,
+            Call("ptk_job", ("action", "status"), ("id", 71L)),
+            _ =>
+            {
+                handlerCalls++;
+                return ValueTask.FromResult(Text("must not run"));
+            });
+
+        Assert.Equal(0, handlerCalls);
+        Assert.Equal(1, boundary.CompletionCount);
+        Assert.Equal("failed", boundary.CompletionState);
+        Assert.Equal(0, boundary.CompletionBytes);
+        Assert.Equal(1, lease.DisposeCount);
+        Assert.StartsWith("audit_boundary_invalid: ", ResultText(result), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Null_boundary_refuses_without_dispatch_and_releases_once()
+    {
+        using var fixture = CreateFixture(slots: 6);
+        var lease = new RecordingCallLease();
+        var owner = new StubAdmissionOwner(
+            fixture.Health,
+            (_, _) => new AdmissionResult(true, null, lease, null));
+        var handlerCalls = 0;
+
+        var result = await InvokeWithOwner(
+            owner,
+            Call("ptk_job", ("action", "status"), ("id", 72L)),
+            _ =>
+            {
+                handlerCalls++;
+                return ValueTask.FromResult(Text("must not run"));
+            });
+
+        Assert.Equal(0, handlerCalls);
+        Assert.Equal(1, lease.DisposeCount);
+        Assert.StartsWith("audit_boundary_invalid: ", ResultText(result), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Null_lease_fails_the_local_boundary_terminal_without_dispatch()
+    {
+        using var fixture = CreateFixture(slots: 6);
+        var owner = new StubAdmissionOwner(
+            fixture.Health,
+            (metadata, submittedScript) =>
+            {
+                var context = new AuditCallContext(fixture.Journal, fixture.Evidence);
+                Assert.True(context.TryBegin(metadata, submittedScript, out var failureClass));
+                Assert.Null(failureClass);
+                return new AdmissionResult(true, context, null, null);
+            });
+        var handlerCalls = 0;
+
+        var result = await InvokeWithOwner(
+            owner,
+            Call("ptk_job", ("action", "status"), ("id", 73L)),
+            _ =>
+            {
+                handlerCalls++;
+                return ValueTask.FromResult(Text("must not run"));
+            });
+
+        Assert.Equal(0, handlerCalls);
+        Assert.StartsWith("audit_boundary_invalid: ", ResultText(result), StringComparison.Ordinal);
+        Assert.Equal(2, fixture.Sink.Lines.Count);
+        using var terminal = Parse(fixture.Sink.Lines[1]);
+        Assert.Equal("call.failed", terminal.RootElement.GetProperty("event_type").GetString());
+        Assert.Equal(0, terminal.RootElement.GetProperty("outcome").GetProperty("bytes_returned").GetInt64());
+    }
+
+    [Fact]
+    public async Task False_admission_with_owned_outputs_fails_and_releases_once()
+    {
+        using var fixture = CreateFixture(slots: 6);
+        var boundary = new RecordingBoundaryCall();
+        var lease = new RecordingCallLease();
+        var owner = new StubAdmissionOwner(
+            fixture.Health,
+            (_, _) => new AdmissionResult(false, boundary, lease, "journal.unavailable"));
+        var handlerCalls = 0;
+
+        var result = await InvokeWithOwner(
+            owner,
+            Call("ptk_job", ("action", "status"), ("id", 74L)),
+            _ =>
+            {
+                handlerCalls++;
+                return ValueTask.FromResult(Text("must not run"));
+            });
+
+        Assert.Equal(0, handlerCalls);
+        Assert.Equal(1, boundary.CompletionCount);
+        Assert.Equal(1, lease.DisposeCount);
+        Assert.StartsWith("audit_boundary_invalid: ", ResultText(result), StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public async Task Admission_exception_after_assigning_outputs_fails_and_releases_once()
+    {
+        using var fixture = CreateFixture(slots: 6);
+        var boundary = new RecordingBoundaryCall();
+        var lease = new RecordingCallLease();
+        IAuditAdmissionOwner owner = new ThrowingAfterOwnershipAdmissionOwner(
+            fixture.Health,
+            boundary,
+            lease);
+        var handlerCalls = 0;
+
+        var result = await InvokeWithOwner(
+            owner,
+            Call("ptk_job", ("action", "status"), ("id", 75L)),
+            _ =>
+            {
+                handlerCalls++;
+                return ValueTask.FromResult(Text("must not run"));
+            });
+
+        Assert.Equal(0, handlerCalls);
+        Assert.Equal(1, boundary.CompletionCount);
+        Assert.Equal("failed", boundary.CompletionState);
+        Assert.Equal(0, boundary.CompletionBytes);
+        Assert.Equal(1, lease.DisposeCount);
+        Assert.True(result.IsError);
+        Assert.Contains("original operation was not started", ResultText(result), StringComparison.Ordinal);
     }
 
     [Fact]
@@ -331,6 +473,30 @@ public sealed class AuditCallFilterTests : IDisposable
             CancellationToken.None);
     }
 
+    private static async ValueTask<CallToolResult> InvokeWithOwner(
+        IAuditAdmissionOwner owner,
+        CallToolRequestParams call,
+        Func<CancellationToken, ValueTask<CallToolResult>> next)
+    {
+        var accessor = new AuditCallContextAccessor();
+        using var provider = new ServiceCollection()
+            .AddSingleton(owner)
+            .AddSingleton(accessor)
+            .BuildServiceProvider();
+        using var scope = provider.CreateScope();
+        Assert.Null(scope.ServiceProvider.GetService<AuditRuntimeGate>());
+
+        return await AuditCallFilter.InvokeAsync(
+            call,
+            new AuditClientContext("test-client", "1.0", "stdio-interface-test"),
+            scope.ServiceProvider,
+            next,
+            DefaultTimeout,
+            MaximumTimeout,
+            () => Now,
+            CancellationToken.None);
+    }
+
     private FilterFixture CreateFixture(
         int slots,
         Func<AuditSinkFaultPoint, int, bool>? faultInjector = null,
@@ -381,7 +547,7 @@ public sealed class AuditCallFilterTests : IDisposable
             .AddSingleton(health)
             .AddSingleton(journal)
             .AddSingleton(evidence)
-            .AddSingleton(runtime)
+            .AddSingleton<IAuditAdmissionOwner>(runtime)
             .AddSingleton(accessor);
         if (includeToolDependencySentinels)
         {
@@ -393,7 +559,15 @@ public sealed class AuditCallFilterTests : IDisposable
         }
         var provider = collection.BuildServiceProvider();
         var scope = provider.CreateScope();
-        return new FilterFixture(health, sink, journal, provider, scope, touches, accessor);
+        return new FilterFixture(
+            health,
+            sink,
+            journal,
+            evidence,
+            provider,
+            scope,
+            touches,
+            accessor);
     }
 
     private static CallToolRequestParams Call(string name, params (string Name, object? Value)[] arguments)
@@ -432,10 +606,97 @@ public sealed class AuditCallFilterTests : IDisposable
         internal int RuntimeResolutions { get; set; }
     }
 
+    private sealed record AdmissionResult(
+        bool Admitted,
+        IAuditBoundaryCall? Call,
+        IDisposable? Lease,
+        string? FailureClass);
+
+    private sealed class StubAdmissionOwner(
+        AuditHealth health,
+        Func<AuditCallMetadata, string?, AdmissionResult> admit) : IAuditAdmissionOwner
+    {
+        public AuditHealth Health { get; } = health;
+
+        public void Touch()
+        {
+        }
+
+        public bool TryBeginCall(
+            AuditCallMetadata metadata,
+            string? exactSubmittedScript,
+            out IAuditBoundaryCall? call,
+            out IDisposable? callLease,
+            out string? failureClass)
+        {
+            var result = admit(metadata, exactSubmittedScript);
+            call = result.Call;
+            callLease = result.Lease;
+            failureClass = result.FailureClass;
+            return result.Admitted;
+        }
+    }
+
+    private sealed class RecordingBoundaryCall : IAuditBoundaryCall
+    {
+        public bool AuthorizationPersistenceFailed => false;
+
+        public bool UserExecutionStarted => false;
+
+        public bool TerminalWritten { get; private set; }
+
+        internal int CompletionCount { get; private set; }
+
+        internal string? CompletionState { get; private set; }
+
+        internal long? CompletionBytes { get; private set; }
+
+        public void CompleteFromFilter(string state, long bytesReturned)
+        {
+            CompletionCount++;
+            CompletionState = state;
+            CompletionBytes = bytesReturned;
+            TerminalWritten = true;
+        }
+    }
+
+    private sealed class ThrowingAfterOwnershipAdmissionOwner(
+        AuditHealth health,
+        IAuditBoundaryCall boundary,
+        IDisposable lease) : IAuditAdmissionOwner
+    {
+        public AuditHealth Health { get; } = health;
+
+        public void Touch()
+        {
+        }
+
+        public bool TryBeginCall(
+            AuditCallMetadata metadata,
+            string? exactSubmittedScript,
+            out IAuditBoundaryCall? call,
+            out IDisposable? callLease,
+            out string? failureClass)
+        {
+            call = boundary;
+            callLease = lease;
+            failureClass = null;
+            throw new InvalidOperationException("admission failed after ownership transfer");
+        }
+    }
+
+    private sealed class RecordingCallLease : IDisposable
+    {
+        internal int DisposeCount { get; private set; }
+
+        public void Dispose() => DisposeCount++;
+    }
+
     private sealed record FilterFixture(
         AuditHealth Health,
         InMemoryAuditJournalSink Sink,
         AuditJournal Journal,
+        ScriptEvidenceStore Evidence,
         ServiceProvider Provider,
         IServiceScope Scope,
         ToolDependencyTouches ToolDependencies,

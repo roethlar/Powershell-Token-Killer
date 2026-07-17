@@ -2062,7 +2062,7 @@ public sealed class AuditPreEffectGuardTests : IDisposable
             .AddSingleton(health)
             .AddSingleton(journal)
             .AddSingleton(evidence)
-            .AddSingleton(runtime)
+            .AddSingleton<IAuditAdmissionOwner>(runtime)
             .AddSingleton(auditContext)
             .BuildServiceProvider();
         return new GuardFixture(
