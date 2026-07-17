@@ -38,10 +38,39 @@ public sealed class GuardianHostSupervisorTests
         var error = DecodeRecovery(result);
         Assert.Equal(PublicRecoveryDetailCode.BackendLostBeforeDispatch, error.DetailCode);
         Assert.True(error.Retryable);
-        Assert.IsType<HostReadyGate>(error.RetryGate);
+        var gate = Assert.IsType<SessionReadyGate>(error.RetryGate);
+        Assert.Equal(TestRig.Alias, gate.Alias);
         Assert.Equal(RecoveryPhase.Containment, error.RecoveryPhase);
         Assert.Equal(0, old.OperationCount);
         Assert.Equal(0, rig.Factory.Resources[1].OperationCount);
+    }
+
+    [Fact]
+    public async Task Host_recovery_refusal_uses_the_selected_session_gate()
+    {
+        await using var rig = new TestRig(
+            new AttemptPlan(HostBehavior.Respond, AutoConfirmContainment: false),
+            new AttemptPlan(HostBehavior.Respond));
+        await rig.StartAsync();
+        var old = rig.Factory.Resources[0];
+
+        old.Crash();
+        await WaitUntilAsync(() =>
+            rig.Supervisor.SnapshotState().Host is
+            {
+                State: PublicHostState.Recovering,
+                RecoveryPhase: RecoveryPhase.Containment,
+            });
+
+        var error = DecodeRecovery(
+            await rig.DispatchJobListAsync().WaitAsync(TestTimeout));
+        Assert.Equal(PublicRecoveryDetailCode.HostRecovering, error.DetailCode);
+        Assert.True(error.Retryable);
+        var gate = Assert.IsType<SessionReadyGate>(error.RetryGate);
+        Assert.Equal(TestRig.Alias, gate.Alias);
+        Assert.Equal(0, old.OperationCount);
+
+        old.ConfirmContainment();
     }
 
     [Fact]

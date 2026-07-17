@@ -256,9 +256,11 @@ internal sealed class GuardianHostSupervisor :
             {
                 if (call is null)
                 {
-                    return ToToolResult(active.PrewriteLossTerminal ??
+                    return ToToolResult(
                         await CurrentHostRefusalAsync(
+                                active,
                                 backendLostBeforeDispatch: true,
+                                target.Alias,
                                 cancellationToken)
                             .ConfigureAwait(false));
                 }
@@ -281,17 +283,26 @@ internal sealed class GuardianHostSupervisor :
         await _authority.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
+            if (!_sessionSource.TryGetJobListTarget(out var target))
+            {
+                return new DispatchAdmission(
+                    null,
+                    null,
+                    CreateSessionRefusal(alias: null));
+            }
+
             if (_stopping || _active is not { Client.State: GuardianHostClientState.Ready } active ||
                 active.Lease.Stage != GuardianHostAttemptStage.Ready)
             {
                 return new DispatchAdmission(
                     null,
                     null,
-                    CreateHostRefusalLocked(backendLostBeforeDispatch: false));
+                    CreateHostRefusalLocked(
+                        backendLostBeforeDispatch: false,
+                        target.Alias));
             }
 
-            if (!_sessionSource.TryGetJobListTarget(out var target) ||
-                !target.ReadyForEffects)
+            if (!target.ReadyForEffects)
             {
                 return new DispatchAdmission(
                     null,
@@ -319,8 +330,10 @@ internal sealed class GuardianHostSupervisor :
                 expectedActive.Client?.State != GuardianHostClientState.Ready ||
                 expectedActive.Lease.Stage != GuardianHostAttemptStage.Ready)
             {
-                return expectedActive.PrewriteLossTerminal ??
-                    CreateHostRefusalLocked(backendLostBeforeDispatch: true);
+                return CreateHostRefusalLocked(
+                    expectedActive,
+                    backendLostBeforeDispatch: true,
+                    expectedTarget.Alias);
             }
 
             if (!_sessionSource.TryGetJobListTarget(out var current) ||
@@ -378,7 +391,10 @@ internal sealed class GuardianHostSupervisor :
                 var hostLost = !ReferenceEquals(_active, call.Attempt) ||
                     call.Attempt.Lease.Stage != GuardianHostAttemptStage.Ready;
                 terminal = hostLost
-                    ? CreateHostRefusalLocked(backendLostBeforeDispatch: true)
+                    ? CreateHostRefusalLocked(
+                        call.Attempt,
+                        backendLostBeforeDispatch: true,
+                        target.Alias)
                     : CreateSessionRefusal(target.Alias);
                 SignalLocalTerminal(call, terminal);
             }
@@ -654,9 +670,7 @@ internal sealed class GuardianHostSupervisor :
 
         active.Ready.TrySetResult(false);
         var host = _lifecycle.Snapshot().Host;
-        active.PrewriteLossTerminal = _stopping
-            ? HostStartFailed()
-            : CreateHostRefusal(host, backendLostBeforeDispatch: true);
+        active.PrewriteLossHost = host;
         foreach (var call in _calls.Values.Where(value =>
                      ReferenceEquals(value.Attempt, active)).ToArray())
         {
@@ -672,7 +686,8 @@ internal sealed class GuardianHostSupervisor :
                             ? HostStartFailed()
                             : CreateHostRefusal(
                                 host,
-                                backendLostBeforeDispatch: true));
+                                backendLostBeforeDispatch: true,
+                                call.Target.Alias));
                     break;
                 case GuardianHostLossDisposition.OutcomeUnknown:
                     SignalClassifiedLossTerminal(call, OutcomeUnknown());
@@ -885,13 +900,18 @@ internal sealed class GuardianHostSupervisor :
     }
 
     private async Task<GuardianHostSupervisorTerminal> CurrentHostRefusalAsync(
+        ActiveAttempt expectedActive,
         bool backendLostBeforeDispatch,
+        CanonicalAlias alias,
         CancellationToken cancellationToken)
     {
         await _authority.WaitAsync(cancellationToken).ConfigureAwait(false);
         try
         {
-            return CreateHostRefusalLocked(backendLostBeforeDispatch);
+            return CreateHostRefusalLocked(
+                expectedActive,
+                backendLostBeforeDispatch,
+                alias);
         }
         finally
         {
@@ -900,14 +920,31 @@ internal sealed class GuardianHostSupervisor :
     }
 
     private GuardianHostSupervisorTerminal CreateHostRefusalLocked(
-        bool backendLostBeforeDispatch) =>
+        bool backendLostBeforeDispatch,
+        CanonicalAlias alias) =>
         CreateHostRefusal(
             _lifecycle.Snapshot().Host,
-            backendLostBeforeDispatch && !_stopping);
+            backendLostBeforeDispatch && !_stopping,
+            alias);
+
+    private GuardianHostSupervisorTerminal CreateHostRefusalLocked(
+        ActiveAttempt expectedActive,
+        bool backendLostBeforeDispatch,
+        CanonicalAlias alias)
+    {
+        if (_stopping)
+            return HostStartFailed();
+
+        return CreateHostRefusal(
+            expectedActive.PrewriteLossHost ?? _lifecycle.Snapshot().Host,
+            backendLostBeforeDispatch,
+            alias);
+    }
 
     private static GuardianHostSupervisorTerminal CreateHostRefusal(
         PublicHostStateSnapshot host,
-        bool backendLostBeforeDispatch)
+        bool backendLostBeforeDispatch,
+        CanonicalAlias alias)
     {
         if (backendLostBeforeDispatch &&
             host.RecoveryPhase is { } lostPhase &&
@@ -920,7 +957,7 @@ internal sealed class GuardianHostSupervisor :
                 lostDelay,
                 lostPhase,
                 host.RecoveryAttempt,
-                new HostReadyGate()));
+                new SessionReadyGate(alias)));
         }
 
         if (host.State is PublicHostState.Recovering or PublicHostState.Backoff or
@@ -937,7 +974,7 @@ internal sealed class GuardianHostSupervisor :
                 retryAfter,
                 phase,
                 host.RecoveryAttempt,
-                new HostReadyGate()));
+                new SessionReadyGate(alias)));
         }
 
         var permanent = host.State == PublicHostState.ContainmentUnconfirmed
@@ -1261,7 +1298,7 @@ internal sealed class GuardianHostSupervisor :
         internal GuardianHostAttemptLease Lease { get; } = lease;
         internal IGuardianHostConnectedAttemptResources Resources { get; } = resources;
         internal GuardianHostClient? Client { get; set; }
-        internal GuardianHostSupervisorTerminal? PrewriteLossTerminal { get; set; }
+        internal PublicHostStateSnapshot? PrewriteLossHost { get; set; }
         internal TaskCompletionSource<bool> Ready { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
         internal int ContainmentStarted;
