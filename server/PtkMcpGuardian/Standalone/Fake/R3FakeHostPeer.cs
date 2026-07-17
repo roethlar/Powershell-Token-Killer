@@ -261,8 +261,13 @@ internal sealed class R3FakeHostPeer
             binding.TemplateName is not null ||
             binding.TemplateDigest is not null ||
             binding.BootstrapDigest is not null ||
+            binding.AllowColdBackground != _profile.AllowColdBackground ||
+            binding.DesiredState != _profile.DesiredState ||
+            binding.TransitionVersion != _profile.JobListTarget.TransitionVersion ||
+            binding.BindingDigest != _profile.BindingDigest ||
             watermark is null ||
-            watermark.Alias.Value != "default")
+            watermark.Alias != _profile.JobListTarget.Alias ||
+            watermark.Generation != _profile.WorkerGenerationHighWatermark)
         {
             throw new InvalidDataException("Recovery manifest did not match the attempt identity and pins.");
         }

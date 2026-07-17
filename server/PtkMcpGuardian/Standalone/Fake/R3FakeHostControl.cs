@@ -15,19 +15,43 @@ internal sealed record R3FakeHostProfile
             new WorkerGeneration(1)),
         readyForEffects: true);
 
-    internal R3FakeHostProfile(GuardianHostJobListTarget jobListTarget)
+    internal R3FakeHostProfile(
+        GuardianHostJobListTarget jobListTarget,
+        Sha256Digest bindingDigest,
+        WorkerGenerationHighWatermark workerGenerationHighWatermark,
+        bool allowColdBackground = false,
+        DesiredSessionState desiredState = DesiredSessionState.Ready)
     {
         JobListTarget = jobListTarget ??
             throw new ArgumentNullException(nameof(jobListTarget));
+        BindingDigest = bindingDigest ??
+            throw new ArgumentNullException(nameof(bindingDigest));
+        WorkerGenerationHighWatermark = workerGenerationHighWatermark ??
+            throw new ArgumentNullException(nameof(workerGenerationHighWatermark));
+        if (!Enum.IsDefined(desiredState))
+            throw new ArgumentOutOfRangeException(nameof(desiredState));
         if (!jobListTarget.ReadyForEffects)
             throw new ArgumentException(
                 "The fake host profile must name a ready job-list target.",
                 nameof(jobListTarget));
+        AllowColdBackground = allowColdBackground;
+        DesiredState = desiredState;
     }
 
     internal GuardianHostJobListTarget JobListTarget { get; }
 
-    internal static R3FakeHostProfile StrictDefault { get; } = new(DefaultTarget);
+    internal Sha256Digest BindingDigest { get; }
+
+    internal WorkerGenerationHighWatermark WorkerGenerationHighWatermark { get; }
+
+    internal bool AllowColdBackground { get; }
+
+    internal DesiredSessionState DesiredState { get; }
+
+    internal static R3FakeHostProfile StrictDefault { get; } = new(
+        DefaultTarget,
+        new Sha256Digest(new string('7', 64)),
+        new WorkerGenerationHighWatermark(1));
 }
 
 internal sealed class R3FakeHostBarrier

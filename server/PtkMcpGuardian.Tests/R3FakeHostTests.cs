@@ -302,6 +302,38 @@ public sealed class R3FakeHostTests
         resources.Dispose();
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    [InlineData(4)]
+    public async Task Fake_peer_rejects_every_mutable_default_manifest_profile_field(
+        int mutation)
+    {
+        var (_, resources) = CreateAttempt();
+        Assert.Equal(GuardianHostLaunchOutcome.Started, resources.Launch());
+        await using var client = CreateClient(resources);
+        var manifest = CreateManifest(
+            allowColdBackground: mutation == 0,
+            desiredState: mutation == 1
+                ? DesiredSessionState.Cold
+                : DesiredSessionState.Ready,
+            transition: mutation == 2
+                ? new SessionTransitionVersion(Transition.Value + 1)
+                : Transition,
+            bindingDigest: mutation == 3 ? Digest('8') : BindingDigest,
+            watermark: mutation == 4
+                ? new WorkerGenerationHighWatermark(Worker.Generation.Value + 1)
+                : new WorkerGenerationHighWatermark(Worker.Generation.Value));
+
+        await Assert.ThrowsAnyAsync<IOException>(() =>
+            client.InitializeAsync(manifest).WaitAsync(TestTimeout));
+        await resources.HostExited.WaitAsync(TestTimeout);
+        Assert.IsType<InvalidDataException>(resources.PeerFailure);
+        resources.Dispose();
+    }
+
     [Fact]
     public async Task Containment_is_idempotent_and_proof_waits_for_exit_zeroing_and_barrier()
     {
@@ -489,7 +521,13 @@ public sealed class R3FakeHostTests
         CatalogDigest,
         PackageManifestDigest);
 
-    private static RecoveryManifest CreateManifest(GuardianBootId? guardian = null) => new(
+    private static RecoveryManifest CreateManifest(
+        GuardianBootId? guardian = null,
+        bool allowColdBackground = false,
+        DesiredSessionState desiredState = DesiredSessionState.Ready,
+        SessionTransitionVersion? transition = null,
+        Sha256Digest? bindingDigest = null,
+        WorkerGenerationHighWatermark? watermark = null) => new(
         guardian ?? Guardian,
         Generation,
         CatalogDigest,
@@ -502,12 +540,14 @@ public sealed class R3FakeHostTests
                 null,
                 null,
                 null,
-                false,
-                DesiredSessionState.Ready,
-                Transition,
-                BindingDigest),
+                allowColdBackground,
+                desiredState,
+                transition ?? Transition,
+                bindingDigest ?? BindingDigest),
         ],
-        [new WorkerGenerationHighWatermarkEntry(Alias, new WorkerGenerationHighWatermark(0))],
+        [new WorkerGenerationHighWatermarkEntry(
+            Alias,
+            watermark ?? new WorkerGenerationHighWatermark(Worker.Generation.Value))],
         Generation);
 
     private static Sha256Digest Digest(char value) => new(new string(value, 64));
