@@ -3,8 +3,8 @@
 **Status:** PLANNING BOUNDARY OWNER-APPROVED 2026-07-15; R0 COMPLETE AND
 LANDED AT `c1d809f`; R1 IMPLEMENTATION AND EXACT-HEAD PLATFORM VALIDATION
 COMPLETE AT `60eb20f` ON 2026-07-17; REQUIRED FIXED-SHA FABLE OPENREVIEW
-PENDING OWNER-DIRECTED CAPACITY HOLD; R2-R7 NOT AUTHORIZED. The approved
-boundary is:
+PENDING OWNER-DIRECTED CAPACITY HOLD; R2-R7 ALL OWNER-AUTHORIZED 2026-07-17
+AND IMPLEMENTATION ACTIVE. The approved boundary is:
 add two recovery
 layers so the MCP host automatically replaces failed session workers and a
 minimal public-pipe guardian automatically restarts the host; neither layer
@@ -106,6 +106,14 @@ Opus model, but the owner directed the in-flight review to stop when Fable
 capacity was exhausted. It returned no verdict, its clean disposable tree was
 removed, and it is not accepted review evidence. Ordinary code reviews may use
 Opus or Grok; openreviews remain held for Fable until capacity returns.
+
+The owner explicitly authorized every remaining resilience slice, R2 through
+R7, on 2026-07-17 and directed implementation to continue without stopping for
+the held reviews. Implement the slices in order, bank and commit each coherent
+delta, and preserve every acceptance boundary in this plan. This authorization
+includes the R7 development-registration cutover and its rollback validation;
+it does not authorize a push, main-branch merge, history rewrite, or public
+release publication.
 
 `.agents/decisions.md` remains under the owner's existing hold and is not
 amended by this plan. This plan is the canonical source for MCP transport and

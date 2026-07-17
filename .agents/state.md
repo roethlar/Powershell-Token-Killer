@@ -117,8 +117,9 @@ short and update it when important repo facts change.
   `4f99fd5`; R1 implementation and exact-head macOS, Windows, and Linux
   behavior validation are complete at `60eb20f` on
   `feature/mcp-resilience-r1`; its required fixed-SHA Fable openreview is held
-  at the owner's 2026-07-17 direction until Fable capacity returns; R2-R7 are
-  not authorized.** The
+  at the owner's 2026-07-17 direction until Fable capacity returns; the owner
+  explicitly authorized every remaining slice R2-R7 on 2026-07-17 and directed
+  implementation to continue without stopping for reviews.** The
   target keeps one public stdio guardian alive while it
   restarts an exact-version private host, and makes a healthy host replace an
   unexpectedly lost session worker. It never replays ambiguous work, changes
@@ -278,9 +279,11 @@ short and update it when important repo facts change.
 2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures.
-3. Hold resilience R1 at exact code head `60eb20f` and rerun its fixed-SHA
-   Fable openreview over `1f314a2..60eb20f` when capacity returns. Do not begin
-   R2 without separate explicit authorization.
+3. Implement resilience R2-R7 sequentially from the complete R1 code head
+   `60eb20f`, committing each coherent slice. Ordinary reviews may use Opus or
+   Grok; hold Fable openreviews until capacity returns, then rerun the R1 fixed
+   range `1f314a2..60eb20f` and review the later fixed ranges. Do not push,
+   merge, rewrite history, or publish a release without separate authorization.
 4. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
