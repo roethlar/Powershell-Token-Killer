@@ -170,6 +170,35 @@ internal sealed class RecoveryCircuitMachine
     }
 
     /// <summary>
+    /// Starts an intentional replacement of the active ready generation
+    /// without counting that healthy generation as failed. Existing failure
+    /// history and attempt ordinal survive until the stability boundary; a
+    /// generation already stable at this exact transition starts a fresh
+    /// attempt-one cycle. Stale and racing callers are inert.
+    /// </summary>
+    internal RecoveryAttemptLease? BeginIntentionalReplacement(
+        RecoveryAttemptLease lease)
+    {
+        ArgumentNullException.ThrowIfNull(lease);
+        lock (_sync)
+        {
+            if (_state != RecoveryCircuitState.Ready ||
+                !OwnsActiveLeaseLocked(lease))
+            {
+                return null;
+            }
+
+            if (!_stabilityReset && DelayElapsedLocked())
+                ResetStabilityHistoryLocked();
+
+            if (_stabilityReset)
+                _attemptOrdinal = 1;
+
+            return StartAttemptLocked(isHalfOpen: false);
+        }
+    }
+
+    /// <summary>
     /// Records failure or pre-stability loss of exactly the leased generation.
     /// A stable ready generation begins a new cycle and returns its immediate
     /// attempt-one lease. Stale and duplicate reports are inert.

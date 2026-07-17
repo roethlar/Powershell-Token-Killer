@@ -195,6 +195,101 @@ public sealed class RecoveryCircuitMachineTests
     }
 
     [Fact]
+    public void Intentional_replacement_preserves_unstable_failure_history_without_counting_failure()
+    {
+        var clock = new ManualTimeProvider();
+        var machine = new RecoveryCircuitMachine(clock);
+        var first = Assert.IsType<RecoveryAttemptLease>(machine.BeginRecovery());
+        Assert.True(machine.ReportGenerationFailure(first).Accepted);
+        clock.Advance(TimeSpan.FromMilliseconds(250));
+        var second = Assert.IsType<RecoveryAttemptLease>(machine.TryAcquireDueAttempt());
+        Assert.True(machine.MarkReady(second));
+
+        var replacement = Assert.IsType<RecoveryAttemptLease>(
+            machine.BeginIntentionalReplacement(second));
+
+        Assert.NotSame(second, replacement);
+        Assert.Equal(2, replacement.AttemptOrdinal);
+        Assert.False(replacement.IsHalfOpen);
+        AssertSnapshot(
+            machine.Snapshot(),
+            RecoveryCircuitState.Attempting,
+            RecoveryPhase.Attempting,
+            attempt: 2,
+            failures: 1,
+            retryAfter: 250,
+            ready: false);
+        Assert.Null(machine.BeginIntentionalReplacement(second));
+    }
+
+    [Fact]
+    public void Intentional_replacement_at_stability_boundary_starts_fresh_attempt_one()
+    {
+        var clock = new ManualTimeProvider();
+        var machine = new RecoveryCircuitMachine(clock);
+        var ready = Assert.IsType<RecoveryAttemptLease>(machine.BeginRecovery());
+        Assert.True(machine.MarkReady(ready));
+        clock.Advance(TimeSpan.FromSeconds(60));
+
+        var replacement = Assert.IsType<RecoveryAttemptLease>(
+            machine.BeginIntentionalReplacement(ready));
+
+        Assert.Equal(1, replacement.AttemptOrdinal);
+        AssertSnapshot(
+            machine.Snapshot(),
+            RecoveryCircuitState.Attempting,
+            RecoveryPhase.Attempting,
+            attempt: 1,
+            failures: 0,
+            retryAfter: 250,
+            ready: false);
+    }
+
+    [Fact]
+    public void Concurrent_intentional_replacement_has_exactly_one_ready_lease_winner()
+    {
+        var machine = new RecoveryCircuitMachine(new ManualTimeProvider());
+        var ready = Assert.IsType<RecoveryAttemptLease>(machine.BeginRecovery());
+        Assert.True(machine.MarkReady(ready));
+        var results = new RecoveryAttemptLease?[512];
+
+        Parallel.For(0, results.Length, index =>
+            results[index] = machine.BeginIntentionalReplacement(ready));
+
+        var replacement = Assert.Single(results.OfType<RecoveryAttemptLease>());
+        Assert.Equal(1, replacement.AttemptOrdinal);
+        Assert.Equal(RecoveryCircuitState.Attempting, machine.Snapshot().State);
+        machine.Stop();
+        Assert.Null(machine.BeginIntentionalReplacement(replacement));
+    }
+
+    [Fact]
+    public void Intentional_replacement_and_failure_race_have_one_transition_owner()
+    {
+        for (var iteration = 0; iteration < 256; iteration++)
+        {
+            var machine = new RecoveryCircuitMachine(new ManualTimeProvider());
+            var ready = Assert.IsType<RecoveryAttemptLease>(machine.BeginRecovery());
+            Assert.True(machine.MarkReady(ready));
+            RecoveryAttemptLease? replacement = null;
+            RecoveryFailureTransition failure = default;
+
+            Parallel.Invoke(
+                () => replacement = machine.BeginIntentionalReplacement(ready),
+                () => failure = machine.ReportGenerationFailure(ready));
+
+            Assert.NotEqual(replacement is not null, failure.Accepted);
+            Assert.Contains(
+                machine.Snapshot().State,
+                new[]
+                {
+                    RecoveryCircuitState.Attempting,
+                    RecoveryCircuitState.Backoff,
+                });
+        }
+    }
+
+    [Fact]
     public void Loss_at_stability_boundary_is_fresh_without_a_prior_completion_poll()
     {
         var clock = new ManualTimeProvider();
