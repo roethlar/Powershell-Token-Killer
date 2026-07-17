@@ -124,7 +124,16 @@ short and update it when important repo facts change.
   guardian, crashable fake-host recovery, race/soak closure, real OS-process
   apphost coverage, and direct macOS/Windows/Linux behavior validation are
   complete at code/test head `1eb69d6` with the test-only scheduler closure at
-  `d238a80`; R4 private real-host and control-plane transfer is active.** The
+  `d238a80`; R4 private real-host and control-plane transfer is active at
+  committed tip `9d897e5` (`Own private host bootstrap channels`) in this
+  worktree (`.claude/worktrees/mcp-resilience-r1`) with uncommitted R4 WIP:
+  modified `OutputStore.cs`, `PrivateHostServer.cs`, `JobManager.cs`,
+  `RunspaceHost.cs`, `SessionRuntime.cs`; new `PrivateHostOutboundChannel`
+  (+tests), `Package/`, `MatchedPackageLoaderTests`, and
+  `PtkOutboundChannelFocused/`. Do not discard that dirty tree. Codex chat
+  claimed a package audit (no edits) and an output-capture type-mismatch
+  block — re-verify before treating either as fact. Future handoffs must only
+  edit `## Now` / `## Next` surgically; never replace this file wholesale.** The
   target keeps one public stdio guardian alive while it
   restarts an exact-version private host, and makes a healthy host replace an
   unexpectedly lost session worker. It never replays ambiguous work, changes
@@ -284,11 +293,12 @@ short and update it when important repo facts change.
 2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures.
-3. Implement resilience R3-R7 sequentially from the complete R2 code head
-   `eaef85f`, committing each coherent slice. Ordinary reviews may use Opus or
-   Grok; hold Fable openreviews until capacity returns, then rerun the R1 fixed
-   range `1f314a2..60eb20f` and review the later fixed ranges. Do not push,
-   merge, rewrite history, or publish a release without separate authorization.
+3. Continue resilience R4 from tip `9d897e5` plus the existing uncommitted WIP
+   in this worktree; commit coherent R4 slices, then R5-R7. Ordinary reviews
+   may use Opus or Grok; hold Fable openreviews until capacity returns, then
+   rerun the R1 fixed range `1f314a2..60eb20f` and later fixed ranges. Do not
+   push, merge, rewrite history, or publish a release without separate
+   authorization. Do not replace `.agents/state.md` wholesale on handoff.
 4. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
