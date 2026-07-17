@@ -612,6 +612,113 @@ public sealed class GuardianHostLifecycleControllerTests
     }
 
     [Fact]
+    public void Startup_deadline_and_ready_transition_have_one_exact_gate_winner()
+    {
+        var before = new TestRig();
+        var beforeAttempt = Assert.IsType<GuardianHostAttemptLease>(
+            before.Controller.StartInitial().Attempt);
+        before.Clock.Advance(TimeSpan.FromSeconds(37) - TimeSpan.FromTicks(1));
+        Assert.True(before.Controller.MarkReady(beforeAttempt));
+        before.Clock.Advance(TimeSpan.FromTicks(1));
+        Assert.Equal(
+            GuardianHostStartupDeadlineDisposition.Duplicate,
+            before.Controller.ObserveStartupDeadline(beforeAttempt));
+        Assert.Equal(PublicHostState.Ready, before.Controller.Snapshot().Host.State);
+        Assert.Equal(0, before.Factory.Resources[0].BeginContainmentCount);
+
+        var exactReady = new TestRig();
+        var exactReadyAttempt = Assert.IsType<GuardianHostAttemptLease>(
+            exactReady.Controller.StartInitial().Attempt);
+        exactReady.Clock.Advance(TimeSpan.FromSeconds(37));
+        Assert.False(exactReady.Controller.MarkReady(exactReadyAttempt));
+        Assert.Equal(GuardianHostAttemptStage.Containing, exactReadyAttempt.Stage);
+        Assert.Equal(1, exactReady.Factory.Resources[0].BeginContainmentCount);
+        Assert.Equal(
+            GuardianHostStartupDeadlineDisposition.Stopped,
+            exactReady.Controller.ObserveStartupDeadline(exactReadyAttempt));
+
+        var exactTimer = new TestRig();
+        var exactTimerAttempt = Assert.IsType<GuardianHostAttemptLease>(
+            exactTimer.Controller.StartInitial().Attempt);
+        Assert.Equal(
+            GuardianHostStartupDeadlineDisposition.Pending,
+            exactTimer.Controller.ObserveStartupDeadline(exactTimerAttempt));
+        exactTimer.Clock.Advance(TimeSpan.FromSeconds(37));
+        Assert.Equal(
+            GuardianHostStartupDeadlineDisposition.BeganContainment,
+            exactTimer.Controller.ObserveStartupDeadline(exactTimerAttempt));
+        Assert.False(exactTimer.Controller.MarkReady(exactTimerAttempt));
+        Assert.Equal(1, exactTimer.Factory.Resources[0].BeginContainmentCount);
+
+        var afterBootstrap = new TestRig();
+        var bootstrapAttempt = Assert.IsType<GuardianHostAttemptLease>(
+            afterBootstrap.Controller.StartInitial().Attempt);
+        Assert.True(afterBootstrap.Controller.MarkBootstrapping(bootstrapAttempt));
+        afterBootstrap.Clock.Advance(TimeSpan.FromSeconds(38));
+        Assert.False(afterBootstrap.Controller.MarkReady(bootstrapAttempt));
+        Assert.Equal(GuardianHostAttemptStage.Containing, bootstrapAttempt.Stage);
+        Assert.Equal(1, afterBootstrap.Factory.Resources[0].BeginContainmentCount);
+    }
+
+    [Fact]
+    public void Startup_deadline_is_enforced_before_prepare_and_after_slow_launch()
+    {
+        var beforePrepare = new TestRig();
+        beforePrepare.Deadlines.Offset = TimeSpan.Zero;
+
+        var refused = beforePrepare.Controller.StartInitial();
+
+        Assert.Equal(GuardianHostStartDisposition.ProvedNoChild, refused.Disposition);
+        Assert.Null(refused.Attempt);
+        Assert.Empty(beforePrepare.Factory.Resources);
+        Assert.Equal(PublicHostState.Stopped, beforePrepare.Controller.Snapshot().Host.State);
+
+        var slowLaunch = new TestRig();
+        slowLaunch.Factory.OnLaunch = _ =>
+            slowLaunch.Clock.Advance(TimeSpan.FromSeconds(37));
+
+        var contained = slowLaunch.Controller.StartInitial();
+
+        var attempt = Assert.IsType<GuardianHostAttemptLease>(contained.Attempt);
+        Assert.Equal(GuardianHostStartDisposition.ContainmentStarted, contained.Disposition);
+        Assert.Equal(GuardianHostAttemptStage.Containing, attempt.Stage);
+        Assert.Equal(1, slowLaunch.Factory.Resources[0].LaunchCount);
+        Assert.Equal(1, slowLaunch.Factory.Resources[0].BeginContainmentCount);
+        Assert.False(slowLaunch.Controller.MarkReady(attempt));
+    }
+
+    [Fact]
+    public void Racing_ready_and_expired_startup_timer_never_publish_ready()
+    {
+        for (var iteration = 0; iteration < 256; iteration++)
+        {
+            var rig = new TestRig();
+            var attempt = Assert.IsType<GuardianHostAttemptLease>(
+                rig.Controller.StartInitial().Attempt);
+            rig.Clock.Advance(TimeSpan.FromSeconds(37));
+            var ready = false;
+            GuardianHostStartupDeadlineDisposition timer = default;
+
+            Parallel.Invoke(
+                () => ready = rig.Controller.MarkReady(attempt),
+                () => timer = rig.Controller.ObserveStartupDeadline(attempt));
+
+            Assert.False(ready);
+            Assert.Contains(
+                timer,
+                new[]
+                {
+                    GuardianHostStartupDeadlineDisposition.BeganContainment,
+                    GuardianHostStartupDeadlineDisposition.Duplicate,
+                    GuardianHostStartupDeadlineDisposition.Stopped,
+                });
+            Assert.Equal(GuardianHostAttemptStage.Containing, attempt.Stage);
+            Assert.Equal(PublicHostState.Recovering, rig.Controller.Snapshot().Host.State);
+            Assert.Equal(1, rig.Factory.Resources[0].BeginContainmentCount);
+        }
+    }
+
+    [Fact]
     public async Task First_write_and_loss_are_linearized_at_the_possibly_writing_callback()
     {
         var writeFirst = new TestRig();
@@ -856,11 +963,12 @@ public sealed class GuardianHostLifecycleControllerTests
         }
 
         internal List<GuardianHostStartupDeadline> Issued { get; } = [];
+        internal TimeSpan Offset { get; set; } = TimeSpan.FromSeconds(37);
 
         public GuardianHostStartupDeadline Next()
         {
             var deadline = new GuardianHostStartupDeadline(
-                checked(_clock.GetTimestamp() + TimeSpan.FromSeconds(37).Ticks));
+                checked(_clock.GetTimestamp() + Offset.Ticks));
             Issued.Add(deadline);
             return deadline;
         }

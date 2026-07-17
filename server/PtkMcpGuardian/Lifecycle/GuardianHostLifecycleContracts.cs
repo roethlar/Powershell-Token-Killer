@@ -66,6 +66,15 @@ internal enum GuardianHostContainmentDisposition
     StaleAttempt,
 }
 
+internal enum GuardianHostStartupDeadlineDisposition
+{
+    Pending,
+    BeganContainment,
+    Duplicate,
+    StaleAttempt,
+    Stopped,
+}
+
 internal enum GuardianHostWriteDisposition
 {
     Began,

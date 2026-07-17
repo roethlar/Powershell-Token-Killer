@@ -108,6 +108,14 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
                 return false;
             }
 
+            if (StartupDeadlineElapsedLocked(attempt))
+            {
+                BeginContainmentLocked(
+                    attempt,
+                    GuardianHostLossReason.InitializationFailure);
+                return false;
+            }
+
             attempt.Stage = GuardianHostAttemptStage.Bootstrapping;
             if (attempt.IsInitialAttempt)
             {
@@ -139,6 +147,14 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
                     GuardianHostAttemptStage.Bootstrapping) ||
                 _terminalShutdown)
             {
+                return false;
+            }
+
+            if (StartupDeadlineElapsedLocked(attempt))
+            {
+                BeginContainmentLocked(
+                    attempt,
+                    GuardianHostLossReason.InitializationFailure);
                 return false;
             }
 
@@ -189,6 +205,47 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
 
             firstPossiblyWriting(attempt.Identity);
             return GuardianHostWriteDisposition.Began;
+        }
+    }
+
+    /// <summary>
+    /// Explicit startup-timer edge. A ready transition that won before its
+    /// absolute deadline makes every later timer callback inert; at or after
+    /// the deadline, containment wins under the same lifecycle gate.
+    /// </summary>
+    internal GuardianHostStartupDeadlineDisposition ObserveStartupDeadline(
+        GuardianHostAttemptLease attempt)
+    {
+        ArgumentNullException.ThrowIfNull(attempt);
+        lock (_gate)
+        {
+            if (!ReferenceEquals(_current, attempt))
+                return GuardianHostStartupDeadlineDisposition.StaleAttempt;
+            if (_terminalShutdown || _permanentStopReason is not null ||
+                _state == PublicHostState.Stopped)
+            {
+                return GuardianHostStartupDeadlineDisposition.Stopped;
+            }
+            if (attempt.Stage == GuardianHostAttemptStage.Ready ||
+                attempt.Stage is GuardianHostAttemptStage.Containing or
+                    GuardianHostAttemptStage.ContainmentUnconfirmed or
+                    GuardianHostAttemptStage.DeathConfirmed)
+            {
+                return GuardianHostStartupDeadlineDisposition.Duplicate;
+            }
+            if (attempt.Stage is not (
+                    GuardianHostAttemptStage.Launching or
+                    GuardianHostAttemptStage.Bootstrapping))
+            {
+                return GuardianHostStartupDeadlineDisposition.StaleAttempt;
+            }
+            if (!StartupDeadlineElapsedLocked(attempt))
+                return GuardianHostStartupDeadlineDisposition.Pending;
+
+            BeginContainmentLocked(
+                attempt,
+                GuardianHostLossReason.InitializationFailure);
+            return GuardianHostStartupDeadlineDisposition.BeganContainment;
         }
     }
 
@@ -424,6 +481,13 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
                 hostBootId,
                 generation);
             startupDeadline = _startupDeadlineSource.Next();
+            if (StartupDeadlineElapsedLocked(startupDeadline))
+            {
+                _lastFailureCode = PublicRecoveryDetailCode.HostStartFailed;
+                return isInitialAttempt
+                    ? StopInitialStartLocked(GuardianHostStartDisposition.ProvedNoChild)
+                    : ContinueAfterFailedGenerationLocked(recoveryLease);
+            }
             resources = _attemptFactory.Prepare(identity, startupDeadline) ??
                 throw new InvalidOperationException("The host attempt factory returned null.");
         }
@@ -453,6 +517,17 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
                 ? RecoveryPhase.HalfOpen
                 : RecoveryPhase.Attempting;
 
+        if (StartupDeadlineElapsedLocked(attempt))
+        {
+            _lastFailureCode = PublicRecoveryDetailCode.HostStartFailed;
+            BeginContainmentLocked(
+                attempt,
+                GuardianHostLossReason.InitializationFailure);
+            return new(
+                GuardianHostStartDisposition.ContainmentStarted,
+                attempt);
+        }
+
         GuardianHostLaunchOutcome launchOutcome;
         try
         {
@@ -474,6 +549,18 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
         if (attempt.Stage is GuardianHostAttemptStage.Containing or
             GuardianHostAttemptStage.ContainmentUnconfirmed)
         {
+            return new(
+                GuardianHostStartDisposition.ContainmentStarted,
+                attempt);
+        }
+
+        if (launchOutcome == GuardianHostLaunchOutcome.Started &&
+            StartupDeadlineElapsedLocked(attempt))
+        {
+            _lastFailureCode = PublicRecoveryDetailCode.HostStartFailed;
+            BeginContainmentLocked(
+                attempt,
+                GuardianHostLossReason.InitializationFailure);
             return new(
                 GuardianHostStartDisposition.ContainmentStarted,
                 attempt);
@@ -711,6 +798,12 @@ internal sealed class GuardianHostLifecycleController : IOrderedOwnedLifetime
             duration.TotalSeconds * _timeProvider.TimestampFrequency));
         return checked(start + timestampTicks);
     }
+
+    private bool StartupDeadlineElapsedLocked(GuardianHostAttemptLease attempt) =>
+        StartupDeadlineElapsedLocked(attempt.StartupDeadline);
+
+    private bool StartupDeadlineElapsedLocked(GuardianHostStartupDeadline deadline) =>
+        _timeProvider.GetTimestamp() >= deadline.AbsoluteTimestamp;
 
     private static void ReleaseAttemptLocked(GuardianHostAttemptLease attempt)
     {
