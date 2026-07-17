@@ -665,6 +665,7 @@ internal sealed class SessionRecoveryStateMachine : IDisposable
             }
 
             transition.Dispatched = true;
+            _transitionVersion = transition.ExpectedTransitionVersion;
             _state = transition.Kind switch
             {
                 SessionRecoveryTransitionKind.Open => PublicSessionState.Starting,

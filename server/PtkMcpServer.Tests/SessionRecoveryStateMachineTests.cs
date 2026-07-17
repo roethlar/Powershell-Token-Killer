@@ -115,7 +115,7 @@ public sealed class SessionRecoveryStateMachineTests
             close,
             PublicSessionState.Cold,
             null,
-            new SessionTransitionVersion(2),
+            close.ExpectedTransitionVersion,
             BootstrapState.Pending,
             oldWorkerDeathConfirmed: true));
 
@@ -220,6 +220,48 @@ public sealed class SessionRecoveryStateMachineTests
             PublicRecoveryDetailCode.SessionRecoveryUnknown,
             snapshot.LastFailureCode);
         Assert.False(snapshot.ReadyForEffects);
+    }
+
+    [Fact]
+    public void Dispatched_lifecycle_publishes_its_epoch_and_repair_advances_past_it()
+    {
+        var harness = Harness.CreateTemplate();
+        harness.PrimeReady();
+        var ambiguous = Assert.IsType<SessionRecoveryTransitionLease>(
+            harness.Machine.BeginLifecycleTransition(
+                SessionRecoveryTransitionKind.Reset));
+        var target = WorkerIdentity(2, 1890);
+        Assert.True(harness.Machine.AttachLifecycleWorkerIdentity(ambiguous, target));
+        Assert.True(harness.Machine.MarkLifecycleDispatched(ambiguous));
+
+        Assert.Equal(
+            ambiguous.ExpectedTransitionVersion,
+            harness.Machine.Snapshot().Session.TransitionVersion);
+
+        var sourceLoss = harness.Machine.BeginUnexpectedLoss(
+            harness.OldIdentity,
+            harness.Machine.FrozenBindingProof);
+        Assert.Equal(SessionRecoveryLossDisposition.RecoveryUnknown, sourceLoss.Disposition);
+        Assert.Equal(
+            SessionRecoveryDeathDisposition.NoRecovery,
+            harness.Machine.ConfirmOldTreeDeath(
+                Assert.IsType<SessionRecoveryLossLease>(sourceLoss.Loss)).Disposition);
+        var targetLoss = harness.Machine.BeginUnexpectedLoss(
+            target,
+            harness.Machine.FrozenBindingProof);
+        Assert.Equal(SessionRecoveryLossDisposition.RecoveryUnknown, targetLoss.Disposition);
+        Assert.Equal(
+            SessionRecoveryDeathDisposition.NoRecovery,
+            harness.Machine.ConfirmOldTreeDeath(
+                Assert.IsType<SessionRecoveryLossLease>(targetLoss.Loss)).Disposition);
+
+        var repair = Assert.IsType<SessionRecoveryTransitionLease>(
+            harness.Machine.BeginLifecycleTransition(
+                SessionRecoveryTransitionKind.Restart,
+                harness.Machine.FrozenBindingProof));
+        Assert.True(
+            repair.ExpectedTransitionVersion.Value >
+            ambiguous.ExpectedTransitionVersion.Value);
     }
 
     [Fact]
@@ -471,7 +513,7 @@ public sealed class SessionRecoveryStateMachineTests
             close,
             PublicSessionState.Cold,
             null,
-            new SessionTransitionVersion(2),
+            close.ExpectedTransitionVersion,
             BootstrapState.Pending,
             oldWorkerDeathConfirmed: true));
         Assert.Equal(1, harness.Factory.DisposeCount);
@@ -1657,7 +1699,7 @@ public sealed class SessionRecoveryStateMachineTests
             repair,
             PublicSessionState.Ready,
             replacement,
-            new SessionTransitionVersion(2),
+            repair.ExpectedTransitionVersion,
             BootstrapState.Restored,
             oldWorkerDeathConfirmed: true));
         Assert.Equal(PublicSessionState.Ready,
