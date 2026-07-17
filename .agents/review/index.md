@@ -2615,3 +2615,28 @@ ready for its local owner-gated merge. This acceptance does not authorize
 push, history rewriting, or R1-R7 implementation. Historical failed-attempt
 detail and resolution are preserved in
 `.agents/review/mcp-resilience-r0-review.contested.md`.
+
+---
+
+**MCP RESILIENCE R1 IMPLEMENTATION — PLATFORM COMPLETE; OPENREVIEW HELD.**
+R1 code is fixed at `60eb20f37a75259c0bf246d594632bde128c109b` over exact
+base `1f314a29807e7504aa04f7f14899c6bb6483248a`. Exact-head macOS, Windows,
+and Linux behavior evidence is complete in `.agents/machines.md`; independent
+final per-slice in-repo reviews reported no remaining material finding after
+their actionable guard issues were closed.
+
+The `openreview` playbook's bounded headless smoke succeeded with Claude Code
+2.1.210, effort `max`, schema-constrained output, and `modelUsage` containing
+only `claude-fable-5` and no Opus model. A disposable detached worktree was
+then created at the exact head and the unprimed question was dispatched over
+the pinned range. Before the reviewer returned an envelope, the owner reported
+that Fable capacity was exhausted and directed the openreview to stop and all
+openreviews to wait until Fable capacity returns. The process was killed, so it
+supplied no verdict and is not accepted review evidence. The disposable tree
+was still clean at the exact head, was removed, and the coder tree remained
+clean.
+
+The owner permits Opus or Grok for ordinary code reviews during the capacity
+window, but they are not substituted for this held openreview. Re-dispatch the
+same fixed range with Fable when capacity returns. R2-R7 remain unauthorized;
+this record authorizes no merge, push, or history rewriting.

@@ -1,8 +1,10 @@
 # Plan: resilient MCP guardian and automatic backend recovery
 
 **Status:** PLANNING BOUNDARY OWNER-APPROVED 2026-07-15; R0 COMPLETE AND
-LANDED AT `c1d809f`; R1 IMPLEMENTATION OWNER-AUTHORIZED 2026-07-16; R2-R7 NOT
-AUTHORIZED. The approved boundary is:
+LANDED AT `c1d809f`; R1 IMPLEMENTATION AND EXACT-HEAD PLATFORM VALIDATION
+COMPLETE AT `60eb20f` ON 2026-07-17; REQUIRED FIXED-SHA FABLE OPENREVIEW
+PENDING OWNER-DIRECTED CAPACITY HOLD; R2-R7 NOT AUTHORIZED. The approved
+boundary is:
 add two recovery
 layers so the MCP host automatically replaces failed session workers and a
 minimal public-pipe guardian automatically restarts the host; neither layer
@@ -93,6 +95,17 @@ That authorization is limited to the behavior-preserving shared-contract and
 guardian-safe ownership extraction plus its dependency/source guards described
 under R1. It does not authorize R2 lifecycle cores, runtime wiring, public
 registration changes, or any later resilience slice.
+
+R1 code and exact-head macOS, Windows, and Linux behavior validation completed
+at `60eb20f37a75259c0bf246d594632bde128c109b` on 2026-07-17. Canonical
+platform evidence is in `.agents/machines.md`. The required openreview was
+dispatched over exact range
+`1f314a29807e7504aa04f7f14899c6bb6483248a..60eb20f37a75259c0bf246d594632bde128c109b`;
+its bounded smoke envelope reported `claude-fable-5` at effort `max` and no
+Opus model, but the owner directed the in-flight review to stop when Fable
+capacity was exhausted. It returned no verdict, its clean disposable tree was
+removed, and it is not accepted review evidence. Ordinary code reviews may use
+Opus or Grok; openreviews remain held for Fable until capacity returns.
 
 `.agents/decisions.md` remains under the owner's existing hold and is not
 amended by this plan. This plan is the canonical source for MCP transport and

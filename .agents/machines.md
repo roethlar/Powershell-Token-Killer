@@ -720,3 +720,53 @@ guard closure was verified at final head
   checks found zero scoped tasks, processes, checkouts, archives, scripts, or
   logs on either remote host. No existing repository or installed PTK payload
   changed.
+
+## MCP resilience R1 verification (Mac, Windows, and Linux, 2026-07-17)
+
+_Exact R1 code head `60eb20f37a75259c0bf246d594632bde128c109b`,
+based on `1f314a29807e7504aa04f7f14899c6bb6483248a`. Remote validation used the
+exact `git archive` whose SHA-256 was
+`A0DE86C1C81E46371ED1A74D164BF5E4020C2D4AE2632F6E072A5900414DC862`._
+
+- On `nagatha.local` (macOS 26.5.2 arm64, .NET SDK 10.0.302, PowerShell
+  7.6.3), the PowerShell suite passed 141 / 0 failed / 2 skipped,
+  `dotnet test server/PtkMcpServer.slnx` passed Guardian 26/26,
+  Architecture 68/68, and Server 1,578/1,578, and the full stdio handshake
+  passed after a zero-warning, zero-error build. Three earlier broad runs
+  during the audit-seam slice had produced different process-start deadline
+  failures while the host had roughly 1,000 processes, 19 `PtkMcpServer`
+  processes, and load averages near 6.5; every named failure passed in isolation.
+  At the final exact-head run the load average had fallen to 2.10 and the one
+  complete battery passed. The preliminary failures were not reproduced once
+  load fell, which is consistent with host-load diagnostics but does not prove
+  load was their cause.
+- On `NETWATCH-01` (Windows 11 Pro 10.0.26200 x64, .NET SDK 10.0.302/runtime
+  10.0.10, Pester 5.8.0), the ordinary no-profile PowerShell suite passed
+  142 / 0 failed / 1 platform skip, Shared contracts passed 29/29, Guardian
+  passed 26/26, Architecture passed 68/68, the 232 directly changed R1 server
+  tests passed 232/232, and the full handshake passed. The SSH identity's
+  broad server run passed 1,561/1,578; all 17 failures were the host's known
+  current-user DPAPI/empty-password PKCS#12 reload problem. A fresh exact-base
+  tree reproduced one representative failure from each path, and the affected
+  helper/configuration blobs were unchanged by R1. The definitive transient
+  `NT AUTHORITY\\SYSTEM` run of `dotnet test server\\PtkMcpServer.slnx` then
+  passed Guardian 26/26, Architecture 68/68, and Server 1,578/1,578 with exit
+  zero. The complete SYSTEM CurrentUser certificate inventory was byte-identical
+  before and after (1,503 entries; SHA-256
+  `0994185A79DDC0488D64D0B603249F35214FE1A61F86DA800ED6A755E31FCD82`),
+  and cleanup found zero matching tasks, processes, paths, archives, or logs.
+- On the Ubuntu 26.04 ARM64 VM at `192.168.64.5` (kernel 7.0.0-27, .NET SDK
+  10.0.110/runtime 10.0.10, PowerShell 7.6.3, Pester 5.8.0), the PowerShell
+  suite passed 141 / 0 failed / 2 skips. The recorded Grpc.Tools 2.82.0
+  MSBuild-only failure reproduced: bundled `linux_arm64/protoc` exited 139
+  under MSBuild, while the exact emitted command ran directly with libprotoc
+  35.0 and generated both expected intermediates. With those ordinary
+  intermediates and `--no-restore`, Shared built with zero warnings/errors,
+  Guardian passed 26/26, Architecture passed 68/68, Server passed
+  1,578/1,578, and the full handshake passed. This is exact behavior evidence,
+  not a clean ARM64 build claim. Archive comparison found no source-content
+  changes, and the scoped tree/process cleanup was clean.
+
+R1 therefore has exact-head behavior evidence on all three target platforms.
+The required fixed-SHA Fable openreview remains a separate acceptance gate;
+R2-R7 remain unauthorized.
