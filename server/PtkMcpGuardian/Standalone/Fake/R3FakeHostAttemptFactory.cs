@@ -124,7 +124,8 @@ internal sealed class R3FakeHostAttemptResources : IGuardianHostConnectedAttempt
             RequestTransport,
             EventTransport,
             control ?? throw new ArgumentNullException(nameof(control)),
-            plan);
+            plan,
+            retiredBufferObserver);
         ContainmentProofBarrier = new R3FakeHostBarrier();
         if (!plan.HoldContainmentProof)
             ContainmentProofBarrier.Release();
@@ -246,6 +247,7 @@ internal sealed class R3FakeHostAttemptResources : IGuardianHostConnectedAttempt
         }
 
         CloseTransport();
+        Peer.Dispose();
         RequestTransport.Dispose();
         EventTransport.Dispose();
         if (HostExited.IsCompleted)
@@ -284,6 +286,7 @@ internal sealed class R3FakeHostAttemptResources : IGuardianHostConnectedAttempt
     private async Task ConfirmContainmentAsync()
     {
         await HostExited.ConfigureAwait(false);
+        Peer.Dispose();
         RequestTransport.Dispose();
         EventTransport.Dispose();
         await ContainmentProofBarrier.ReachAndWaitAsync(CancellationToken.None)

@@ -9,7 +9,7 @@ namespace PtkMcpGuardian.Standalone.Fake;
 /// A strict typed peer for supervisor tests. It implements only the R3 surface:
 /// initialize with a complete recovery manifest, job-list, and shutdown.
 /// </summary>
-internal sealed class R3FakeHostPeer
+internal sealed class R3FakeHostPeer : IDisposable
 {
     private const int MaximumRetainedRequestIds = 256;
 
@@ -36,6 +36,7 @@ internal sealed class R3FakeHostPeer
 
     private long _lastRequestId;
     private int _jobListEffectCount;
+    private int _disposed;
 
     internal R3FakeHostPeer(
         GuardianHostIdentity identity,
@@ -45,7 +46,8 @@ internal sealed class R3FakeHostPeer
         R3BoundedOneWayStream requestStream,
         R3BoundedOneWayStream eventStream,
         R3FakeHostControl control,
-        R3FakeHostAttemptPlan attemptPlan)
+        R3FakeHostAttemptPlan attemptPlan,
+        Action<byte[]>? retiredTransportBufferObserver)
     {
         _identity = identity ?? throw new ArgumentNullException(nameof(identity));
         _pins = pins ?? throw new ArgumentNullException(nameof(pins));
@@ -57,7 +59,12 @@ internal sealed class R3FakeHostPeer
         _control = control ?? throw new ArgumentNullException(nameof(control));
         _attemptPlan = attemptPlan ?? throw new ArgumentNullException(nameof(attemptPlan));
         _hostProcessId = hostProcessId;
-        _reader = new GuardianHostProtocolReader(requestStream, GuardianHostPeer.Guardian);
+        _reader = retiredTransportBufferObserver is null
+            ? new GuardianHostProtocolReader(requestStream, GuardianHostPeer.Guardian)
+            : new GuardianHostProtocolReader(
+                requestStream,
+                GuardianHostPeer.Guardian,
+                retiredTransportBufferObserver);
         _writer = new GuardianHostProtocolWriter(eventStream, GuardianHostPeer.Host);
     }
 
@@ -70,6 +77,12 @@ internal sealed class R3FakeHostPeer
             lock (_sync)
                 return _receivedRequestIds.ToArray();
         }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) == 0)
+            _reader.Dispose();
     }
 
     internal async Task RunAsync(CancellationToken cancellationToken)

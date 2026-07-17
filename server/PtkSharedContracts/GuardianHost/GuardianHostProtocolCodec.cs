@@ -1019,7 +1019,7 @@ public static class GuardianHostProtocolCodec
 }
 
 /// <summary>Incremental bounded reader for typed LF-terminated protocol frames.</summary>
-public sealed class GuardianHostProtocolReader
+public sealed class GuardianHostProtocolReader : IDisposable
 {
     private readonly GuardianHostRawProtocolReader _reader;
 
@@ -1032,12 +1032,23 @@ public sealed class GuardianHostProtocolReader
         ArrayPool<byte> framePool) =>
         _reader = new GuardianHostRawProtocolReader(stream, sender, framePool);
 
+    internal GuardianHostProtocolReader(
+        Stream stream,
+        GuardianHostPeer sender,
+        Action<byte[]> retiredTransportBufferObserver) =>
+        _reader = new GuardianHostRawProtocolReader(
+            stream,
+            sender,
+            retiredTransportBufferObserver: retiredTransportBufferObserver);
+
     public async ValueTask<GuardianHostMessage?> ReadAsync(
         CancellationToken cancellationToken = default)
     {
         var raw = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
         return raw is null ? null : GuardianHostProtocolCodec.FromRaw(raw);
     }
+
+    public void Dispose() => _reader.Dispose();
 }
 
 /// <summary>Serializes typed LF-terminated frames and latches ambiguous transport failure.</summary>

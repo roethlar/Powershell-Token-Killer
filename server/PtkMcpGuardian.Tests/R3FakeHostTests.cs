@@ -357,6 +357,7 @@ public sealed class R3FakeHostTests
         Assert.True(resources.EventTransport.IsDisposed);
         Assert.NotEmpty(retired);
         Assert.All(retired, bytes => Assert.All(bytes, value => Assert.Equal(0, value)));
+        Assert.Contains(retired, bytes => bytes.Length == 16 * 1024);
         Assert.Equal(1, resources.CrashCount);
         Assert.Equal(1, resources.TransportCloseCount);
         Assert.Equal(1, resources.ContainmentStartCount);

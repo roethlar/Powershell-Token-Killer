@@ -709,7 +709,7 @@ internal static class GuardianHostRawProtocol
 /// Incremental bounded reader that preserves coalesced-frame read-ahead and
 /// returns every pooled frame buffer with clearing enabled.
 /// </summary>
-internal sealed class GuardianHostRawProtocolReader
+internal sealed class GuardianHostRawProtocolReader : IDisposable
 {
     private const int TransportBufferBytes = 16 * 1024;
 
@@ -718,13 +718,17 @@ internal sealed class GuardianHostRawProtocolReader
     private readonly ArrayPool<byte> _framePool;
     private readonly byte[] _transportBuffer = new byte[TransportBufferBytes];
     private readonly SemaphoreSlim _readGate = new(1, 1);
+    private readonly CancellationTokenSource _disposed = new();
+    private readonly Action<byte[]>? _retiredTransportBufferObserver;
     private int _transportOffset;
     private int _transportLength;
+    private int _disposeStarted;
 
     internal GuardianHostRawProtocolReader(
         Stream stream,
         GuardianHostPeer sender,
-        ArrayPool<byte>? framePool = null)
+        ArrayPool<byte>? framePool = null,
+        Action<byte[]>? retiredTransportBufferObserver = null)
     {
         ArgumentNullException.ThrowIfNull(stream);
         if (!stream.CanRead) throw new ArgumentException("Stream must be readable.", nameof(stream));
@@ -732,15 +736,28 @@ internal sealed class GuardianHostRawProtocolReader
         _stream = stream;
         _sender = sender;
         _framePool = framePool ?? ArrayPool<byte>.Shared;
+        _retiredTransportBufferObserver = retiredTransportBufferObserver;
     }
 
     internal async ValueTask<GuardianHostRawEnvelope?> ReadAsync(
         CancellationToken cancellationToken = default)
     {
-        await _readGate.WaitAsync(cancellationToken).ConfigureAwait(false);
-        var frame = _framePool.Rent(GuardianHostRawProtocol.MaximumEncodedFrameBytes);
+        ObjectDisposedException.ThrowIf(
+            Volatile.Read(ref _disposeStarted) != 0,
+            this);
+        using var linked = CancellationTokenSource.CreateLinkedTokenSource(
+            cancellationToken,
+            _disposed.Token);
+        var gateHeld = false;
+        byte[]? frame = null;
         try
         {
+            await _readGate.WaitAsync(linked.Token).ConfigureAwait(false);
+            gateHeld = true;
+            ObjectDisposedException.ThrowIf(
+                Volatile.Read(ref _disposeStarted) != 0,
+                this);
+            frame = _framePool.Rent(GuardianHostRawProtocol.MaximumEncodedFrameBytes);
             var frameLength = 0;
             while (true)
             {
@@ -748,7 +765,7 @@ internal sealed class GuardianHostRawProtocolReader
                 {
                     _transportLength = await _stream.ReadAsync(
                         _transportBuffer.AsMemory(),
-                        cancellationToken).ConfigureAwait(false);
+                        linked.Token).ConfigureAwait(false);
                     _transportOffset = 0;
                     if (_transportLength == 0)
                     {
@@ -782,10 +799,44 @@ internal sealed class GuardianHostRawProtocolReader
                     _sender);
             }
         }
+        catch (OperationCanceledException) when (_disposed.IsCancellationRequested)
+        {
+            throw new ObjectDisposedException(nameof(GuardianHostRawProtocolReader));
+        }
         finally
         {
-            _framePool.Return(frame, clearArray: true);
+            if (frame is not null)
+                _framePool.Return(frame, clearArray: true);
+            if (gateHeld)
+                _readGate.Release();
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposeStarted, 1) != 0)
+            return;
+
+        _disposed.Cancel();
+        _readGate.Wait();
+        try
+        {
+            CryptographicOperations.ZeroMemory(_transportBuffer);
+            try
+            {
+                _retiredTransportBufferObserver?.Invoke(_transportBuffer);
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(_transportBuffer);
+                _transportOffset = 0;
+                _transportLength = 0;
+            }
+        }
+        finally
+        {
             _readGate.Release();
+            _disposed.Dispose();
         }
     }
 }

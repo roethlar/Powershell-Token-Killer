@@ -841,6 +841,7 @@ internal sealed class GuardianHostClient : IAsyncDisposable
         }
         await _operationalWriteGate.WaitAsync(CancellationToken.None).ConfigureAwait(false);
         _operationalWriteGate.Release();
+        _reader.Dispose();
         _lifetime.Dispose();
     }
 
