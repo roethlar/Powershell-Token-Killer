@@ -72,6 +72,32 @@ public sealed class GuardianArchitectureBoundaryTests
         "AuditRuntimeGate.cs",
     ];
 
+    private static readonly string[] RequiredGuardianOutputCompileInputs =
+    [
+        "OutputProvenance.cs",
+        "OutputRecoverySummary.cs",
+        "OutputStore.cs",
+    ];
+
+    private static readonly string[] RequiredGuardianOutputTypeDefinitions =
+    [
+        "PtkMcpServer.ForegroundOutputCapture",
+        "PtkMcpServer.OutputArtifactContent",
+        "PtkMcpServer.OutputArtifactState",
+        "PtkMcpServer.OutputArtifactStateCodes",
+        "PtkMcpServer.OutputArtifactStatus",
+        "PtkMcpServer.OutputCaptureReservation",
+        "PtkMcpServer.OutputProvenance",
+        "PtkMcpServer.OutputProvenanceMachineCodes",
+        "PtkMcpServer.OutputReadResult",
+        "PtkMcpServer.OutputRecoverySummary",
+        "PtkMcpServer.OutputSearchMatch",
+        "PtkMcpServer.OutputSearchResult",
+        "PtkMcpServer.OutputSealResult",
+        "PtkMcpServer.OutputStore",
+        "PtkMcpServer.OutputStoreOptions",
+    ];
+
     private static readonly StringComparer PathComparer = OperatingSystem.IsWindows()
         ? StringComparer.OrdinalIgnoreCase
         : StringComparer.Ordinal;
@@ -277,6 +303,11 @@ public sealed class GuardianArchitectureBoundaryTests
             "Audit",
             RequiredGuardianAuditCompileInputs,
             "guardian audit ownership");
+        AssertExactCompileDirectory(
+            guardian,
+            "Output",
+            RequiredGuardianOutputCompileInputs,
+            "guardian output ownership");
         Assert.Empty(shared.ProtobufInputs);
         AssertExactSet(
             guardian.ProtobufInputs,
@@ -309,6 +340,16 @@ public sealed class GuardianArchitectureBoundaryTests
             "Audit",
             RequiredServerAuditCompileInputs,
             "server audit adapters");
+        foreach (var outputSource in RequiredGuardianOutputCompileInputs)
+        {
+            Assert.DoesNotContain(
+                server.CompileInputs,
+                path => Path.GetFileName(path).Equals(outputSource, PathComparison));
+        }
+        Assert.False(File.Exists(Path.Combine(
+            server.ProjectDirectory,
+            "Execution",
+            "OutputStore.cs")));
         Assert.Empty(server.ProtobufInputs);
         Assert.DoesNotContain(
             server.PackageReferences,
@@ -331,6 +372,22 @@ public sealed class GuardianArchitectureBoundaryTests
             [paths.GuardianProject],
             "PtkAuditAdmin project references",
             PathComparer);
+    }
+
+    [Fact]
+    public void Output_definitions_are_compiled_only_by_guardian()
+    {
+        var paths = RepositoryPaths.Create();
+        var guardian = EvaluateProject(paths.GuardianProject);
+        var server = EvaluateProject(paths.ServerProject);
+        var guardianDefinitions = ReadCompiledTypeDefinitions(guardian);
+        var serverDefinitions = ReadSourceTypeDefinitions(server);
+
+        foreach (var typeName in RequiredGuardianOutputTypeDefinitions)
+        {
+            Assert.Contains(typeName, guardianDefinitions, StringComparer.Ordinal);
+            Assert.DoesNotContain(typeName, serverDefinitions, StringComparer.Ordinal);
+        }
     }
 
     [Fact]
@@ -1031,6 +1088,42 @@ public sealed class GuardianArchitectureBoundaryTests
     {
         var type = reader.GetTypeDefinition(handle);
         return QualifiedTypeName(reader.GetString(type.Namespace), reader.GetString(type.Name));
+    }
+
+    private static IReadOnlyCollection<string> ReadCompiledTypeDefinitions(EvaluatedProject project)
+    {
+        Assert.True(
+            File.Exists(project.TargetPath),
+            $"Build output is absent for {project.AssemblyName}: {project.TargetPath}");
+        using var stream = File.OpenRead(project.TargetPath);
+        using var pe = new PEReader(stream);
+        Assert.True(pe.HasMetadata, $"{project.TargetPath} has no managed metadata.");
+        var reader = pe.GetMetadataReader();
+        return reader.TypeDefinitions
+            .Select(handle => TypeDefinitionName(reader, handle))
+            .ToArray();
+    }
+
+    private static IReadOnlyCollection<string> ReadSourceTypeDefinitions(EvaluatedProject project)
+    {
+        var definitions = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var sourcePath in project.CompileInputs)
+        {
+            var tree = CSharpSyntaxTree.ParseText(File.ReadAllText(sourcePath));
+            foreach (var declaration in tree.GetRoot().DescendantNodes().OfType<BaseTypeDeclarationSyntax>())
+            {
+                if (declaration.Ancestors().OfType<BaseTypeDeclarationSyntax>().Any()) continue;
+                var declaredNamespace = declaration.Ancestors()
+                    .OfType<BaseNamespaceDeclarationSyntax>()
+                    .FirstOrDefault()
+                    ?.Name
+                    .ToString() ?? string.Empty;
+                definitions.Add(QualifiedTypeName(
+                    declaredNamespace,
+                    declaration.Identifier.ValueText));
+            }
+        }
+        return definitions;
     }
 
     private static string QualifiedTypeName(string @namespace, string name) =>

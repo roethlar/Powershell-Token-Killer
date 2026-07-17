@@ -129,30 +129,6 @@ internal sealed record ShapedTextResult(
     string Text,
     OutputShapingSummary? Shaping);
 
-internal sealed record OutputRecoverySummary(
-    string? Handle,
-    OutputArtifactState State,
-    long Bytes,
-    string? DetailCode,
-    bool Advertise)
-{
-    internal static OutputRecoverySummary FromSeal(OutputSealResult result) => new(
-        result.Handle,
-        result.State,
-        result.Bytes,
-        result.DetailCode,
-        Advertise: result.Success && result.Handle is not null);
-
-    internal static OutputRecoverySummary Unavailable(
-        string detailCode,
-        bool advertise = false) => new(
-            Handle: null,
-            State: OutputArtifactState.NotFound,
-            Bytes: 0,
-            DetailCode: detailCode,
-            Advertise: advertise);
-}
-
 /// <summary>What the session has changed in the process environment since the
 /// post-priming baseline. PATH is additionally reported as an entry-level diff
 /// because prepended tool shims are the recorded warm-state hazard.</summary>
