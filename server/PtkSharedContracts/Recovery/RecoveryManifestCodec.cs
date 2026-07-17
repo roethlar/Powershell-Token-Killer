@@ -60,11 +60,23 @@ public static class RecoveryManifestCodec
         ReadOnlyMemory<byte> encoded,
         Sha256Digest initializeConfigurationDigest) =>
         DecodeCore(encoded, initializeConfigurationDigest ??
-            throw new ArgumentNullException(nameof(initializeConfigurationDigest)));
+            throw new ArgumentNullException(nameof(initializeConfigurationDigest)),
+            templateDecoded: null);
+
+    internal static RecoveryManifest DecodeForInitializeObserved(
+        ReadOnlyMemory<byte> encoded,
+        Sha256Digest initializeConfigurationDigest,
+        Action<RecoveryTemplate> templateDecoded)
+    {
+        ArgumentNullException.ThrowIfNull(initializeConfigurationDigest);
+        ArgumentNullException.ThrowIfNull(templateDecoded);
+        return DecodeCore(encoded, initializeConfigurationDigest, templateDecoded);
+    }
 
     private static RecoveryManifest DecodeCore(
         ReadOnlyMemory<byte> encoded,
-        Sha256Digest initializeConfigurationDigest)
+        Sha256Digest initializeConfigurationDigest,
+        Action<RecoveryTemplate>? templateDecoded)
     {
         if (encoded.Length is < 2 or > ContractLimits.MaximumManifestBytes)
             throw new InvalidDataException("Recovery manifest is outside its frozen bound.");
@@ -81,35 +93,60 @@ public static class RecoveryManifestCodec
             "worker_generation_high_watermarks", "host_generation_high_watermark");
         if (root.GetProperty("schema_version").GetString() != "ptk.recovery-manifest/1")
             throw new InvalidDataException("Unknown recovery manifest version.");
-        var templates = root.GetProperty("templates").EnumerateArray().Select(ReadTemplate).ToArray();
-        var bindings = root.GetProperty("bindings").EnumerateArray().Select(ReadBinding).ToArray();
-        var marks = root.GetProperty("worker_generation_high_watermarks").EnumerateArray().Select(value =>
-        {
-            StrictJson.RequirePropertyOrder(value, "alias", "generation");
-            return new WorkerGenerationHighWatermarkEntry(
-                new CanonicalAlias(StrictJson.RequiredString(value, "alias")),
-                new WorkerGenerationHighWatermark(RequiredLong(value, "generation")));
-        }).ToArray();
-        var manifest = new RecoveryManifest(
-            new GuardianBootId(ParseCanonicalUuidV4(StrictJson.RequiredString(root, "guardian_boot_id"))),
-            new HostGeneration(RequiredLong(root, "host_generation")),
-            new Sha256Digest(StrictJson.RequiredString(root, "catalog_digest")),
-            new Sha256Digest(StrictJson.RequiredString(root, "configuration_sha256")),
-            templates, bindings, marks,
-            new HostGeneration(RequiredLong(root, "host_generation_high_watermark")));
-        if (manifest.ConfigurationDigest != initializeConfigurationDigest)
-            throw new InvalidDataException("Manifest configuration digest does not match initialize.");
-        var canonical = Encode(manifest, appendFinalLf: hasFinalLf);
+        var templates = new List<RecoveryTemplate>();
+        var completed = false;
         try
         {
-            if (!canonical.AsSpan().SequenceEqual(encoded.Span))
-                throw new InvalidDataException("Recovery manifest is not in canonical compact form.");
+            foreach (var value in root.GetProperty("templates").EnumerateArray())
+            {
+                var template = ReadTemplate(value);
+                templates.Add(template);
+                templateDecoded?.Invoke(template);
+            }
+
+            var bindings = root.GetProperty("bindings").EnumerateArray()
+                .Select(ReadBinding)
+                .ToArray();
+            var marks = root.GetProperty("worker_generation_high_watermarks")
+                .EnumerateArray()
+                .Select(value =>
+                {
+                    StrictJson.RequirePropertyOrder(value, "alias", "generation");
+                    return new WorkerGenerationHighWatermarkEntry(
+                        new CanonicalAlias(StrictJson.RequiredString(value, "alias")),
+                        new WorkerGenerationHighWatermark(RequiredLong(value, "generation")));
+                })
+                .ToArray();
+            var manifest = new RecoveryManifest(
+                new GuardianBootId(ParseCanonicalUuidV4(StrictJson.RequiredString(root, "guardian_boot_id"))),
+                new HostGeneration(RequiredLong(root, "host_generation")),
+                new Sha256Digest(StrictJson.RequiredString(root, "catalog_digest")),
+                new Sha256Digest(StrictJson.RequiredString(root, "configuration_sha256")),
+                templates, bindings, marks,
+                new HostGeneration(RequiredLong(root, "host_generation_high_watermark")));
+            if (manifest.ConfigurationDigest != initializeConfigurationDigest)
+                throw new InvalidDataException("Manifest configuration digest does not match initialize.");
+            var canonical = Encode(manifest, appendFinalLf: hasFinalLf);
+            try
+            {
+                if (!canonical.AsSpan().SequenceEqual(encoded.Span))
+                    throw new InvalidDataException("Recovery manifest is not in canonical compact form.");
+            }
+            finally
+            {
+                CryptographicOperations.ZeroMemory(canonical);
+            }
+            completed = true;
+            return manifest;
         }
         finally
         {
-            CryptographicOperations.ZeroMemory(canonical);
+            if (!completed)
+            {
+                foreach (var template in templates)
+                    template.ClearBootstrapBytes();
+            }
         }
-        return manifest;
     }
 
     internal static void ClearMemoryStreamBuffer(MemoryStream stream)

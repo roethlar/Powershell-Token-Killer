@@ -1,3 +1,4 @@
+using System.Reflection;
 using System.Text;
 using System.Text.Json;
 using PtkSharedContracts;
@@ -211,6 +212,33 @@ public sealed class PtkSharedContractsMatrixTests
             "CryptographicOperations.ZeroMemory(canonical)",
             source,
             StringComparison.Ordinal);
+    }
+
+    [Fact]
+    public void Failed_recovery_manifest_decode_clears_owned_template_bootstrap_bytes()
+    {
+        var encoded = RecoveryManifestCodec.Encode(
+            ManifestWithAllBindingKinds(includeExtraMark: false));
+        byte[]? decodedBootstrap = null;
+
+        var failure = Assert.Throws<InvalidDataException>(() =>
+            RecoveryManifestCodec.DecodeForInitializeObserved(
+                encoded,
+                Digest('c'),
+                template =>
+                {
+                    var field = typeof(RecoveryTemplate).GetField(
+                        "_bootstrapBytes",
+                        BindingFlags.Instance | BindingFlags.NonPublic);
+                    decodedBootstrap = Assert.IsType<byte[]>(field!.GetValue(template));
+                    Assert.Contains(decodedBootstrap, value => value != 0);
+                }));
+
+        Assert.Equal(
+            "Manifest configuration digest does not match initialize.",
+            failure.Message);
+        Assert.NotNull(decodedBootstrap);
+        Assert.All(decodedBootstrap, value => Assert.Equal(0, value));
     }
 
     [Fact]

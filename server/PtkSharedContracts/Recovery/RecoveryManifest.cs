@@ -1,5 +1,6 @@
 using System.Buffers;
 using System.Globalization;
+using System.Security.Cryptography;
 using System.Text;
 
 namespace PtkSharedContracts;
@@ -51,6 +52,8 @@ public sealed record RecoveryTemplate
     public int BootstrapByteCount => _bootstrapBytes.Length;
     public byte[] GetBootstrapBytes() => _bootstrapBytes.ToArray();
     internal ReadOnlySpan<byte> BootstrapSpan => _bootstrapBytes;
+    internal void ClearBootstrapBytes() =>
+        CryptographicOperations.ZeroMemory(_bootstrapBytes);
 
     private static void ValidateText(string value, int maximumScalars, string name)
     {
