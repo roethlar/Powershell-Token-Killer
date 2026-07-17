@@ -114,7 +114,23 @@ short and update it when important repo facts change.
   R0 code, tests, independent contract audit, and platform evidence are
   complete and landed on local `master` at `c1d809f`, and its required
   fixed-SHA Fable implementation review is accepted at review-record head
-  `4f99fd5`; R1-R7 are not authorized.** The
+  `4f99fd5`; R1 implementation and exact-head macOS, Windows, and Linux
+  behavior validation are complete at `60eb20f` on
+  `feature/mcp-resilience-r1`; its required fixed-SHA Fable openreview is held
+  at the owner's 2026-07-17 direction until Fable capacity returns; the owner
+  explicitly authorized every remaining slice R2-R7 on 2026-07-17 and directed
+  implementation to continue without stopping for reviews; R2's deterministic
+  unwired per-alias recovery core is complete at `eaef85f`; R3's standalone
+  guardian, crashable fake-host recovery, race/soak closure, real OS-process
+  apphost coverage, and direct macOS/Windows/Linux behavior validation are
+  complete at code/test head `1eb69d6` with the test-only scheduler closure at
+  `d238a80`; R4 private real-host and control-plane transfer is active on
+  `feature/mcp-resilience-r1` at committed tip `9d897e5` in worktree
+  `.claude/worktrees/mcp-resilience-r1`, with uncommitted R4 WIP (private host
+  outbound channel, package loader, OutputStore/JobManager/SessionRuntime
+  edits) — do not discard that dirty worktree. A prior bad handoff replaced this
+  file and was restored from HEAD; future handoffs must only edit `## Now` /
+  `## Next` surgically.** The
   target keeps one public stdio guardian alive while it
   restarts an exact-version private host, and makes a healthy host replace an
   unexpectedly lost session worker. It never replays ambiguous work, changes
@@ -258,6 +274,11 @@ short and update it when important repo facts change.
 - **Standing GitHub authority:** the owner granted persistent permission on
   2026-07-10 to comment, close, and triage issues in this repository as
   appropriate without per-action asks.
+- **Main-checkout has uncommitted governance-refresh WIP unrelated to product
+  code** (as of handoff 2026-07-17): reviewloop→codereview/openreview split,
+  deleted toolkit manifests, protect-governance hook, and AGENTS.md
+  toolkit-owned wording. Leave it alone unless the owner directs a governance
+  commit; do not fold it into product commits.
 
 ## Next
 
@@ -267,7 +288,13 @@ short and update it when important repo facts change.
 2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures.
-3. Do not begin resilience R1 without separate explicit authorization.
+3. Continue resilience R4 only in `.claude/worktrees/mcp-resilience-r1` on
+   `feature/mcp-resilience-r1` from tip `9d897e5` plus the existing uncommitted
+   WIP; then R5-R7 sequentially. Ordinary reviews may use Opus or Grok; hold
+   Fable openreviews until capacity returns, then rerun the R1 fixed range
+   `1f314a2..60eb20f` and later fixed ranges. Do not push, merge, rewrite
+   history, or publish a release without separate authorization. Do not replace
+   `.agents/state.md` wholesale on handoff.
 4. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
