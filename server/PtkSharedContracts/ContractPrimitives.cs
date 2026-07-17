@@ -7,6 +7,7 @@ public static class ContractLimits
     public const int GuardianHostProtocolVersion = 1;
     public const int MaximumEncodedFrameBytes = 1_048_576;
     public const int MaximumJsonDepth = 32;
+    public const int MaximumOutstandingPrivateRequests = 64;
     public const int MaximumDiagnosticBytesPerStream = 65_536;
     public const int MaximumDiagnosticChunkBytes = 16_384;
     public const int MaximumManifestBytes = 25_165_824;
