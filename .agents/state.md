@@ -258,21 +258,30 @@ short and update it when important repo facts change.
 - **Standing GitHub authority:** the owner granted persistent permission on
   2026-07-10 to comment, close, and triage issues in this repository as
   appropriate without per-action asks.
+- **Mini-SIEM S3H is complete at code head `c726a33`.** The receiver now
+  applies one SIEM-local, fail-closed protected-path boundary before parsing or
+  use: retained identity-stable config/TLS reads, exact numeric-UID POSIX
+  modes plus macOS ACL rejection, exact protected one-ACE Windows DACLs,
+  lexical link/reparse rejection, mutable-storage identity-collision checks,
+  and eager atomic owner-only DB/WAL/SHM startup with live identity
+  revalidation before Kestrel can bind. Existing insecure objects are never
+  repaired. The cross-platform matrix, guard mutations, independent audit,
+  and exact host evidence are recorded in `.agents/machines.md`. This closes
+  current config/TLS/SQLite enforcement; full acceptance row 7 still waits for
+  the later slice that introduces and protects the currently absent custody
+  checkpoint/anchor path.
 
 ## Next
 
-1. Implement the owner-approved mini-SIEM S3H amendment in
-   `.agents/plans/mini-siem-implementation.md`: startup filesystem hardening
-   under `siem/` only. Do not begin S4-S6 or modify PTK runtime code.
-2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
+1. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures.
-3. Do not begin resilience R1 without separate explicit authorization.
-4. Release-distribution slice 3 is ordered after resilience R7 and consumes
+2. Do not begin resilience R1 without separate explicit authorization.
+3. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
    slice 4.
-5. When the owner releases the decisions hold, reconcile the rejected
+4. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
 
@@ -318,17 +327,6 @@ short and update it when important repo facts change.
   suite to pass. This does not invalidate that behavior evidence, but a clean
   ARM64 build must not be claimed until the launch failure is resolved or
   independently disproved; see `.agents/machines.md`.
-
-- **Mini-SIEM startup filesystem enforcement is approved but not yet
-  implemented.** The S3H amendment in
-  `.agents/plans/mini-siem-implementation.md`, approved by the owner on
-  2026-07-16, corrects the former S1/S3
-  scheduling inconsistency for current config, TLS, database, and sidecar
-  paths while leaving the not-yet-existent custody-checkpoint path with its
-  later owning slice. The current receiver still lacks this enforcement. Do
-  not claim receiver-host storage protection or full product acceptance until
-  S3H's cross-platform negative matrix lands and the later checkpoint path is
-  protected before first use.
 
 - **Windows wiring requires a hard supervisor/worker role cutover.**
   `Program.cs`, `BashProcessRunner`, `RtkProcessRunner`, and `JobManager` still
