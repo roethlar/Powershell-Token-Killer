@@ -16,6 +16,12 @@ public sealed class GuardianArchitectureBoundaryTests
     private const string ServerAssemblyName = "PtkMcpServer";
     private const string GuardianSentinel = "Ownership/PublicJobIdAllocator.cs";
 
+    private static readonly string[] RequiredGuardianAppHostCompileInputs =
+    [
+        "Program.cs",
+        "Standalone/GuardianMcpApplication.cs",
+    ];
+
     private static readonly string[] RequiredGuardianAuditCompileInputs =
     [
         "AuditAdmissionContracts.cs",
@@ -304,8 +310,10 @@ public sealed class GuardianArchitectureBoundaryTests
                     "all",
                     "runtime; build; native; contentfiles; analyzers; buildtransitive"),
                 new("Microsoft.Extensions.Hosting", "10.0.9", null, null),
+                new("ModelContextProtocol", "1.4.0", null, null),
             ]);
         AssertPackages(shared, []);
+        Assert.Equal("Exe", guardian.OutputType);
 
         foreach (var project in closure)
         {
@@ -318,6 +326,8 @@ public sealed class GuardianArchitectureBoundaryTests
         }
 
         AssertCompileSentinel(guardian, GuardianSentinel);
+        foreach (var sentinel in RequiredGuardianAppHostCompileInputs)
+            AssertCompileSentinel(guardian, sentinel);
         foreach (var sentinel in RequiredSharedCompileInputs)
             AssertCompileSentinel(shared, sentinel);
 
@@ -400,6 +410,38 @@ public sealed class GuardianArchitectureBoundaryTests
             [paths.GuardianProject],
             "PtkAuditAdmin project references",
             PathComparer);
+    }
+
+    [Fact]
+    public void Guardian_apphost_uses_the_frozen_contract_explicit_handlers_and_stderr_logging()
+    {
+        var paths = RepositoryPaths.Create();
+        var guardian = EvaluateProject(paths.GuardianProject);
+        Assert.Equal("Exe", guardian.OutputType);
+
+        var applicationPath = Path.Combine(
+            guardian.ProjectDirectory,
+            "Standalone",
+            "GuardianMcpApplication.cs");
+        var application = File.ReadAllText(applicationPath);
+        Assert.Contains("PublicToolContractResource.Parse()", application, StringComparison.Ordinal);
+        Assert.Contains(".WithStreamServerTransport(", application, StringComparison.Ordinal);
+        Assert.Contains(".WithListToolsHandler(", application, StringComparison.Ordinal);
+        Assert.Contains(".WithCallToolHandler(", application, StringComparison.Ordinal);
+        Assert.Contains("builder.Logging.ClearProviders()", application, StringComparison.Ordinal);
+        Assert.Contains("LogToStandardErrorThreshold = LogLevel.Trace", application, StringComparison.Ordinal);
+
+        var programPath = Path.Combine(guardian.ProjectDirectory, "Program.cs");
+        var program = File.ReadAllText(programPath);
+        Assert.DoesNotContain("Console.Out", program, StringComparison.Ordinal);
+        Assert.DoesNotContain("OpenStandardOutput", program, StringComparison.Ordinal);
+
+        foreach (var sourcePath in guardian.CompileInputs)
+        {
+            var source = File.ReadAllText(sourcePath);
+            Assert.DoesNotContain("WithToolsFromAssembly", source, StringComparison.Ordinal);
+            Assert.DoesNotContain("McpServerTool", source, StringComparison.Ordinal);
+        }
     }
 
     [Fact]
@@ -1166,7 +1208,7 @@ public sealed class GuardianArchitectureBoundaryTests
             "-nologo",
             "-verbosity:quiet",
             $"-property:Configuration={BuildConfiguration}",
-            "-getProperty:AssemblyName;TargetPath;ProjectAssetsFile",
+            "-getProperty:AssemblyName;OutputType;TargetPath;ProjectAssetsFile",
             "-getItem:ProjectReference;PackageReference;Reference;FrameworkReference;Compile;EmbeddedResource;Protobuf");
         Assert.True(
             result.ExitCode == 0,
@@ -1182,6 +1224,7 @@ public sealed class GuardianArchitectureBoundaryTests
         return new EvaluatedProject(
             projectPath,
             assemblyName!,
+            properties.GetProperty("OutputType").GetString()!,
             NormalizePath(properties.GetProperty("TargetPath").GetString()!),
             NormalizePath(properties.GetProperty("ProjectAssetsFile").GetString()!),
             ReadItems(items, "ProjectReference", item => NormalizePath(RequiredItem(item, "FullPath"))),
@@ -1735,6 +1778,7 @@ public sealed class GuardianArchitectureBoundaryTests
     private sealed record EvaluatedProject(
         string ProjectPath,
         string AssemblyName,
+        string OutputType,
         string TargetPath,
         string ProjectAssetsFile,
         IReadOnlyList<string> ProjectReferences,
