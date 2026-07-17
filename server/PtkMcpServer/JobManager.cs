@@ -4,6 +4,7 @@ using System.Collections.Immutable;
 using System.Diagnostics;
 using System.Text;
 using PtkMcpGuardian.Ownership;
+using PtkSharedContracts;
 
 namespace PtkMcpServer;
 
@@ -507,6 +508,14 @@ public sealed class JobManager : IDisposable
     public JobStartPlan PrepareStart(string script, string? workingDirectory = null)
     {
         ArgumentNullException.ThrowIfNull(script);
+        return PrepareStartCore(
+            CreateCompatibilityDispatch(script),
+            workingDirectory,
+            reservedPublicJobId: null);
+    }
+
+    private static ExecutionDispatch CreateCompatibilityDispatch(string script)
+    {
         var compatibilityPlan = new ExecutionPlan(
             script,
             script,
@@ -519,9 +528,7 @@ public sealed class JobManager : IDisposable
             ImmutableArray<ExecutionPath>.Empty,
             fallbackReason: null,
             rtkExecutableIdentity: null);
-        return PrepareStartCore(
-            ExecutionDispatch.FromPlan(compatibilityPlan),
-            workingDirectory);
+        return ExecutionDispatch.FromPlan(compatibilityPlan);
     }
 
     /// <summary>
@@ -535,6 +542,24 @@ public sealed class JobManager : IDisposable
     {
         ArgumentNullException.ThrowIfNull(dispatch);
         var reservation = PrepareStart(dispatch.Plan.OriginalScript);
+        return BindDispatch(reservation, dispatch, workingDirectory);
+    }
+
+    /// <summary>
+    /// Binds a guardian-reserved public job ID to one typed cold dispatch.
+    /// The private host must never allocate or substitute a public ID.
+    /// </summary>
+    internal JobStartPlan PrepareStartWithReservedId(
+        PublicJobId publicJobId,
+        ExecutionDispatch dispatch,
+        string workingDirectory)
+    {
+        ArgumentNullException.ThrowIfNull(publicJobId);
+        ArgumentNullException.ThrowIfNull(dispatch);
+        var reservation = PrepareStartCore(
+            CreateCompatibilityDispatch(dispatch.Plan.OriginalScript),
+            workingDirectory: null,
+            publicJobId);
         return BindDispatch(reservation, dispatch, workingDirectory);
     }
 
@@ -614,7 +639,8 @@ public sealed class JobManager : IDisposable
 
     private JobStartPlan PrepareStartCore(
         ExecutionDispatch dispatch,
-        string? workingDirectory)
+        string? workingDirectory,
+        PublicJobId? reservedPublicJobId)
     {
         long generation;
         lock (_shutdownGate)
@@ -624,7 +650,7 @@ public sealed class JobManager : IDisposable
             // reset/shutdown is permanently stale and can never be committed.
             generation = _stopping || _resetting ? -1 : _generation;
         }
-        var id = _publicJobIdAllocator.Allocate().Value;
+        var id = reservedPublicJobId?.Value ?? _publicJobIdAllocator.Allocate().Value;
         var outputPath = ExpectedOutputPath(id);
         var encodedCommand = dispatch.ExecutionPath == ExecutionPath.PowerShellDirect
             ? BuildEncodedCommand(dispatch.ExecutionScript!, outputPath)

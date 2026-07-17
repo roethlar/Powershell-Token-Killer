@@ -1,6 +1,7 @@
 using System.Collections.Immutable;
 using PtkMcpGuardian.Ownership;
 using PtkMcpServer.Sessions;
+using PtkSharedContracts;
 
 namespace PtkMcpServer.Tests;
 
@@ -115,6 +116,36 @@ public sealed class JobManagerTests : IDisposable
         Assert.Null(first.Snapshot(failed.Id));
         Assert.Null(second.Snapshot(abandoned.Id));
         Assert.Null(second.Snapshot(failed.Id));
+    }
+
+    [Fact]
+    public void Guardian_reserved_job_id_is_bound_without_host_allocation()
+    {
+        var allocator = new RejectingPublicJobIdAllocator();
+        var root = Path.Combine(_dir, "guardian-reserved");
+        using var jobs = new JobManager(
+            allocator,
+            new JobPwshExecutable(AbsolutePath: null),
+            root);
+        var cwd = Path.GetFullPath(_fixtureDir);
+        Directory.CreateDirectory(cwd);
+        var dispatch = CreateRtkDispatch(
+            cwd,
+            DirectCommand("echo guardian-reserved"),
+            originalScript: "guardian-reserved intent");
+
+        var plan = jobs.PrepareStartWithReservedId(
+            new PublicJobId(41),
+            dispatch,
+            cwd);
+
+        Assert.Equal(41, plan.Id);
+        Assert.Same(dispatch, plan.Dispatch);
+        Assert.True(plan.DispatchBound);
+        Assert.Equal(0, allocator.AllocationAttempts);
+        Assert.Empty(jobs.List());
+        Assert.False(Directory.Exists(root));
+        Assert.False(File.Exists(plan.OutputPath));
     }
 
     [Fact]
@@ -2379,6 +2410,18 @@ public sealed class JobManagerTests : IDisposable
             : File.Exists("/bin/sh")
                 ? "/bin/sh"
                 : "/usr/bin/sh";
+
+    private sealed class RejectingPublicJobIdAllocator : IPublicJobIdAllocator
+    {
+        internal int AllocationAttempts { get; private set; }
+
+        public PublicJobId Allocate()
+        {
+            AllocationAttempts++;
+            throw new InvalidOperationException(
+                "The private host must not allocate a guardian-owned public job ID.");
+        }
+    }
 
     private static string CopyCommandProcessor(string directory)
     {
