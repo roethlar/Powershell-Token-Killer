@@ -82,6 +82,10 @@ internal sealed class ScriptEvidenceAcknowledgmentObserver(
                 !string.Equals(
                     schemaVersion,
                     AuditEventSerializer.CurrentSchemaVersion,
+                    StringComparison.Ordinal) &&
+                !string.Equals(
+                    schemaVersion,
+                    AuditEventSerializer.ResilientSchemaVersion,
                     StringComparison.Ordinal))
             {
                 throw new IOException("The acknowledged audit schema is invalid.");

@@ -45,7 +45,8 @@ internal sealed class AuditOtlpRecord
 }
 
 /// <summary>
-/// Maps one already-validated authoritative ptk.audit/1 or ptk.audit/2 JSONL record to one
+/// Maps one already-validated authoritative ptk.audit/1, ptk.audit/2, or
+/// ptk.audit/3 JSONL record to one
 /// deterministic OTLP/HTTP binary protobuf request. The JSON body is decoded
 /// only to populate the frozen query attributes; it is never reserialized.
 /// </summary>
@@ -96,12 +97,17 @@ internal static class AuditOtlpRecordMapper
                 !string.Equals(
                     schemaVersion,
                     AuditEventSerializer.CurrentSchemaVersion,
+                    StringComparison.Ordinal) &&
+                !string.Equals(
+                    schemaVersion,
+                    AuditEventSerializer.ResilientSchemaVersion,
                     StringComparison.Ordinal))
             {
                 Fail("schema_version");
             }
             var shape = AuditEvidenceSpoolScanner.ValidateExactEnvelopeShape(root);
-            var isV2 = shape.Version == AuditCoreSchemaVersion.V2;
+            var hasV2Shape = shape.Version is AuditCoreSchemaVersion.V2 or AuditCoreSchemaVersion.V3;
+            var hostSnapshot = shape.Host;
             var eventIdText = RequiredString(root, "event_id");
             var eventId = RequiredCanonicalUuid(eventIdText, version: 7);
             var eventType = RequiredNonemptyString(root, "event_type");
@@ -159,7 +165,7 @@ internal static class AuditOtlpRecordMapper
             long? evidenceSubjectBytes = null;
             string? evidenceSubjectState = null;
             string? retentionReason = null;
-            if (isV2)
+            if (hasV2Shape)
             {
                 evidenceSubjectId = NullableCanonicalUuid(
                     auditRequest,
@@ -192,7 +198,7 @@ internal static class AuditOtlpRecordMapper
             }
 
             AuditOperatorDispositionFacts? dispositionFacts = null;
-            if (isV2 &&
+            if (hasV2Shape &&
                 root.GetProperty("operator_disposition") is var dispositionElement &&
                 dispositionElement.ValueKind != JsonValueKind.Null)
             {
@@ -230,7 +236,7 @@ internal static class AuditOtlpRecordMapper
                         "acknowledged_gap_reason"),
                 };
             }
-            if (isV2)
+            if (hasV2Shape)
             {
                 AuditEventSerializer.ValidateOperatorDispositionFacts(
                     eventType,
@@ -278,6 +284,18 @@ internal static class AuditOtlpRecordMapper
             AddOptionalString(logRecord, "ptk.audit.previous_event_hash", previousHash);
             logRecord.Attributes.Add(StringAttribute("ptk.audit.event_hash", eventHash));
             logRecord.Attributes.Add(StringAttribute("ptk.supervisor.boot_id", supervisorBootId));
+            if (hostSnapshot is not null)
+            {
+                AddOptionalString(
+                    logRecord,
+                    "ptk.host.boot_id",
+                    hostSnapshot.BootId?.ToString("D"));
+                AddOptionalInt(logRecord, "ptk.host.generation", hostSnapshot.Generation);
+                logRecord.Attributes.Add(StringAttribute("ptk.host.state", hostSnapshot.State));
+                logRecord.Attributes.Add(IntAttribute(
+                    "ptk.host.recovery_attempt",
+                    hostSnapshot.RecoveryAttempt));
+            }
             AddOptionalString(logRecord, "ptk.worker.boot_id", workerBootId);
             AddOptionalString(logRecord, "ptk.session.name", sessionName);
             AddOptionalInt(logRecord, "ptk.session.generation", sessionGeneration);

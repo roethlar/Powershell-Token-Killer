@@ -18,11 +18,13 @@ internal enum AuditCoreSchemaVersion
 {
     V1,
     V2,
+    V3,
 }
 
 internal readonly record struct AuditCoreEnvelopeShape(
     AuditCoreSchemaVersion Version,
-    JsonElement Request);
+    JsonElement Request,
+    AuditHostSnapshot? Host);
 
 /// <summary>
 /// Proves whether awaiting evidence is absent from one complete, stable view
@@ -46,6 +48,15 @@ internal static class AuditEvidenceSpoolScanner
         [
             "schema_version", "event_id", "event_type", "occurred_utc",
             "observed_utc", "producer", "sequence", "previous_event_hash",
+            "session", "actor", "correlation", "request", "operator_disposition", "routing",
+            "outcome", "coverage", "audit", "event_hash",
+        ],
+        StringComparer.Ordinal);
+
+    private static readonly HashSet<string> V3RootProperties = new(
+        [
+            "schema_version", "event_id", "event_type", "occurred_utc",
+            "observed_utc", "producer", "host", "sequence", "previous_event_hash",
             "session", "actor", "correlation", "request", "operator_disposition", "routing",
             "outcome", "coverage", "audit", "event_hash",
         ],
@@ -600,14 +611,22 @@ internal static class AuditEvidenceSpoolScanner
         {
             AuditEventSerializer.LegacySchemaVersion => AuditCoreSchemaVersion.V1,
             AuditEventSerializer.CurrentSchemaVersion => AuditCoreSchemaVersion.V2,
+            AuditEventSerializer.ResilientSchemaVersion => AuditCoreSchemaVersion.V3,
             _ => throw new IOException("An evidence-proof audit schema is unsupported."),
         };
         root = RequireExactObject(
             root,
-            version == AuditCoreSchemaVersion.V1
-                ? V1RootProperties
-                : V2RootProperties);
+            version switch
+            {
+                AuditCoreSchemaVersion.V1 => V1RootProperties,
+                AuditCoreSchemaVersion.V2 => V2RootProperties,
+                AuditCoreSchemaVersion.V3 => V3RootProperties,
+                _ => throw new IOException("An evidence-proof audit schema is unsupported."),
+            });
         _ = RequireExactObject(root.GetProperty("producer"), ProducerProperties);
+        var host = version == AuditCoreSchemaVersion.V3
+            ? AuditHostSnapshotCodec.ReadExact(root.GetProperty("host"))
+            : null;
         _ = RequireExactObject(root.GetProperty("session"), SessionProperties);
         _ = RequireExactObject(root.GetProperty("actor"), ActorProperties);
         _ = RequireExactObject(root.GetProperty("correlation"), CorrelationProperties);
@@ -616,7 +635,7 @@ internal static class AuditEvidenceSpoolScanner
             version == AuditCoreSchemaVersion.V1
                 ? V1RequestProperties
                 : V2RequestProperties);
-        if (version == AuditCoreSchemaVersion.V2)
+        if (version is AuditCoreSchemaVersion.V2 or AuditCoreSchemaVersion.V3)
         {
             var disposition = root.GetProperty("operator_disposition");
             if (disposition.ValueKind != JsonValueKind.Null)
@@ -626,7 +645,7 @@ internal static class AuditEvidenceSpoolScanner
         _ = RequireExactObject(root.GetProperty("outcome"), OutcomeProperties);
         _ = RequireExactObject(root.GetProperty("coverage"), CoverageProperties);
         _ = RequireExactObject(root.GetProperty("audit"), AuditProperties);
-        return new AuditCoreEnvelopeShape(version, request);
+        return new AuditCoreEnvelopeShape(version, request, host);
     }
 
     private static JsonElement RequireExactObject(

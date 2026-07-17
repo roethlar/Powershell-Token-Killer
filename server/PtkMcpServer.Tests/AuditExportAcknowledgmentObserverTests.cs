@@ -12,10 +12,11 @@ public sealed class AuditExportAcknowledgmentObserverTests : IDisposable
         ".ptk-evidence-observer-tests-" + Guid.NewGuid().ToString("N"));
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void Valid_v1_and_v2_reference_is_marked_before_checkpoint_and_finalized_only_afterward(
-        bool legacyV1)
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void Valid_v1_v2_and_v3_reference_is_marked_before_checkpoint_and_finalized_only_afterward(
+        int schemaVersion)
     {
         var options = Options();
         using var checkpoint = AuditExportCheckpointStore.CreateForWriter(options, BootId);
@@ -28,7 +29,7 @@ public sealed class AuditExportAcknowledgmentObserverTests : IDisposable
             eventId,
             reference.EvidenceId,
             reference.ScriptDigest,
-            legacyV1);
+            schemaVersion);
 
         using var anchor = observer.ObserveAcknowledgment(line);
 
@@ -115,52 +116,69 @@ public sealed class AuditExportAcknowledgmentObserverTests : IDisposable
         Guid eventId,
         string? evidenceId,
         string? digest,
-        bool legacyV1 = false)
+        int schemaVersion = 2)
     {
-        var serialized = AuditEventSerializer.Serialize(
-            1,
-            previousEventHash: null,
-            new AuditProducerContext(
-                Guid.Parse("22345678-1234-4abc-8def-0123456789ab"),
-                BootId,
-                WorkerBootId: null,
-                Environment.ProcessId,
-                "acknowledgment-observer-test",
-                BinaryDigest: null),
-            new AuditEventInput
+        var producer = new AuditProducerContext(
+            Guid.Parse("22345678-1234-4abc-8def-0123456789ab"),
+            BootId,
+            WorkerBootId: null,
+            Environment.ProcessId,
+            "acknowledgment-observer-test",
+            BinaryDigest: null);
+        var input = new AuditEventInput
+        {
+            EventType = "execution.planned",
+            Session = new AuditSession { DeclaredPurpose = "test" },
+            Actor = new AuditActor { AttributionStrength = "unknown" },
+            Correlation = new AuditCorrelation
             {
-                EventType = "execution.planned",
-                Session = new AuditSession { DeclaredPurpose = "test" },
-                Actor = new AuditActor { AttributionStrength = "unknown" },
-                Correlation = new AuditCorrelation
-                {
-                    PlanId = Guid.Parse("32345678-1234-4abc-8def-0123456789ab"),
-                },
-                Request = new AuditRequest
-                {
-                    OriginalScriptDigest = digest,
-                    ScriptEvidenceId = evidenceId is null ? null : Guid.Parse(evidenceId),
-                },
-                Routing = new AuditRouting(),
-                Outcome = new AuditOutcome { TerminationCertainty = "not_applicable" },
-                Coverage = new AuditCoverage
-                {
-                    PtkRequest = false,
-                    RootProcessObserved = "not_applicable",
-                    DescendantsObserved = "not_applicable",
-                    RemoteEffectObserved = "not_applicable",
-                },
-                Audit = new AuditEventHealth
-                {
-                    ProtectionMode = "anchored",
-                    ExportConfigurationIdentity = new string('a', 64),
-                    HealthState = "healthy",
-                },
+                PlanId = Guid.Parse("32345678-1234-4abc-8def-0123456789ab"),
             },
-            eventId,
-            DateTimeOffset.UtcNow,
-            DateTimeOffset.UtcNow);
-        return legacyV1
+            Request = new AuditRequest
+            {
+                OriginalScriptDigest = digest,
+                ScriptEvidenceId = evidenceId is null ? null : Guid.Parse(evidenceId),
+            },
+            Routing = new AuditRouting(),
+            Outcome = new AuditOutcome { TerminationCertainty = "not_applicable" },
+            Coverage = new AuditCoverage
+            {
+                PtkRequest = false,
+                RootProcessObserved = "not_applicable",
+                DescendantsObserved = "not_applicable",
+                RemoteEffectObserved = "not_applicable",
+            },
+            Audit = new AuditEventHealth
+            {
+                ProtectionMode = "anchored",
+                ExportConfigurationIdentity = new string('a', 64),
+                HealthState = "healthy",
+            },
+        };
+        var occurred = DateTimeOffset.UtcNow;
+        var serialized = schemaVersion == 3
+            ? AuditEventSerializer.SerializeVersion3(
+                1,
+                previousEventHash: null,
+                producer,
+                new AuditHostSnapshot(
+                    Guid.Parse("42345678-1234-4abc-8def-0123456789ab"),
+                    1,
+                    "ready",
+                    0),
+                input,
+                eventId,
+                occurred,
+                occurred)
+            : AuditEventSerializer.Serialize(
+                1,
+                previousEventHash: null,
+                producer,
+                input,
+                eventId,
+                occurred,
+                occurred);
+        return schemaVersion == 1
             ? AuditCoreSchemaTestRecords.ToLegacyV1(serialized.Utf8Line)
             : serialized.Utf8Line.ToArray();
     }

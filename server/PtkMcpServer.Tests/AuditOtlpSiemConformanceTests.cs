@@ -2,6 +2,7 @@ extern alias siem;
 
 using System.Net;
 using System.Net.Http.Headers;
+using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Google.Protobuf;
@@ -35,6 +36,68 @@ public sealed class AuditOtlpSiemConformanceTests
         if (!string.Equals(mode, "in-process", StringComparison.Ordinal))
             throw new InvalidOperationException($"{OverrideVariable} must be exactly 'in-process' when set.");
         yield return [true];
+    }
+
+    public static IEnumerable<object[]> ProducerCorpusReceiverCases()
+    {
+        foreach (var receiverCase in ReceiverCases())
+        {
+            foreach (var recordName in new[]
+                     {
+                         "audit-v1",
+                         "audit-v2",
+                         "audit-v3-null",
+                         "audit-v3-host",
+                     })
+            {
+                yield return [receiverCase[0], recordName];
+            }
+        }
+    }
+
+    [Theory]
+    [MemberData(nameof(ProducerCorpusReceiverCases))]
+    public async Task Producer_owned_corpus_is_byte_identical_through_fake_or_live_receiver(
+        bool useSiemOverride,
+        string recordName)
+    {
+        var jsonl = ReadCorpus(recordName, "jsonl");
+        var expectedRequest = ReadCorpus(recordName, "otlp");
+        var record = AuditOtlpRecordMapper.Map(jsonl);
+        Assert.Equal(expectedRequest, record.RequestBytes.ToArray());
+
+        if (!useSiemOverride)
+        {
+            var handler = new CapturingAckHandler();
+            using var exporter = CreateExporter(
+                new Uri("https://127.0.0.1:1/v1/logs"),
+                [],
+                [],
+                clientCertificate: null,
+                handler);
+
+            var result = await ExportAsync(exporter, record);
+
+            Assert.Equal(AuditExportAttemptKind.Acknowledged, result.Kind);
+            Assert.Equal(expectedRequest, handler.LastRequestBody);
+            return;
+        }
+
+        using var pki = SiemConformancePki.Create();
+        await using var receiver = await SiemOtlpConformanceHost.StartAsync(pki);
+        using var siemExporter = CreateExporter(
+            receiver.Endpoint,
+            [],
+            [pki.CreateTrustedRoot()],
+            pki.CreateClientCertificate(),
+            handler: null);
+
+        var siemResult = await ExportAsync(siemExporter, record);
+
+        Assert.Equal(AuditExportAttemptKind.Acknowledged, siemResult.Kind);
+        var committed = Assert.Single(receiver.Committer.Records);
+        Assert.Equal(expectedRequest, committed.RawRequestBytes);
+        Assert.Equal(record.ExactJsonBody.ToArray(), committed.ExactJsonBody);
     }
 
     [Theory]
@@ -79,7 +142,7 @@ public sealed class AuditOtlpSiemConformanceTests
     }
 
     [Fact]
-    public void Producer_fixture_serializer_emits_exact_current_v1_and_v2_request_bytes()
+    public void Producer_fixture_serializer_emits_exact_current_v1_v2_and_v3_request_bytes()
     {
         var root = Path.Combine(
             Path.GetTempPath(),
@@ -89,6 +152,7 @@ public sealed class AuditOtlpSiemConformanceTests
         {
             var v2 = SiemConformanceAuditRecord.Create().Utf8Line;
             var v1 = AuditCoreSchemaTestRecords.ToLegacyV1(v2);
+            var v3 = ReadCorpus("audit-v3-host", "jsonl");
 
             ProducerGoldenOtlpFixtureSerializer.Write(
                 root,
@@ -96,6 +160,7 @@ public sealed class AuditOtlpSiemConformanceTests
                 {
                     ["v1"] = v1,
                     ["v2"] = v2,
+                    ["v3"] = v3,
                 });
 
             Assert.Equal(
@@ -104,7 +169,9 @@ public sealed class AuditOtlpSiemConformanceTests
             Assert.Equal(
                 AuditOtlpRecordMapper.Map(v2).RequestBytes.ToArray(),
                 File.ReadAllBytes(Path.Combine(root, "v2.otlp.bin")));
-            Assert.False(File.Exists(Path.Combine(root, "v3.otlp.bin")));
+            Assert.Equal(
+                AuditOtlpRecordMapper.Map(v3).RequestBytes.ToArray(),
+                File.ReadAllBytes(Path.Combine(root, "v3.otlp.bin")));
         }
         finally
         {
@@ -137,6 +204,35 @@ public sealed class AuditOtlpSiemConformanceTests
         return handler is null
             ? AuditOtlpHttpExporter.Create(options, "9.8.7")
             : new AuditOtlpHttpExporter(options, "9.8.7", handler);
+    }
+
+    private static byte[] ReadCorpus(
+        string recordName,
+        string kind,
+        [CallerFilePath] string sourcePath = "")
+    {
+        if (recordName is not (
+                "audit-v1" or "audit-v2" or "audit-v3-null" or "audit-v3-host") ||
+            kind is not ("jsonl" or "otlp"))
+        {
+            throw new ArgumentException("The producer corpus key is invalid.");
+        }
+
+        var path = Path.GetFullPath(Path.Combine(
+            Path.GetDirectoryName(sourcePath)!,
+            "..",
+            "Contracts",
+            "SiemConformance",
+            $"{recordName}.{kind}.base64"));
+        var file = File.ReadAllBytes(path);
+        Assert.NotEmpty(file);
+        Assert.Equal((byte)'\n', file[^1]);
+        Assert.Equal(1, file.Count(value => value == (byte)'\n'));
+        Assert.DoesNotContain((byte)'\r', file);
+        var encoded = System.Text.Encoding.ASCII.GetString(file.AsSpan()[..^1]);
+        var decoded = Convert.FromBase64String(encoded);
+        Assert.Equal(encoded, Convert.ToBase64String(decoded));
+        return decoded;
     }
 }
 

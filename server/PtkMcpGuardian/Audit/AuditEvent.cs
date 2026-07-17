@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using System.Text.Encodings.Web;
 using System.Text.Json;
+using System.Text.Unicode;
 
 namespace PtkMcpServer.Audit;
 
@@ -169,17 +170,21 @@ internal readonly record struct SerializedAuditEvent(
 internal sealed class AuditEventValidationException(string message) : Exception(message);
 
 /// <summary>
-/// Validates and serializes one strict ptk.audit/2 core record. The returned
-/// bytes are the authoritative bytes: callers must persist/export them as-is,
-/// never reserialize the event after its hash has been computed.
+/// Validates and serializes one strict core record. The established entry
+/// point remains ptk.audit/2; the explicit version-3 entry point additionally
+/// requires a guardian-owned host snapshot. Returned bytes are authoritative:
+/// callers must persist/export them as-is, never reserialize after hashing.
 /// </summary>
 internal static class AuditEventSerializer
 {
     internal const int MaximumLineBytes = 65_536;
     internal const string LegacySchemaVersion = "ptk.audit/1";
     internal const string CurrentSchemaVersion = "ptk.audit/2";
+    internal const string ResilientSchemaVersion = AuditHostSnapshotCodec.SchemaVersion;
     private const string TimestampFormat = "yyyy-MM-dd'T'HH:mm:ss.fffffff'Z'";
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+    private static readonly JavaScriptEncoder Version3Encoder =
+        JavaScriptEncoder.Create(UnicodeRanges.All);
 
     private static readonly HashSet<string> BindingKinds =
         new(["default", "dynamic", "template"], StringComparer.Ordinal);
@@ -254,10 +259,55 @@ internal static class AuditEventSerializer
         AuditEventInput input,
         Guid eventId,
         DateTimeOffset occurredUtc,
+        DateTimeOffset observedUtc) =>
+        SerializeCore(
+            CurrentSchemaVersion,
+            host: null,
+            sequence,
+            previousEventHash,
+            producer,
+            input,
+            eventId,
+            occurredUtc,
+            observedUtc);
+
+    internal static SerializedAuditEvent SerializeVersion3(
+        long sequence,
+        string? previousEventHash,
+        AuditProducerContext producer,
+        AuditHostSnapshot host,
+        AuditEventInput input,
+        Guid eventId,
+        DateTimeOffset occurredUtc,
+        DateTimeOffset observedUtc)
+    {
+        ArgumentNullException.ThrowIfNull(host);
+        return SerializeCore(
+            ResilientSchemaVersion,
+            host,
+            sequence,
+            previousEventHash,
+            producer,
+            input,
+            eventId,
+            occurredUtc,
+            observedUtc);
+    }
+
+    private static SerializedAuditEvent SerializeCore(
+        string schemaVersion,
+        AuditHostSnapshot? host,
+        long sequence,
+        string? previousEventHash,
+        AuditProducerContext producer,
+        AuditEventInput input,
+        Guid eventId,
+        DateTimeOffset occurredUtc,
         DateTimeOffset observedUtc)
     {
         ArgumentNullException.ThrowIfNull(producer);
         ArgumentNullException.ThrowIfNull(input);
+        if (host is not null) AuditHostSnapshotCodec.ValidateForSerialization(host);
 
         var normalized = Validate(
             sequence,
@@ -271,13 +321,20 @@ internal static class AuditEventSerializer
         var buffer = new ArrayBufferWriter<byte>(4096);
         using (var writer = new Utf8JsonWriter(buffer, new JsonWriterOptions
         {
-            Encoder = JavaScriptEncoder.Default,
+            Encoder = string.Equals(
+                schemaVersion,
+                ResilientSchemaVersion,
+                StringComparison.Ordinal)
+                ? Version3Encoder
+                : JavaScriptEncoder.Default,
             Indented = false,
             SkipValidation = false
         }))
         {
             WritePreHashEvent(
                 writer,
+                schemaVersion,
+                host,
                 sequence,
                 previousEventHash,
                 producer,
@@ -809,6 +866,8 @@ internal static class AuditEventSerializer
 
     private static void WritePreHashEvent(
         Utf8JsonWriter writer,
+        string schemaVersion,
+        AuditHostSnapshot? host,
         long sequence,
         string? previousEventHash,
         AuditProducerContext producer,
@@ -820,7 +879,7 @@ internal static class AuditEventSerializer
         string[] permittedFallbacks)
     {
         writer.WriteStartObject();
-        writer.WriteString("schema_version", CurrentSchemaVersion);
+        writer.WriteString("schema_version", schemaVersion);
         writer.WriteString("event_id", FormatUuid(eventId));
         writer.WriteString("event_type", input.EventType);
         writer.WriteString("occurred_utc", FormatTimestamp(occurredUtc));
@@ -834,6 +893,8 @@ internal static class AuditEventSerializer
         writer.WriteString("version", producer.Version);
         WriteString(writer, "binary_digest", producer.BinaryDigest);
         writer.WriteEndObject();
+
+        if (host is not null) AuditHostSnapshotCodec.Write(writer, host);
 
         writer.WriteNumber("sequence", sequence);
         WriteString(writer, "previous_event_hash", previousEventHash);

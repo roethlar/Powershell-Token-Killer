@@ -49,6 +49,7 @@ public sealed class GuardianArchitectureBoundaryTests
         "AuditExportRetrySchedule.cs",
         "AuditExportTransitionRecorder.cs",
         "AuditHealth.cs",
+        "AuditHostSnapshot.cs",
         "AuditJournal.cs",
         "AuditJournalFactory.cs",
         "AuditLiveSpoolReader.cs",
