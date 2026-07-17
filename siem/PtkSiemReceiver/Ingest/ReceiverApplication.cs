@@ -8,82 +8,231 @@ using Microsoft.AspNetCore.Server.Kestrel.Https;
 using Microsoft.Net.Http.Headers;
 using PtkMcpServer.Audit.OtlpWire;
 using PtkSiemReceiver.Configuration;
+using PtkSiemReceiver.Security;
 
 namespace PtkSiemReceiver.Ingest;
 
 internal static class ReceiverApplication
 {
     private const string ProtobufMediaType = "application/x-protobuf";
+    internal const int MaximumTlsMaterialBytes = 4 * 1024 * 1024;
 
     internal static WebApplication Build(
         SiemReceiverOptions options,
         string[]? args = null,
         IIngestCommitter? committer = null,
         TimeProvider? timeProvider = null,
-        Storage.ISqliteIngestFaultInjector? storageFaultInjector = null)
+        Storage.ISqliteIngestFaultInjector? storageFaultInjector = null,
+        ProtectedPathTestHooks? protectedPathTestHooks = null,
+        Action? tlsMaterialAcquiredForTests = null)
     {
         ArgumentNullException.ThrowIfNull(options);
+        RejectMutableStorageCollisions(options);
 
-        var serverCertificate = ReceiverCertificateLoader.LoadServerCertificate(
-            options.ServerCertificatePath,
-            options.ServerCertificateKeyPath);
-        var clientAuthorities = ReceiverCertificateLoader.LoadAuthorities(
-            options.ClientCaBundlePaths);
-        var trustStore = new ReceiverTrustStore(clientAuthorities);
-
+        var sensitiveBuffers = new List<byte[]>();
         try
         {
-            var builder = WebApplication.CreateSlimBuilder(args ?? []);
-            builder.WebHost.ConfigureKestrel(kestrel =>
+            var protectedExternalIdentities = new HashSet<ProtectedPathIdentity>();
+            if (options.ConfigurationIdentity is { } configurationIdentity)
+                protectedExternalIdentities.Add(configurationIdentity);
+
+            var serverCertificateRead = ReadTlsMaterial(
+                options.ServerCertificatePath,
+                "tls_protection",
+                "server_certificate",
+                sensitiveBuffers,
+                protectedPathTestHooks);
+            protectedExternalIdentities.Add(serverCertificateRead.Identity);
+            var serverKeyRead = ReadTlsMaterial(
+                options.ServerCertificateKeyPath,
+                "tls_protection",
+                "server_certificate",
+                sensitiveBuffers,
+                protectedPathTestHooks);
+            protectedExternalIdentities.Add(serverKeyRead.Identity);
+            var authorityReads = options.ClientCaBundlePaths
+                .Select(path => ReadTlsMaterial(
+                    path,
+                    "tls_protection",
+                    "client_ca_bundle",
+                    sensitiveBuffers,
+                    protectedPathTestHooks))
+                .ToArray();
+            foreach (var authorityRead in authorityReads)
+                protectedExternalIdentities.Add(authorityRead.Identity);
+            if (options.OperatorHttpsCertificatePath is not null)
             {
-                kestrel.AddServerHeader = false;
-                kestrel.Limits.MaxRequestBodySize = null;
-                kestrel.Listen(options.IngestBindAddress, options.IngestPort, listen =>
+                var operatorCertificateRead = ReadTlsMaterial(
+                    options.OperatorHttpsCertificatePath,
+                    "operator_https_material",
+                    "operator_https_material",
+                    sensitiveBuffers,
+                    protectedPathTestHooks);
+                protectedExternalIdentities.Add(operatorCertificateRead.Identity);
+                var operatorKeyRead = ReadTlsMaterial(
+                    options.OperatorHttpsCertificateKeyPath!,
+                    "operator_https_material",
+                    "operator_https_material",
+                    sensitiveBuffers,
+                    protectedPathTestHooks);
+                protectedExternalIdentities.Add(operatorKeyRead.Identity);
+            }
+
+            tlsMaterialAcquiredForTests?.Invoke();
+            var serverCertificate = ReceiverCertificateLoader.LoadServerCertificate(
+                serverCertificateRead.Bytes,
+                serverKeyRead.Bytes);
+            IReadOnlyList<X509Certificate2> clientAuthorities;
+            try
+            {
+                clientAuthorities = ReceiverCertificateLoader.LoadAuthorities(
+                    authorityReads.Select(read => read.Bytes).ToArray());
+            }
+            catch
+            {
+                serverCertificate.Dispose();
+                throw;
+            }
+            var trustStore = new ReceiverTrustStore(clientAuthorities);
+            Storage.SqliteIngestStore? ownedStore = null;
+            WebApplication? application = null;
+            try
+            {
+                if (committer is null)
                 {
-                    listen.Protocols = HttpProtocols.Http1AndHttp2;
-                    listen.UseHttps(new HttpsConnectionAdapterOptions
+                    // Open and complete storage protection before Kestrel can bind.
+                    ownedStore = Storage.SqliteIngestStore.Open(
+                        options.SqlitePath,
+                        storageFaultInjector,
+                        protectedPathTestHooks,
+                        protectedExternalIdentities);
+                }
+
+                var builder = WebApplication.CreateSlimBuilder(args ?? []);
+                builder.WebHost.ConfigureKestrel(kestrel =>
+                {
+                    kestrel.AddServerHeader = false;
+                    kestrel.Limits.MaxRequestBodySize = null;
+                    kestrel.Listen(options.IngestBindAddress, options.IngestPort, listen =>
                     {
-                        ServerCertificate = serverCertificate,
-                        ClientCertificateMode = ClientCertificateMode.RequireCertificate,
-                        ClientCertificateValidation = (certificate, chain, errors) =>
-                            ClientCertificateValidator.Validate(
-                                certificate,
-                                chain,
-                                errors,
-                                trustStore.Authorities,
-                                options.RevocationCheckMode),
-                        SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                        listen.Protocols = HttpProtocols.Http1AndHttp2;
+                        listen.UseHttps(new HttpsConnectionAdapterOptions
+                        {
+                            ServerCertificate = serverCertificate,
+                            ClientCertificateMode = ClientCertificateMode.RequireCertificate,
+                            ClientCertificateValidation = (certificate, chain, errors) =>
+                                ClientCertificateValidator.Validate(
+                                    certificate,
+                                    chain,
+                                    errors,
+                                    trustStore.Authorities,
+                                    options.RevocationCheckMode),
+                            SslProtocols = SslProtocols.Tls12 | SslProtocols.Tls13,
+                        });
                     });
                 });
-            });
 
-            builder.Services.AddSingleton(options);
-            builder.Services.AddSingleton(serverCertificate);
-            builder.Services.AddSingleton(trustStore);
-            builder.Services.AddSingleton(timeProvider ?? TimeProvider.System);
-            if (committer is null)
-            {
-                builder.Services.AddSingleton<IIngestCommitter>(serviceProvider =>
-                    Storage.SqliteIngestStore.Open(
-                        serviceProvider.GetRequiredService<SiemReceiverOptions>().SqlitePath,
-                        storageFaultInjector));
-            }
-            else
-            {
-                builder.Services.AddSingleton(committer);
-            }
-            builder.Services.AddHostedService<ReceiverLifecycleService>();
+                builder.Services.AddSingleton(options);
+                builder.Services.AddSingleton<X509Certificate2>(_ => serverCertificate);
+                builder.Services.AddSingleton<ReceiverTrustStore>(_ => trustStore);
+                builder.Services.AddSingleton(timeProvider ?? TimeProvider.System);
+                if (ownedStore is not null)
+                {
+                    builder.Services.AddSingleton<IIngestCommitter>(_ => ownedStore);
+                }
+                else
+                {
+                    builder.Services.AddSingleton(committer!);
+                }
+                builder.Services.AddHostedService<ReceiverLifecycleService>();
 
-            var application = builder.Build();
-            application.MapPost("/v1/logs", HandleIngestAsync);
-            return application;
+                application = builder.Build();
+                // Ensure the container owns all captured disposable singletons.
+                _ = application.Services.GetRequiredService<X509Certificate2>();
+                _ = application.Services.GetRequiredService<ReceiverTrustStore>();
+                _ = application.Services.GetRequiredService<IIngestCommitter>();
+                application.MapPost("/v1/logs", HandleIngestAsync);
+                return application;
+            }
+            catch
+            {
+                if (application is not null)
+                {
+                    application.DisposeAsync().AsTask().GetAwaiter().GetResult();
+                }
+                else
+                {
+                    ownedStore?.Dispose();
+                    serverCertificate.Dispose();
+                    trustStore.Dispose();
+                }
+                throw;
+            }
         }
-        catch
+        finally
         {
-            serverCertificate.Dispose();
-            trustStore.Dispose();
-            throw;
+            foreach (var buffer in sensitiveBuffers)
+                CryptographicOperations.ZeroMemory(buffer);
         }
+    }
+
+    private static void RejectMutableStorageCollisions(SiemReceiverOptions options)
+    {
+        var comparison = OperatingSystem.IsWindows()
+            ? StringComparison.OrdinalIgnoreCase
+            : StringComparison.Ordinal;
+        var storagePaths = new[]
+        {
+            options.SqlitePath,
+            options.SqlitePath + "-wal",
+            options.SqlitePath + "-shm",
+        };
+        var externalPaths = new List<string>
+        {
+            options.ServerCertificatePath,
+            options.ServerCertificateKeyPath,
+        };
+        externalPaths.AddRange(options.ClientCaBundlePaths);
+        if (options.ConfigurationPath is not null)
+            externalPaths.Add(options.ConfigurationPath);
+        if (options.OperatorHttpsCertificatePath is not null)
+        {
+            externalPaths.Add(options.OperatorHttpsCertificatePath);
+            externalPaths.Add(options.OperatorHttpsCertificateKeyPath!);
+        }
+
+        if (externalPaths.Any(externalPath =>
+                storagePaths.Any(storagePath =>
+                    string.Equals(externalPath, storagePath, comparison))))
+        {
+            throw new SiemReceiverStartupException("protected_path_collision");
+        }
+    }
+
+    private static ProtectedFileRead ReadTlsMaterial(
+        string path,
+        string protectionFailureCode,
+        string emptyFailureCode,
+        ICollection<byte[]> ownedBuffers,
+        ProtectedPathTestHooks? testHooks)
+    {
+        ProtectedFileRead protectedRead;
+        try
+        {
+            protectedRead = SiemProtectedPath.ReadExternalFileWithIdentity(
+                path,
+                MaximumTlsMaterialBytes,
+                testHooks);
+        }
+        catch (ProtectedPathException exception)
+        {
+            throw new SiemReceiverStartupException(protectionFailureCode, exception);
+        }
+
+        ownedBuffers.Add(protectedRead.Bytes);
+        if (protectedRead.Bytes.Length == 0)
+            throw new SiemReceiverStartupException(emptyFailureCode);
+        return protectedRead;
     }
 
     private static async Task HandleIngestAsync(

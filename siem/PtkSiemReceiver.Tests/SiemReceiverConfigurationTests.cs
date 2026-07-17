@@ -1,15 +1,20 @@
 using System.Net;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
 using System.Security.Cryptography.X509Certificates;
+using System.Security.Principal;
 using System.Text;
 using System.Text.Json.Nodes;
 using PtkSiemReceiver.Configuration;
+using PtkSiemReceiver.Ingest;
+using PtkSiemReceiver.Security;
 
 namespace PtkSiemReceiver.Tests;
 
 public sealed class SiemReceiverConfigurationTests : IDisposable
 {
     private readonly string _root =
-        Directory.CreateTempSubdirectory("ptk-siem-config-").FullName;
+        SiemTestFileSystem.CreateProtectedRoot("ptk-siem-config");
 
     public void Dispose()
     {
@@ -29,14 +34,14 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
     [Fact]
     public void Valid_minimal_configuration_loads_typed_values_and_defaults()
     {
-        var options = SiemReceiverConfigurationLoader.Load(
-            WriteConfiguration(ValidConfiguration()));
+        var configurationPath = WriteConfiguration(ValidConfiguration());
+        var options = SiemReceiverConfigurationLoader.Load(configurationPath);
 
         Assert.Equal(IPAddress.Parse("10.0.0.5"), options.IngestBindAddress);
         Assert.Equal(4318, options.IngestPort);
-        Assert.Equal("/etc/ptk-siem/server.pem", options.ServerCertificatePath);
-        Assert.Equal("/etc/ptk-siem/server.key", options.ServerCertificateKeyPath);
-        Assert.Equal(["/etc/ptk-siem/client-ca.pem"], options.ClientCaBundlePaths);
+        Assert.Equal(Path.Combine(_root, "server.pem"), options.ServerCertificatePath);
+        Assert.Equal(Path.Combine(_root, "server.key"), options.ServerCertificateKeyPath);
+        Assert.Equal([Path.Combine(_root, "client-ca.pem")], options.ClientCaBundlePaths);
         Assert.Equal(X509RevocationMode.Offline, options.RevocationCheckMode);
 
         // Documented non-security defaults.
@@ -49,9 +54,10 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
         Assert.Equal("operator-token-for-tests", options.OperatorToken);
         Assert.Null(options.OperatorHttpsCertificatePath);
         Assert.Null(options.OperatorHttpsCertificateKeyPath);
-        Assert.Equal("/var/lib/ptk-siem/events.db", options.SqlitePath);
+        Assert.Equal(Path.Combine(_root, "events.db"), options.SqlitePath);
         Assert.Null(options.RetentionMaxAgeDays);
         Assert.Null(options.RetentionMaxTotalBytes);
+        Assert.Equal(configurationPath, options.ConfigurationPath);
     }
 
     [Fact]
@@ -60,10 +66,12 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
         var configuration = ValidConfiguration();
         configuration.Ingest["maxRequestBytes"] = 4 * 1024 * 1024;
         configuration.Operator["bindAddress"] = "10.0.0.6";
-        configuration.Operator["httpsCertificatePath"] = "/etc/ptk-siem/operator.pem";
-        configuration.Operator["httpsCertificateKeyPath"] = "/etc/ptk-siem/operator.key";
+        configuration.Operator["httpsCertificatePath"] = Path.Combine(_root, "operator.pem");
+        configuration.Operator["httpsCertificateKeyPath"] = Path.Combine(_root, "operator.key");
         configuration.Ingest["clientCaBundlePaths"] =
-            new JsonArray("/etc/ptk-siem/ca-old.pem", "/etc/ptk-siem/ca-new.pem");
+            new JsonArray(
+                Path.Combine(_root, "ca-old.pem"),
+                Path.Combine(_root, "ca-new.pem"));
         configuration.Storage["retention"] = new JsonObject
         {
             ["maxAgeDays"] = 30,
@@ -75,10 +83,14 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
 
         Assert.Equal(4 * 1024 * 1024, options.MaxRequestBytes);
         Assert.Equal(IPAddress.Parse("10.0.0.6"), options.OperatorBindAddress);
-        Assert.Equal("/etc/ptk-siem/operator.pem", options.OperatorHttpsCertificatePath);
-        Assert.Equal("/etc/ptk-siem/operator.key", options.OperatorHttpsCertificateKeyPath);
         Assert.Equal(
-            ["/etc/ptk-siem/ca-old.pem", "/etc/ptk-siem/ca-new.pem"],
+            Path.Combine(_root, "operator.pem"),
+            options.OperatorHttpsCertificatePath);
+        Assert.Equal(
+            Path.Combine(_root, "operator.key"),
+            options.OperatorHttpsCertificateKeyPath);
+        Assert.Equal(
+            [Path.Combine(_root, "ca-old.pem"), Path.Combine(_root, "ca-new.pem")],
             options.ClientCaBundlePaths);
         Assert.Equal(30, options.RetentionMaxAgeDays);
         Assert.Equal(1_073_741_824L, options.RetentionMaxTotalBytes);
@@ -130,6 +142,204 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
     }
 
     [Fact]
+    public void Insecure_configuration_is_rejected_before_parse_without_repair()
+    {
+        var path = WriteConfiguration("{ malformed-before-protection");
+        Broaden(path, isDirectory: false);
+        var before = ProtectionSnapshot(path, isDirectory: false);
+
+        Assert.Equal("config_protection", FailureCodeOf(path));
+        Assert.Equal(before, ProtectionSnapshot(path, isDirectory: false));
+        _ = SiemProtectedPath.ProtectCreatedFile(path);
+    }
+
+    [Fact]
+    public void Insecure_configuration_parent_is_rejected_before_parse_without_repair()
+    {
+        var path = WriteConfiguration("{ malformed-before-parent-protection");
+        Broaden(_root, isDirectory: true);
+        var before = ProtectionSnapshot(_root, isDirectory: true);
+
+        Assert.Equal("config_protection", FailureCodeOf(path));
+        Assert.Equal(before, ProtectionSnapshot(_root, isDirectory: true));
+        _ = SiemProtectedPath.ProtectCreatedDirectory(_root);
+    }
+
+    [Fact]
+    public void Wrong_kind_configuration_is_rejected_as_protection_failure()
+    {
+        var path = Path.Combine(_root, "config-directory");
+        Directory.CreateDirectory(path);
+        _ = SiemProtectedPath.ProtectCreatedDirectory(path);
+
+        Assert.Equal("config_protection", FailureCodeOf(path));
+    }
+
+    [Fact]
+    public void Linked_configuration_is_rejected_before_parse()
+    {
+        var target = WriteConfiguration(ValidConfiguration());
+        var linked = Path.Combine(_root, "linked-config.json");
+        File.CreateSymbolicLink(linked, target);
+
+        Assert.Equal("config_protection", FailureCodeOf(linked));
+    }
+
+    [Fact]
+    public void Configuration_ancestor_redirect_is_rejected_before_parse()
+    {
+        var target = WriteConfiguration(ValidConfiguration());
+        var linkRoot = SiemTestFileSystem.CreateProtectedRoot("ptk-siem-config-link");
+        try
+        {
+            var redirect = Path.Combine(linkRoot, "redirect");
+            Directory.CreateSymbolicLink(redirect, _root);
+            var linked = Path.Combine(redirect, Path.GetFileName(target));
+
+            Assert.Equal("config_protection", FailureCodeOf(linked));
+        }
+        finally
+        {
+            Directory.Delete(linkRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void Configuration_file_and_parent_have_independent_wrong_owner_guards(bool parent)
+    {
+        var path = WriteConfiguration(ValidConfiguration());
+        var target = parent ? _root : path;
+        var hooks = WrongOwnerHooks(target, parent);
+
+        var exception = Assert.Throws<SiemReceiverConfigurationException>(() =>
+            SiemReceiverConfigurationLoader.Load(path, hooks));
+
+        Assert.Equal("config_protection", exception.FailureCode);
+    }
+
+    [Fact]
+    public void Configuration_parent_replacement_barrier_rejects_namespace_swap()
+    {
+        var originalParent = Path.Combine(_root, "original-parent");
+        var replacementParent = Path.Combine(_root, "replacement-parent");
+        Directory.CreateDirectory(originalParent);
+        Directory.CreateDirectory(replacementParent);
+        _ = SiemProtectedPath.ProtectCreatedDirectory(originalParent);
+        _ = SiemProtectedPath.ProtectCreatedDirectory(replacementParent);
+        var original = SiemTestFileSystem.WriteProtectedText(
+            originalParent,
+            "config.json",
+            ValidConfiguration().Node.ToJsonString());
+        _ = SiemTestFileSystem.WriteProtectedText(
+            replacementParent,
+            "config.json",
+            "{ replacement must never parse");
+        var displaced = Path.Combine(_root, "displaced-parent");
+
+        var exception = Assert.Throws<SiemReceiverConfigurationException>(() =>
+            SiemReceiverConfigurationLoader.Load(
+                original,
+                new ProtectedPathTestHooks(AfterInitialDirectoryIdentity: _ =>
+                {
+                    Directory.Move(originalParent, displaced);
+                    Directory.Move(replacementParent, originalParent);
+                })));
+
+        Assert.Equal("config_protection", exception.FailureCode);
+    }
+
+    [Fact]
+    public void Configuration_file_cannot_alias_mutable_sqlite_storage()
+    {
+        var path = Path.Combine(_root, "self-alias.db");
+        var configuration = ValidConfiguration();
+        configuration.Storage["sqlitePath"] = path;
+        File.WriteAllText(path, configuration.Node.ToJsonString());
+        _ = SiemProtectedPath.ProtectCreatedFile(path);
+        var options = SiemReceiverConfigurationLoader.Load(path);
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            ReceiverApplication.Build(
+                options,
+                committer: new RecordingIngestCommitter()));
+
+        Assert.Equal("protected_path_collision", exception.FailureCode);
+    }
+
+    [Fact]
+    public void Configuration_replacement_barrier_never_accepts_replacement_token()
+    {
+        var originalConfiguration = ValidConfiguration();
+        originalConfiguration.Operator["token"] = "original-token";
+        var replacementConfiguration = ValidConfiguration();
+        replacementConfiguration.Operator["token"] = "replacement-token";
+        var original = WriteConfiguration(originalConfiguration);
+        var replacement = WriteConfiguration(replacementConfiguration);
+        SiemReceiverOptions? observed = null;
+
+        var error = Record.Exception(() =>
+        {
+            observed = SiemReceiverConfigurationLoader.Load(
+                original,
+                new ProtectedPathTestHooks(AfterInitialFileIdentity: _ =>
+                    File.Move(replacement, original, overwrite: true)));
+        });
+
+        if (error is null)
+            Assert.Equal("original-token", observed!.OperatorToken);
+        else
+            Assert.Equal(
+                "config_protection",
+                Assert.IsType<SiemReceiverConfigurationException>(error).FailureCode);
+        Assert.NotEqual("replacement-token", observed?.OperatorToken);
+    }
+
+    [Theory]
+    [InlineData("serverCertificatePath", "server_certificate_path")]
+    [InlineData("serverCertificateKeyPath", "server_certificate_key_path")]
+    [InlineData("clientCaBundlePaths", "client_ca_bundle")]
+    [InlineData("operatorHttpsCertificatePath", "operator_https_pair")]
+    [InlineData("operatorHttpsCertificateKeyPath", "operator_https_pair")]
+    [InlineData("sqlitePath", "storage_sqlite_path")]
+    public void Every_configured_filesystem_path_must_be_absolute(
+        string role,
+        string expectedFailureCode)
+    {
+        var configuration = ValidConfiguration();
+        switch (role)
+        {
+            case "serverCertificatePath":
+            case "serverCertificateKeyPath":
+                configuration.Ingest[role] = "relative.pem";
+                break;
+            case "clientCaBundlePaths":
+                configuration.Ingest[role] = new JsonArray("relative-ca.pem");
+                break;
+            case "operatorHttpsCertificatePath":
+                configuration.Operator["httpsCertificatePath"] = "relative-operator.pem";
+                configuration.Operator["httpsCertificateKeyPath"] =
+                    Path.Combine(_root, "operator.key");
+                break;
+            case "operatorHttpsCertificateKeyPath":
+                configuration.Operator["httpsCertificatePath"] =
+                    Path.Combine(_root, "operator.pem");
+                configuration.Operator["httpsCertificateKeyPath"] = "relative-operator.key";
+                break;
+            case "sqlitePath":
+                configuration.Storage[role] = "relative.db";
+                break;
+            default:
+                throw new InvalidOperationException(role);
+        }
+
+        Assert.Equal(
+            expectedFailureCode,
+            FailureCodeOf(WriteConfiguration(configuration)));
+    }
+
+    [Fact]
     public void Oversized_configuration_is_rejected()
     {
         var path = WriteConfiguration(new string(
@@ -150,6 +360,7 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
         var path = Path.Combine(_root, "bom.json");
         var body = Encoding.UTF8.GetBytes(ValidConfiguration().Node.ToJsonString());
         File.WriteAllBytes(path, [0xEF, 0xBB, 0xBF, .. body]);
+        _ = SiemProtectedPath.ProtectCreatedFile(path);
         Assert.Equal("config_json", FailureCodeOf(path));
     }
 
@@ -158,6 +369,7 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
     {
         var path = Path.Combine(_root, "invalid-utf8.json");
         File.WriteAllBytes(path, [0x7B, 0xFF, 0xFE, 0x7D]);
+        _ = SiemProtectedPath.ProtectCreatedFile(path);
         Assert.Equal("config_json", FailureCodeOf(path));
     }
 
@@ -465,15 +677,15 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
 
     // ---- helpers ------------------------------------------------------------
 
-    private static ConfigurationUnderTest ValidConfiguration() => new(new JsonObject
+    private ConfigurationUnderTest ValidConfiguration() => new(new JsonObject
     {
         ["ingest"] = new JsonObject
         {
             ["bindAddress"] = "10.0.0.5",
             ["port"] = 4318,
-            ["serverCertificatePath"] = "/etc/ptk-siem/server.pem",
-            ["serverCertificateKeyPath"] = "/etc/ptk-siem/server.key",
-            ["clientCaBundlePaths"] = new JsonArray("/etc/ptk-siem/client-ca.pem"),
+            ["serverCertificatePath"] = Path.Combine(_root, "server.pem"),
+            ["serverCertificateKeyPath"] = Path.Combine(_root, "server.key"),
+            ["clientCaBundlePaths"] = new JsonArray(Path.Combine(_root, "client-ca.pem")),
             ["revocationCheckMode"] = "Offline",
         },
         ["operator"] = new JsonObject
@@ -483,7 +695,7 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
         },
         ["storage"] = new JsonObject
         {
-            ["sqlitePath"] = "/var/lib/ptk-siem/events.db",
+            ["sqlitePath"] = Path.Combine(_root, "events.db"),
         },
     });
 
@@ -494,6 +706,7 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
     {
         var path = Path.Combine(_root, Guid.NewGuid().ToString("n") + ".json");
         File.WriteAllText(path, text);
+        _ = SiemProtectedPath.ProtectCreatedFile(path);
         return path;
     }
 
@@ -502,6 +715,85 @@ public sealed class SiemReceiverConfigurationTests : IDisposable
         var exception = Assert.Throws<SiemReceiverConfigurationException>(
             () => SiemReceiverConfigurationLoader.Load(path));
         return exception.FailureCode;
+    }
+
+    private static ProtectedPathTestHooks WrongOwnerHooks(string target, bool directory)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            var effective = UnixProtectedPathNative.EffectiveUserId;
+            var different = effective == uint.MaxValue ? effective - 1 : effective + 1;
+            return new ProtectedPathTestHooks(
+                ExpectedUnixUserIdForPath: (candidate, candidateIsDirectory) =>
+                    candidateIsDirectory == directory && PathsEqual(candidate, target)
+                        ? different
+                        : null);
+        }
+
+        var foreignSid = new SecurityIdentifier(WellKnownSidType.LocalSystemSid, null).Value;
+        return new ProtectedPathTestHooks(
+            ExpectedWindowsOwnerSidForPath: (candidate, candidateIsDirectory) =>
+                candidateIsDirectory == directory && PathsEqual(candidate, target)
+                    ? foreignSid
+                    : null);
+    }
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
+
+    private static void Broaden(string path, bool isDirectory)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(
+                path,
+                isDirectory
+                    ? SiemProtectedPath.OwnerDirectoryMode |
+                      UnixFileMode.GroupRead |
+                      UnixFileMode.GroupExecute
+                    : SiemProtectedPath.OwnerFileMode | UnixFileMode.GroupRead);
+            return;
+        }
+
+        AddWindowsWorldRead(path, isDirectory);
+    }
+
+    private static string ProtectionSnapshot(string path, bool isDirectory)
+    {
+        if (!OperatingSystem.IsWindows())
+            return File.GetUnixFileMode(path).ToString();
+        return SnapshotWindowsAcl(path, isDirectory);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void AddWindowsWorldRead(string path, bool isDirectory)
+    {
+        FileSystemSecurity security = isDirectory
+            ? FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path))
+            : FileSystemAclExtensions.GetAccessControl(new FileInfo(path));
+        security.AddAccessRule(new FileSystemAccessRule(
+            new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+            FileSystemRights.Read,
+            AccessControlType.Allow));
+        if (isDirectory)
+            FileSystemAclExtensions.SetAccessControl(new DirectoryInfo(path), (DirectorySecurity)security);
+        else
+            FileSystemAclExtensions.SetAccessControl(new FileInfo(path), (FileSecurity)security);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string SnapshotWindowsAcl(string path, bool isDirectory)
+    {
+        FileSystemSecurity security = isDirectory
+            ? FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path))
+            : FileSystemAclExtensions.GetAccessControl(new FileInfo(path));
+        return security.GetSecurityDescriptorSddlForm(
+            AccessControlSections.Owner | AccessControlSections.Access);
     }
 
     private sealed record ConfigurationUnderTest(JsonObject Node)

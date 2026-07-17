@@ -1,20 +1,27 @@
 using System.Net.Security;
 using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
+using System.Text;
 
 namespace PtkSiemReceiver.Ingest;
 
 internal static class ReceiverCertificateLoader
 {
+    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
+
     internal static X509Certificate2 LoadServerCertificate(
-        string certificatePath,
-        string privateKeyPath)
+        ReadOnlySpan<byte> certificatePem,
+        ReadOnlySpan<byte> privateKeyPem)
     {
+        char[]? certificateCharacters = null;
+        char[]? privateKeyCharacters = null;
         try
         {
-            using var loaded = X509Certificate2.CreateFromPemFile(
-                certificatePath,
-                privateKeyPath);
+            certificateCharacters = DecodePem(certificatePem);
+            privateKeyCharacters = DecodePem(privateKeyPem);
+            using var loaded = X509Certificate2.CreateFromPem(
+                certificateCharacters,
+                privateKeyCharacters);
             var pkcs12 = loaded.Export(X509ContentType.Pkcs12, string.Empty);
             try
             {
@@ -30,32 +37,52 @@ internal static class ReceiverCertificateLoader
         }
         catch (Exception exception) when (!IsFatal(exception))
         {
-            throw new SiemReceiverStartupException("server_certificate", exception);
+            throw new SiemReceiverStartupException("server_certificate");
+        }
+        finally
+        {
+            Clear(certificateCharacters);
+            Clear(privateKeyCharacters);
         }
     }
 
     internal static IReadOnlyList<X509Certificate2> LoadAuthorities(
-        IReadOnlyList<string> bundlePaths)
+        IReadOnlyList<byte[]> bundleBytes)
     {
         var authorities = new List<X509Certificate2>();
         try
         {
-            foreach (var path in bundlePaths)
+            foreach (var bytes in bundleBytes)
             {
                 var bundle = new X509Certificate2Collection();
-                bundle.ImportFromPemFile(path);
-                foreach (var certificate in bundle)
+                char[]? characters = null;
+                var transferred = false;
+                try
                 {
-                    if (!certificate.Extensions.OfType<X509BasicConstraintsExtension>()
-                            .Any(extension => extension.CertificateAuthority))
-                    {
-                        certificate.Dispose();
+                    characters = DecodePem(bytes);
+                    bundle.ImportFromPem(characters);
+                    if (bundle.Count == 0)
                         throw new SiemReceiverStartupException("client_ca_bundle");
+                    foreach (var certificate in bundle.Cast<X509Certificate2>())
+                    {
+                        if (!certificate.Extensions.OfType<X509BasicConstraintsExtension>()
+                                .Any(extension => extension.CertificateAuthority))
+                        {
+                            throw new SiemReceiverStartupException("client_ca_bundle");
+                        }
                     }
-                    authorities.Add(certificate);
+                    authorities.AddRange(bundle.Cast<X509Certificate2>());
+                    transferred = true;
                 }
-                if (bundle.Count == 0)
-                    throw new SiemReceiverStartupException("client_ca_bundle");
+                finally
+                {
+                    Clear(characters);
+                    if (!transferred)
+                    {
+                        foreach (var certificate in bundle.Cast<X509Certificate2>())
+                            certificate.Dispose();
+                    }
+                }
             }
 
             if (authorities.Count == 0)
@@ -70,8 +97,21 @@ internal static class ReceiverCertificateLoader
         catch (Exception exception) when (!IsFatal(exception))
         {
             foreach (var authority in authorities) authority.Dispose();
-            throw new SiemReceiverStartupException("client_ca_bundle", exception);
+            throw new SiemReceiverStartupException("client_ca_bundle");
         }
+    }
+
+    private static char[] DecodePem(ReadOnlySpan<byte> bytes)
+    {
+        var characters = new char[StrictUtf8.GetCharCount(bytes)];
+        StrictUtf8.GetChars(bytes, characters);
+        return characters;
+    }
+
+    private static void Clear(char[]? characters)
+    {
+        if (characters is not null)
+            Array.Clear(characters);
     }
 
     private static bool IsFatal(Exception exception) =>
