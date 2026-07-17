@@ -266,10 +266,30 @@ internal sealed class PrivateHostServer
         var message = await _reader.ReadAsync(cancellationToken).ConfigureAwait(false);
         if (message is null)
             throw Protocol("unexpected_eof", "Private guardian channel ended during initialization.");
-        ValidateIdentity(message);
-        return message as TMessage ?? throw Protocol(
-            detailCode,
-            $"Expected private message '{typeof(TMessage).Name}'.");
+        return RequireMessage<TMessage>(message, detailCode);
+    }
+
+    internal TMessage RequireMessage<TMessage>(
+        GuardianHostMessage message,
+        string detailCode)
+        where TMessage : GuardianHostMessage
+    {
+        ArgumentNullException.ThrowIfNull(message);
+        ArgumentException.ThrowIfNullOrWhiteSpace(detailCode);
+
+        try
+        {
+            ValidateIdentity(message);
+            return message as TMessage ?? throw Protocol(
+                detailCode,
+                $"Expected private message '{typeof(TMessage).Name}'.");
+        }
+        catch
+        {
+            if (message is IDisposable disposable)
+                disposable.Dispose();
+            throw;
+        }
     }
 
     private void ValidateIdentity(GuardianHostMessage message)

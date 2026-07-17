@@ -339,6 +339,48 @@ public sealed class PrivateHostServerTests
     }
 
     [Fact]
+    public void Rejected_raw_initialization_frames_are_disposed()
+    {
+        using var guardianToHost = new ChannelStream();
+        using var hostToGuardian = new ChannelStream();
+        var server = NewServer(guardianToHost, hostToGuardian);
+        var rawBytes = Enumerable.Repeat((byte)0xa5, 32).ToArray();
+        var wrongStage = new ManifestChunkRequest(
+            Guardian,
+            Host,
+            Generation,
+            new PrivateRequestId(1),
+            ManifestId,
+            chunkIndex: 0,
+            rawBytes);
+
+        var wrongStageFailure = Assert.Throws<GuardianHostProtocolException>(() =>
+            server.RequireMessage<ManifestHeaderRequest>(
+                wrongStage,
+                "manifest_header_required"));
+
+        Assert.Equal("manifest_header_required", wrongStageFailure.DetailCode);
+        Assert.Throws<ObjectDisposedException>(() => wrongStage.GetRawBytes());
+
+        var wrongIdentity = new ManifestChunkRequest(
+            new GuardianBootId(Guid.Parse("dddddddd-dddd-4ddd-8ddd-dddddddddddd")),
+            Host,
+            Generation,
+            new PrivateRequestId(2),
+            ManifestId,
+            chunkIndex: 0,
+            rawBytes);
+
+        var wrongIdentityFailure = Assert.Throws<GuardianHostProtocolException>(() =>
+            server.RequireMessage<ManifestChunkRequest>(
+                wrongIdentity,
+                "manifest_chunk_required"));
+
+        Assert.Equal("identity_mismatch", wrongIdentityFailure.DetailCode);
+        Assert.Throws<ObjectDisposedException>(() => wrongIdentity.GetRawBytes());
+    }
+
+    [Fact]
     public void Private_initialization_server_remains_unwired_from_runtime_and_mcp_execution()
     {
         var source = File.ReadAllText(PrivateHostServerSourcePath());
