@@ -810,6 +810,63 @@ public sealed class GuardianHostLifecycleControllerTests
     }
 
     [Fact]
+    public async Task Lifecycle_shutdown_claim_precedes_containment_disposal_gate()
+    {
+        var rig = new TestRig();
+        var attempt = StartReady(rig);
+        Assert.Equal(
+            GuardianHostLifecycleLossDisposition.BeganContainment,
+            rig.Controller.ReportLoss(attempt, GuardianHostLossReason.Exit));
+        var old = Assert.Single(rig.Factory.Resources);
+        var disposeEntered = old.BlockDispose();
+
+        var confirmation = Task.Run(() => rig.Controller.ConfirmContainment(attempt));
+        await disposeEntered.WaitAsync(TimeSpan.FromSeconds(5));
+        var shutdown = Task.Run(async () => await rig.Controller.ShutdownAsync());
+        var claimed = SpinWait.SpinUntil(
+            () => rig.Controller.TerminalShutdownClaimed,
+            TimeSpan.FromSeconds(5));
+        old.ReleaseDispose();
+
+        Assert.True(claimed);
+        var confirmed = await confirmation.WaitAsync(TimeSpan.FromSeconds(5));
+        await shutdown.WaitAsync(TimeSpan.FromSeconds(5));
+        Assert.Equal(GuardianHostContainmentDisposition.Confirmed, confirmed.Disposition);
+        Assert.Null(confirmed.StartedAttempt);
+        Assert.Equal(PublicHostState.Stopped, rig.Controller.Snapshot().Host.State);
+        Assert.Single(rig.Factory.Resources);
+    }
+
+    [Fact]
+    public async Task Terminal_claim_refuses_initial_and_due_recovery_start_edges()
+    {
+        var initial = new TestRig();
+        initial.Controller.ClaimTerminalShutdown();
+
+        Assert.Equal(
+            GuardianHostStartDisposition.Refused,
+            initial.Controller.StartInitial().Disposition);
+        Assert.Empty(initial.Factory.Resources);
+        await initial.Controller.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5));
+
+        var recovery = new TestRig();
+        var first = StartReady(recovery);
+        var second = LoseAndConfirm(recovery, first);
+        Assert.Equal(
+            GuardianHostLifecycleLossDisposition.BeganContainment,
+            recovery.Controller.ReportLoss(second, GuardianHostLossReason.Exit));
+        Assert.Null(recovery.Controller.ConfirmContainment(second).StartedAttempt);
+        recovery.Clock.Advance(TimeSpan.FromMilliseconds(250));
+        recovery.Controller.ClaimTerminalShutdown();
+
+        Assert.Equal(
+            GuardianHostStartDisposition.Refused,
+            recovery.Controller.TryStartDueRecovery().Disposition);
+        Assert.Equal(2, recovery.Factory.Resources.Count);
+        await recovery.Controller.ShutdownAsync().WaitAsync(TimeSpan.FromSeconds(5));
+    }
+
+    [Fact]
     public async Task Unconfirmed_terminal_shutdown_retains_identity_and_never_restarts()
     {
         var rig = new TestRig();
@@ -1033,6 +1090,9 @@ public sealed class GuardianHostLifecycleControllerTests
         private readonly GuardianHostLaunchOutcome _outcome;
         private readonly bool _throwOnLaunch;
         private readonly Action<FakeAttemptResources>? _onLaunch;
+        private readonly TaskCompletionSource<bool> _disposeEntered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private ManualResetEventSlim? _disposeRelease;
 
         internal FakeAttemptResources(
             GuardianHostIdentity identity,
@@ -1055,6 +1115,14 @@ public sealed class GuardianHostLifecycleControllerTests
         internal int BeginContainmentCount { get; private set; }
         internal int DisposeCount { get; private set; }
         internal GuardianHostContainmentDeadline? Deadline { get; private set; }
+
+        internal Task BlockDispose()
+        {
+            _disposeRelease = new ManualResetEventSlim();
+            return _disposeEntered.Task;
+        }
+
+        internal void ReleaseDispose() => _disposeRelease?.Set();
 
         public GuardianHostLaunchOutcome Launch()
         {
@@ -1079,6 +1147,8 @@ public sealed class GuardianHostLifecycleControllerTests
         public void Dispose()
         {
             DisposeCount++;
+            _disposeEntered.TrySetResult(true);
+            _disposeRelease?.Wait();
         }
     }
 

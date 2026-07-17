@@ -279,6 +279,30 @@ public sealed class GuardianHostSupervisorTests
     }
 
     [Fact]
+    public async Task Shutdown_claim_during_containment_disposal_prevents_replacement()
+    {
+        await using var rig = new TestRig(
+            new AttemptPlan(HostBehavior.Respond, AutoConfirmContainment: false),
+            new AttemptPlan(HostBehavior.Respond));
+        await rig.StartAsync();
+        var old = rig.Factory.Resources[0];
+
+        old.Crash();
+        await WaitUntilAsync(() =>
+            rig.Supervisor.SnapshotState().Host.State == PublicHostState.Recovering);
+        var disposeEntered = old.BlockDispose();
+        old.ConfirmContainment();
+        await disposeEntered.WaitAsync(TestTimeout);
+
+        var shutdown = rig.Supervisor.ShutdownAsync();
+        old.ReleaseDispose();
+        await shutdown.WaitAsync(TestTimeout);
+
+        Assert.Equal(PublicHostState.Stopped, rig.Supervisor.SnapshotState().Host.State);
+        Assert.Single(rig.Factory.Resources);
+    }
+
+    [Fact]
     public async Task Failed_generations_open_a_bounded_circuit_without_poll_driven_probes()
     {
         var plans = new List<AttemptPlan>
@@ -773,7 +797,10 @@ public sealed class GuardianHostSupervisorTests
             TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly TaskCompletionSource<bool> _containmentConfirmed = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<bool> _disposeEntered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
         private readonly FakeHostPeer _peer;
+        private ManualResetEventSlim? _disposeRelease;
         private int _launched;
         private int _closed;
         private int _disposed;
@@ -837,9 +864,19 @@ public sealed class GuardianHostSupervisorTests
         internal void ConfirmContainment() =>
             _containmentConfirmed.TrySetResult(true);
 
+        internal Task BlockDispose()
+        {
+            _disposeRelease = new ManualResetEventSlim();
+            return _disposeEntered.Task;
+        }
+
+        internal void ReleaseDispose() => _disposeRelease?.Set();
+
         public void Dispose()
         {
             if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
+            _disposeEntered.TrySetResult(true);
+            _disposeRelease?.Wait();
             _requests.Dispose();
             _events.Dispose();
             _hostExited.TrySetResult(true);

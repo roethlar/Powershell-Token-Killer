@@ -171,6 +171,7 @@ internal sealed class GuardianHostSupervisor :
 
     internal Task ShutdownAsync()
     {
+        _lifecycle.ClaimTerminalShutdown();
         lock (_stateSync)
         {
             _shutdownTask ??= ShutdownCoreAsync();
