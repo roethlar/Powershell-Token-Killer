@@ -153,6 +153,80 @@ public sealed class GuardianHostTypedProtocolTests
     }
 
     [Fact]
+    public void Raw_events_dispose_zero_their_owned_bytes_and_refuse_reuse()
+    {
+        byte[] diagnosticSource = [0x41, 0x42, 0x43, 0x44];
+        byte[] outputSource = [0x51, 0x52, 0x53, 0x54];
+        GuardianHostEvent[] rawEvents =
+        [
+            new WorkerDiagnosticChunkEvent(
+                Guardian,
+                Host,
+                HostGeneration,
+                EventSequence(90),
+                RequestId(10),
+                Alias,
+                Transition,
+                Worker,
+                OperationIdentity,
+                GuardianHostDiagnosticStream.Stdout,
+                chunkIndex: 0,
+                offset: 0,
+                diagnosticSource,
+                endOfStream: true),
+            new OutputChunkEvent(
+                Guardian,
+                Host,
+                HostGeneration,
+                EventSequence(91),
+                RequestId(11),
+                Alias,
+                Transition,
+                Worker,
+                OperationIdentity,
+                OutputToken,
+                chunkIndex: 0,
+                offset: 0,
+                outputSource),
+        ];
+
+        foreach (var rawEvent in rawEvents)
+        {
+            var field = rawEvent.GetType().GetField(
+                "_rawBytes",
+                BindingFlags.Instance | BindingFlags.NonPublic);
+            var owned = Assert.IsType<byte[]>(field!.GetValue(rawEvent));
+            var expected = rawEvent is WorkerDiagnosticChunkEvent
+                ? diagnosticSource
+                : outputSource;
+            var rawByteCount = rawEvent switch
+            {
+                WorkerDiagnosticChunkEvent value => value.RawByteCount,
+                OutputChunkEvent value => value.RawByteCount,
+                _ => throw new InvalidOperationException(),
+            };
+
+            Assert.NotSame(expected, owned);
+            Assert.Equal(expected, owned);
+            Assert.Equal(expected.Length, rawByteCount);
+
+            ((IDisposable)rawEvent).Dispose();
+
+            Assert.All(owned, value => Assert.Equal(0, value));
+            Assert.Throws<ObjectDisposedException>(() => rawEvent switch
+            {
+                WorkerDiagnosticChunkEvent value => value.GetRawBytes(),
+                OutputChunkEvent value => value.GetRawBytes(),
+                _ => throw new InvalidOperationException(),
+            });
+            Assert.Throws<ObjectDisposedException>(() =>
+                GuardianHostProtocolCodec.Encode(rawEvent));
+            ((IDisposable)rawEvent).Dispose();
+            Assert.Equal(expected.Length, rawByteCount);
+        }
+    }
+
+    [Fact]
     public void Public_codec_surface_exposes_typed_messages_not_raw_dictionary_envelopes()
     {
         var publicTypes = typeof(GuardianHostProtocolCodec).Assembly.GetExportedTypes();

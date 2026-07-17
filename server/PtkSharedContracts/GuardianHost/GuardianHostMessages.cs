@@ -1005,9 +1005,9 @@ public abstract class GuardianHostWorkerDiagnosticEvent : GuardianHostEvent
     public GuardianHostDiagnosticStream Stream { get; }
 }
 
-public sealed class WorkerDiagnosticChunkEvent : GuardianHostWorkerDiagnosticEvent
+public sealed class WorkerDiagnosticChunkEvent : GuardianHostWorkerDiagnosticEvent, IDisposable
 {
-    private readonly byte[] _rawBytes;
+    private byte[]? _rawBytes;
     public WorkerDiagnosticChunkEvent(
         GuardianBootId guardianBootId, HostBootId hostBootId, HostGeneration hostGeneration,
         HostEventSequence eventSequence, PrivateRequestId? requestId, CanonicalAlias sessionAlias,
@@ -1022,17 +1022,30 @@ public sealed class WorkerDiagnosticChunkEvent : GuardianHostWorkerDiagnosticEve
         GuardianHostDtoValidation.RequireRange(rawBytes.Length, 1, ContractLimits.MaximumDiagnosticChunkBytes, nameof(rawBytes));
         if ((long)offset + rawBytes.Length > ContractLimits.MaximumDiagnosticBytesPerStream)
             throw new ArgumentOutOfRangeException(nameof(rawBytes));
-        ChunkIndex = chunkIndex; Offset = offset; _rawBytes = rawBytes.ToArray();
-        RawDigest = Sha256Digest.Compute(_rawBytes); EndOfStream = endOfStream;
+        var owned = rawBytes.ToArray();
+        ChunkIndex = chunkIndex; Offset = offset; _rawBytes = owned;
+        RawByteCount = owned.Length;
+        RawDigest = Sha256Digest.Compute(owned); EndOfStream = endOfStream;
     }
     public override GuardianHostEventType EventType => GuardianHostEventType.WorkerDiagnosticChunk;
     public long ChunkIndex { get; }
     public int Offset { get; }
-    public int RawByteCount => _rawBytes.Length;
+    public int RawByteCount { get; }
     public Sha256Digest RawDigest { get; }
     public bool EndOfStream { get; }
-    public byte[] GetRawBytes() => _rawBytes.ToArray();
-    internal ReadOnlySpan<byte> RawSpan => _rawBytes;
+    public byte[] GetRawBytes() => RawBytesOrThrow().ToArray();
+    internal ReadOnlySpan<byte> RawSpan => RawBytesOrThrow();
+
+    public void Dispose()
+    {
+        var rawBytes = Interlocked.Exchange(ref _rawBytes, null);
+        if (rawBytes is not null)
+            CryptographicOperations.ZeroMemory(rawBytes);
+    }
+
+    private byte[] RawBytesOrThrow() =>
+        Volatile.Read(ref _rawBytes) ??
+        throw new ObjectDisposedException(nameof(WorkerDiagnosticChunkEvent));
 }
 
 public sealed class WorkerDiagnosticTruncatedEvent : GuardianHostWorkerDiagnosticEvent
@@ -1084,9 +1097,9 @@ public sealed class JobLifecycleEvent : GuardianHostEvent
     public Sha256Digest? OutputDigest { get; }
 }
 
-public sealed class OutputChunkEvent : GuardianHostEvent
+public sealed class OutputChunkEvent : GuardianHostEvent, IDisposable
 {
-    private readonly byte[] _rawBytes;
+    private byte[]? _rawBytes;
     public OutputChunkEvent(
         GuardianBootId guardianBootId, HostBootId hostBootId, HostGeneration hostGeneration,
         HostEventSequence eventSequence, PrivateRequestId requestId, CanonicalAlias sessionAlias,
@@ -1103,17 +1116,29 @@ public sealed class OutputChunkEvent : GuardianHostEvent
         GuardianHostDtoValidation.RequireRange(rawBytes.Length, 1, ContractLimits.MaximumOutputChunkBytes, nameof(rawBytes));
         if ((long)offset + rawBytes.Length > ContractLimits.MaximumOutputBytes)
             throw new ArgumentOutOfRangeException(nameof(rawBytes));
+        var owned = rawBytes.ToArray();
         OutputCapabilityToken = outputCapabilityToken; ChunkIndex = chunkIndex; Offset = offset;
-        _rawBytes = rawBytes.ToArray(); RawDigest = Sha256Digest.Compute(_rawBytes);
+        _rawBytes = owned; RawByteCount = owned.Length; RawDigest = Sha256Digest.Compute(owned);
     }
     public override GuardianHostEventType EventType => GuardianHostEventType.OutputChunk;
     public CapabilityToken OutputCapabilityToken { get; }
     public long ChunkIndex { get; }
     public int Offset { get; }
-    public int RawByteCount => _rawBytes.Length;
+    public int RawByteCount { get; }
     public Sha256Digest RawDigest { get; }
-    public byte[] GetRawBytes() => _rawBytes.ToArray();
-    internal ReadOnlySpan<byte> RawSpan => _rawBytes;
+    public byte[] GetRawBytes() => RawBytesOrThrow().ToArray();
+    internal ReadOnlySpan<byte> RawSpan => RawBytesOrThrow();
+
+    public void Dispose()
+    {
+        var rawBytes = Interlocked.Exchange(ref _rawBytes, null);
+        if (rawBytes is not null)
+            CryptographicOperations.ZeroMemory(rawBytes);
+    }
+
+    private byte[] RawBytesOrThrow() =>
+        Volatile.Read(ref _rawBytes) ??
+        throw new ObjectDisposedException(nameof(OutputChunkEvent));
 }
 
 public sealed class OutputSealEvent : GuardianHostEvent
