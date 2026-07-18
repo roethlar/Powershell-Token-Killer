@@ -2673,3 +2673,12 @@ record consistency; accepted), final head `edb26d4`, guard_confirmed
 true, verdict accepted. Suite 1575/1575. Merged to master 2026-07-18,
 merge commit `b7ac20b` (owner-approved); post-merge master check
 ToolSchemaConformanceTests + McpResilienceR0ContractTests 53/53.
+
+---
+
+**Owner triage 2026-07-18:** all 11 open findings triaged to FIX, in
+priority order rbc-1; rbc-5, rbc-6; rbc-7; rbc-2, rbc-8, rbc-9; rbc-10,
+rbc-11, rbc-12; rbc-13. Each fix runs the standard external fixed-SHA
+review loop. Owner pre-approved merge to master for any fix whose
+external review is accepted with guard_confirmed true and a green full
+suite; no per-item merge prompt required for this batch.
