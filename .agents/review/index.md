@@ -2630,10 +2630,10 @@ subsystem, SIEM receiver). Per-finding detail: `.agents/review/findings/rbc-*.md
 
 | ID    | Severity | Impact (one line)                                                          | Status | Branch |
 |-------|----------|----------------------------------------------------------------------------|--------|--------|
-| rbc-1 | BLOCKER  | Cold PS-direct background jobs lack CreateNoWindow and stdout/stderr redirect; native-command output can leak into the MCP transport | `[ ]`  | n/a (intake) |
-| rbc-2 | MAJOR    | AuditRuntimeGate StopCoreAsync does not guarantee server.stopped on session/exporter failure | `[ ]`  | n/a (intake) |
+| rbc-1 | BLOCKER  | Cold PS-direct background jobs lack CreateNoWindow and stdout/stderr redirect; native-command output can leak into the MCP transport | `[x]` merged (`a445038`) | `fix/rbc-1-cold-ps-job-stream-containment` |
+| rbc-2 | MAJOR    | AuditRuntimeGate StopCoreAsync does not guarantee server.stopped on session/exporter failure | `[x]` merged (`a6c4a17`) | `fix/rbc-2-stopcore-server-stopped` |
 | rbc-3 | MAJOR    | AuditRuntimeGate TryCreateCallContext bypasses the lifecycle gate | `[x]` refuted | `fix/rbc-3-callcontext-lifecycle-gate` |
-| rbc-4 | MAJOR    | AuditOtlpHttpExporter TLS revocation disabled by default with no opt-in | `[~]` fixed, pending review | `fix/rbc-4-otlp-revocation-mode` |
+| rbc-4 | MAJOR    | AuditOtlpHttpExporter TLS revocation disabled by default with no opt-in | `[x]` merged (`685d34c`) | `fix/rbc-4-otlp-revocation-mode` |
 | rbc-5 | MAJOR    | Background jobs lack Job Object containment on Windows (foreground workers have it) | `[ ]`  | n/a (intake) |
 | rbc-6 | MAJOR    | No SIGKILL escalation for Unix process trees after SIGTERM grace | `[ ]`  | n/a (intake) |
 | rbc-7 | MAJOR    | OutputStore Read/Search can wedge the store lock on a slow filesystem | `[ ]`  | n/a (intake) |
