@@ -49,7 +49,8 @@ reachable store size.
 
 ## Resolution
 
-Two commits on `fix/ptk-output-schema-draft2020`.
+Branch `fix/ptk-output-schema-draft2020`: two code commits, followed by
+record-only amendments that change no code.
 
 Commit `3505edd` (round-1 head):
 
@@ -77,8 +78,9 @@ Commit `03d2803` (round-2 head):
   retained as a fast early signal.
 - This finding record (`hf-1.md`) first landed in this commit.
 
-A third, docs-only commit amends this record to correct the commit
-attribution above after the round-2 review flagged it.
+Record-only amendments: `5540a6d` corrected the commit attribution
+above after the round-2 review flagged it; later record-only commits
+append review outcomes without touching code.
 
 ## Guard proof
 
@@ -115,5 +117,10 @@ four failures including generated-schema rejection of string
 `minimum`/`maximum`. Remaining blocker was record accuracy: this record
 attributed the generated-schema guard to `3505edd` (where the guard was
 reflection-only and this record did not yet exist) and named `3505edd`
-as the fixed head. Corrected by the docs-only amendment noted in
-Resolution; round-3 re-review dispatched over the record-only delta.
+as the fixed head. Corrected by record-only amendment `5540a6d`.
+
+Round 3 (head `5540a6d`): codex, guard_confirmed **true**, verdict
+**rejected** on record accuracy only — Resolution said "two commits"
+while describing three and left the amendment commit unnamed. Corrected
+by a further record-only amendment naming `5540a6d`; round-4 re-review
+dispatched over the record-only delta.
