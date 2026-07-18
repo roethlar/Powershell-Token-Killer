@@ -1,7 +1,8 @@
 using System.Net;
+using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
-using System.Text;
 using System.Text.Json;
+using PtkSiemReceiver.Security;
 
 namespace PtkSiemReceiver.Configuration;
 
@@ -38,7 +39,9 @@ internal sealed class SiemReceiverOptions
         string? operatorHttpsCertificateKeyPath,
         string sqlitePath,
         int? retentionMaxAgeDays,
-        long? retentionMaxTotalBytes)
+        long? retentionMaxTotalBytes,
+        string? configurationPath = null,
+        ProtectedPathIdentity? configurationIdentity = null)
     {
         IngestBindAddress = ingestBindAddress;
         IngestPort = ingestPort;
@@ -55,6 +58,8 @@ internal sealed class SiemReceiverOptions
         SqlitePath = sqlitePath;
         RetentionMaxAgeDays = retentionMaxAgeDays;
         RetentionMaxTotalBytes = retentionMaxTotalBytes;
+        ConfigurationPath = configurationPath;
+        ConfigurationIdentity = configurationIdentity;
     }
 
     internal IPAddress IngestBindAddress { get; }
@@ -89,6 +94,10 @@ internal sealed class SiemReceiverOptions
 
     internal long? RetentionMaxTotalBytes { get; }
 
+    internal string? ConfigurationPath { get; }
+
+    internal ProtectedPathIdentity? ConfigurationIdentity { get; }
+
     // Never include the operator token (or anything derived from it) here.
     public override string ToString() => "siem receiver configuration";
 }
@@ -99,18 +108,14 @@ internal sealed class SiemReceiverOptions
 /// unknown properties rejected everywhere, actionable single-code failures,
 /// and no fallback defaults for security-relevant fields.
 ///
-/// S1 scope note: this loader validates shape and cross-field semantics only.
-/// Filesystem enforcement for every referenced TLS material / data path
-/// (ownership, 0700/0600 or protected DACL, symlink refusal) is the separate
-/// startup-enforcement work in the plan's later slices and is deliberately
-/// not duplicated here.
+/// The configuration itself crosses the protected-path boundary before any
+/// token or referenced path is parsed. Referenced assets cross the same
+/// boundary in receiver startup before they are consumed.
 /// </summary>
 internal static class SiemReceiverConfigurationLoader
 {
     internal const int MaximumConfigurationBytes = 256 * 1024;
     internal const int DefaultMaxRequestBytes = 1024 * 1024;
-
-    private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     private static readonly HashSet<string> RootProperties = new(StringComparer.Ordinal)
     {
@@ -151,8 +156,12 @@ internal static class SiemReceiverConfigurationLoader
         "maxTotalBytes",
     };
 
-    internal static SiemReceiverOptions Load(string configurationPath)
+    internal static SiemReceiverOptions Load(
+        string configurationPath,
+        ProtectedPathTestHooks? protectedPathTestHooks = null)
     {
+        byte[]? bytes = null;
+        ProtectedPathIdentity? configurationIdentity = null;
         try
         {
             if (string.IsNullOrWhiteSpace(configurationPath) ||
@@ -161,10 +170,25 @@ internal static class SiemReceiverConfigurationLoader
                 Fail("config_path");
             }
 
-            byte[] bytes;
             try
             {
-                bytes = File.ReadAllBytes(Path.GetFullPath(configurationPath));
+                var protectedRead = SiemProtectedPath.ReadExternalFileWithIdentity(
+                    SiemProtectedPath.NormalizeAbsolute(configurationPath),
+                    MaximumConfigurationBytes,
+                    protectedPathTestHooks);
+                bytes = protectedRead.Bytes;
+                configurationIdentity = protectedRead.Identity;
+            }
+            catch (ProtectedPathException exception)
+            {
+                throw new SiemReceiverConfigurationException(
+                    exception.FailureKind switch
+                    {
+                        ProtectedPathFailureKind.TooLarge => "config_bytes",
+                        ProtectedPathFailureKind.Missing => "config_read",
+                        ProtectedPathFailureKind.InvalidPath => "config_path",
+                        _ => "config_protection",
+                    });
             }
             catch (Exception exception) when (
                 exception is IOException or UnauthorizedAccessException)
@@ -172,25 +196,13 @@ internal static class SiemReceiverConfigurationLoader
                 throw new SiemReceiverConfigurationException("config_read");
             }
 
-            if (bytes.Length > MaximumConfigurationBytes)
-                Fail("config_bytes");
             if (bytes.Length == 0 || HasUtf8Bom(bytes))
                 Fail("config_json");
-
-            string text;
-            try
-            {
-                text = StrictUtf8.GetString(bytes);
-            }
-            catch (DecoderFallbackException)
-            {
-                throw new SiemReceiverConfigurationException("config_json");
-            }
 
             JsonDocument document;
             try
             {
-                document = JsonDocument.Parse(text, new JsonDocumentOptions
+                document = JsonDocument.Parse(bytes.AsMemory(), new JsonDocumentOptions
                 {
                     AllowTrailingCommas = false,
                     CommentHandling = JsonCommentHandling.Disallow,
@@ -203,7 +215,10 @@ internal static class SiemReceiverConfigurationLoader
 
             using (document)
             {
-                return Validate(document.RootElement);
+                return Validate(
+                    document.RootElement,
+                    SiemProtectedPath.NormalizeAbsolute(configurationPath),
+                    configurationIdentity.Value);
             }
         }
         catch (SiemReceiverConfigurationException)
@@ -214,9 +229,17 @@ internal static class SiemReceiverConfigurationLoader
         {
             throw new SiemReceiverConfigurationException("load_failed");
         }
+        finally
+        {
+            if (bytes is not null)
+                CryptographicOperations.ZeroMemory(bytes);
+        }
     }
 
-    private static SiemReceiverOptions Validate(JsonElement root)
+    private static SiemReceiverOptions Validate(
+        JsonElement root,
+        string configurationPath,
+        ProtectedPathIdentity configurationIdentity)
     {
         if (root.ValueKind != JsonValueKind.Object)
             Fail("config_root");
@@ -233,9 +256,9 @@ internal static class SiemReceiverConfigurationLoader
             RequiredString(ingest, "bindAddress", "ingest_bind_address"),
             "ingest_bind_address");
         var ingestPort = ParsePort(ingest, "port", "ingest_port");
-        var serverCertificatePath = RequiredString(
+        var serverCertificatePath = RequiredAbsolutePath(
             ingest, "serverCertificatePath", "server_certificate_path");
-        var serverCertificateKeyPath = RequiredString(
+        var serverCertificateKeyPath = RequiredAbsolutePath(
             ingest, "serverCertificateKeyPath", "server_certificate_key_path");
         var clientCaBundlePaths = ParseCaBundlePaths(ingest);
         var revocationCheckMode = ParseRevocationMode(ingest);
@@ -248,9 +271,9 @@ internal static class SiemReceiverConfigurationLoader
             : IPAddress.Loopback;
         var operatorPort = ParsePort(operatorSection, "port", "operator_port");
         var operatorToken = RequiredString(operatorSection, "token", "operator_token");
-        var operatorHttpsCertificatePath = OptionalString(
+        var operatorHttpsCertificatePath = OptionalAbsolutePath(
             operatorSection, "httpsCertificatePath", "operator_https_pair");
-        var operatorHttpsCertificateKeyPath = OptionalString(
+        var operatorHttpsCertificateKeyPath = OptionalAbsolutePath(
             operatorSection, "httpsCertificateKeyPath", "operator_https_pair");
 
         if (operatorHttpsCertificatePath is null != operatorHttpsCertificateKeyPath is null)
@@ -266,7 +289,8 @@ internal static class SiemReceiverConfigurationLoader
         if (operatorPort == ingestPort)
             Fail("operator_port_conflict");
 
-        var sqlitePath = RequiredString(storage, "sqlitePath", "storage_sqlite_path");
+        var sqlitePath = RequiredAbsolutePath(
+            storage, "sqlitePath", "storage_sqlite_path");
 
         int? retentionMaxAgeDays = null;
         long? retentionMaxTotalBytes = null;
@@ -298,7 +322,9 @@ internal static class SiemReceiverConfigurationLoader
             operatorHttpsCertificateKeyPath,
             sqlitePath,
             retentionMaxAgeDays,
-            retentionMaxTotalBytes);
+            retentionMaxTotalBytes,
+            configurationPath,
+            configurationIdentity);
     }
 
     private static void RejectUnknownProperties(JsonElement element, HashSet<string> expected)
@@ -342,6 +368,37 @@ internal static class SiemReceiverConfigurationLoader
         if (string.IsNullOrWhiteSpace(value))
             Fail(failureCode);
         return value;
+    }
+
+    private static string RequiredAbsolutePath(
+        JsonElement parent,
+        string propertyName,
+        string failureCode)
+    {
+        var value = RequiredString(parent, propertyName, failureCode);
+        return NormalizeConfiguredPath(value, failureCode);
+    }
+
+    private static string? OptionalAbsolutePath(
+        JsonElement parent,
+        string propertyName,
+        string failureCode)
+    {
+        var value = OptionalString(parent, propertyName, failureCode);
+        return value is null ? null : NormalizeConfiguredPath(value, failureCode);
+    }
+
+    private static string NormalizeConfiguredPath(string value, string failureCode)
+    {
+        try
+        {
+            return SiemProtectedPath.NormalizeAbsolute(value);
+        }
+        catch (ProtectedPathException)
+        {
+            Fail(failureCode);
+            throw null!;
+        }
     }
 
     private static int ParsePort(JsonElement parent, string propertyName, string failureCode)
@@ -417,10 +474,10 @@ internal static class SiemReceiverConfigurationLoader
                 Fail("client_ca_bundle");
             }
 
-            paths.Add(entry.GetString()!);
+            paths.Add(NormalizeConfiguredPath(entry.GetString()!, "client_ca_bundle"));
         }
 
-        return paths;
+        return Array.AsReadOnly(paths.ToArray());
     }
 
     private static X509RevocationMode ParseRevocationMode(JsonElement ingest)

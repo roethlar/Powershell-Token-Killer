@@ -274,26 +274,32 @@ short and update it when important repo facts change.
 - **Standing GitHub authority:** the owner granted persistent permission on
   2026-07-10 to comment, close, and triage issues in this repository as
   appropriate without per-action asks.
-- **Main-checkout has uncommitted governance-refresh WIP unrelated to product
-  code** (as of handoff 2026-07-17): reviewloop→codereview/openreview split,
-  deleted toolkit manifests, protect-governance hook, and AGENTS.md
-  toolkit-owned wording. Leave it alone unless the owner directs a governance
-  commit; do not fold it into product commits.
-- **Mini-SIEM S3H is complete on isolated branch `plan/mini-siem-storage-hardening`
-  (not on `master`).** Code head `c726a33`, durable record head `3bacbc4`, clean
-  worktree `.claude/worktrees/siem-storage-hardening`. Receiver enforces
-  SIEM-local protected config/TLS reads, POSIX owner/modes, Windows one-ACE
-  DACLs, link/reparse rejection, storage identity-collision checks, and atomic
-  owner-only DB/WAL/SHM startup. Platform matrix and guard evidence are in that
-  worktree's `.agents/machines.md`. S4–S6 and PTK runtime were not touched.
-  Branch is unmerged and unpushed; Grok session stopped after Codex resume
-  (2026-07-17) awaiting owner land/park/review direction.
+- **Mini-SIEM S3H is landed on `master` (no-ff merge, 2026-07-18).** Code head
+  `c726a33` (record head `3bacbc4`) merged from
+  `plan/mini-siem-storage-hardening`; the branch and worktree
+  `.claude/worktrees/siem-storage-hardening` are retained pending owner
+  cleanup direction. The receiver now applies one SIEM-local, fail-closed
+  protected-path boundary before parsing or use: retained identity-stable
+  config/TLS reads, exact numeric-UID POSIX modes plus macOS ACL rejection,
+  exact protected one-ACE Windows DACLs, lexical link/reparse rejection,
+  mutable-storage identity-collision checks, and eager atomic owner-only
+  DB/WAL/SHM startup with live identity revalidation before Kestrel can bind.
+  Existing insecure objects are never repaired. The cross-platform matrix,
+  guard mutations, independent audit, and exact host evidence are recorded in
+  `.agents/machines.md`. This closes current config/TLS/SQLite enforcement;
+  full acceptance row 7 still waits for the later slice that introduces and
+  protects the currently absent custody checkpoint/anchor path.
+- **Uncommitted read-only baseline review (Hermes loop, 2026-07-18) sits in
+  the main checkout:** a modified `.agents/review/index.md` plus untracked
+  `.agents/review/findings/rbc-1.md` through `rbc-13.md` (1 blocker, 12
+  major), all at intake awaiting owner triage. No fixes were written. Leave
+  it uncommitted unless the owner directs otherwise; do not fold it into
+  product commits.
 
 ## Next
 
-1. Owner call on S3H: review, merge `plan/mini-siem-storage-hardening` into
-   `master`, park, or push — do not invent a land path. Work only in the SIEM
-   worktree for that branch; do not mix with main's governance WIP.
+1. Owner call: push `master` (now containing the S3H merge) to `origin`, or
+   keep it local. Push policy requires an explicit ask for merge commits.
 2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures. Do not begin
@@ -355,12 +361,6 @@ short and update it when important repo facts change.
   suite to pass. This does not invalidate that behavior evidence, but a clean
   ARM64 build must not be claimed until the launch failure is resolved or
   independently disproved; see `.agents/machines.md`.
-
-- **Mini-SIEM S3H is implemented on `plan/mini-siem-storage-hardening` but not
-  yet on `master`.** Full product acceptance still waits for that branch to
-  land and for the later slice that introduces and protects the custody
-  checkpoint/anchor path before first use. Do not re-implement S3H on master
-  from scratch.
 
 - **Windows wiring requires a hard supervisor/worker role cutover.**
   `Program.cs`, `BashProcessRunner`, `RtkProcessRunner`, and `JobManager` still

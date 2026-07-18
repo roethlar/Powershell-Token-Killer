@@ -12,6 +12,7 @@ using Microsoft.Extensions.DependencyInjection;
 using PtkMcpServer.Audit.OtlpWire;
 using PtkSiemReceiver.Configuration;
 using PtkSiemReceiver.Ingest;
+using PtkSiemReceiver.Security;
 using PtkSiemReceiver.Storage;
 
 namespace PtkSiemReceiver.Tests;
@@ -20,6 +21,35 @@ namespace PtkSiemReceiver.Tests;
 public sealed class SiemReceiverProcessCollection
 {
     public const string Name = "siem receiver process";
+}
+
+internal static class SiemTestFileSystem
+{
+    internal static string CreateProtectedRoot(string prefix)
+    {
+        var root = Path.Combine(
+            Environment.GetFolderPath(Environment.SpecialFolder.UserProfile),
+            $".{prefix}-{Guid.NewGuid():N}");
+        Directory.CreateDirectory(root);
+        _ = SiemProtectedPath.ProtectCreatedDirectory(root);
+        return root;
+    }
+
+    internal static string WriteProtectedText(string root, string name, string text)
+    {
+        var path = Path.Combine(root, name);
+        File.WriteAllText(path, text);
+        _ = SiemProtectedPath.ProtectCreatedFile(path);
+        return path;
+    }
+
+    internal static string WriteProtectedBytes(string root, string name, byte[] bytes)
+    {
+        var path = Path.Combine(root, name);
+        File.WriteAllBytes(path, bytes);
+        _ = SiemProtectedPath.ProtectCreatedFile(path);
+        return path;
+    }
 }
 
 internal sealed class TestCertificateAuthority : IDisposable
@@ -146,22 +176,24 @@ internal sealed class SiemReceiverTestHost : IAsyncDisposable
         TimeProvider? timeProvider = null,
         ISqliteIngestFaultInjector? storageFaultInjector = null)
     {
-        var root = Path.Combine(Path.GetTempPath(), $"ptk-siem-host-{Guid.NewGuid():N}");
-        Directory.CreateDirectory(root);
+        var root = SiemTestFileSystem.CreateProtectedRoot("ptk-siem-host");
         var certificatePath = Path.Combine(root, "server-cert.pem");
         var keyPath = Path.Combine(root, "server-key.pem");
         var authorityPath = Path.Combine(root, "client-roots.pem");
         await File.WriteAllTextAsync(certificatePath, serverCertificate.ExportCertificatePem());
+        _ = SiemProtectedPath.ProtectCreatedFile(certificatePath);
         using (var key = serverCertificate.GetRSAPrivateKey() ??
                          throw new InvalidOperationException("The test server certificate has no RSA key."))
         {
             await File.WriteAllTextAsync(keyPath, key.ExportPkcs8PrivateKeyPem());
         }
+        _ = SiemProtectedPath.ProtectCreatedFile(keyPath);
         await File.WriteAllTextAsync(
             authorityPath,
             string.Join(
                 Environment.NewLine,
                 trustedClientAuthorities.Select(certificate => certificate.ExportCertificatePem())));
+        _ = SiemProtectedPath.ProtectCreatedFile(authorityPath);
 
         var databasePath = Path.Combine(root, "siem.db");
         var options = new SiemReceiverOptions(
