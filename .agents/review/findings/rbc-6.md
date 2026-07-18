@@ -1,7 +1,10 @@
 # rbc-6: No SIGKILL escalation for Unix process trees after SIGTERM grace
 
 **Severity**: MAJOR
-**Status**: Open (intake, awaiting owner triage)
+**Status**: RESOLVED — refuted at triage 2026-07-18. The reviewed code already
+uses the Unix runtime's immediate SIGKILL tree termination; the claimed
+SIGTERM-only grace and predicted TERM-trap survivor do not exist. No code
+change. External fixed-SHA review pending.
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **Files**: `server/PtkMcpServer/Execution/BashProcessRunner.cs:736-744`,
 `server/PtkMcpServer/Execution/RtkProcessRunner.cs:403-430`
@@ -44,11 +47,43 @@ preserved — the escalation is best-effort containment, not a retry.
 
 ## Guard proof
 
-Not yet written. A guard should launch a child that traps `SIGTERM`
-and sleeps, verify it survives the 2s grace, then verify the `SIGKILL`
-escalation reaps it.
+No product guard is required because no product behavior changes. The triage
+refutation is backed by the .NET 10 runtime source and a direct host probe,
+recorded below, that exercises the exact API used by both runners.
+
+## Triage resolution (2026-07-18, head `2b3ce1a`)
+
+The finding's signal premise is false for the target runtime:
+
+- Both cited production paths already call
+  `Process.Kill(entireProcessTree: true)`. Their two-second
+  `ProcessStopGrace` bounds observation/drain after the kill; it is not a
+  SIGTERM grace period.
+- The official .NET 10 Unix implementation first sends SIGSTOP while it
+  discovers the live tree, then sends SIGKILL to the root and each discovered
+  descendant. `Process.Kill()` itself also sends SIGKILL. Source:
+  <https://github.com/dotnet/runtime/blob/release/10.0/src/libraries/System.Diagnostics.Process/src/System/Diagnostics/Process.Unix.cs>
+  (`Kill`, `KillTree`).
+- A direct probe on Darwin arm64 with .NET SDK 10.0.302 / runtime 10.0.10
+  launched a Bash root that ignored SIGTERM and held a `sleep 300` child,
+  called `Kill(entireProcessTree: true)`, and observed the root exit with code
+  137 and the child dead in under the five-second observation bound. The
+  predicted survivor did not reproduce.
+
+The paused uncommitted implementation on
+`fix/rbc-6-unix-sigkill-escalation` addresses a different condition: a child
+that daemonizes and is reparented before tree discovery. A second direct probe
+confirmed that such a child can outlive a call made after its root has already
+exited. That is not the filed SIGTERM-escalation defect, and the proposed
+server-wide process-group tracker changes lifecycle/containment behavior well
+beyond the finding's approved one-helper scope. It remains preserved as WIP
+and is neither accepted nor committed by this refutation. Treat daemonized-
+descendant containment as a separately scoped question; do not relabel it as
+the rbc-6 fix.
 
 ## Reviewer comments
 
-Read-only review by Hermes subagent (execution/worker subsystem pass).
-No external fixed-SHA review has been dispatched.
+Read-only review by Hermes subagent (execution/worker subsystem pass). Triage
+refutation performed by Codex against the reviewed/current code, official
+.NET 10 Unix source, and the installed .NET 10.0.10 runtime. No external
+fixed-SHA review has been dispatched.
