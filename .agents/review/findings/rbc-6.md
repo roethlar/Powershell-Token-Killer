@@ -4,7 +4,7 @@
 **Status**: RESOLVED — refuted at triage 2026-07-18. The reviewed code already
 uses the Unix runtime's immediate SIGKILL tree termination; the claimed
 SIGTERM-only grace and predicted TERM-trap survivor do not exist. No code
-change. External fixed-SHA review pending.
+change. External fixed-SHA review accepted with `guard_confirmed: true`.
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **Files**: `server/PtkMcpServer/Execution/BashProcessRunner.cs:736-744`,
 `server/PtkMcpServer/Execution/RtkProcessRunner.cs:403-430`
@@ -85,5 +85,22 @@ the rbc-6 fix.
 
 Read-only review by Hermes subagent (execution/worker subsystem pass). Triage
 refutation performed by Codex against the reviewed/current code, official
-.NET 10 Unix source, and the installed .NET 10.0.10 runtime. No external
-fixed-SHA review has been dispatched.
+.NET 10 Unix source, and the installed .NET 10.0.10 runtime.
+
+### External refutation review (dispatched, accepted)
+
+Reviewer: codex / gpt-5.6-sol / high / standard
+Harness: codex-cli 0.144.5 (headless `codex exec --sandbox read-only --json`,
+model/effort pinned at dispatch; JSONL envelope + `--output-schema` payload)
+Reviewed head SHA: d50adcd85d107f9f34b8c48c02f708c0322937e9
+Base SHA: e766e1923bf655fc2385a095d5eec5d4a50351a5 (docs-only diff)
+guard_confirmed: true (reviewer independently inspected the reviewed/current
+runner code and the official .NET 10 Unix implementation, then reproduced the
+SIGTERM-resistant root/child probe on .NET 10.0.10)
+Verdict: **accepted** — the filed SIGTERM-only premise is false; no product
+change or product guard is required for this refutation.
+Timestamp: 2026-07-18T14:56:24Z
+Escalation: none (T1-T5 unmatched; standard at high)
+Record committed: yes (this commit)
+
+Reviewer comments (verbatim): none.
