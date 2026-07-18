@@ -1,7 +1,7 @@
 # rbc-2: AuditRuntimeGate StopCoreAsync does not guarantee server.stopped on session/exporter failure
 
 **Severity**: MAJOR
-**Status**: Fixed on `fix/rbc-2-stopcore-stopped-guarantee` (guard tests green; pending owner review/merge)
+**Status**: Fixed, merged to `master` at `a6c4a17` (guard tests green; owner-approved merge)
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Audit/AuditRuntimeGate.cs:350-362`
 

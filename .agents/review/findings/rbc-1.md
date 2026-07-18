@@ -1,7 +1,7 @@
 # rbc-1: Cold PowerShell-direct background jobs lack stream redirection and CreateNoWindow
 
 **Severity**: BLOCKER
-**Status**: Fixed on `fix/rbc-1-cold-ps-job-stream-containment` (guard test green; pending owner review/merge)
+**Status**: Fixed, merged to `master` at `a445038` (guard test green; owner-approved merge)
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/JobManager.cs:1102-1107`
 
