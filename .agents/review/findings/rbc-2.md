@@ -1,7 +1,7 @@
 # rbc-2: AuditRuntimeGate StopCoreAsync does not guarantee server.stopped on session/exporter failure
 
 **Severity**: MAJOR
-**Status**: Open (intake, awaiting owner triage)
+**Status**: Fixed on `fix/rbc-2-stopcore-stopped-guarantee` (guard tests green; pending owner review/merge)
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Audit/AuditRuntimeGate.cs:350-362`
 
@@ -38,9 +38,29 @@ One method in `AuditRuntimeGate.cs`. No architectural change.
 
 ## Guard proof
 
-Not yet written. A guard should inject a throwing `ISessionLifetime`
-and/or a throwing exporter and assert `lifecycle.Stop()` still runs and
-`server.stopped` is the final journal record.
+Two guards in `AuditRuntimeGateTests`
+(`Failed_runtime_drain_still_records_a_degraded_server_stopped`,
+`Failed_owned_runspace_cleanup_still_records_a_degraded_server_stopped`)
+inject a throwing session-lifetime drain and assert, via
+`AssertDegradedServerStopped`, that `server.stopped` is still appended
+as the final journal record and that its health snapshot carries the
+`session.shutdown` degradation.
+
+Fix: `StopCoreAsync` wraps `sessionLifetime.ShutdownAsync()` in a
+non-fatal try/catch that calls `MarkDrainDegraded("session.shutdown")`
+before `lifecycle?.Stop()`, so the terminal record always lands and
+durably carries the drain failure. `MarkDrainDegraded` never softens an
+existing unhealthy record (its failure class is the recovery key
+consumed by `TryRecoverExternal` on restart) and tolerates a failing
+health surface.
+
+Deliberate deviation from the original "What": `StopExporterAsync`
+stays fail-closed (NOT wrapped). A faulted export pipeline is an
+audit-integrity failure that must not be papered over with a clean
+terminal record; the pre-existing guard
+`Export_loop_failure_prevents_false_server_stopped` still passes
+unchanged. Full `AuditRuntimeGateTests` class: 17 passed, 0 failed.
+Full suite: 1533 passed, 0 failed.
 
 ## Reviewer comments
 

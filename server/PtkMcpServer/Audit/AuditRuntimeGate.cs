@@ -354,11 +354,42 @@ internal sealed class AuditRuntimeGate : IHostedService, IDisposable
         AuditRuntimeResources? resources)
     {
         await activeCalls.ConfigureAwait(false);
-        if (sessionLifetime is not null)
-            await sessionLifetime.ShutdownAsync().ConfigureAwait(false);
+        // Session drain is operational cleanup, not an audit-integrity seam: a
+        // stuck job or runspace must not forfeit the server.stopped terminal
+        // record, or an orderly shutdown becomes indistinguishable from a
+        // crash on replay. The degradation is marked before Stop() so the
+        // terminal event's health snapshot durably carries the drain failure.
+        // Exporter stop stays fail-closed: a faulted export pipeline is an
+        // audit-integrity failure that must not be papered over with a clean
+        // terminal record.
+        try
+        {
+            if (sessionLifetime is not null)
+                await sessionLifetime.ShutdownAsync().ConfigureAwait(false);
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            MarkDrainDegraded("session.shutdown");
+        }
         if (resources is not null)
             await resources.StopExporterAsync().ConfigureAwait(false);
         lifecycle?.Stop();
+    }
+
+    private void MarkDrainDegraded(string failureClass)
+    {
+        try
+        {
+            // Never soften an existing unhealthy record: its failure class is
+            // the recovery key consumed by TryRecoverExternal on restart.
+            if (_health.Snapshot().State is AuditHealthState.Healthy or AuditHealthState.Recovered)
+                _health.MarkDegraded(failureClass);
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            // Keep shutdown on the recorded path even if the health surface
+            // itself is failing; Stop() still captures the current snapshot.
+        }
     }
 
     private void ReleaseActiveCall()
