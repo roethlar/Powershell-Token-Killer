@@ -2135,6 +2135,44 @@ public sealed class JobManagerTests : IDisposable
     }
 
     [Fact]
+    public async Task Cold_direct_job_host_streams_never_reach_the_transport_and_cannot_deadlock()
+    {
+        // rbc-1 guard: [Console]::Out/[Console]::Error write to the child's
+        // process stdout/stderr handles, bypassing the job's `*> log` stream
+        // redirection exactly like a native child would. Without redirection
+        // those handles are the server's inherited stdio (the MCP transport);
+        // without the null-drain, >64KB on either pipe deadlocks the child.
+        System.Diagnostics.ProcessStartInfo? observedStartInfo = null;
+        _jobs.ProcessStartOverrideForTests = process =>
+        {
+            observedStartInfo = process.StartInfo;
+            return process.Start();
+        };
+        var script =
+            "$o = [string]::new('S', 8192)\n" +
+            "$e = [string]::new('E', 8192)\n" +
+            "for ($i = 0; $i -lt 12; $i++) { [Console]::Out.WriteLine($o) }\n" +
+            "for ($i = 0; $i -lt 12; $i++) { [Console]::Error.WriteLine($e) }\n" +
+            "'DIRECT_CONTAINMENT_MARKER'";
+        var job = _jobs.Start(script);
+
+        var final = await WaitForExitAsync(job.Id);
+
+        Assert.NotNull(observedStartInfo);
+        Assert.True(observedStartInfo!.RedirectStandardOutput);
+        Assert.True(observedStartInfo.RedirectStandardError);
+        Assert.True(observedStartInfo.RedirectStandardInput);
+        Assert.False(observedStartInfo.UseShellExecute);
+        Assert.True(observedStartInfo.CreateNoWindow);
+
+        Assert.Equal(0, final.ExitCode);
+        var read = _jobs.ReadOutput(job.Id, 0)!.Value.Text;
+        Assert.Contains("DIRECT_CONTAINMENT_MARKER", read);
+        Assert.DoesNotContain("SSSSSSSS", read, StringComparison.Ordinal);
+        Assert.DoesNotContain("EEEEEEEE", read, StringComparison.Ordinal);
+    }
+
+    [Fact]
     public async Task Offset_paging_returns_only_new_output()
     {
         var job = _jobs.Start("'first'; 'second'");

@@ -851,6 +851,8 @@ public sealed class JobManager : IDisposable
                 try { process.StandardInput.Close(); } catch { }
                 if (plan.ExecutionPath == ExecutionPath.Rtk)
                     InitializeRtkOutputCapture(entry);
+                else
+                    InitializeDirectStreamContainment(entry);
                 _ = ObserveTerminalAsync(plan.Id, entry);
                 return SnapshotLocked(plan.Id, entry);
             }
@@ -1103,7 +1105,13 @@ public sealed class JobManager : IDisposable
         {
             FileName = pwshExecutablePath,
             RedirectStandardInput = true,
+            // rbc-1: without these redirections the cold child inherits the
+            // server's stdio handles, so any native stdout/stderr emitted
+            // inside the job writes straight into the MCP transport stream.
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
             UseShellExecute = false,
+            CreateNoWindow = true,
         };
         if (plan.WorkingDirectory is not null)
             startInfo.WorkingDirectory = plan.WorkingDirectory;
@@ -1302,6 +1310,8 @@ public sealed class JobManager : IDisposable
             try { entry.Process.StandardInput.Close(); } catch { }
             if (entry.Execution.ExecutionPath == ExecutionPath.Rtk)
                 InitializeRtkOutputCapture(entry);
+            else
+                InitializeDirectStreamContainment(entry);
             var containmentRequired = !RootAlreadyExited(entry.Process);
             if (containmentRequired)
                 RequireInternalContainment(entry);
@@ -1368,6 +1378,52 @@ public sealed class JobManager : IDisposable
             MarkExecutionOutcomeUnknownIfContainmentRequired(
                 entry,
                 "rtk_output_pump_setup_failed");
+        }
+    }
+
+    private void InitializeDirectStreamContainment(JobEntry entry)
+    {
+        // rbc-1: a cold PS-direct child runs with its host stdout/stderr
+        // redirected away from the server's stdio MCP transport. Job output
+        // comes exclusively from the job's output file, so both pipes are
+        // drained to null; the drain keeps a chatty native child from ever
+        // blocking on a full pipe buffer.
+        try
+        {
+            entry.StandardOutputStream = entry.Process.StandardOutput.BaseStream;
+            entry.StandardErrorStream = entry.Process.StandardError.BaseStream;
+            entry.OutputTask = Task.WhenAll(
+                DrainStreamToNullAsync(entry.StandardOutputStream),
+                DrainStreamToNullAsync(entry.StandardErrorStream));
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            // Containment must not depend on the drain: closing the parent
+            // read ends breaks the child's pipes instead of leaving them
+            // writable-but-undrained, so the child can never block on them.
+            entry.OutputTask = Task.CompletedTask;
+            try { entry.StandardOutputStream?.Dispose(); } catch { }
+            try { entry.StandardErrorStream?.Dispose(); } catch { }
+        }
+    }
+
+    private static async Task DrainStreamToNullAsync(Stream source)
+    {
+        var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
+        try
+        {
+            while (await source.ReadAsync(buffer.AsMemory()).ConfigureAwait(false) > 0)
+            {
+            }
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            // A failed drain read means the pipe is gone (child exit, kill,
+            // dispose); there is nothing left to contain.
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 

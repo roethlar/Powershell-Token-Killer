@@ -1,7 +1,7 @@
 # rbc-1: Cold PowerShell-direct background jobs lack stream redirection and CreateNoWindow
 
 **Severity**: BLOCKER
-**Status**: Open (intake, awaiting owner triage)
+**Status**: Fixed on `fix/rbc-1-cold-ps-job-stream-containment` (guard test green; pending owner review/merge)
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/JobManager.cs:1102-1107`
 
@@ -52,11 +52,27 @@ stderr/stdout inside the cold PS job.
 
 ## Guard proof
 
-Not yet written. A guard should assert that a cold PS job that runs a
-native command writing to stderr cannot corrupt the MCP transport —
-e.g., launch a job whose script is `& cmd /c "echo leak 1>&2"` (or the
-Unix equivalent) and verify the bytes do not appear on the MCP stdout
-pipe.
+`JobManagerTests.Cold_direct_job_host_streams_never_reach_the_transport_and_cannot_deadlock`
+(`server/PtkMcpServer.Tests/JobManagerTests.cs`). Uses
+`ProcessStartOverrideForTests` to capture the actual `ProcessStartInfo`
+at start time and asserts `RedirectStandardOutput`,
+`RedirectStandardError`, `RedirectStandardInput`, `CreateNoWindow`, and
+`!UseShellExecute`. The job script writes ~96KB to each of
+`[Console]::Out` and `[Console]::Error` — host-handle writes that bypass
+the wrapper's `*> log` redirection exactly as a native child would —
+then emits a pipeline marker. The test asserts the job exits 0 (no
+>64KB pipe deadlock, proving the null-drain), the marker is captured,
+and none of the host-handle bytes appear in the job's captured output
+(they went to the redirected pipes, not the inherited transport
+handles). Verified failing semantics against pre-fix behavior: without
+redirection the bytes share the server's stdio handles; without the
+drain the child blocks on a full pipe.
+
+Fix: `CreatePowerShellStartInfo` now sets `CreateNoWindow = true` and
+redirects stdout/stderr; `JobManager` drains both to null
+(`DrainStreamToNullAsync`) since legitimate output flows through the
+encoded wrapper's file-based capture. Full `JobManagerTests` class: 59
+passed, 0 failed.
 
 ## Reviewer comments
 
