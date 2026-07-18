@@ -289,33 +289,66 @@ short and update it when important repo facts change.
   `.agents/machines.md`. This closes current config/TLS/SQLite enforcement;
   full acceptance row 7 still waits for the later slice that introduces and
   protects the currently absent custody checkpoint/anchor path.
-- **Uncommitted read-only baseline review (Hermes loop, 2026-07-18) sits in
-  the main checkout:** a modified `.agents/review/index.md` plus untracked
-  `.agents/review/findings/rbc-1.md` through `rbc-13.md` (1 blocker, 12
-  major), all at intake awaiting owner triage. No fixes were written. Leave
-  it uncommitted unless the owner directs otherwise; do not fold it into
-  product commits.
+- **rbc review-loop batch is in progress on `master` (2026-07-18).** The
+  Hermes baseline review (`.agents/review/findings/rbc-1..13.md`,
+  `.agents/review/index.md`) is committed. Owner triaged all 11 open findings
+  to FIX with **batch merge pre-approval** (commit `3d7f2c1`): any fix whose
+  external fixed-SHA review is accepted with `guard_confirmed=true` and a green
+  full suite may be merged to `master` without a per-item prompt. Merged so
+  far: rbc-1 (`a445038`), rbc-2 (`a6c4a17`), rbc-3 refuted (`41d3257`), rbc-4
+  (`685d34c`), and out-of-band hotfix hf-1 ptk_output draft-2020-12 schema
+  (`b7ac20b`). Stale index rows reconciled at `e766e19`. Remaining open:
+  rbc-5, rbc-6, rbc-7, rbc-8, rbc-9, rbc-10, rbc-11, rbc-12, rbc-13. External
+  reviewer this session was codex (standard = gpt-5.6-sol @ high, owner-
+  confirmed in `.agents/review/harnesses.local.json`; frontier unconfirmed —
+  escalation on codex blocks to owner).
+- **PAUSED by owner + safeguards: rbc-5/rbc-6 background-job containment has
+  UNCOMMITTED WIP on branch `fix/rbc-6-unix-sigkill-escalation` (built on
+  `master` tip `e766e19`).** The process-kill/containment implementation
+  tripped Fable 5 safeguards mid-work; the owner directed that this
+  security-sensitive work be **farmed out to codex or an opus subagent for
+  implementation, not written inline in this chat**, and to stop. Do NOT
+  resume the containment code inline on Fable. Working-tree WIP (do not
+  discard without owner direction): new `ProcessTreeContainment.cs` +
+  `ProcessTreeContainmentTests.cs` (rbc-6 Unix: exclusive-process-group sweep
+  + SIGKILL escalation for reparented orphans; was green 1578/1578), new
+  `BackgroundJobContainment.cs` + edits to `WindowsWorkerNative.cs`
+  (AssignProcessToJob), `JobManager.cs`, `BashProcessRunner.cs`,
+  `RtkProcessRunner.cs` (rbc-5 Windows Job-Object attach; compiled clean, no
+  tests yet). None of this is committed or reviewed. Task list #8 tracks it.
 
 ## Next
 
-1. Owner call: push `master` (now containing the S3H merge) to `origin`, or
-   keep it local. Push policy requires an explicit ask for merge commits.
-2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
+1. **rbc-5/rbc-6 containment: route implementation to codex or an opus
+   subagent** (owner directive after Fable safeguards flagged the process-kill
+   work). Hand it the uncommitted WIP on `fix/rbc-6-unix-sigkill-escalation`
+   as a starting point or restart clean; do not implement inline on Fable.
+   Then run the standard external fixed-SHA review + batch-merge per the
+   pre-approval above.
+2. Continue the rest of the rbc batch (rbc-7, then rbc-2 already done, rbc-8,
+   rbc-9, rbc-10, rbc-11, rbc-12, rbc-13) in the owner's priority order; each
+   is fix → external review → merge-on-accept. Non-process-kill findings can
+   proceed inline; reassess per-finding whether the work is safeguard-sensitive
+   and route out if so.
+3. Owner call: push `master` (contains the S3H merge plus the rbc-1..4 + hf-1
+   merges) to `origin`, or keep it local. Push policy requires an explicit ask
+   for merge commits.
+4. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures. Do not begin
    S4–S6 or modify PTK runtime for SIEM work.
-3. Continue resilience R4 only in `.claude/worktrees/mcp-resilience-r1` on
+5. Continue resilience R4 only in `.claude/worktrees/mcp-resilience-r1` on
    `feature/mcp-resilience-r1` from tip `9d897e5` plus the existing uncommitted
    WIP; then R5-R7 sequentially. Ordinary reviews may use Opus or Grok; hold
    Fable openreviews until capacity returns, then rerun the R1 fixed range
    `1f314a2..60eb20f` and later fixed ranges. Do not push, merge, rewrite
    history, or publish a release without separate authorization. Do not replace
    `.agents/state.md` wholesale on handoff.
-4. Release-distribution slice 3 is ordered after resilience R7 and consumes
+6. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
    slice 4.
-5. When the owner releases the decisions hold, reconcile the rejected
+7. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
 
