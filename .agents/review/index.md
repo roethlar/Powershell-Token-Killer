@@ -2656,3 +2656,19 @@ clause exists at `f6a2caa`, since `460c106`); refutation independently
 verified by external fixed-SHA review — Reviewer: codex / gpt-5.6-sol /
 high / standard, head `3a56672`, base `a4cff13`, guard_confirmed true,
 verdict accepted. Docs-only branch awaits owner-gated merge.
+---
+
+Hotfix 2026-07-18 (operator-reported production defect, second-machine
+install) — per-finding detail: `.agents/review/findings/hf-1.md`.
+
+| ID   | Severity | Impact (one line)                                                          | Status | Branch |
+|------|----------|----------------------------------------------------------------------------|--------|--------|
+| hf-1 | MAJOR    | ptk_output offset schema emits string minimum/maximum; strict draft 2020-12 MCP clients reject the entire toolset | `[x]` fixed, externally verified | `fix/ptk-output-schema-draft2020` |
+
+**hf-1 closed 2026-07-18T07:27:56Z:** numeric Range fix + generated-schema conformance
+guard at code head `03d2803`; digest chain recomputed. External
+fixed-SHA review — Reviewer: codex / high / standard, 4 rounds
+(rejected: tautological guard; rejected: record attribution; rejected:
+record consistency; accepted), final head `edb26d4`, guard_confirmed
+true, verdict accepted. Suite 1575/1575. Branch awaits owner-gated
+merge.

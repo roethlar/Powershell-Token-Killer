@@ -206,7 +206,7 @@
       "files_order": "ordinal_utf8_path",
       "example_file": "package-manifest.example.json",
       "example_raw_utf8_bytes": 2233,
-      "example_digest": "4f4b9059442b11c948727cf424e3fb512cefda25f03f5fdf423d13319d9aba7e",
+      "example_digest": "2e923f910b01e2ad0d002079f10eb01d85dfee2d831e88556a4e393164ef2417",
       "manifest_is_not_a_file_entry": true,
       "runtime_invariants_schema": "package-manifest.schema.json#/x-ptk-runtime-invariants",
       "runtime_validation_required_before_activation": true
@@ -296,7 +296,7 @@
     "sentinel-event.json"
   ],
   "artifact_sha256": {
-    "public-tool-contract.json": "8906a9117fccb3fa7040f0ab8ba703256793278fbd22b2c674b8104fdbb88435",
+    "public-tool-contract.json": "4467db273553ea80036f4ec5eaa95b34ce7b48d7723e54a217cacca007357c6e",
     "public-recovery.schema.json": "cf218e4a1617b79a0370ee0a62f000f565572d50b2709db4374e5724b41e7925",
     "public-state.schema.json": "2fc6c1fcea8a807f3e0c395bad011f05c4e34fac1e437854ebf7d5856aeea864",
     "guardian-host-protocol.json": "568cb9961bb54ca24c2b146d625f8f5678b30fdce61125efc13cd5a23dca925e",
@@ -306,7 +306,7 @@
     "audit-v3-null.jsonl": "515008d265bdf60594a091e734221b2555b53d5b0dda377eed7f7de76297f39b",
     "audit-v3-host.jsonl": "c0bf4bf23f60cd60e524f3eb1628a9ab28d8cae59d922c541b1dc43c5e35a3e5",
     "package-manifest.schema.json": "22058d458122874e4f42dc0e802f21c6bc61ea49233dc095e02cc0c63037f0e4",
-    "package-manifest.example.json": "b0450c9927a61f4d66e17609cc0eaf991bd16b85ad07cba2000e7f3e6acfafb5",
+    "package-manifest.example.json": "5699d8fcc50410de49e255f98c59bfd4adb149c9350a62d0192acc837fc0650f",
     "native-linux-acquisition.json": "bf9a29f3a61df4a79e93ba65059594429f2e3d51df6c371deb9f2fec831b14cc",
     "adapter-pins.json": "163c41eaa147c12993c4c2f9f57ab433654fa9d08c623b71ac56d708945d9a0c",
     "adapter-live-validation.json": "500e385ff211805c41d41e7465cc651505341f83f765ec117aeb22a299f8ad80",
