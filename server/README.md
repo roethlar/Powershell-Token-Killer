@@ -342,7 +342,7 @@ Set these in the MCP registration `env` block when defaults do not fit:
 | `PTK_MAX_CALL_TIMEOUT_SECONDS` | `3600` | Cap on the per-call `timeoutSeconds` override. |
 | `PTK_IDLE_EXIT_SECONDS` | `14400` | Idle self-exit backstop for orphaned servers, in seconds. |
 | `PTK_AUDIT_ROOT` | `~/.ptk/audit` | Absolute protected root for mandatory local audit JSONL and exact-script evidence. Local logging requires no SIEM configuration. |
-| `PTK_AUDIT_EXPORT_CONFIG` | unset | Absolute path to a protected `ptk.export-config/1` JSON file. Unset selects local-only mode; presence, including an empty value, requests strict anchored mode and makes incomplete or invalid configuration a startup failure. |
+| `PTK_AUDIT_EXPORT_CONFIG` | unset | Absolute path to a protected `ptk.export-config/2` JSON file. Unset selects local-only mode; presence, including an empty value, requests strict anchored mode and makes incomplete or invalid configuration a startup failure. |
 | `PTK_MODULE_PATH` | auto-discovered `src/PwshTokenCompressor.psd1` | Explicit module manifest to import into the runspace. If set to a missing file, shaping is disabled. |
 | `PTK_RTK_PATH` | `rtk` on `PATH` | Explicit `rtk` binary for native routing and log shaping. If set to a missing file, `rtk` is treated as absent. |
 
