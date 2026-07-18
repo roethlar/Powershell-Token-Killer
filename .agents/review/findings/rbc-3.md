@@ -5,6 +5,7 @@
 exists at the reviewed head `f6a2caa` and has existed since the file's first
 commit (`460c106`). No code change. Refutation independently verified and
 **accepted** by external fixed-SHA review (codex, 2026-07-18T05:24:20Z).
+Merged to `master` at `41d3257` (owner-approved, docs only).
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Audit/AuditRuntimeGate.cs:107-146`
 
