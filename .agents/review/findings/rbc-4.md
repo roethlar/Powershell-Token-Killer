@@ -1,7 +1,7 @@
 # rbc-4: AuditOtlpHttpExporter TLS revocation disabled by default with no opt-in
 
 **Severity**: MAJOR
-**Status**: Fixed, pending owner review/merge
+**Status**: Fixed, merged to master (merge `685d34c`)
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Audit/AuditOtlpHttpExporter.cs:432`
 
