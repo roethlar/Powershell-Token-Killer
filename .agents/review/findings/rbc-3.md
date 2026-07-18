@@ -3,7 +3,8 @@
 **Severity**: MAJOR
 **Status**: RESOLVED — refuted at triage 2026-07-18: the claimed missing check
 exists at the reviewed head `f6a2caa` and has existed since the file's first
-commit (`460c106`). No code change.
+commit (`460c106`). No code change. Refutation independently verified and
+**accepted** by external fixed-SHA review (codex, 2026-07-18T05:24:20Z).
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Audit/AuditRuntimeGate.cs:107-146`
 
@@ -82,6 +83,33 @@ re-check.
 
 ## Reviewer comments
 
-Read-only review by Hermes subagent (audit subsystem pass). No external
-fixed-SHA review has been dispatched. Triage refutation performed in-session
-against both the reviewed head and current `master`.
+Read-only review by Hermes subagent (audit subsystem pass). Triage refutation
+performed in-session against both the reviewed head and current `master`.
+
+### External refutation review (dispatched, accepted)
+
+Reviewer: codex / gpt-5.6-sol / high / standard
+Harness: codex-cli 0.144.5 (headless `codex exec --sandbox read-only --json`,
+model/effort pinned at dispatch; JSONL envelope + `--output-schema` payload)
+Reviewed head SHA: 3a5667263f38b2c849087f0ef2da96b1bb6740c8
+Base SHA: a4cff131711af0ac3d3f2e86307980a920f56117 (docs-only diff)
+guard_confirmed: true (reviewer re-derived the git evidence itself:
+`git show` at `f6a2caa` and head, `_testOperational` reference search,
+cited guard tests located and read)
+Verdict: **accepted** — refutation correct and complete; the reviewer
+additionally cleared the alternate-path blind spot (no pre-start journal
+access via `TryInitializeSerialized`, `AuditRuntimeResources.Journal`, or
+any `AuditCallContext` construction site).
+Timestamp: 2026-07-18T05:24:20Z
+Escalation: none (T1-T5 unmatched; standard at high)
+Record committed: yes (this commit)
+
+Reviewer comments (verbatim):
+- server/PtkMcpServer/Audit/AuditRuntimeGate.cs:133 — At f6a2caa and the reviewed head, the sole successful production return follows the second gate requiring IsStarted; all earlier returns refuse or throw.
+- server/PtkMcpServer/Audit/AuditRuntimeGate.cs:67 — _testOperational is assigned only by the private constructor reached through CreateOperationalForTests; repository references are confined to two test files.
+- server/PtkMcpServer/Audit/AuditRuntimeGate.cs:443 — TryInitializeSerialized calls EnsureStarted before publishing _journal and _lifecycle together; failure publishes neither.
+- server/PtkMcpServer/Audit/AuditServerLifecycle.cs:86 — server.started is appended before state becomes Started at line 93; AuditJournal flushes the append to disk before returning.
+- server/PtkMcpServer/Audit/AuditRuntimeResources.cs:33 — The only production consumer of the exposed Journal property is TryInitializeSerialized, and production AuditCallContext construction occurs only in the lifecycle-gated runtime methods; no alternate pre-start access path exists.
+- server/PtkMcpServer.Tests/AuditRuntimeGateTests.cs:393 — The named diagnostic-only shutdown test exists and asserts refusal after startup failure, when no server.started was durable.
+- server/PtkMcpServer.Tests/AuditEvidenceOrphanReconcilerTests.cs:175 — Local reconciliation asserts refusal while startup remains unavailable and admission at line 180 only after serialized startup can complete.
+- server/PtkMcpServer.Tests/AuditEvidenceOrphanReconcilerTests.cs:238 — Anchored reconciliation likewise asserts refusal before startup proof and admission at line 245 only after the blocker clears.

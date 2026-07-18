@@ -2632,7 +2632,7 @@ subsystem, SIEM receiver). Per-finding detail: `.agents/review/findings/rbc-*.md
 |-------|----------|----------------------------------------------------------------------------|--------|--------|
 | rbc-1 | BLOCKER  | Cold PS-direct background jobs lack CreateNoWindow and stdout/stderr redirect; native-command output can leak into the MCP transport | `[ ]`  | n/a (intake) |
 | rbc-2 | MAJOR    | AuditRuntimeGate StopCoreAsync does not guarantee server.stopped on session/exporter failure | `[ ]`  | n/a (intake) |
-| rbc-3 | MAJOR    | AuditRuntimeGate TryCreateCallContext bypasses the lifecycle gate | `[ ]`  | n/a (intake) |
+| rbc-3 | MAJOR    | AuditRuntimeGate TryCreateCallContext bypasses the lifecycle gate | `[x]` refuted | `fix/rbc-3-callcontext-lifecycle-gate` |
 | rbc-4 | MAJOR    | AuditOtlpHttpExporter TLS revocation disabled by default with no opt-in | `[ ]`  | n/a (intake) |
 | rbc-5 | MAJOR    | Background jobs lack Job Object containment on Windows (foreground workers have it) | `[ ]`  | n/a (intake) |
 | rbc-6 | MAJOR    | No SIGKILL escalation for Unix process trees after SIGTERM grace | `[ ]`  | n/a (intake) |
@@ -2650,3 +2650,9 @@ read-only review; no files were modified except this index and the 13
 per-finding records under `.agents/review/findings/rbc-*.md`. The subagent
 that flagged rbc-13 rated it blocker; the orchestrating session downgraded
 it to major after verifying the failure mode fails closed.
+
+**rbc-3 closed 2026-07-18T05:24:20Z:** refuted at triage (the lifecycle
+clause exists at `f6a2caa`, since `460c106`); refutation independently
+verified by external fixed-SHA review — Reviewer: codex / gpt-5.6-sol /
+high / standard, head `3a56672`, base `a4cff13`, guard_confirmed true,
+verdict accepted. Docs-only branch awaits owner-gated merge.
