@@ -2636,7 +2636,7 @@ subsystem, SIEM receiver). Per-finding detail: `.agents/review/findings/rbc-*.md
 | rbc-4 | MAJOR    | AuditOtlpHttpExporter TLS revocation disabled by default with no opt-in | `[x]` merged (`685d34c`) | `fix/rbc-4-otlp-revocation-mode` |
 | rbc-5 | MAJOR    | Background jobs lack Job Object containment on Windows (foreground workers have it) | `[ ]` deferred to resilience R7 | n/a (owner disposition 2026-07-19) |
 | rbc-6 | MAJOR    | No SIGKILL escalation for Unix process trees after SIGTERM grace | `[x]` refuted | `fix/rbc-6-refutation` |
-| rbc-7 | MAJOR    | OutputStore Read/Search can wedge the store lock on a slow filesystem | `[ ]` fix amended (`db23ec4`), external review in progress | `fix/rbc-7-outputstore-read-wedge` |
+| rbc-7 | MAJOR    | OutputStore Read/Search can wedge the store lock on a slow filesystem | `[x]` merged (`a9b0476`) | `fix/rbc-7-outputstore-read-wedge` |
 | rbc-8 | MAJOR    | WorkerServer initialize handshake is a fragile multi-arm Task.WhenAny | `[ ]`  | n/a (intake) |
 | rbc-9 | MAJOR    | WorkerOperationScheduler ignores injected TaskScheduler for outer admit dispatch | `[ ]`  | n/a (intake) |
 | rbc-10 | MAJOR   | SIEM receiver Kestrel MaxRequestBodySize disabled (defense-in-depth gap) | `[ ]`  | n/a (intake) |
@@ -2699,3 +2699,10 @@ still unlinks and disposes artifact files under `_gate`
 on the delete path. Deferred from the rbc-7 diff to keep that fix
 narrow; awaiting owner triage. Detail:
 `.agents/review/findings/rbc-14.md`.
+
+**rbc-7 CLOSED 2026-07-19:** merged to master `a9b0476` (branch head
+`48f87ac`, `--no-ff`). External review via codex MCP converged within
+the owner's 3-turn cap; owner approved the batch merge. Post-merge
+master check green: OutputStoreTests + McpResilienceR0ContractTests,
+32/32 passed. Retention/delete-path residue remains tracked as rbc-14
+(open, awaiting owner triage).

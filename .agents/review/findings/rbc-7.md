@@ -1,7 +1,7 @@
 # rbc-7: OutputStore Read/Search can wedge the store lock on a slow filesystem
 
 **Severity**: MAJOR
-**Status**: Open (fix amended 2026-07-19 on `fix/rbc-7-outputstore-read-wedge` at `db23ec4` after turn-1 external review remedies; review turn 2 pending; retention-path residue split out as rbc-14)
+**Status**: Merged to master 2026-07-19 (`a9b0476`, fix branch head `48f87ac`; external review via codex MCP converged within the 3-turn cap; owner-approved batch merge; retention-path residue tracked as rbc-14)
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Execution/OutputStore.cs:584-638`
 
