@@ -607,43 +607,58 @@ public sealed class OutputStore : IDisposable
 
         // Sealed artifacts are immutable, so the file reads run outside _gate:
         // a wedged filesystem must not stall Status/TryReserve/Seal callers
-        // queued behind this read (rbc-7). A concurrent retention pass may
-        // dispose the stream mid-read; that surfaces as
-        // ObjectDisposedException, and the success path re-validates the
+        // queued behind this read (rbc-7). The test hook rides ReadExact —
+        // the io primitive — so the guard test wedges the real read path. A
+        // concurrent retention pass may dispose the stream mid-read; that
+        // surfaces as ObjectDisposedException, and every return path
+        // (success, invalid offset, insufficient bound) re-validates the
         // entry under _gate so the reported artifact state reflects
         // completion time, never a pre-read snapshot. Retention still
         // deletes artifact files while holding _gate; that residual wedge on
         // the delete/close path is tracked separately as rbc-14.
         try
         {
-            _options.RetainedReadStartingForTests?.Invoke();
             if (offset > totalBytes || !IsUtf8Boundary(file, offset, totalBytes))
             {
-                return new OutputReadResult(
-                    OutputArtifactState.InvalidOffset,
-                    string.Empty,
-                    offset,
-                    offset,
-                    totalBytes,
-                    0,
-                    complete,
-                    provenance,
-                    "offset_not_utf8_boundary");
+                lock (_gate)
+                {
+                    ThrowIfDisposed();
+                    var entry = FindReadableLocked(handle);
+                    if (entry is null) return MissingRead(offset);
+                    if (!IsReadableArtifact(entry)) return StateRead(entry, offset);
+                    return new OutputReadResult(
+                        OutputArtifactState.InvalidOffset,
+                        string.Empty,
+                        offset,
+                        offset,
+                        totalBytes,
+                        0,
+                        complete,
+                        provenance,
+                        "offset_not_utf8_boundary");
+                }
             }
 
             var bytes = ReadUtf8Chunk(file, offset, maximumBytes, totalBytes);
             if (bytes.Length == 0 && offset < totalBytes)
             {
-                return new OutputReadResult(
-                    OutputArtifactState.InsufficientBound,
-                    string.Empty,
-                    offset,
-                    offset,
-                    totalBytes,
-                    0,
-                    complete,
-                    provenance,
-                    "max_bytes_too_small_for_next_utf8_scalar");
+                lock (_gate)
+                {
+                    ThrowIfDisposed();
+                    var entry = FindReadableLocked(handle);
+                    if (entry is null) return MissingRead(offset);
+                    if (!IsReadableArtifact(entry)) return StateRead(entry, offset);
+                    return new OutputReadResult(
+                        OutputArtifactState.InsufficientBound,
+                        string.Empty,
+                        offset,
+                        offset,
+                        totalBytes,
+                        0,
+                        complete,
+                        provenance,
+                        "max_bytes_too_small_for_next_utf8_scalar");
+                }
             }
             var text = StrictUtf8.GetString(bytes);
             var nextOffset = checked(offset + bytes.Length);
@@ -709,39 +724,53 @@ public sealed class OutputStore : IDisposable
             provenance = entry.Provenance;
         }
 
-        // See Read: file io runs outside _gate (rbc-7); dispose races map to
-        // ObjectDisposedException, and the success path re-validates the
-        // entry state under _gate at completion.
+        // See Read: file io runs outside _gate (rbc-7); the test hook rides
+        // ReadExact, dispose races map to ObjectDisposedException, and every
+        // return path (success, invalid offset, insufficient bound)
+        // re-validates the entry state under _gate at completion.
         try
         {
-            _options.RetainedReadStartingForTests?.Invoke();
             if (offset > totalBytes || !IsUtf8Boundary(file, offset, totalBytes))
             {
-                return new OutputSearchResult(
-                    OutputArtifactState.InvalidOffset,
-                    [],
-                    offset,
-                    offset,
-                    totalBytes,
-                    0,
-                    complete,
-                    provenance,
-                    offset > totalBytes ? "offset_past_end" : "offset_not_utf8_boundary");
+                lock (_gate)
+                {
+                    ThrowIfDisposed();
+                    var entry = FindReadableLocked(handle);
+                    if (entry is null) return MissingSearch(offset);
+                    if (!IsReadableArtifact(entry)) return StateSearch(entry, offset);
+                    return new OutputSearchResult(
+                        OutputArtifactState.InvalidOffset,
+                        [],
+                        offset,
+                        offset,
+                        totalBytes,
+                        0,
+                        complete,
+                        provenance,
+                        offset > totalBytes ? "offset_past_end" : "offset_not_utf8_boundary");
+                }
             }
 
             var scan = ReadUtf8Chunk(file, offset, maximumBytes, totalBytes);
             if (scan.Length == 0 && offset < totalBytes)
             {
-                return new OutputSearchResult(
-                    OutputArtifactState.InsufficientBound,
-                    [],
-                    offset,
-                    offset,
-                    totalBytes,
-                    0,
-                    complete,
-                    provenance,
-                    "max_bytes_too_small_for_next_utf8_scalar");
+                lock (_gate)
+                {
+                    ThrowIfDisposed();
+                    var entry = FindReadableLocked(handle);
+                    if (entry is null) return MissingSearch(offset);
+                    if (!IsReadableArtifact(entry)) return StateSearch(entry, offset);
+                    return new OutputSearchResult(
+                        OutputArtifactState.InsufficientBound,
+                        [],
+                        offset,
+                        offset,
+                        totalBytes,
+                        0,
+                        complete,
+                        provenance,
+                        "max_bytes_too_small_for_next_utf8_scalar");
+                }
             }
             var matches = new List<OutputSearchMatch>();
             var cursor = 0;
@@ -1498,7 +1527,7 @@ public sealed class OutputStore : IDisposable
         writer.Write(Environment.NewLine);
     }
 
-    private static byte[] ReadUtf8Chunk(
+    private byte[] ReadUtf8Chunk(
         SafeFileHandle handle,
         long offset,
         int maximumBytes,
@@ -1512,7 +1541,7 @@ public sealed class OutputStore : IDisposable
         return probe[..end];
     }
 
-    private static bool IsUtf8Boundary(SafeFileHandle handle, long offset, long totalBytes)
+    private bool IsUtf8Boundary(SafeFileHandle handle, long offset, long totalBytes)
     {
         if (offset == 0 || offset == totalBytes) return true;
         var current = ReadExact(handle, offset, 1)[0];
@@ -1523,9 +1552,13 @@ public sealed class OutputStore : IDisposable
         offset == 0 || offset == bytes.Length ||
         (bytes[offset] & 0b1100_0000) != 0b1000_0000;
 
-    private static byte[] ReadExact(SafeFileHandle handle, long offset, int count)
+    private byte[] ReadExact(SafeFileHandle handle, long offset, int count)
     {
         if (count == 0) return [];
+        // The wedge hook rides the io primitive itself: a regression that
+        // moves any retained-read file io back under _gate makes the guard
+        // test wedge _gate here, and its concurrent Status probe times out.
+        _options.RetainedReadStartingForTests?.Invoke();
         var buffer = new byte[count];
         var read = 0;
         while (read < count)
