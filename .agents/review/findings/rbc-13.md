@@ -1,7 +1,7 @@
 # rbc-13: ColdCommandResolution MatchesCurrentResolution PATH race (safe but racy)
 
-**Severity**: MAJOR
-**Status**: Open (intake, awaiting owner triage)
+**Severity**: Note (refuted as defect at 2026-07-19 triage; was MAJOR)
+**Status**: Refuted as defect 2026-07-19 — live-PATH re-resolution at commit with fail-closed matching is the intended integrity gate (PATH hijack is in-threat-model); a snapshot compare would weaken it, and non-shadowing PATH appends do not change resolution, so the benign-penalty window is narrower than described. Docs-only follow-up: record prepare→commit PATH stability as a design requirement. Contested by maintaining agent (owner-delegated triage); codex consensus AGREE (thread `019f7cb9-c587-79c1-994b-a28e8d7b1ba1`, turn 1/3).
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Execution/ColdCommandResolution.cs:238-246`
 

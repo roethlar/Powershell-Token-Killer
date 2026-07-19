@@ -1,7 +1,7 @@
 # rbc-10: SIEM receiver Kestrel MaxRequestBodySize disabled (defense-in-depth gap)
 
 **Severity**: MAJOR
-**Status**: Open (intake, awaiting owner triage)
+**Status**: Triaged 2026-07-19 — confirmed at `ec4d292` (line anchor now `ReceiverApplication.cs:115`). Fix approved: set a Kestrel-level `MaxRequestBodySize` bound above `MaxRequestBytes` so `/v1/logs` rejection/custody semantics stay endpoint-owned while Kestrel backstops any future endpoint. Queued in fix batch 2.
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `siem/PtkSiemReceiver/Ingest/ReceiverApplication.cs:40`
 

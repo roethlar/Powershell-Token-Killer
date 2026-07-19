@@ -2637,13 +2637,13 @@ subsystem, SIEM receiver). Per-finding detail: `.agents/review/findings/rbc-*.md
 | rbc-5 | MAJOR    | Background jobs lack Job Object containment on Windows (foreground workers have it) | `[ ]` deferred to resilience R7 | n/a (owner disposition 2026-07-19) |
 | rbc-6 | MAJOR    | No SIGKILL escalation for Unix process trees after SIGTERM grace | `[x]` refuted | `fix/rbc-6-refutation` |
 | rbc-7 | MAJOR    | OutputStore Read/Search can wedge the store lock on a slow filesystem | `[x]` merged (`a9b0476`) | `fix/rbc-7-outputstore-read-wedge` |
-| rbc-8 | MAJOR    | WorkerServer initialize handshake is a fragile multi-arm Task.WhenAny | `[ ]`  | n/a (intake) |
-| rbc-9 | MAJOR    | WorkerOperationScheduler ignores injected TaskScheduler for outer admit dispatch | `[ ]`  | n/a (intake) |
-| rbc-10 | MAJOR   | SIEM receiver Kestrel MaxRequestBodySize disabled (defense-in-depth gap) | `[ ]`  | n/a (intake) |
-| rbc-11 | MAJOR   | SIEM receiver has no retention enforcement on master | `[ ]`  | n/a (intake) |
-| rbc-12 | MAJOR   | SIEM receiver has no rate limiting or backpressure | `[ ]`  | n/a (intake) |
-| rbc-13 | MAJOR   | ColdCommandResolution MatchesCurrentResolution PATH race (safe but racy; downgraded from blocker) | `[ ]`  | n/a (intake) |
-| rbc-14 | MAJOR   | OutputStore retention deletes artifact files while holding the store gate | `[ ]`  | n/a (intake 2026-07-19, from rbc-7 external review) |
+| rbc-8 | MINOR    | WorkerServer initialize handshake is a fragile multi-arm Task.WhenAny | `[ ]` deferred — downgraded at triage 2026-07-19; targeted guard queued to worker pass | n/a |
+| rbc-9 | MAJOR    | WorkerOperationScheduler ignores injected TaskScheduler for outer admit dispatch | `[ ]` fix approved (triage 2026-07-19) | n/a |
+| rbc-10 | MAJOR   | SIEM receiver Kestrel MaxRequestBodySize disabled (defense-in-depth gap) | `[ ]` fix approved (triage 2026-07-19) | n/a |
+| rbc-11 | MAJOR   | SIEM receiver has no retention enforcement on master | `[ ]` deferred — gated on S3H land/park decision (triage 2026-07-19); interim docs warning queued | n/a |
+| rbc-12 | MAJOR   | SIEM receiver has no rate limiting or backpressure | `[ ]` fix approved: admission concurrency cap (triage 2026-07-19); per-client limit deferred | n/a |
+| rbc-13 | NOTE    | ColdCommandResolution MatchesCurrentResolution PATH race (safe but racy; downgraded from blocker) | `[x]` refuted as defect — fail-closed by design (triage 2026-07-19); docs-only follow-up | n/a |
+| rbc-14 | MAJOR   | OutputStore retention deletes artifact files while holding the store gate | `[ ]` fix approved, next up (triage 2026-07-19) | n/a (intake 2026-07-19, from rbc-7 external review) |
 
 **Loop OPEN 2026-07-18T00:12Z:** 13 findings (1 blocker, 12 major), all at
 intake awaiting owner triage. No fixes have been written. This is a
@@ -2706,3 +2706,14 @@ the owner's 3-turn cap; owner approved the batch merge. Post-merge
 master check green: OutputStoreTests + McpResilienceR0ContractTests,
 32/32 passed. Retention/delete-path residue remains tracked as rbc-14
 (open, awaiting owner triage).
+
+**TRIAGE 2026-07-19 (rbc-8..rbc-14):** owner (non-developer) delegated
+triage; maintaining agent adversarially re-verified all seven findings
+against master `ec4d292`. Confirmed, fix approved: rbc-9, rbc-10,
+rbc-12, rbc-14. Deferred: rbc-8 (downgraded to MINOR; targeted guard to
+worker pass), rbc-11 (gated on S3H land/park; interim docs warning).
+Refuted as defect: rbc-13 (fail-closed by design; docs-only follow-up).
+Contested items (rbc-8, rbc-13) went to codex MCP under the 3-turn cap;
+consensus AGREE on both at turn 1 (thread
+`019f7cb9-c587-79c1-994b-a28e8d7b1ba1`). Fix order: rbc-14 first (own
+branch + external fixed-SHA review), then rbc-9, rbc-10, rbc-12.

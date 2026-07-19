@@ -1,7 +1,7 @@
 # rbc-14: OutputStore retention deletes artifact files while holding the store gate
 
 **Severity**: MAJOR
-**Status**: Open (intake 2026-07-19, follow-up surfaced by rbc-7 external review)
+**Status**: Triaged 2026-07-19 — confirmed; fix approved (move unlink/dispose off `_gate`, preserving delete-failure retry and cap-accounting semantics). First in fix queue; own branch + external fixed-SHA review per rbc-7 precedent.
 **Source**: external fixed-SHA review (codex, turn 1) of `fix/rbc-7-outputstore-read-wedge` at `bb2df34`
 **File**: `server/PtkMcpServer/Execution/OutputStore.cs:1178,1233` (line anchors at `db23ec4`)
 

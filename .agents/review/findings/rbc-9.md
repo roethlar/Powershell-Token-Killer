@@ -1,7 +1,7 @@
 # rbc-9: WorkerOperationScheduler ignores injected TaskScheduler for outer admit dispatch
 
 **Severity**: MAJOR
-**Status**: Open (intake, awaiting owner triage)
+**Status**: Triaged 2026-07-19 — confirmed at `ec4d292` (outer admit hop `WorkerOperationScheduler.cs:145-149` on `TaskScheduler.Default`; inner hop `:255-259` on `_taskScheduler`). Fix approved: route the outer hop through `_taskScheduler` + hop-counting guard. Queued in fix batch 2.
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Worker/WorkerOperationScheduler.cs:145-149`
 

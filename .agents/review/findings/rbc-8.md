@@ -1,7 +1,7 @@
 # rbc-8: WorkerServer initialize handshake is a fragile multi-arm Task.WhenAny
 
-**Severity**: MAJOR
-**Status**: Open (intake, awaiting owner triage)
+**Severity**: MINOR (downgraded from MAJOR at 2026-07-19 triage)
+**Status**: Triaged 2026-07-19 — downgraded to MINOR and deferred. No demonstrated defect: the `queuedEnvelope` carry with post-initialize replay (`eor_during_initialize`/`eor_after_initialize`) already handles the feared interleaving structurally. Targeted drain-replay guard test queued to the worker-subsystem pass; no refactor. Contested by maintaining agent (owner-delegated triage); codex consensus AGREE (thread `019f7cb9-c587-79c1-994b-a28e8d7b1ba1`, turn 1/3).
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Worker/WorkerServer.cs:121-324`
 

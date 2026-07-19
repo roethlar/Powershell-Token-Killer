@@ -366,3 +366,16 @@ under `siem/`.
 acceptance questions are answered by the plan's S1-S7 sections and threat-model
 matrix; the standing "discovery first" recommendation was satisfied by
 `.agents/plans/mini-siem-discovery.md` before this authorization.
+
+## 2026-07-19: Triage delegation for the rbc review batch
+
+**Decision:** The owner (non-developer) delegated finding triage to the
+maintaining agent. Protocol: adversarial self-verification against the
+code at a fixed SHA; contested findings go to a codex MCP follow-up
+capped at 3 turns; escalate to the owner only on no-consensus.
+
+**Applied:** rbc-8..rbc-14 at master `ec4d292` — dispositions recorded
+in `.agents/review/index.md` (triage log) and the finding records.
+Contested: rbc-8 (downgrade+defer) and rbc-13 (refute as by-design);
+codex consensus AGREE on both at turn 1 (thread
+`019f7cb9-c587-79c1-994b-a28e8d7b1ba1`).
