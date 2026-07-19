@@ -1,7 +1,7 @@
 # rbc-7: OutputStore Read/Search can wedge the store lock on a slow filesystem
 
 **Severity**: MAJOR
-**Status**: Open (intake, awaiting owner triage)
+**Status**: Open (fix committed 2026-07-19 on `fix/rbc-7-outputstore-read-wedge` at `bb2df34`; external fixed-SHA review pending)
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Execution/OutputStore.cs:584-638`
 
@@ -51,3 +51,28 @@ completes within a bounded time instead of queueing behind the wedge.
 
 Read-only review by Hermes subagent (execution/worker subsystem pass).
 No external fixed-SHA review has been dispatched.
+
+## Disposition (owner, 2026-07-19)
+
+Fix committed on `fix/rbc-7-outputstore-read-wedge` at `bb2df34`
+(branch cut from master `e082d53`). `Read` and `Search` now snapshot
+the artifact entry under `_gate` and perform all `RandomAccess` file
+I/O against the retained `SafeFileHandle` outside the lock,
+re-validating entry state afterward. The seal/unlink invariant and the
+foreground-operation lane are unchanged.
+
+Guard tests (in `OutputStoreTests.cs`):
+- `Read_and_search_file_io_does_not_wedge_the_store_gate` — asserts
+  concurrent store operations complete while a read's file I/O is
+  stalled, instead of queueing behind the wedge.
+- `Expiry_during_unlocked_read_reports_the_tombstone_state` — covers
+  the entry-expiry race opened by moving I/O outside the lock.
+
+Evidence: full suite green on the fix branch (1577/1577). The fix was
+developed in the `fix/rbc-6-unix-sigkill-escalation` checkout and
+ported file-identically (no committed drift for either file between
+`1441858` and `e082d53`).
+
+The finding stays Open until the branch passes its own external
+fixed-SHA review and is merged to master; closure is gated on that
+review, not on this record.

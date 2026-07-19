@@ -2636,7 +2636,7 @@ subsystem, SIEM receiver). Per-finding detail: `.agents/review/findings/rbc-*.md
 | rbc-4 | MAJOR    | AuditOtlpHttpExporter TLS revocation disabled by default with no opt-in | `[x]` merged (`685d34c`) | `fix/rbc-4-otlp-revocation-mode` |
 | rbc-5 | MAJOR    | Background jobs lack Job Object containment on Windows (foreground workers have it) | `[ ]` deferred to resilience R7 | n/a (owner disposition 2026-07-19) |
 | rbc-6 | MAJOR    | No SIGKILL escalation for Unix process trees after SIGTERM grace | `[x]` refuted | `fix/rbc-6-refutation` |
-| rbc-7 | MAJOR    | OutputStore Read/Search can wedge the store lock on a slow filesystem | `[ ]`  | n/a (intake) |
+| rbc-7 | MAJOR    | OutputStore Read/Search can wedge the store lock on a slow filesystem | `[ ]` fix committed (`bb2df34`), review pending | `fix/rbc-7-outputstore-read-wedge` |
 | rbc-8 | MAJOR    | WorkerServer initialize handshake is a fragile multi-arm Task.WhenAny | `[ ]`  | n/a (intake) |
 | rbc-9 | MAJOR    | WorkerOperationScheduler ignores injected TaskScheduler for outer admit dispatch | `[ ]`  | n/a (intake) |
 | rbc-10 | MAJOR   | SIEM receiver Kestrel MaxRequestBodySize disabled (defense-in-depth gap) | `[ ]`  | n/a (intake) |
