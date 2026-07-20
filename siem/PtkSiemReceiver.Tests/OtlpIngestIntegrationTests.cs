@@ -247,11 +247,60 @@ public sealed class OtlpIngestIntegrationTests
         // Malformed_and_oversized_requests_are_permanently_rejected_before_commit);
         // 130 bytes (bound + 2) exceeds the Kestrel backstop and must be
         // refused by the transport itself, never reaching commit/quarantine.
+        //
+        // NOTE: ByteArrayContent sends a *declared* Content-Length, so this
+        // exercises Kestrel's header-based refusal (rejected before the body
+        // is read). The streamed/undeclared path is pinned separately by
+        // Chunked_body_beyond_kestrel_backstop_fails_closed_mid_stream below.
         using var content = new ByteArrayContent(new byte[130]);
         content.Headers.TryAddWithoutValidation("Content-Type", "application/x-protobuf");
         using var response = await client.PostAsync(host.Endpoint, content);
 
         Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        Assert.Empty(committer.Records);
+        Assert.Empty(committer.Quarantines);
+    }
+
+    [Fact]
+    public async Task Chunked_body_beyond_kestrel_backstop_fails_closed_mid_stream()
+    {
+        using var authority = new TestCertificateAuthority();
+        using var root = authority.Root;
+        using var server = authority.IssueServer();
+        using var clientCertificate = authority.IssueClient();
+        var committer = new RecordingIngestCommitter();
+        await using var host = await SiemReceiverTestHost.StartAsync(
+            server,
+            [root],
+            committer,
+            maximumRequestBytes: 128);
+        using var client = host.CreateClient(clientCertificate);
+
+        // rbc-10 (streamed path): with chunked transfer encoding there is no
+        // declared Content-Length, so Kestrel cannot refuse up front — the
+        // backstop must fail closed *while reading* once bound + 2 bytes have
+        // been consumed. Either surface is acceptable — a 413 response or an
+        // aborted request stream — but the body must never reach
+        // commit/quarantine.
+        using var content = new StreamContent(new MemoryStream(new byte[130]));
+        content.Headers.TryAddWithoutValidation("Content-Type", "application/x-protobuf");
+        using var request = new HttpRequestMessage(HttpMethod.Post, host.Endpoint)
+        {
+            Content = content,
+        };
+        request.Headers.TransferEncodingChunked = true;
+
+        try
+        {
+            using var response = await client.SendAsync(request);
+            Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        }
+        catch (HttpRequestException)
+        {
+            // Connection abort while writing the oversized chunked body is a
+            // valid fail-closed outcome.
+        }
+
         Assert.Empty(committer.Records);
         Assert.Empty(committer.Quarantines);
     }

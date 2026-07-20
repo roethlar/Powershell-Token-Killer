@@ -243,7 +243,9 @@ internal static class ReceiverApplication
         return protectedRead;
     }
 
-    private static async Task HandleIngestAsync(
+    // internal (not private) solely so PtkSiemReceiver.Tests can pin the
+    // rbc-12 refusal-before-buffering contract with a throwing body stream.
+    internal static async Task HandleIngestAsync(
         HttpContext context,
         SiemReceiverOptions options,
         IIngestCommitter committer,
