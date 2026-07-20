@@ -296,14 +296,25 @@ short and update it when important repo facts change.
   external fixed-SHA review is accepted with `guard_confirmed=true` and a green
   full suite may be merged to `master` without a per-item prompt. Merged so
   far: rbc-1 (`a445038`), rbc-2 (`a6c4a17`), rbc-3 refuted (`41d3257`), rbc-4
-  (`685d34c`), rbc-6 refuted (`315b9db`, merge record `749815b`), and
-  out-of-band hotfix hf-1 ptk_output draft-2020-12 schema (`b7ac20b`). The
-  rbc-6 fixed-SHA Codex review accepted the docs-only refutation with
-  `guard_confirmed=true`; the recorded PowerShell and .NET suites were green.
-  Remaining open: rbc-5, rbc-7, rbc-8, rbc-9, rbc-10, rbc-11, rbc-12,
-  rbc-13. External reviewer was codex (standard = gpt-5.6-sol @ high,
-  owner-confirmed in `.agents/review/harnesses.local.json`; frontier
-  unconfirmed — escalation on codex blocks to owner).
+  (`685d34c`), rbc-6 refuted (`315b9db`, merge record `749815b`), out-of-band
+  hotfix hf-1 ptk_output draft-2020-12 schema (`b7ac20b`), rbc-7 (`a9b0476`),
+  rbc-9/rbc-10/rbc-12 (`6452945`; fix `27511b1`, external-review hardening
+  `90b97b3`, remedy verification VERDICT: ACCEPT 2026-07-20), and rbc-14
+  (`897bdbc`; fix `5fc84ad` + stale-pulse remedy `f624796`, codex turn-3
+  ACCEPT). rbc-13 is refuted as a defect (fail-closed by design, documented at
+  `MatchesCurrentResolution`). Dispositions without product change: rbc-5
+  deferred to resilience R7 (owner disposition 2026-07-19), rbc-8 downgraded
+  at triage 2026-07-19 with a targeted drain-replay guard queued to the worker
+  pass, rbc-11 gated on the owner's S3H land/park decision with an interim
+  deployment warning landed. rbc-15 (process-tree containment for background
+  jobs) has remedies committed on `fix/rbc-15-process-tree-containment` at
+  `a216734` (`b4432dc` → `c17c1f9` → `08da8f5` → `a216734`) with the full
+  server suite 1587/1587 green; it awaits external fixed-SHA review, then the
+  accumulated master-push queue. Per-item ledger: `.agents/review/index.md`;
+  records: `.agents/review/findings/rbc-*.md`. External reviewer was codex
+  (standard = gpt-5.6-sol @ high, owner-confirmed in
+  `.agents/review/harnesses.local.json`; frontier unconfirmed — escalation on
+  codex blocks to owner).
 - **rbc-5/rbc-6 containment WIP remains uncommitted and preserved on
   `fix/rbc-6-unix-sigkill-escalation` at `2b3ce1a`; do not discard it without
   owner direction.** rbc-6's filed premise was false: .NET 10 Unix
@@ -315,22 +326,23 @@ short and update it when important repo facts change.
   product change is accepted or committed. The recommended proportional
   resolution is to close rbc-5 through the already-planned resilience R7
   worker cutover, adding a Windows guard that a background descendant dies on
-  hard supervisor termination; this recommendation is not yet owner-approved.
+  hard supervisor termination; the owner approved this deferral on 2026-07-19
+  (recorded in `.agents/review/index.md`).
 
 ## Next
 
-1. Obtain the owner's informed rbc-5 posture decision: either close it through
-   resilience R7's creation-time worker containment (recommended, with a direct
-   Windows hard-supervisor-death background-descendant guard), or authorize a
-   separate creation-time contained launcher for the current runtime. Do not
-   continue or commit the saved post-start attach WIP.
-2. Continue the rest of the rbc batch with rbc-7, then rbc-8, rbc-9, rbc-10,
-   rbc-11, rbc-12, rbc-13 in the owner's priority order; each is fix → external
-   review → merge-on-accept. Reassess per-finding whether work is
-   safeguard-sensitive and route out if so.
+1. Run the external fixed-SHA review of `a216734` on
+   `fix/rbc-15-process-tree-containment` (per repo convention); on ACCEPT with
+   `guard_confirmed=true` and the recorded green full suite, queue the branch
+   for the accumulated master push. Do not continue or commit the saved rbc-5
+   post-start attach WIP.
+2. Close out the rbc batch remainders: rbc-8's targeted drain-replay guard
+   test lands in the worker-subsystem pass; rbc-11 stays gated on the owner's
+   S3H land/park decision; rbc-5 closes via resilience R7. Reassess
+   per-finding whether work is safeguard-sensitive and route out if so.
 3. Owner call: push `master` (contains the S3H merge plus rbc-1..4, the rbc-6
-   refutation, and hf-1) to `origin`, or keep it local. Push policy requires an
-   explicit ask for merge commits.
+   refutation, hf-1, rbc-7, rbc-9/rbc-10/rbc-12, and rbc-14) to `origin`, or
+   keep it local. Push policy requires an explicit ask for merge commits.
 4. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures. Do not begin
