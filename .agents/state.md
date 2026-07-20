@@ -346,7 +346,10 @@ short and update it when important repo facts change.
    rbc-1..4, the rbc-6 refutation, hf-1, rbc-7, rbc-9/rbc-10/rbc-12, rbc-14,
    and rbc-15) was pushed fast-forward `19732e8..8e90552` to all three
    remotes: `origin`, `github`, and `gitea`. No force, no divergence; all
-   remotes now match local `master`.
+   remotes now match local `master`. Follow-up push 2026-07-20 (owner-approved):
+   `85416b7..51ce880` fast-forward to all three remotes — interim Defender-FP
+   mitigation (issue #7: quarantine detection in dev-install.ps1 + README +
+   runbook submission status). Remotes match local `master`.
 4. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures. Do not begin
