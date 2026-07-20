@@ -14,6 +14,7 @@ using PtkMcpServer.Audit.OtlpWire;
 using SiemCommitResult = siem::PtkSiemReceiver.Ingest.IngestCommitResult;
 using SiemCommitter = siem::PtkSiemReceiver.Ingest.IIngestCommitter;
 using SiemOptions = siem::PtkSiemReceiver.Configuration.SiemReceiverOptions;
+using SiemOptionsLoader = siem::PtkSiemReceiver.Configuration.SiemReceiverConfigurationLoader;
 using SiemReceiverApplication = siem::PtkSiemReceiver.Ingest.ReceiverApplication;
 using SiemValidatedRecord = siem::PtkSiemReceiver.Ingest.ValidatedOtlpRecord;
 
@@ -219,6 +220,7 @@ internal sealed class SiemOtlpConformanceHost : IAsyncDisposable
             [authorityPath],
             X509RevocationMode.NoCheck,
             1024 * 1024,
+            SiemOptionsLoader.DefaultMaxConcurrentRequests,
             IPAddress.Loopback,
             9,
             new string('t', 32),
