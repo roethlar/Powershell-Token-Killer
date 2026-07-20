@@ -38,11 +38,24 @@ the storage or validation layers.
 
 ## Guard proof
 
-Not yet written. A guard should open more concurrent connections than
-the cap and assert excess connections are rejected with 503 before
-memory grows unboundedly.
+Written at `27511b1` (integration guard: refusal under a parked commit
+with transient 503 + Retry-After; capacity recovery after release).
+External review noted no unit-level pin that refusal happens *before*
+any body buffering. At `90b97b3`: `HandleIngestAsync` made internal
+(`InternalsVisibleTo` already present) and
+`ReceiverAdmissionRefusalTests` saturates the gate, passes a throwing
+body stream plus `null!` options/committer, asserts 503 +
+`Retry-After: 1` + non-empty status body, and asserts the refusal path
+does not call `Exit()` (no over-admission under saturation).
 
 ## Reviewer comments
 
-Read-only review by Hermes subagent (SIEM receiver pass). No external
-fixed-SHA review has been dispatched.
+Read-only review by Hermes subagent (SIEM receiver pass). External
+fixed-SHA codex review of `27511b1`, turn 1: missing unit pin on
+refusal-before-buffering. Adjudicated PARTIALLY VALID — the
+integration guard proves refusal under saturation but not body-read
+timing; the unit pin adds real mutation-sensitivity (including
+`Exit()` slot accounting), though the `null!` collaborator technique
+is blunt. Unit pin added at `90b97b3`. Per-client rate limiting
+remains deferred to SIEM ingest hardening. Further review turns halted
+per operator instruction (no turn 2/3 dispatched).

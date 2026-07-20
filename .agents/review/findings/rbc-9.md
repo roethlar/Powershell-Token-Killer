@@ -40,10 +40,18 @@ One line in `WorkerOperationScheduler.cs`. No architectural change.
 
 ## Guard proof
 
-Not yet written. A guard should inject a custom `TaskScheduler` that
-counts hops and assert both the outer and inner hops run on it.
+Written at `27511b1` (counting scheduler asserts injected-scheduler
+dispatch). External review found the assertion (`QueueCount > 0`) too
+weak: it stays green if the outer admit hop regresses to
+`TaskScheduler.Default`. Hardened at `90b97b3`: assertion now requires
+`QueueCount >= 2` with a failure message naming both hops
+(`WorkerOperationSchedulerTests.cs`).
 
 ## Reviewer comments
 
 Read-only review by Hermes subagent (execution/worker subsystem pass).
-No external fixed-SHA review has been dispatched.
+External fixed-SHA codex review of `27511b1`, turn 1: guard-weakness
+finding. Adjudicated VALID — the guard as committed did not fail on
+the exact mutation it was built to catch. Hardened at `90b97b3`.
+Further review turns halted per operator instruction (no turn 2/3
+dispatched).

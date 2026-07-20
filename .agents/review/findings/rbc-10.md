@@ -34,11 +34,21 @@ One line in `ReceiverApplication.cs`. No architectural change.
 
 ## Guard proof
 
-Not yet written. A guard should assert that a request body larger than
-`MaxRequestBodySize` is rejected by Kestrel before reaching the
-endpoint, regardless of which endpoint handles it.
+Written at `27511b1` (sandwich guards: bound+1 endpoint-owned
+`request_too_large`; bound+2 refused 413 before commit/quarantine).
+External review noted the bound+2 test used `ByteArrayContent`
+(declared Content-Length), leaving the streamed/chunked path unpinned.
+At `90b97b3` the comment names the declared-length path explicitly and
+`Chunked_body_beyond_kestrel_backstop_fails_closed_mid_stream` pins
+the undeclared/chunked bound+2 path (413 or transport abort; no
+commit/quarantine) (`OtlpIngestIntegrationTests.cs`).
 
 ## Reviewer comments
 
-Read-only review by Hermes subagent (SIEM receiver pass). No external
-fixed-SHA review has been dispatched.
+Read-only review by Hermes subagent (SIEM receiver pass). External
+fixed-SHA codex review of `27511b1`, turn 1: test-framing finding
+(declared vs. chunked path). Adjudicated TECHNICALLY CORRECT, MARGINAL
+— chunked enforcement is Kestrel framework behavior, so the added test
+pins Kestrel's contract, not ours; accepted as cheap belt-and-
+suspenders at `90b97b3`. Further review turns halted per operator
+instruction (no turn 2/3 dispatched).
