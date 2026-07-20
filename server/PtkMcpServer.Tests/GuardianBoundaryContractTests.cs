@@ -301,7 +301,7 @@ public sealed class GuardianBoundaryContractTests
         Assert.All(
             privateInvokeBoundaries,
             method => Assert.Equal(
-                typeof(IOutputCaptureOwner),
+                typeof(IExecutionOutputCaptureOwner),
                 method.GetParameters()[^1].ParameterType));
         var privateJobBoundaries = typeof(SessionRuntime)
             .GetMethods(BindingFlags.Instance | BindingFlags.NonPublic)
@@ -324,7 +324,7 @@ public sealed class GuardianBoundaryContractTests
         var sessionCore = Assert.Single(
             typeof(SessionRuntime).GetMethods(BindingFlags.Instance | BindingFlags.NonPublic),
             method => method.Name == "InvokeCoreAsync");
-        Assert.Equal(typeof(IOutputCaptureOwner), sessionCore.GetParameters()[^1].ParameterType);
+        Assert.Equal(typeof(IExecutionOutputCaptureOwner), sessionCore.GetParameters()[^1].ParameterType);
         Assert.DoesNotContain(
             sessionCore.GetParameters(),
             parameter => parameter.ParameterType == typeof(OutputStore));
@@ -345,7 +345,7 @@ public sealed class GuardianBoundaryContractTests
         var commitCore = typeof(JobManager).GetMethod(
             "CommitStartCore",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
-        Assert.Equal(typeof(IOutputCaptureOwner), commitCore.GetParameters()[^1].ParameterType);
+        Assert.Equal(typeof(IExecutionOutputCaptureOwner), commitCore.GetParameters()[^1].ParameterType);
         Assert.DoesNotContain(
             commitCore.GetParameters(),
             parameter => parameter.ParameterType == typeof(OutputStore));
@@ -353,7 +353,7 @@ public sealed class GuardianBoundaryContractTests
             "CommitAdmittedStart",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
         Assert.Equal(
-            typeof(IOutputCaptureOwner),
+            typeof(IExecutionOutputCaptureOwner),
             admittedStart.GetParameters()[^1].ParameterType);
         Assert.DoesNotContain(
             admittedStart.GetParameters(),
@@ -362,7 +362,7 @@ public sealed class GuardianBoundaryContractTests
             "PrepareOutputRecovery",
             BindingFlags.NonPublic | BindingFlags.Instance)!;
         Assert.Equal(
-            typeof(IOutputCaptureOwner),
+            typeof(IExecutionOutputCaptureOwner),
             prepareRecovery.GetParameters()[1].ParameterType);
         Assert.DoesNotContain(
             prepareRecovery.GetParameters(),
@@ -383,11 +383,12 @@ public sealed class GuardianBoundaryContractTests
             "JobEntry",
             BindingFlags.NonPublic)!;
         Assert.Equal(
-            typeof(IOutputCaptureOwner),
-            jobEntry.GetField("OutputRecoveryStore")!.FieldType);
+            typeof(IExecutionOutputCapture),
+            jobEntry.GetField("OutputRecoveryCapture")!.FieldType);
         Assert.DoesNotContain(
             jobEntry.GetFields(BindingFlags.Instance | BindingFlags.Public | BindingFlags.NonPublic),
-            field => field.FieldType == typeof(OutputStore));
+            field => field.FieldType == typeof(OutputStore) ||
+                field.FieldType == typeof(IOutputCaptureOwner));
     }
 
     [Theory]

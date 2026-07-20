@@ -119,7 +119,11 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
         int timeoutSeconds = 0,
         AuditCallContext? audit = null,
         OutputStore? outputStore = null)
-        => InvokeCoreAsync(
+    {
+        var outputCapture = outputStore is null
+            ? null
+            : ExecutionOutputCaptureAdapter.Create(outputStore);
+        return InvokeCoreAsync(
             script,
             cancellationToken,
             raw,
@@ -128,7 +132,8 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
             timeoutSeconds,
             audit,
             operationAuthority: null,
-            outputStore);
+            outputCapture);
+    }
 
     /// <summary>
     /// Private foreground boundary. The exact typed operation supplies every
@@ -140,7 +145,7 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
         InvokeForegroundOperation operation,
         CancellationToken cancellationToken,
         int timeoutSeconds = 0,
-        IOutputCaptureOwner? outputCaptureOwner = null)
+        IExecutionOutputCaptureOwner? outputCaptureOwner = null)
     {
         ArgumentNullException.ThrowIfNull(operationAuthority);
         operationAuthority.RequireOperation(operation);
@@ -166,7 +171,7 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
         InvokeBackgroundOperation operation,
         CancellationToken cancellationToken,
         int timeoutSeconds = 0,
-        IOutputCaptureOwner? outputCaptureOwner = null)
+        IExecutionOutputCaptureOwner? outputCaptureOwner = null)
     {
         ArgumentNullException.ThrowIfNull(operationAuthority);
         operationAuthority.RequireOperation(operation);
@@ -195,8 +200,9 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
         int timeoutSeconds,
         AuditCallContext? audit,
         SessionOperationAuthority? operationAuthority,
-        IOutputCaptureOwner? outputCaptureOwner)
+        IExecutionOutputCaptureOwner? outputCaptureOwner)
     {
+        using var outputCapture = outputCaptureOwner;
         var host = _host;
         var jobs = _jobs;
         var rawUsage = _rawUsage;
@@ -416,7 +422,7 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                         onTerminal,
                         deadline,
                         cancellationToken,
-                        outputCaptureOwner);
+                        outputCapture);
                 }
                 catch (JobStartException exception) when (
                     exception.ProcessStarted is false &&
@@ -463,7 +469,7 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                         onTerminal,
                         deadline,
                         cancellationToken,
-                        outputCaptureOwner);
+                        outputCapture);
                 }
                 terminalCallbackOwnedByJob = true;
 
@@ -568,9 +574,6 @@ public sealed class SessionRuntime : ISessionOperations, ISessionLifetime, IDisp
                 }
             }
         }
-        using var outputCapture = outputCaptureOwner is null
-            ? null
-            : new ForegroundOutputCapture(outputCaptureOwner);
         var executionDeadline = operationAuthority?.AbsoluteDeadlineUtc;
         var result = audit is null
             ? outputCapture is null

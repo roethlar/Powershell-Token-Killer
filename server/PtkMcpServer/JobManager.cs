@@ -288,10 +288,10 @@ public sealed class JobManager : IDisposable
         public int OutputFinalized;
         public string? OutputFailureCode;
         public string? ExecutionOutcomeFailureCode;
-        public OutputCaptureReservation? OutputRecoveryReservation;
-        public IOutputCaptureOwner? OutputRecoveryStore;
+        public IExecutionOutputCapture? OutputRecoveryCapture;
         public OutputRecoverySummary? OutputRecovery;
         public int OutputRecoveryFinalized;
+        public int OutputRecoveryCapturePrepared;
         public long OutputRecoveryMaximumBytes;
         public Task OutputTask { get; set; } = Task.CompletedTask;
         public Stream? StandardOutputStream { get; set; }
@@ -300,7 +300,7 @@ public sealed class JobManager : IDisposable
     }
 
     private sealed record JobOutputRecoveryPreparation(
-        OutputCaptureReservation? Reservation,
+        bool CapturePrepared,
         OutputRecoverySummary Summary,
         bool Finalized,
         long MaximumBytes);
@@ -752,19 +752,24 @@ public sealed class JobManager : IDisposable
         DateTimeOffset? deadline = null,
         CancellationToken cancellationToken = default,
         OutputStore? outputStore = null)
-        => CommitStartCore(
+    {
+        using var outputCapture = outputStore is null
+            ? null
+            : ExecutionOutputCaptureAdapter.Create(outputStore);
+        return CommitStartCore(
             plan,
             onTerminal,
             deadline,
             cancellationToken,
-            outputStore);
+            outputCapture);
+    }
 
     internal JobSnapshot CommitStartCore(
         JobStartPlan plan,
         Func<JobSnapshot, Task>? onTerminal,
         DateTimeOffset? deadline,
         CancellationToken cancellationToken,
-        IOutputCaptureOwner? outputCaptureOwner)
+        IExecutionOutputCaptureOwner? outputCaptureOwner)
     {
         ArgumentNullException.ThrowIfNull(plan);
         if (!_allowColdBackground)
@@ -806,7 +811,7 @@ public sealed class JobManager : IDisposable
         Func<JobSnapshot, Task>? onTerminal,
         DateTimeOffset? deadline,
         CancellationToken cancellationToken,
-        IOutputCaptureOwner? outputCaptureOwner)
+        IExecutionOutputCaptureOwner? outputCaptureOwner)
     {
         ThrowIfStartBudgetExpired(deadline, cancellationToken);
         ProcessStartInfo startInfo;
@@ -888,10 +893,9 @@ public sealed class JobManager : IDisposable
             JobCapability = plan.JobCapability,
             OnTerminal = onTerminal,
             OutputWriter = outputWriter,
-            OutputRecoveryReservation = recovery.Reservation,
-            OutputRecoveryStore = recovery.Reservation is null ? null : outputCaptureOwner,
             OutputRecovery = recovery.Summary,
             OutputRecoveryFinalized = recovery.Finalized ? 1 : 0,
+            OutputRecoveryCapturePrepared = recovery.CapturePrepared ? 1 : 0,
             OutputRecoveryMaximumBytes = recovery.MaximumBytes,
         };
 
@@ -918,9 +922,11 @@ public sealed class JobManager : IDisposable
                     ValidateRtkLaunchFacts(plan);
                 ThrowIfStartBudgetExpired(deadline, cancellationToken);
                 StartProcessOrThrow(plan, process);
+                TransferOutputRecoveryToStartedJob(entry, outputCaptureOwner);
             }
             catch (JobStartException exception) when (exception.ProcessStarted is null)
             {
+                TransferOutputRecoveryToStartedJob(entry, outputCaptureOwner);
                 if (!RetainUnknownStart(entry)) throw;
                 throw new JobStartException(
                     exception.DetailCode,
@@ -977,7 +983,7 @@ public sealed class JobManager : IDisposable
 
     private JobOutputRecoveryPreparation PrepareOutputRecovery(
         JobStartPlan plan,
-        IOutputCaptureOwner? outputCaptureOwner,
+        IExecutionOutputCaptureOwner? outputCaptureOwner,
         DateTimeOffset? deadline,
         CancellationToken cancellationToken)
     {
@@ -987,7 +993,7 @@ public sealed class JobManager : IDisposable
         if (plan.Execution.OutputProvenance != OutputProvenance.DirectText)
         {
             return new JobOutputRecoveryPreparation(
-                null,
+                CapturePrepared: false,
                 OutputRecoverySummary.Unavailable("rtk_capture_unsupported"),
                 Finalized: true,
                 MaximumBytes: 0);
@@ -996,7 +1002,7 @@ public sealed class JobManager : IDisposable
         if (outputCaptureOwner is null)
         {
             return new JobOutputRecoveryPreparation(
-                null,
+                CapturePrepared: false,
                 OutputRecoverySummary.Unavailable(
                     "output_store_unavailable",
                     advertise: true),
@@ -1004,104 +1010,69 @@ public sealed class JobManager : IDisposable
                 MaximumBytes: 0);
         }
 
-        var attemptState = 0;
         try
         {
-            // Reservation can touch retention storage. Reuse the store's
-            // single anti-wedge lane so a filesystem stall consumes at most
-            // one worker across foreground and background capture.
-            if (!outputCaptureOwner.TryStartForegroundOperation(
-                    () =>
-                    {
-                        if (!outputCaptureOwner.TryReserve(
-                                "default",
-                                out var reservation,
-                                out var failure))
-                        {
-                            return new JobOutputRecoveryPreparation(
-                                null,
-                                OutputRecoverySummary.Unavailable(
-                                    failure is null
-                                        ? "output_store_unavailable"
-                                        : $"output_store_{failure}",
-                                    advertise: true),
-                                Finalized: true,
-                                MaximumBytes: 0);
-                        }
-
-                        if (Interlocked.CompareExchange(
-                                ref attemptState,
-                                2,
-                                0) == 0)
-                        {
-                            return new JobOutputRecoveryPreparation(
-                                reservation,
-                                OutputRecoverySummary.Unavailable("capture_pending"),
-                                Finalized: false,
-                                OutputRecoverySnapshotMaximumBytesForTests is { } testMaximum
-                                    ? Math.Min(testMaximum, outputCaptureOwner.MaximumArtifactBytes)
-                                    : outputCaptureOwner.MaximumArtifactBytes);
-                        }
-
-                        reservation!.Dispose();
-                        return new JobOutputRecoveryPreparation(
-                            null,
-                            OutputRecoverySummary.Unavailable(
-                                "output_store_prepare_timed_out",
-                                advertise: true),
-                            Finalized: true,
-                            MaximumBytes: 0);
-                    },
-                    out var preparationTask))
-            {
-                return new JobOutputRecoveryPreparation(
-                    null,
-                    OutputRecoverySummary.Unavailable(
-                        "output_store_busy",
-                        advertise: true),
-                    Finalized: true,
-                    MaximumBytes: 0);
-            }
-
-            var maximumWait = _abortedOutputDrainGrace;
-            if (deadline is { } absoluteDeadline)
-            {
-                var remaining = absoluteDeadline - DateTimeOffset.UtcNow;
-                if (remaining < maximumWait) maximumWait = remaining;
-            }
-            if (maximumWait <= TimeSpan.Zero)
-                maximumWait = TimeSpan.FromMilliseconds(1);
-            var delayTask = cancellationToken.CanBeCanceled
-                ? Task.Delay(maximumWait, cancellationToken)
-                : Task.Delay(maximumWait);
-            if (Task.WhenAny(preparationTask!, delayTask)
-                    .GetAwaiter().GetResult() != preparationTask &&
-                Interlocked.CompareExchange(ref attemptState, 1, 0) == 0)
-            {
-                ObserveLateOutputRecovery(preparationTask!);
-                return new JobOutputRecoveryPreparation(
-                    null,
-                    OutputRecoverySummary.Unavailable(
-                        cancellationToken.IsCancellationRequested
-                            ? "output_store_prepare_canceled"
-                            : "output_store_prepare_timed_out",
-                        advertise: true),
-                    Finalized: true,
-                    MaximumBytes: 0);
-            }
-
-            return preparationTask!.GetAwaiter().GetResult();
+            // The execution-scoped capability owns deadline enforcement and
+            // guardian storage serialization. JobManager never receives the
+            // underlying store or reservation.
+            var absoluteDeadline = deadline ?? DateTimeOffset.UtcNow + _abortedOutputDrainGrace;
+            var preparation = outputCaptureOwner.PrepareAsync(
+                    absoluteDeadline,
+                    _abortedOutputDrainGrace,
+                    cancellationToken)
+                .GetAwaiter()
+                .GetResult();
+            var maximumBytes = preparation.Available
+                ? OutputRecoverySnapshotMaximumBytesForTests is { } testMaximum
+                    ? Math.Min(testMaximum, outputCaptureOwner.MaximumArtifactBytes)
+                    : outputCaptureOwner.MaximumArtifactBytes
+                : 0;
+            return new JobOutputRecoveryPreparation(
+                preparation.Available,
+                preparation.Summary,
+                Finalized: !preparation.Available,
+                maximumBytes);
         }
         catch (Exception exception) when (!IsFatal(exception))
         {
             return new JobOutputRecoveryPreparation(
-                null,
+                CapturePrepared: false,
                 OutputRecoverySummary.Unavailable(
                     "output_store_unavailable",
                     advertise: true),
                 Finalized: true,
                 MaximumBytes: 0);
         }
+    }
+
+    private static void TransferOutputRecoveryToStartedJob(
+        JobEntry entry,
+        IExecutionOutputCaptureOwner? outputCaptureOwner)
+    {
+        if (Interlocked.Exchange(ref entry.OutputRecoveryCapturePrepared, 0) == 0)
+            return;
+
+        try
+        {
+            if (outputCaptureOwner is not null &&
+                outputCaptureOwner.TryTransferToBackground(out var capture) &&
+                capture is not null)
+            {
+                entry.OutputRecoveryCapture = capture;
+                return;
+            }
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            // A capture transfer is diagnostic and cannot turn a confirmed or
+            // ambiguous process start into a retryable start failure.
+        }
+
+        PublishOutputRecovery(
+            entry,
+            OutputRecoverySummary.Unavailable(
+                "output_capture_transfer_failed",
+                advertise: true));
     }
 
     private void BeginStartAttempt(JobStartPlan plan)
@@ -1389,7 +1360,7 @@ public sealed class JobManager : IDisposable
         entry.TerminalCompleted.TrySetResult(true);
         ((ICollection<KeyValuePair<long, JobEntry>>)_jobs).Remove(
             new KeyValuePair<long, JobEntry>(plan.Id, entry));
-        Interlocked.Exchange(ref entry.OutputRecoveryReservation, null)?.Dispose();
+        Interlocked.Exchange(ref entry.OutputRecoveryCapture, null)?.Dispose();
         entry.OutputWriter?.Dispose();
         entry.Process.Dispose();
         if (plan.ExecutionPath == ExecutionPath.Rtk)
@@ -1444,7 +1415,7 @@ public sealed class JobManager : IDisposable
 
     private static void AbandonOutputRecovery(JobEntry entry, string detailCode)
     {
-        Interlocked.Exchange(ref entry.OutputRecoveryReservation, null)?.Dispose();
+        Interlocked.Exchange(ref entry.OutputRecoveryCapture, null)?.Dispose();
         Volatile.Write(
             ref entry.OutputRecovery,
             OutputRecoverySummary.Unavailable(detailCode, advertise: true));
@@ -1670,10 +1641,10 @@ public sealed class JobManager : IDisposable
 
     private async Task FinalizeOutputRecoveryAsync(JobEntry entry)
     {
-        var reservation = Interlocked.Exchange(
-            ref entry.OutputRecoveryReservation,
+        var capture = Interlocked.Exchange(
+            ref entry.OutputRecoveryCapture,
             null);
-        if (reservation is null)
+        if (capture is null)
         {
             if (Volatile.Read(ref entry.OutputRecoveryFinalized) == 0)
             {
@@ -1687,51 +1658,26 @@ public sealed class JobManager : IDisposable
         }
 
         // Copy only a configured-cap snapshot. The polling spool stays in
-        // place so existing ptk_job offsets remain valid; OutputStore renders
-        // and retains a distinct immutable artifact for ptk_output. The
-        // anti-wedge lane bounds stalled filesystem work to one worker across
-        // foreground and background seals; a concurrent capture degrades
-        // truthfully instead of queueing terminal publication indefinitely.
-        var store = entry.OutputRecoveryStore;
-        if (store is null ||
-            !store.TryStartForegroundOperation(
-                () =>
-                {
-                    var content = CaptureJobOutputArtifact(entry);
-                    return reservation.Seal(content);
-                },
-                out var sealTask))
-        {
-            _ = reservation.TryCancel();
-            PublishOutputRecovery(
-                entry,
-                OutputRecoverySummary.Unavailable(
-                    "output_store_busy",
-                    advertise: true));
-            return;
-        }
-        if (await Task.WhenAny(
-                sealTask!,
-                Task.Delay(_postExitOutputDrainGrace)).ConfigureAwait(false) != sealTask &&
-            reservation.TryCancel())
-        {
-            ObserveLateOutputRecovery(sealTask!);
-            PublishOutputRecovery(
-                entry,
-                OutputRecoverySummary.Unavailable(
-                    "output_store_seal_timed_out",
-                    advertise: true));
-            return;
-        }
-
-        OutputSealResult result;
+        // place so existing ptk_job offsets remain valid. The execution-scoped
+        // capability owns guardian serialization, publication, and its one
+        // terminal seal without exposing a store or reservation here.
         try
         {
-            result = await sealTask!.ConfigureAwait(false);
+            var content = CaptureJobOutputArtifact(entry);
+            var recovery = content.Complete
+                ? await capture.SealAsync(
+                        content,
+                        _postExitOutputDrainGrace)
+                    .ConfigureAwait(false)
+                : await capture.SealIncompleteAsync(
+                        content,
+                        content.IncompleteReason ?? "job_output_incomplete",
+                        _postExitOutputDrainGrace)
+                    .ConfigureAwait(false);
+            PublishOutputRecovery(entry, recovery);
         }
         catch (Exception exception) when (!IsFatal(exception))
         {
-            _ = reservation.TryCancel();
             PublishOutputRecovery(
                 entry,
                 OutputRecoverySummary.Unavailable(
@@ -1741,16 +1687,8 @@ public sealed class JobManager : IDisposable
         }
         finally
         {
-            reservation.CompleteObserved();
+            capture.Dispose();
         }
-
-        PublishOutputRecovery(
-            entry,
-            result.Success
-                ? OutputRecoverySummary.FromSeal(result)
-                : OutputRecoverySummary.Unavailable(
-                    result.DetailCode ?? "output_store_unavailable",
-                    advertise: true));
     }
 
     private static OutputArtifactContent CaptureJobOutputArtifact(JobEntry entry)
@@ -1876,14 +1814,6 @@ public sealed class JobManager : IDisposable
         Volatile.Write(ref entry.OutputRecovery, recovery);
         Volatile.Write(ref entry.OutputRecoveryFinalized, 1);
     }
-
-    private static void ObserveLateOutputRecovery(Task task) =>
-        _ = task.ContinueWith(
-            static completed => _ = completed.Exception,
-            CancellationToken.None,
-            TaskContinuationOptions.OnlyOnFaulted |
-            TaskContinuationOptions.ExecuteSynchronously,
-            TaskScheduler.Default);
 
     private static void MarkOutputIncomplete(JobEntry entry, string detailCode)
     {

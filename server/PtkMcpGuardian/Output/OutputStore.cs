@@ -151,6 +151,52 @@ internal interface IOutputCaptureOwner
         out string? failure);
 }
 
+/// <summary>The bounded result of preparing one execution-scoped capture.
+/// Preparation is diagnostic: an unavailable capture never authorizes,
+/// suppresses, or replays user work.</summary>
+internal sealed record OutputCapturePreparation(
+    bool Available,
+    OutputRecoverySummary Summary)
+{
+    internal static OutputCapturePreparation Pending() => new(
+        Available: true,
+        Summary: OutputRecoverySummary.Unavailable("capture_pending"));
+
+    internal static OutputCapturePreparation Unavailable(string detailCode) => new(
+        Available: false,
+        Summary: OutputRecoverySummary.Unavailable(detailCode, advertise: true));
+}
+
+/// <summary>A transport-neutral, single-execution output capability. Runtime
+/// code can prepare and terminally seal content without receiving the
+/// guardian's store, reservation, path, or public-handle authority.</summary>
+internal interface IExecutionOutputCapture : IDisposable
+{
+    long MaximumArtifactBytes { get; }
+
+    Task<OutputCapturePreparation> PrepareAsync(
+        DateTimeOffset absoluteDeadlineUtc,
+        TimeSpan maximumWait,
+        CancellationToken cancellationToken);
+
+    Task<OutputRecoverySummary> SealAsync(
+        OutputArtifactContent content,
+        TimeSpan maximumWait);
+
+    Task<OutputRecoverySummary> SealIncompleteAsync(
+        OutputArtifactContent content,
+        string reason,
+        TimeSpan maximumWait);
+}
+
+/// <summary>Request ownership for one execution capture. Foreground work keeps
+/// this owner through its terminal seal. Background work may detach exactly
+/// one child owner after process start reaches its no-retry boundary.</summary>
+internal interface IExecutionOutputCaptureOwner : IExecutionOutputCapture
+{
+    bool TryTransferToBackground(out IExecutionOutputCapture? capture);
+}
+
 /// <summary>A one-shot supervisor-issued write capability. The opaque public
 /// handle is returned only by a successful seal, never by the reservation.</summary>
 internal sealed class OutputCaptureReservation : IDisposable
@@ -237,7 +283,7 @@ internal sealed class OutputCaptureReservation : IDisposable
 /// <summary>Request-owned supervisor coordinator for one foreground capture.
 /// Reservation stays lazy until the host has selected a capturable dispatch,
 /// then the worker-facing path receives only the one-shot write capability.</summary>
-internal sealed class ForegroundOutputCapture : IDisposable
+internal sealed class ForegroundOutputCapture : IDisposable, IExecutionOutputCapture
 {
     private sealed class ReservationAttempt
     {
@@ -276,6 +322,26 @@ internal sealed class ForegroundOutputCapture : IDisposable
 
     internal long MaximumArtifactBytes =>
         _store?.MaximumArtifactBytes ?? OutputStore.DefaultReadBytes;
+
+    long IExecutionOutputCapture.MaximumArtifactBytes => MaximumArtifactBytes;
+
+    Task<OutputCapturePreparation> IExecutionOutputCapture.PrepareAsync(
+        DateTimeOffset absoluteDeadlineUtc,
+        TimeSpan maximumWait,
+        CancellationToken cancellationToken) =>
+        PrepareAgainstDeadlineAsync(
+            absoluteDeadlineUtc,
+            maximumWait,
+            cancellationToken);
+
+    Task<OutputRecoverySummary> IExecutionOutputCapture.SealAsync(
+        OutputArtifactContent content,
+        TimeSpan maximumWait) => SealAsync(content, maximumWait);
+
+    Task<OutputRecoverySummary> IExecutionOutputCapture.SealIncompleteAsync(
+        OutputArtifactContent content,
+        string reason,
+        TimeSpan maximumWait) => SealIncompleteAsync(content, reason, maximumWait);
 
     internal async Task PrepareAsync(
         TimeSpan maximumWait,
@@ -350,6 +416,43 @@ internal sealed class ForegroundOutputCapture : IDisposable
         _reservation = result.Reservation;
         _failure = result.Failure;
     }
+
+    internal async Task<OutputCapturePreparation> PrepareAgainstDeadlineAsync(
+        DateTimeOffset absoluteDeadlineUtc,
+        TimeSpan maximumWait,
+        CancellationToken cancellationToken)
+    {
+        if (maximumWait <= TimeSpan.Zero)
+            throw new ArgumentOutOfRangeException(nameof(maximumWait));
+
+        if (!_prepared)
+        {
+            var remaining = absoluteDeadlineUtc - DateTimeOffset.UtcNow;
+            if (remaining <= TimeSpan.Zero)
+            {
+                _prepared = true;
+                _failure = cancellationToken.IsCancellationRequested
+                    ? "output_store_prepare_canceled"
+                    : "output_store_prepare_timed_out";
+                return CurrentPreparation();
+            }
+
+            await PrepareAsync(
+                    remaining < maximumWait ? remaining : maximumWait,
+                    cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        return CurrentPreparation();
+    }
+
+    private OutputCapturePreparation CurrentPreparation() =>
+        Volatile.Read(ref _reservation) is not null
+            ? OutputCapturePreparation.Pending()
+            : OutputCapturePreparation.Unavailable(
+                _failure ?? (_prepared
+                    ? "output_store_unavailable"
+                    : "capture_not_prepared"));
 
     internal Task<OutputRecoverySummary> SealAsync(
         OutputArtifactContent content,
@@ -448,6 +551,144 @@ internal sealed class ForegroundOutputCapture : IDisposable
         Interlocked.Exchange(ref _reservation, null)?.Dispose();
         _store = null;
     }
+}
+
+/// <summary>Local transitional adapter from the guardian-owned store contract
+/// to the transport-neutral per-execution capability. A future private host
+/// implementation can implement the interfaces above without receiving any
+/// store or reservation internals.</summary>
+internal static class ExecutionOutputCaptureAdapter
+{
+    internal static IExecutionOutputCaptureOwner Create(
+        IOutputCaptureOwner owner,
+        Action? sealCancellationRejectedForTests = null,
+        Func<TimeSpan, Task>? sealDelayForTests = null) =>
+        new RequestOwner(
+            new CaptureCore(
+                new ForegroundOutputCapture(
+                    owner ?? throw new ArgumentNullException(nameof(owner)),
+                    sealCancellationRejectedForTests,
+                    sealDelayForTests)));
+
+    private sealed class CaptureCore(ForegroundOutputCapture capture) : IDisposable
+    {
+        private ForegroundOutputCapture? _capture = capture;
+        private int _terminalClaimed;
+
+        internal long MaximumArtifactBytes =>
+            Volatile.Read(ref _capture)?.MaximumArtifactBytes ?? OutputStore.DefaultReadBytes;
+
+        internal Task<OutputCapturePreparation> PrepareAsync(
+            DateTimeOffset absoluteDeadlineUtc,
+            TimeSpan maximumWait,
+            CancellationToken cancellationToken)
+        {
+            var current = Volatile.Read(ref _capture);
+            return current is null
+                ? Task.FromResult(OutputCapturePreparation.Unavailable("capture_closed"))
+                : current.PrepareAgainstDeadlineAsync(
+                    absoluteDeadlineUtc,
+                    maximumWait,
+                    cancellationToken);
+        }
+
+        internal Task<OutputRecoverySummary> SealAsync(
+            OutputArtifactContent content,
+            string? incompleteReason,
+            TimeSpan maximumWait)
+        {
+            ArgumentNullException.ThrowIfNull(content);
+            if (Interlocked.CompareExchange(ref _terminalClaimed, 1, 0) != 0)
+            {
+                return Task.FromResult(OutputRecoverySummary.Unavailable(
+                    "capture_already_terminal",
+                    advertise: true));
+            }
+
+            var current = Volatile.Read(ref _capture);
+            if (current is null)
+            {
+                return Task.FromResult(OutputRecoverySummary.Unavailable(
+                    "capture_closed",
+                    advertise: true));
+            }
+
+            return incompleteReason is null
+                ? current.SealAsync(content, maximumWait)
+                : current.SealIncompleteAsync(content, incompleteReason, maximumWait);
+        }
+
+        public void Dispose() => Interlocked.Exchange(ref _capture, null)?.Dispose();
+    }
+
+    private abstract class CaptureLease : IExecutionOutputCapture
+    {
+        private CaptureCore? _core;
+
+        protected CaptureLease(CaptureCore core) =>
+            _core = core ?? throw new ArgumentNullException(nameof(core));
+
+        protected CaptureCore? Detach() => Interlocked.Exchange(ref _core, null);
+
+        public long MaximumArtifactBytes =>
+            Volatile.Read(ref _core)?.MaximumArtifactBytes ?? OutputStore.DefaultReadBytes;
+
+        public Task<OutputCapturePreparation> PrepareAsync(
+            DateTimeOffset absoluteDeadlineUtc,
+            TimeSpan maximumWait,
+            CancellationToken cancellationToken)
+        {
+            var core = Volatile.Read(ref _core);
+            return core is null
+                ? Task.FromResult(OutputCapturePreparation.Unavailable("capture_closed"))
+                : core.PrepareAsync(
+                    absoluteDeadlineUtc,
+                    maximumWait,
+                    cancellationToken);
+        }
+
+        public Task<OutputRecoverySummary> SealAsync(
+            OutputArtifactContent content,
+            TimeSpan maximumWait)
+        {
+            var core = Volatile.Read(ref _core);
+            return core is null
+                ? Task.FromResult(OutputRecoverySummary.Unavailable(
+                    "capture_closed",
+                    advertise: true))
+                : core.SealAsync(content, incompleteReason: null, maximumWait);
+        }
+
+        public Task<OutputRecoverySummary> SealIncompleteAsync(
+            OutputArtifactContent content,
+            string reason,
+            TimeSpan maximumWait)
+        {
+            ArgumentNullException.ThrowIfNull(reason);
+            var core = Volatile.Read(ref _core);
+            return core is null
+                ? Task.FromResult(OutputRecoverySummary.Unavailable(
+                    "capture_closed",
+                    advertise: true))
+                : core.SealAsync(content, reason, maximumWait);
+        }
+
+        public void Dispose() => Detach()?.Dispose();
+    }
+
+    private sealed class RequestOwner(CaptureCore core) :
+        CaptureLease(core),
+        IExecutionOutputCaptureOwner
+    {
+        public bool TryTransferToBackground(out IExecutionOutputCapture? capture)
+        {
+            var detached = Detach();
+            capture = detached is null ? null : new BackgroundOwner(detached);
+            return capture is not null;
+        }
+    }
+
+    private sealed class BackgroundOwner(CaptureCore core) : CaptureLease(core);
 }
 
 /// <summary>Supervisor-owned, harness-lifetime output artifact store. Public

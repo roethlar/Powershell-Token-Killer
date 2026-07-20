@@ -311,6 +311,72 @@ public sealed class OutputStoreTests : IDisposable
     }
 
     [Fact]
+    public async Task Execution_capture_transfers_once_and_background_lease_owns_terminal_seal()
+    {
+        using var store = CreateStore(() => DateTimeOffset.UtcNow);
+        using var owner = ExecutionOutputCaptureAdapter.Create(store);
+        var preparation = await owner.PrepareAsync(
+            DateTimeOffset.UtcNow.AddSeconds(5),
+            TimeSpan.FromSeconds(5),
+            CancellationToken.None);
+
+        Assert.True(preparation.Available);
+        Assert.Equal("capture_pending", preparation.Summary.DetailCode);
+        Assert.True(owner.TryTransferToBackground(out var transferred));
+        using var background = Assert.IsAssignableFrom<IExecutionOutputCapture>(transferred);
+        Assert.False(owner.TryTransferToBackground(out var duplicate));
+        Assert.Null(duplicate);
+        owner.Dispose();
+
+        var recovery = await background.SealAsync(
+            new OutputArtifactContent(
+                "TRANSFERRED_BACKGROUND_OUTPUT",
+                [],
+                [],
+                [],
+                null,
+                OutputProvenance.DirectText),
+            TimeSpan.FromSeconds(5));
+        var duplicateTerminal = await background.SealIncompleteAsync(
+            new OutputArtifactContent(
+                "must-not-replace",
+                [],
+                [],
+                [],
+                null,
+                OutputProvenance.DirectText),
+            "duplicate_terminal",
+            TimeSpan.FromSeconds(5));
+
+        Assert.Equal(OutputArtifactState.Available, recovery.State);
+        var handle = Assert.IsType<string>(recovery.Handle);
+        Assert.Equal("capture_already_terminal", duplicateTerminal.DetailCode);
+        Assert.Equal(
+            "TRANSFERRED_BACKGROUND_OUTPUT",
+            store.Read(handle, 0, OutputStore.MaximumReadBytes).Text);
+    }
+
+    [Fact]
+    public async Task Expired_execution_capture_deadline_reserves_no_store_capacity()
+    {
+        using var store = CreateStore(() => DateTimeOffset.UtcNow);
+        using var owner = ExecutionOutputCaptureAdapter.Create(store);
+
+        var preparation = await owner.PrepareAsync(
+            DateTimeOffset.UtcNow.AddMilliseconds(-1),
+            TimeSpan.FromSeconds(1),
+            CancellationToken.None);
+
+        Assert.False(preparation.Available);
+        Assert.Equal("output_store_prepare_timed_out", preparation.Summary.DetailCode);
+        Assert.True(store.TryReserve(
+            "default",
+            out var independentReservation,
+            out var failure), failure);
+        independentReservation!.Dispose();
+    }
+
+    [Fact]
     public void Expiration_overflow_cannot_publish_or_leak_a_reservation()
     {
         var now = DateTimeOffset.MaxValue.AddMinutes(-1);

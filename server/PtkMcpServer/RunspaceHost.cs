@@ -1491,7 +1491,7 @@ public sealed class RunspaceHost : IDisposable
     /// user script can be committed and is consumed at most once by this call.</summary>
     internal Task<InvokeResult> InvokeWithOutputCaptureAsync(
         string script,
-        ForegroundOutputCapture outputCapture,
+        IExecutionOutputCapture outputCapture,
         bool raw = false,
         CancellationToken cancellationToken = default,
         string route = "auto",
@@ -1516,7 +1516,7 @@ public sealed class RunspaceHost : IDisposable
         string route = "auto",
         int timeoutSeconds = 0,
         DateTimeOffset? deadline = null,
-        ForegroundOutputCapture? outputCapture = null) =>
+        IExecutionOutputCapture? outputCapture = null) =>
         InvokeCoreAsync(
             script,
             cancellationToken,
@@ -1533,7 +1533,7 @@ public sealed class RunspaceHost : IDisposable
         int timeoutSeconds,
         DateTimeOffset? deadline,
         IInvocationAuthorizer? authorizer,
-        ForegroundOutputCapture? outputCapture)
+        IExecutionOutputCapture? outputCapture)
     {
         ObjectDisposedException.ThrowIf(_disposed, this);
         var budget = EffectiveBudget(timeoutSeconds);
@@ -3253,7 +3253,7 @@ public sealed class RunspaceHost : IDisposable
         TimeSpan budget,
         CancellationToken cancellationToken,
         IInvocationAuthorizer? authorizer,
-        ForegroundOutputCapture? outputCapture)
+        IExecutionOutputCapture? outputCapture)
     {
         var ps = PowerShell.Create();
         var handedOff = false;
@@ -3680,6 +3680,7 @@ public sealed class RunspaceHost : IDisposable
             if (outputCapture is not null)
             {
                 await outputCapture.PrepareAsync(
+                    callDeadline,
                     OutputSealWait(callDeadline),
                     cancellationToken);
             }

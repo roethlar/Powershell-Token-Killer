@@ -607,8 +607,8 @@ public sealed class JobManagerTests : IDisposable
         Assert.True(final.OutputRecoveryFinalized);
         Assert.Equal("output_store_busy", recovery.DetailCode);
         Assert.True(recovery.Advertise);
-        Assert.Equal(1, owner.TryStartCalls);
-        Assert.Equal(0, owner.TryReserveCalls);
+        Assert.Equal(1, owner.PrepareCalls);
+        Assert.Equal(0, owner.TransferCalls);
     }
 
     [Fact]
@@ -2604,31 +2604,43 @@ public sealed class JobManagerTests : IDisposable
             ? StringComparison.OrdinalIgnoreCase
             : StringComparison.Ordinal;
 
-    private sealed class BusyOutputCaptureOwner : IOutputCaptureOwner
+    private sealed class BusyOutputCaptureOwner : IExecutionOutputCaptureOwner
     {
-        internal int TryStartCalls { get; private set; }
-        internal int TryReserveCalls { get; private set; }
+        internal int PrepareCalls { get; private set; }
+        internal int TransferCalls { get; private set; }
 
         public long MaximumArtifactBytes => 4096;
 
-        public bool TryStartForegroundOperation<T>(
-            Func<T> work,
-            out Task<T>? operation)
+        public Task<OutputCapturePreparation> PrepareAsync(
+            DateTimeOffset absoluteDeadlineUtc,
+            TimeSpan maximumWait,
+            CancellationToken cancellationToken)
         {
-            TryStartCalls++;
-            operation = null;
+            PrepareCalls++;
+            return Task.FromResult(
+                OutputCapturePreparation.Unavailable("output_store_busy"));
+        }
+
+        public Task<OutputRecoverySummary> SealAsync(
+            OutputArtifactContent content,
+            TimeSpan maximumWait) => throw new InvalidOperationException(
+                "An unavailable capture must never be sealed.");
+
+        public Task<OutputRecoverySummary> SealIncompleteAsync(
+            OutputArtifactContent content,
+            string reason,
+            TimeSpan maximumWait) => throw new InvalidOperationException(
+                "An unavailable capture must never be sealed.");
+
+        public bool TryTransferToBackground(out IExecutionOutputCapture? capture)
+        {
+            TransferCalls++;
+            capture = null;
             return false;
         }
 
-        public bool TryReserve(
-            string sessionAlias,
-            out OutputCaptureReservation? reservation,
-            out string? failure)
+        public void Dispose()
         {
-            TryReserveCalls++;
-            reservation = null;
-            failure = "unexpected";
-            return false;
         }
     }
 

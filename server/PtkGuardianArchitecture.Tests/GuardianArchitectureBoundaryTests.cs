@@ -110,13 +110,17 @@ public sealed class GuardianArchitectureBoundaryTests
 
     private static readonly string[] RequiredGuardianOutputTypeDefinitions =
     [
+        "PtkMcpServer.ExecutionOutputCaptureAdapter",
         "PtkMcpServer.ForegroundOutputCapture",
+        "PtkMcpServer.IExecutionOutputCapture",
+        "PtkMcpServer.IExecutionOutputCaptureOwner",
         "PtkMcpServer.IOutputArtifactReader",
         "PtkMcpServer.IOutputCaptureOwner",
         "PtkMcpServer.OutputArtifactContent",
         "PtkMcpServer.OutputArtifactState",
         "PtkMcpServer.OutputArtifactStateCodes",
         "PtkMcpServer.OutputArtifactStatus",
+        "PtkMcpServer.OutputCapturePreparation",
         "PtkMcpServer.OutputCaptureReservation",
         "PtkMcpServer.OutputProvenance",
         "PtkMcpServer.OutputProvenanceMachineCodes",
