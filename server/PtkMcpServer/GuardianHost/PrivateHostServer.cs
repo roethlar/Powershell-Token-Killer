@@ -86,7 +86,7 @@ internal sealed class PrivateHostServer
     private static readonly TimeSpan MaximumDeadlinePoll = TimeSpan.FromMinutes(1);
 
     private readonly GuardianHostProtocolReader _reader;
-    private readonly GuardianHostProtocolWriter _writer;
+    private readonly PrivateHostOutboundChannel _outbound;
     private readonly PrivateHostServerIdentity _identity;
     private readonly PrivateHostServerPins _pins;
     private readonly IPrivateHostRuntime _runtime;
@@ -121,9 +121,7 @@ internal sealed class PrivateHostServer
         _reader = new GuardianHostProtocolReader(
             guardianRequestStream,
             GuardianHostPeer.Guardian);
-        _writer = new GuardianHostProtocolWriter(
-            hostEventStream,
-            GuardianHostPeer.Host);
+        _outbound = new PrivateHostOutboundChannel(hostEventStream, identity);
         _identity = identity;
         _pins = pins;
         _runtime = runtime;
@@ -268,7 +266,7 @@ internal sealed class PrivateHostServer
             SetState(PrivateHostServerState.InitializingRuntime);
             await _runtime.InitializeAsync(initialization, cancellationToken).ConfigureAwait(false);
 
-            await _writer.WriteAsync(
+            await _outbound.WriteFrameAsync(
                 new GuardianHostReady(
                     _identity.GuardianBootId,
                     _identity.HostBootId,
@@ -505,7 +503,7 @@ internal sealed class PrivateHostServer
     private ValueTask WriteOperationTerminalAsync(
         OperationRequest request,
         PrivateHostOperationOutcome outcome) =>
-        _writer.WriteAsync(
+        _outbound.WriteFrameAsync(
             CreateOperationTerminal(request, outcome),
             CancellationToken.None);
 
@@ -709,7 +707,7 @@ internal sealed class PrivateHostServer
     }
 
     private ValueTask WriteHelloAsync(CancellationToken cancellationToken) =>
-        _writer.WriteAsync(
+        _outbound.WriteFrameAsync(
             new GuardianHostHello(
                 _identity.GuardianBootId,
                 _identity.HostBootId,
@@ -845,7 +843,7 @@ internal sealed class PrivateHostServer
         PrivateRequestId requestId,
         GuardianHostSuccessPayload payload,
         CancellationToken cancellationToken) =>
-        _writer.WriteAsync(
+        _outbound.WriteFrameAsync(
             new GuardianHostSuccessResponse(
                 _identity.GuardianBootId,
                 _identity.HostBootId,
