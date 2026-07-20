@@ -21,11 +21,14 @@ namespace PtkMcpServer;
 /// so a containment setup failure must not convert a started job into a
 /// start failure. On Windows the assignment happens immediately after
 /// <c>Process.Start</c>; children spawned inside that window escape the
-/// job. That residual window is small, applies only to the post-start
-/// attach path, and remains covered by the snapshot-walk kill
-/// (<c>Process.Kill(entireProcessTree: true)</c>). Unknown-start
-/// retention (a start whose outcome could not be proven) never attaches:
-/// containment applies to confirmed starts only.
+/// job. On the kill path that window is covered by the snapshot-walk
+/// kill (<c>Process.Kill(entireProcessTree: true)</c>) that precedes
+/// escalation; on natural root exit no walk occurs, so a child spawned
+/// inside the pre-assign window and abandoned there is an accepted
+/// residual of the post-start attach model, bounded by the assignment
+/// happening immediately after start. Unknown-start retention (a start
+/// whose outcome could not be proven) never attaches: containment
+/// applies to confirmed starts only.
 /// </remarks>
 internal static class BackgroundJobContainment
 {

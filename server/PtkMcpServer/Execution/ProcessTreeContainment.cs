@@ -56,8 +56,9 @@ internal sealed class ProcessTreeContainment : IDisposable
 
     private readonly int _rootPid;
     private readonly bool _inert;
+    private readonly bool _useExclusive;
     private readonly Lock _gate = new();
-    private readonly HashSet<int> _tracked = [];
+    private readonly Dictionary<int, int> _tracked = [];
     private readonly CancellationTokenSource _stop = new();
     private int _disposed;
 
@@ -65,8 +66,23 @@ internal sealed class ProcessTreeContainment : IDisposable
     {
         _rootPid = rootPid;
         _inert = inert;
-        if (!inert && !ExclusiveGroup.Value)
+        if (inert) return;
+
+        // Exclusive mode is only trusted for roots that verifiably
+        // inherited the exclusive group. The first tracked root predates
+        // the lazy setpgid switch (it inherited the server's original
+        // group), and a root can leave the group later via setsid or
+        // setpgid; both cases degrade to fallback polling instead of
+        // silently escaping every sweep.
+        _useExclusive = ExclusiveGroup.Value && RootInExclusiveGroup(rootPid);
+        if (!_useExclusive)
             _ = Task.Run(() => PollLoopAsync(_stop.Token));
+    }
+
+    private static bool RootInExclusiveGroup(int rootPid)
+    {
+        try { return getpgid(rootPid) == getpgrp(); }
+        catch { return false; }
     }
 
     /// <summary>
@@ -151,32 +167,66 @@ internal sealed class ProcessTreeContainment : IDisposable
 
     private async Task PollLoopAsync(CancellationToken token)
     {
+        var rootAbsentPolls = 0;
         while (!token.IsCancellationRequested)
         {
             var snapshot = ProcessTableSnapshot.TryTake();
-            if (snapshot is not null) Update(snapshot);
+            if (snapshot is not null)
+            {
+                // Self-terminate once the root is verifiably gone: the
+                // frozen tracked set stays valid because escalation
+                // re-validates every pid (presence plus recorded pgid)
+                // against a fresh snapshot. This bounds the poller's
+                // lifetime even when the owning Process is dropped
+                // without a terminal Release.
+                rootAbsentPolls = Update(snapshot) ? 0 : rootAbsentPolls + 1;
+                if (rootAbsentPolls >= 2) return;
+            }
+
             try { await Task.Delay(PollInterval, token); }
             catch (OperationCanceledException) { return; }
         }
     }
 
-    private void Update(List<ProcessTableRow> snapshot)
+    private bool Update(List<ProcessTableRow> snapshot)
     {
         var closure = LiveClosure(snapshot, _rootPid);
-        var present = new Dictionary<int, int>(snapshot.Count);
-        foreach (var row in snapshot) present[row.Pid] = row.Ppid;
+        var present = new Dictionary<int, (int Ppid, int Pgid)>(snapshot.Count);
+        foreach (var row in snapshot) present[row.Pid] = (row.Ppid, row.Pgid);
 
         lock (_gate)
         {
-            // Retain a tracked pid only while it stays present and is
-            // either still inside the closure or reparented to PID 1;
-            // pids that exit are dropped on the next poll, bounding
-            // pid-reuse misfire risk to one poll interval.
-            _tracked.RemoveWhere(pid =>
-                !present.TryGetValue(pid, out var ppid) ||
-                (!closure.Contains(pid) && ppid != 1));
-            foreach (var pid in closure) _tracked.Add(pid);
+            // Retain a tracked pid only while it stays present with the
+            // pgid recorded when it was last inside the closure, and is
+            // either still inside the closure or reparented to PID 1.
+            // The pgid identity check bounds pid-reuse misfire: a
+            // recycled pid that reappears under PID 1 in a different
+            // group is dropped instead of being retained indefinitely.
+            List<int>? drop = null;
+            foreach (var (pid, recordedPgid) in _tracked)
+            {
+                if (present.TryGetValue(pid, out var row) &&
+                    row.Pgid == recordedPgid &&
+                    (closure.Contains(pid) || row.Ppid == 1))
+                {
+                    continue;
+                }
+
+                (drop ??= []).Add(pid);
+            }
+
+            if (drop is not null)
+            {
+                foreach (var pid in drop) _tracked.Remove(pid);
+            }
+
+            foreach (var pid in closure)
+            {
+                if (present.TryGetValue(pid, out var row)) _tracked[pid] = row.Pgid;
+            }
         }
+
+        return present.ContainsKey(_rootPid);
     }
 
     private async Task<bool> EscalateCoreAsync(Process process, bool stopped)
@@ -211,7 +261,7 @@ internal sealed class ProcessTreeContainment : IDisposable
 
     private HashSet<int> FindEscapees(List<ProcessTableRow> snapshot)
     {
-        if (ExclusiveGroup.Value)
+        if (_useExclusive)
         {
             // Deterministic sweep: group-marked processes with no live
             // parent chain back to the server are escaped descendants.
@@ -228,18 +278,28 @@ internal sealed class ProcessTreeContainment : IDisposable
             return escapees;
         }
 
-        // Fallback: tracked survivors observed by the poller, folded with
-        // the root's current live closure, intersected with live pids.
+        // Fallback: tracked survivors observed by the poller — validated
+        // against the escalation snapshot by presence and recorded pgid,
+        // so a pid recycled after the poller froze is never signalled —
+        // folded with the root's current live closure.
+        var present = new Dictionary<int, int>(snapshot.Count);
+        foreach (var row in snapshot) present[row.Pid] = row.Pgid;
+
         var survivors = new HashSet<int>();
         lock (_gate)
         {
-            foreach (var pid in _tracked) survivors.Add(pid);
+            foreach (var (pid, recordedPgid) in _tracked)
+            {
+                if (present.TryGetValue(pid, out var pgid) && pgid == recordedPgid)
+                    survivors.Add(pid);
+            }
         }
 
-        var present = new HashSet<int>(snapshot.Count);
-        foreach (var row in snapshot) present.Add(row.Pid);
-        foreach (var pid in LiveClosure(snapshot, _rootPid)) survivors.Add(pid);
-        survivors.IntersectWith(present);
+        foreach (var pid in LiveClosure(snapshot, _rootPid))
+        {
+            if (present.ContainsKey(pid)) survivors.Add(pid);
+        }
+
         survivors.Remove(_rootPid);
         return survivors;
     }
@@ -287,6 +347,9 @@ internal sealed class ProcessTreeContainment : IDisposable
 
     [DllImport("libc", SetLastError = true)]
     private static extern int setpgid(int pid, int pgid);
+
+    [DllImport("libc", SetLastError = true)]
+    private static extern int getpgid(int pid);
 }
 
 internal readonly record struct ProcessTableRow(int Pid, int Ppid, int Pgid);

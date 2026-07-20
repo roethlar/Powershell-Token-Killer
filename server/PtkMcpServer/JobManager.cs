@@ -2026,6 +2026,12 @@ public sealed class JobManager : IDisposable
                 return new JobKillResult(id, JobKillDisposition.NotFound, reason);
             if (Volatile.Read(ref entry.RootExited) != 0)
             {
+                // The root is already gone, but escaped descendants may
+                // not be: fire a sweep-only escalation (stopped: true
+                // skips the root re-kill) so kill/reset/shutdown cannot
+                // skip orphan containment when they lose this race.
+                _ = BackgroundJobContainment.EscalateAsync(
+                    entry.Process, stopped: true);
                 return new JobKillResult(
                     id,
                     Volatile.Read(ref entry.RootTerminationConfirmed) != 0
@@ -2052,6 +2058,12 @@ public sealed class JobManager : IDisposable
             catch
             {
                 Interlocked.Exchange(ref entry.TerminationReason, (int)JobTerminationReason.None);
+                // Kill admission failed (typically a lost race with root
+                // exit). Containment still owes a descendant sweep;
+                // stopped: true keeps admission semantics intact by
+                // never re-killing the root from this path.
+                _ = BackgroundJobContainment.EscalateAsync(
+                    entry.Process, stopped: true);
                 return new JobKillResult(id, JobKillDisposition.Failed, reason);
             }
         }
