@@ -318,6 +318,16 @@ short and update it when important repo facts change.
   (standard = gpt-5.6-sol @ high, owner-confirmed in
   `.agents/review/harnesses.local.json`; frontier unconfirmed — escalation on
   codex blocks to owner).
+- **GitHub #7 (Defender FP: `Trojan:MSIL/AsyncRAT.AB!MTB` on `PtkMcpServer.dll`)
+  carries a landed interim mitigation and is gated on Microsoft's verdict.**
+  Interim mitigation `51ce880` on `master`: the install path detects a
+  Defender-quarantined/missing payload after install and fails loudly with
+  remediation guidance instead of leaving a silently broken install; README and
+  the runbook document the FP and submission status. The owner submitted the
+  detected DLL to Microsoft via the WDSI file-submission portal on 2026-07-20.
+  On verdict: update security intelligence, rescan the artifact, remove any
+  incident-specific exclusions, retire the quarantine detection if superseded,
+  and close #7 per `.agents/plans/defender-fp-submission.md`.
 - **rbc-5/rbc-6 containment WIP remains uncommitted and preserved on
   `fix/rbc-6-unix-sigkill-escalation` at `2b3ce1a`; do not discard it without
   owner direction.** rbc-6's filed premise was false: .NET 10 Unix
@@ -368,6 +378,11 @@ short and update it when important repo facts change.
 7. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
+8. On Microsoft's #7 verdict, execute the on-verdict steps in
+   `.agents/plans/defender-fp-submission.md`. Meanwhile the unblocked CI
+   remainders are the Windows kill-path test diagnosis (2/1587 failures) and
+   the pre-existing `tls_protection` SIEM conformance-host TLS-material
+   hardening.
 
 ## Open / Parked
 
@@ -433,6 +448,10 @@ short and update it when important repo facts change.
   later direction removes both from the candidate build. Do not implement
   either stale direction; preserve the decision-log conflict until the hold
   is released.
+- **GitHub #7 closure is gated on Microsoft's WDSI verdict** on the submitted
+  `PtkMcpServer.dll` (owner-submitted 2026-07-20). Interim quarantine-detection
+  mitigation is landed (`51ce880`); no further local action on #7 until the
+  verdict lands.
 - **Plan-record drift, reported but not edited in this narrow state pass:**
   the warm-runspace plan still says slice 7 is paused behind the already
   decided GO, and the shared-runspace idea still assumes the rejected policy
