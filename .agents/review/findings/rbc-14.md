@@ -1,7 +1,7 @@
 # rbc-14: OutputStore retention deletes artifact files while holding the store gate
 
 **Severity**: MAJOR
-**Status**: Triaged 2026-07-19 — confirmed; fix approved (move unlink/dispose off `_gate`, preserving delete-failure retry and cap-accounting semantics). First in fix queue; own branch + external fixed-SHA review per rbc-7 precedent.
+**Status**: Fix committed 2026-07-19 on `fix/rbc-14-retention-delete-offgate` at `5fc84ad` — awaiting external fixed-SHA review before merge.
 **Source**: external fixed-SHA review (codex, turn 1) of `fix/rbc-7-outputstore-read-wedge` at `bb2df34`
 **File**: `server/PtkMcpServer/Execution/OutputStore.cs:1178,1233` (line anchors at `db23ec4`)
 
@@ -43,3 +43,31 @@ exceeded on a failed delete.
 Deferred from the rbc-7 fix on purpose: moving deletion I/O changes
 retry/accounting atomicity and deserves its own fix and its own
 external review cycle rather than widening an already-reviewed diff.
+
+## Fix record (2026-07-19, `5fc84ad`)
+
+- `TombstoneLocked` now only claims the delete
+  (`ClaimStoredArtifactDeleteLocked`: sets `DeleteClaimed`, bumps
+  `_deletesInFlight`, enqueues into `_pendingDeletes`). All unlink and
+  handle-dispose I/O runs in `DrainPendingArtifactDeletes` outside
+  `_gate`.
+- Accounting semantics preserved: byte caps are decremented under
+  `_gate` only after the unlink succeeds; a failed unlink clears the
+  claim so the entry is retried by the next retention pass. Reservers
+  that need in-flight deletes to settle wait on `Monitor.PulseAll`
+  bounded by `PendingDeleteSettleTimeout`.
+- Seam correction found while writing the guard: sealed artifacts lose
+  their directory entry at seal time (retained-handle design), so
+  `entry.Path` is null and the old `ArtifactDeleteStartingForTests`
+  invocation (inside the `Path is { }` branch) never fired on Unix —
+  the real delete io there is the retained-handle `Stream.Dispose()`.
+  The seam now fires for every drained tombstone (empty string when
+  path-unlinked), so wedge guards cover the common sealed path.
+- Guard: `Retention_delete_io_does_not_wedge_the_store_gate` wedges the
+  delete seam mid-retention, proves `Status` and `Read` on a live
+  artifact complete while wedged, then proves the released delete
+  reclaimed the expired artifact's bytes (post-release reservation fits
+  the aggregate cap without evicting the survivor).
+- Full suite at `5fc84ad`: 1578 total, 1 unrelated flake
+  (`Guardian_death_contains_every_creation_barrier`, passes 7/7 in
+  isolation), all OutputStore tests green.

@@ -2643,7 +2643,7 @@ subsystem, SIEM receiver). Per-finding detail: `.agents/review/findings/rbc-*.md
 | rbc-11 | MAJOR   | SIEM receiver has no retention enforcement on master | `[ ]` deferred — gated on S3H land/park decision (triage 2026-07-19); interim docs warning queued | n/a |
 | rbc-12 | MAJOR   | SIEM receiver has no rate limiting or backpressure | `[ ]` fix approved: admission concurrency cap (triage 2026-07-19); per-client limit deferred | n/a |
 | rbc-13 | NOTE    | ColdCommandResolution MatchesCurrentResolution PATH race (safe but racy; downgraded from blocker) | `[x]` refuted as defect — fail-closed by design (triage 2026-07-19); docs-only follow-up | n/a |
-| rbc-14 | MAJOR   | OutputStore retention deletes artifact files while holding the store gate | `[ ]` fix approved, next up (triage 2026-07-19) | n/a (intake 2026-07-19, from rbc-7 external review) |
+| rbc-14 | MAJOR   | OutputStore retention deletes artifact files while holding the store gate | `[ ]` fix committed `5fc84ad` on `fix/rbc-14-retention-delete-offgate` (2026-07-19); awaiting external fixed-SHA review | n/a (intake 2026-07-19, from rbc-7 external review) |
 
 **Loop OPEN 2026-07-18T00:12Z:** 13 findings (1 blocker, 12 major), all at
 intake awaiting owner triage. No fixes have been written. This is a
