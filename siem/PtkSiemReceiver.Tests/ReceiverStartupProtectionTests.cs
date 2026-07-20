@@ -708,6 +708,7 @@ public sealed class ReceiverStartupProtectionTests
             authorities ?? [ClientCaPath, SecondClientCaPath],
             X509RevocationMode.NoCheck,
             1024 * 1024,
+            SiemReceiverConfigurationLoader.DefaultMaxConcurrentRequests,
             IPAddress.Loopback,
             9,
             new string('t', 32),

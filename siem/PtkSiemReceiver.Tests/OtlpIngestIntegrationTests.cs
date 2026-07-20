@@ -3,6 +3,7 @@ using System.Security.Cryptography;
 using System.Security.Cryptography.X509Certificates;
 using Google.Protobuf;
 using Microsoft.Data.Sqlite;
+using PtkSiemReceiver.Ingest;
 using PtkSiemReceiver.Storage;
 
 namespace PtkSiemReceiver.Tests;
@@ -223,6 +224,104 @@ public sealed class OtlpIngestIntegrationTests
         var quarantine = Assert.Single(committer.Quarantines);
         Assert.Equal("protobuf", quarantine.FailureCode);
         Assert.Equal(new byte[] { 0x0a, 0xff }, quarantine.RawRequestBytes);
+    }
+
+    [Fact]
+    public async Task Body_beyond_kestrel_backstop_is_rejected_at_transport_before_endpoint()
+    {
+        using var authority = new TestCertificateAuthority();
+        using var root = authority.Root;
+        using var server = authority.IssueServer();
+        using var clientCertificate = authority.IssueClient();
+        var committer = new RecordingIngestCommitter();
+        await using var host = await SiemReceiverTestHost.StartAsync(
+            server,
+            [root],
+            committer,
+            maximumRequestBytes: 128);
+        using var client = host.CreateClient(clientCertificate);
+
+        // rbc-10: the transport bound must sit exactly one byte above the
+        // application bound. 129 bytes (bound + 1) reaches the endpoint and
+        // yields the deterministic request_too_large response (pinned by
+        // Malformed_and_oversized_requests_are_permanently_rejected_before_commit);
+        // 130 bytes (bound + 2) exceeds the Kestrel backstop and must be
+        // refused by the transport itself, never reaching commit/quarantine.
+        using var content = new ByteArrayContent(new byte[130]);
+        content.Headers.TryAddWithoutValidation("Content-Type", "application/x-protobuf");
+        using var response = await client.PostAsync(host.Endpoint, content);
+
+        Assert.Equal(HttpStatusCode.RequestEntityTooLarge, response.StatusCode);
+        Assert.Empty(committer.Records);
+        Assert.Empty(committer.Quarantines);
+    }
+
+    [Fact]
+    public async Task Saturated_admission_gate_refuses_with_transient_503_and_recovers()
+    {
+        using var authority = new TestCertificateAuthority();
+        using var root = authority.Root;
+        using var server = authority.IssueServer();
+        using var clientCertificate = authority.IssueClient();
+        var committer = new BlockingIngestCommitter();
+        await using var host = await SiemReceiverTestHost.StartAsync(
+            server,
+            [root],
+            committer,
+            maximumConcurrentRequests: 1);
+        using var client = host.CreateClient(clientCertificate);
+
+        // Park the single admission slot inside the committer, then prove a
+        // concurrent request is refused (rbc-12) without queueing: transient
+        // 503, Retry-After, admission_capacity detail, no extra commit.
+        var parked = client.PostAsync(host.Endpoint, OtlpTestRequest.Content());
+        await committer.Entered.WaitAsync(TimeSpan.FromSeconds(30));
+
+        using (var refused = await client.PostAsync(host.Endpoint, OtlpTestRequest.Content()))
+        {
+            Assert.Equal(HttpStatusCode.ServiceUnavailable, refused.StatusCode);
+            Assert.Equal("1", refused.Headers.RetryAfter?.ToString());
+            Assert.Equal(
+                (14, "admission_capacity"),
+                ReadGoogleStatus(await refused.Content.ReadAsByteArrayAsync()));
+        }
+
+        committer.Release();
+        using (var admitted = await parked)
+        {
+            Assert.Equal(HttpStatusCode.OK, admitted.StatusCode);
+        }
+
+        // The slot must be returned after completion: capacity recovers.
+        using var reopened = await client.PostAsync(host.Endpoint, OtlpTestRequest.Content());
+        Assert.Equal(HttpStatusCode.OK, reopened.StatusCode);
+        Assert.Equal(2, committer.Commits);
+    }
+
+    private sealed class BlockingIngestCommitter : IIngestCommitter
+    {
+        private readonly TaskCompletionSource _entered =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _release =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _commits;
+
+        internal Task Entered => _entered.Task;
+
+        internal int Commits => Volatile.Read(ref _commits);
+
+        internal void Release() => _release.TrySetResult();
+
+        public async Task<IngestCommitResult> CommitAsync(
+            ValidatedOtlpRecord record,
+            IngestReceiptContext receipt,
+            CancellationToken cancellationToken)
+        {
+            _entered.TrySetResult();
+            await _release.Task.WaitAsync(cancellationToken);
+            Interlocked.Increment(ref _commits);
+            return IngestCommitResult.Accepted();
+        }
     }
 
     [Fact]

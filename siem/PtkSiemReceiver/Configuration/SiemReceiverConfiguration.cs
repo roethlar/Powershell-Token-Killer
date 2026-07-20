@@ -32,6 +32,7 @@ internal sealed class SiemReceiverOptions
         IReadOnlyList<string> clientCaBundlePaths,
         X509RevocationMode revocationCheckMode,
         int maxRequestBytes,
+        int maxConcurrentRequests,
         IPAddress operatorBindAddress,
         int operatorPort,
         string operatorToken,
@@ -50,6 +51,7 @@ internal sealed class SiemReceiverOptions
         ClientCaBundlePaths = clientCaBundlePaths;
         RevocationCheckMode = revocationCheckMode;
         MaxRequestBytes = maxRequestBytes;
+        MaxConcurrentRequests = maxConcurrentRequests;
         OperatorBindAddress = operatorBindAddress;
         OperatorPort = operatorPort;
         OperatorToken = operatorToken;
@@ -77,6 +79,13 @@ internal sealed class SiemReceiverOptions
     internal X509RevocationMode RevocationCheckMode { get; }
 
     internal int MaxRequestBytes { get; }
+
+    /// <summary>
+    /// Global ingest admission cap (rbc-12): requests beyond this many
+    /// concurrently in flight receive a retryable 503 instead of queuing
+    /// without bound behind storage.
+    /// </summary>
+    internal int MaxConcurrentRequests { get; }
 
     internal IPAddress OperatorBindAddress { get; }
 
@@ -116,6 +125,7 @@ internal static class SiemReceiverConfigurationLoader
 {
     internal const int MaximumConfigurationBytes = 256 * 1024;
     internal const int DefaultMaxRequestBytes = 1024 * 1024;
+    internal const int DefaultMaxConcurrentRequests = 64;
 
     private static readonly HashSet<string> RootProperties = new(StringComparer.Ordinal)
     {
@@ -133,6 +143,7 @@ internal static class SiemReceiverConfigurationLoader
         "clientCaBundlePaths",
         "revocationCheckMode",
         "maxRequestBytes",
+        "maxConcurrentRequests",
     };
 
     private static readonly HashSet<string> OperatorProperties = new(StringComparer.Ordinal)
@@ -264,6 +275,8 @@ internal static class SiemReceiverConfigurationLoader
         var revocationCheckMode = ParseRevocationMode(ingest);
         var maxRequestBytes = ParseOptionalPositiveInt32(
             ingest, "maxRequestBytes", "max_request_bytes") ?? DefaultMaxRequestBytes;
+        var maxConcurrentRequests = ParseOptionalPositiveInt32(
+            ingest, "maxConcurrentRequests", "max_concurrent_requests") ?? DefaultMaxConcurrentRequests;
 
         var operatorBindAddress = OptionalString(
                 operatorSection, "bindAddress", "operator_bind_address") is { } operatorBindText
@@ -315,6 +328,7 @@ internal static class SiemReceiverConfigurationLoader
             clientCaBundlePaths,
             revocationCheckMode,
             maxRequestBytes,
+            maxConcurrentRequests,
             operatorBindAddress,
             operatorPort,
             operatorToken,
