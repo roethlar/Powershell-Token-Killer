@@ -289,33 +289,76 @@ short and update it when important repo facts change.
   `.agents/machines.md`. This closes current config/TLS/SQLite enforcement;
   full acceptance row 7 still waits for the later slice that introduces and
   protects the currently absent custody checkpoint/anchor path.
-- **Uncommitted read-only baseline review (Hermes loop, 2026-07-18) sits in
-  the main checkout:** a modified `.agents/review/index.md` plus untracked
-  `.agents/review/findings/rbc-1.md` through `rbc-13.md` (1 blocker, 12
-  major), all at intake awaiting owner triage. No fixes were written. Leave
-  it uncommitted unless the owner directs otherwise; do not fold it into
-  product commits.
+- **rbc review-loop batch is in progress on `master` (2026-07-18).** The
+  Hermes baseline review (`.agents/review/findings/rbc-1..13.md`,
+  `.agents/review/index.md`) is committed. Owner triaged all 11 open findings
+  to FIX with **batch merge pre-approval** (commit `3d7f2c1`): any fix whose
+  external fixed-SHA review is accepted with `guard_confirmed=true` and a green
+  full suite may be merged to `master` without a per-item prompt. Merged so
+  far: rbc-1 (`a445038`), rbc-2 (`a6c4a17`), rbc-3 refuted (`41d3257`), rbc-4
+  (`685d34c`), rbc-6 refuted (`315b9db`, merge record `749815b`), out-of-band
+  hotfix hf-1 ptk_output draft-2020-12 schema (`b7ac20b`), rbc-7 (`a9b0476`),
+  rbc-9/rbc-10/rbc-12 (`6452945`; fix `27511b1`, external-review hardening
+  `90b97b3`, remedy verification VERDICT: ACCEPT 2026-07-20), and rbc-14
+  (`897bdbc`; fix `5fc84ad` + stale-pulse remedy `f624796`, codex turn-3
+  ACCEPT). rbc-13 is refuted as a defect (fail-closed by design, documented at
+  `MatchesCurrentResolution`). Dispositions without product change: rbc-5
+  deferred to resilience R7 (owner disposition 2026-07-19), rbc-8 downgraded
+  at triage 2026-07-19 with a targeted drain-replay guard queued to the worker
+  pass, rbc-11 gated on the owner's S3H land/park decision with an interim
+  deployment warning landed. rbc-15 (process-tree containment for background
+  jobs) has remedies committed on `fix/rbc-15-process-tree-containment` at
+  `a216734` (`b4432dc` → `c17c1f9` → `08da8f5` → `a216734`) with the full
+  server suite 1587/1587 green; it awaits external fixed-SHA review, then the
+  accumulated master-push queue. Per-item ledger: `.agents/review/index.md`;
+  records: `.agents/review/findings/rbc-*.md`. External reviewer was codex
+  (standard = gpt-5.6-sol @ high, owner-confirmed in
+  `.agents/review/harnesses.local.json`; frontier unconfirmed — escalation on
+  codex blocks to owner).
+- **rbc-5/rbc-6 containment WIP remains uncommitted and preserved on
+  `fix/rbc-6-unix-sigkill-escalation` at `2b3ce1a`; do not discard it without
+  owner direction.** rbc-6's filed premise was false: .NET 10 Unix
+  `Process.Kill(entireProcessTree: true)` already uses SIGKILL. Its WIP instead
+  addresses a different daemonized/reparented-descendant condition and was not
+  accepted. rbc-5 is valid in the current in-process Windows runtime, but its
+  saved spawn-then-assign Job Object WIP has an admitted escape race and
+  conflicts with the approved creation-time containment contract. No rbc-5
+  product change is accepted or committed. The recommended proportional
+  resolution is to close rbc-5 through the already-planned resilience R7
+  worker cutover, adding a Windows guard that a background descendant dies on
+  hard supervisor termination; the owner approved this deferral on 2026-07-19
+  (recorded in `.agents/review/index.md`).
 
 ## Next
 
-1. Owner call: push `master` (now containing the S3H merge) to `origin`, or
+1. Run the external fixed-SHA review of `a216734` on
+   `fix/rbc-15-process-tree-containment` (per repo convention); on ACCEPT with
+   `guard_confirmed=true` and the recorded green full suite, queue the branch
+   for the accumulated master push. Do not continue or commit the saved rbc-5
+   post-start attach WIP.
+2. Close out the rbc batch remainders: rbc-8's targeted drain-replay guard
+   test lands in the worker-subsystem pass; rbc-11 stays gated on the owner's
+   S3H land/park decision; rbc-5 closes via resilience R7. Reassess
+   per-finding whether work is safeguard-sensitive and route out if so.
+3. Owner call: push `master` (contains the S3H merge plus rbc-1..4, the rbc-6
+   refutation, hf-1, rbc-7, rbc-9/rbc-10/rbc-12, and rbc-14) to `origin`, or
    keep it local. Push policy requires an explicit ask for merge commits.
-2. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
+4. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures. Do not begin
    S4–S6 or modify PTK runtime for SIEM work.
-3. Continue resilience R4 only in `.claude/worktrees/mcp-resilience-r1` on
+5. Continue resilience R4 only in `.claude/worktrees/mcp-resilience-r1` on
    `feature/mcp-resilience-r1` from tip `9d897e5` plus the existing uncommitted
    WIP; then R5-R7 sequentially. Ordinary reviews may use Opus or Grok; hold
    Fable openreviews until capacity returns, then rerun the R1 fixed range
    `1f314a2..60eb20f` and later fixed ranges. Do not push, merge, rewrite
    history, or publish a release without separate authorization. Do not replace
    `.agents/state.md` wholesale on handoff.
-4. Release-distribution slice 3 is ordered after resilience R7 and consumes
+6. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
    slice 4.
-5. When the owner releases the decisions hold, reconcile the rejected
+7. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
 
@@ -352,6 +395,13 @@ short and update it when important repo facts change.
   slice.
 
 ## Blockers
+
+- **rbc-5 implementation is blocked on an informed owner choice.** A correct
+  standalone fix for the current Windows runtime is a moderate low-level
+  launcher/JobManager change; the smaller preserved post-start attach has a
+  real escape race. The proposed lower-duplication resolution is to prove and
+  close the finding with resilience R7's already-planned creation-time worker
+  containment, but the owner has not yet approved that change in disposition.
 
 - **Direct ARM64 Linux clean-build validation is blocked by a host-specific
   `Grpc.Tools` launch failure.** On the Ubuntu 26.04 ARM64 VM, the bundled
