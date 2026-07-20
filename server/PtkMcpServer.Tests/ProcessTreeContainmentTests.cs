@@ -214,6 +214,23 @@ public sealed class ProcessTreeContainmentTests : IDisposable
                 child.Id, pgid, start + TimeSpan.FromHours(1).Ticks);
             Assert.DoesNotContain(child.Id, tracker.FindEscapeesForTests(table));
 
+            // Tolerance boundary (codex rbc-15 turn-4): skew exactly at the
+            // window edge is still the same incarnation; one tick past the
+            // edge — on either side — is a different incarnation and must
+            // fail toward NOT killing.
+            var tolerance =
+                ProcessTreeContainment.StartIdentityToleranceTicksForTests;
+            tracker.RecordTrackedForTests(child.Id, pgid, start + tolerance);
+            Assert.Contains(child.Id, tracker.FindEscapeesForTests(table));
+
+            tracker.RecordTrackedForTests(
+                child.Id, pgid, start + tolerance + 1);
+            Assert.DoesNotContain(child.Id, tracker.FindEscapeesForTests(table));
+
+            tracker.RecordTrackedForTests(
+                child.Id, pgid, start - tolerance - 1);
+            Assert.DoesNotContain(child.Id, tracker.FindEscapeesForTests(table));
+
             tracker.RecordTrackedForTests(child.Id, pgid, 0);
             Assert.DoesNotContain(child.Id, tracker.FindEscapeesForTests(table));
         }

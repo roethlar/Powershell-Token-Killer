@@ -60,6 +60,16 @@ internal sealed class ProcessTreeContainment : IDisposable
     /// most. The tolerance must stay well under <see cref="PollInterval"/>:
     /// a pid recycled between the final poll and the escalation snapshot
     /// must not be able to impersonate the tracked incarnation.
+    /// Impersonation additionally requires the recycled occupant's own
+    /// start instant to land inside this window around the ORIGINAL's
+    /// recorded start — the comparison is between absolute start
+    /// instants, not "time since reuse" — so the pid space would have to
+    /// wrap back onto the exact pid within the window. Sequential pid
+    /// allocation makes that unreachable on supported platforms, and
+    /// every ambiguous outcome (unreadable or out-of-window identity on
+    /// either side) fails toward NOT killing (rbc-15 T4). Strictly
+    /// stronger identity would need an OS handle (pidfd/Job Object);
+    /// Windows already uses Job Objects, and this is the Unix fallback.
     /// </summary>
     private static readonly long StartIdentityToleranceTicks =
         TimeSpan.FromMilliseconds(100).Ticks;
@@ -160,6 +170,10 @@ internal sealed class ProcessTreeContainment : IDisposable
 
     /// <summary>Test seam: the recorded start-time identity source.</summary>
     internal static long ReadStartUtcTicksForTests(int pid) => TryGetStartUtcTicks(pid);
+
+    /// <summary>Test seam: the incarnation tolerance boundary.</summary>
+    internal static long StartIdentityToleranceTicksForTests =>
+        StartIdentityToleranceTicks;
 
     /// <summary>
     /// Begins containment for a successfully started process. Returns an
