@@ -1,9 +1,13 @@
 # Runbook: submit the PtkMcpServer.dll Defender false positive
 
-**Status:** Ready for use on the affected Windows machine. The owner requested
-this corrected runbook on 2026-07-20. Uploading a file to Microsoft and posting
-to GitHub remain outward-facing actions: confirm those actions with the
-operator before performing them.
+**Status:** Submitted — awaiting Microsoft verdict. The owner uploaded the
+detected `PtkMcpServer.dll` to the WDSI file-submission portal on 2026-07-20
+(submission ID not yet recorded; add it here when available). Do not repeat the
+upload. Remaining steps on verdict: update security intelligence, rescan the
+artifact (Step 5), remove any incident-specific exclusion, and close issue #7.
+The owner requested the original runbook on 2026-07-20. Uploading a file to
+Microsoft and posting to GitHub remain outward-facing actions: confirm those
+actions with the operator before performing them.
 
 **Audience:** An agent or human working on the Windows machine where Microsoft
 Defender Antivirus detected the DLL.

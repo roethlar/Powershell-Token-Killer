@@ -125,6 +125,36 @@ function Get-PtkServerBinaryName {
     if ($TargetRid -like 'win-*') { 'PtkMcpServer.exe' } else { 'PtkMcpServer' }
 }
 
+# Interim mitigation for GitHub issue #7: Microsoft Defender falsely detected
+# PtkMcpServer.dll (reported as Trojan:MSIL/AsyncRAT.AB!MTB) and quarantined it
+# out of the build output and the installed payload. When that happens the
+# publish/copy steps succeed but the file is silently missing afterwards, so
+# verify the payload landed intact and fail with actionable guidance if not.
+function Assert-PtkPayloadIntact {
+    param(
+        [Parameter(Mandatory)][string]$Root,
+        [Parameter(Mandatory)][string]$TargetRid
+    )
+    $required = @(
+        (Join-Path $Root 'bin' (Get-PtkServerBinaryName -TargetRid $TargetRid))
+        (Join-Path $Root 'bin' 'PtkMcpServer.dll')
+    )
+    $missing = @($required | Where-Object { -not (Test-Path -LiteralPath $_ -PathType Leaf) })
+    if ($missing.Count -eq 0) { return }
+    Write-Warning ((@(
+        'These files are missing from the freshly written payload:'
+        ($missing | ForEach-Object { "  $_" })
+        'An antivirus quarantine is the most likely cause: Microsoft Defender has'
+        'falsely detected PtkMcpServer.dll (Trojan:MSIL/AsyncRAT.AB!MTB) and removed'
+        'it immediately after install. See the false-positive tracking issue'
+        'https://github.com/AlsoBeltrix/PowerShell-Token-Killer/issues/7 and the'
+        'runbook .agents/plans/defender-fp-submission.md. Check the Defender'
+        'protection history before restoring anything, and do not add broad'
+        'exclusions.'
+    ) | ForEach-Object { $_ }) -join [Environment]::NewLine)
+    throw 'Install incomplete: payload files missing (possible antivirus quarantine).'
+}
+
 # Publishes both executables and assembles the canonical layout (bin/, src/,
 # scripts/, VERSION) in $Destination. The one layout generator dev installs
 # and release CI share.
@@ -300,6 +330,7 @@ switch ($mode) {
         }
         New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
         New-PtkLayout -Destination $OutputDir -TargetRid $targetRid -PayloadVersion $payloadVersion
+        Assert-PtkPayloadIntact -Root $OutputDir -TargetRid $targetRid
         Write-Host "Layout ready: $OutputDir ($targetRid, $payloadVersion)"
     }
     'Uninstall' {
@@ -340,6 +371,7 @@ switch ($mode) {
             Remove-Item -LiteralPath $staging -Recurse -Force -ErrorAction SilentlyContinue
         }
         $binaryPath = Join-Path $ptkHome 'bin' (Get-PtkServerBinaryName -TargetRid $targetRid)
+        Assert-PtkPayloadIntact -Root $ptkHome -TargetRid $targetRid
         $registered = Register-PtkServer -BinaryPath $binaryPath
         Write-PtkArpEntry -PayloadVersion $payloadVersion
         if ($Hook) {
