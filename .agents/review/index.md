@@ -2640,9 +2640,9 @@ subsystem, SIEM receiver). Per-finding detail: `.agents/review/findings/rbc-*.md
 | rbc-8 | MINOR    | WorkerServer initialize handshake is a fragile multi-arm Task.WhenAny | `[ ]` deferred — downgraded at triage 2026-07-19; targeted guard queued to worker pass | n/a |
 | rbc-9 | MAJOR    | WorkerOperationScheduler ignores injected TaskScheduler for outer admit dispatch | `[ ]` fix committed `27511b1` on `fix/rbc-batch2-scheduler-kestrel-admission` (2026-07-19); awaiting external fixed-SHA review | n/a |
 | rbc-10 | MAJOR   | SIEM receiver Kestrel MaxRequestBodySize disabled (defense-in-depth gap) | `[ ]` fix committed `27511b1` on `fix/rbc-batch2-scheduler-kestrel-admission` (2026-07-19); awaiting external fixed-SHA review | n/a |
-| rbc-11 | MAJOR   | SIEM receiver has no retention enforcement on master | `[ ]` deferred — gated on S3H land/park decision (triage 2026-07-19); interim docs warning queued | n/a |
+| rbc-11 | MAJOR   | SIEM receiver has no retention enforcement on master | `[ ]` deferred — gated on S3H land/park decision (triage 2026-07-19); interim deployment warning landed in `siem/PtkSiemReceiver/README.md` + gate recorded in `.agents/decisions.md` (2026-07-19) | n/a |
 | rbc-12 | MAJOR   | SIEM receiver has no rate limiting or backpressure | `[ ]` fix committed `27511b1` on `fix/rbc-batch2-scheduler-kestrel-admission` (2026-07-19); per-client limit deferred; awaiting external fixed-SHA review | n/a |
-| rbc-13 | NOTE    | ColdCommandResolution MatchesCurrentResolution PATH race (safe but racy; downgraded from blocker) | `[x]` refuted as defect — fail-closed by design (triage 2026-07-19); docs-only follow-up | n/a |
+| rbc-13 | NOTE    | ColdCommandResolution MatchesCurrentResolution PATH race (safe but racy; downgraded from blocker) | `[x]` refuted as defect — fail-closed by design (triage 2026-07-19); design requirement documented at `MatchesCurrentResolution` (2026-07-19) | n/a |
 | rbc-14 | MAJOR   | OutputStore retention deletes artifact files while holding the store gate | `[ ]` fix committed `5fc84ad` on `fix/rbc-14-retention-delete-offgate` (2026-07-19); awaiting external fixed-SHA review | n/a (intake 2026-07-19, from rbc-7 external review) |
 
 **Loop OPEN 2026-07-18T00:12Z:** 13 findings (1 blocker, 12 major), all at
