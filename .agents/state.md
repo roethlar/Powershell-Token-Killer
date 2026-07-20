@@ -307,10 +307,13 @@ short and update it when important repo facts change.
   at triage 2026-07-19 with a targeted drain-replay guard queued to the worker
   pass, rbc-11 gated on the owner's S3H land/park decision with an interim
   deployment warning landed. rbc-15 (process-tree containment for background
-  jobs) has remedies committed on `fix/rbc-15-process-tree-containment` at
-  `a216734` (`b4432dc` → `c17c1f9` → `08da8f5` → `a216734`) with the full
-  server suite 1587/1587 green; it awaits external fixed-SHA review, then the
-  accumulated master-push queue. Per-item ledger: `.agents/review/index.md`;
+  jobs) is closed and merged to local master at `f0d17f6`: remedies
+  `b4432dc` → `c17c1f9` → `08da8f5` → `a216734` → `3634fe7`, codex review
+  closed at turn 4 (diff-scoped findings: none; sole MAJOR labeled
+  PRE-EXISTING by the reviewer, adjudicated deferred to the recycled-PID
+  incarnation-hardening follow-up task), full server suite 1587/1587 green at
+  `3634fe7` and again on master post-merge (2 m 17 s). Per-item ledger:
+  `.agents/review/index.md`;
   records: `.agents/review/findings/rbc-*.md`. External reviewer was codex
   (standard = gpt-5.6-sol @ high, owner-confirmed in
   `.agents/review/harnesses.local.json`; frontier unconfirmed — escalation on
@@ -331,17 +334,17 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Run the external fixed-SHA review of `a216734` on
-   `fix/rbc-15-process-tree-containment` (per repo convention); on ACCEPT with
-   `guard_confirmed=true` and the recorded green full suite, queue the branch
-   for the accumulated master push. Do not continue or commit the saved rbc-5
+1. rbc-15 is closed and merged locally (`f0d17f6`); its residual
+   recycled-PID incarnation hardening is a tracked follow-up dev task (no
+   further paid review rounds). Do not continue or commit the saved rbc-5
    post-start attach WIP.
 2. Close out the rbc batch remainders: rbc-8's targeted drain-replay guard
    test lands in the worker-subsystem pass; rbc-11 stays gated on the owner's
    S3H land/park decision; rbc-5 closes via resilience R7. Reassess
    per-finding whether work is safeguard-sensitive and route out if so.
 3. Owner call: push `master` (contains the S3H merge plus rbc-1..4, the rbc-6
-   refutation, hf-1, rbc-7, rbc-9/rbc-10/rbc-12, and rbc-14) to `origin`, or
+   refutation, hf-1, rbc-7, rbc-9/rbc-10/rbc-12, rbc-14, and rbc-15) to
+   `origin`, or
    keep it local. Push policy requires an explicit ask for merge commits.
 4. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
