@@ -1,7 +1,7 @@
 # rbc-12: SIEM receiver has no rate limiting or backpressure
 
 **Severity**: MAJOR
-**Status**: Triaged 2026-07-19 — confirmed (only the `SqliteIngestStore` writer gate `SemaphoreSlim(1,1)` exists; no admission cap). Fix approved: global admission concurrency cap rejecting 503 when saturated; per-client rate limiting deferred to SIEM ingest hardening. Queued in fix batch 2.
+**Status**: Triaged 2026-07-19 — confirmed (only the `SqliteIngestStore` writer gate `SemaphoreSlim(1,1)` exists; no admission cap). Fix committed 2026-07-19 at `27511b1` on `fix/rbc-batch2-scheduler-kestrel-admission`: `IngestAdmissionGate` (`MaxConcurrentRequests`) refuses saturation before any buffering with transient 503 + Retry-After + `admission_capacity`; guard proves refusal under a parked commit and capacity recovery after release. Per-client rate limiting remains deferred to SIEM ingest hardening.
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `siem/PtkSiemReceiver/Ingest/ReceiverApplication.cs` (no rate-limiting middleware)
 
@@ -38,11 +38,26 @@ the storage or validation layers.
 
 ## Guard proof
 
-Not yet written. A guard should open more concurrent connections than
-the cap and assert excess connections are rejected with 503 before
-memory grows unboundedly.
+Written at `27511b1` (integration guard: refusal under a parked commit
+with transient 503 + Retry-After; capacity recovery after release).
+External review noted no unit-level pin that refusal happens *before*
+any body buffering. At `90b97b3`: `HandleIngestAsync` made internal
+(`InternalsVisibleTo` already present) and
+`ReceiverAdmissionRefusalTests` saturates the gate, passes a throwing
+body stream plus `null!` options/committer, asserts 503 +
+`Retry-After: 1` + non-empty status body, and asserts the refusal path
+does not call `Exit()` (no over-admission under saturation).
 
 ## Reviewer comments
 
-Read-only review by Hermes subagent (SIEM receiver pass). No external
-fixed-SHA review has been dispatched.
+Read-only review by Hermes subagent (SIEM receiver pass). External
+fixed-SHA codex review of `27511b1`, turn 1: missing unit pin on
+refusal-before-buffering. Adjudicated PARTIALLY VALID — the
+integration guard proves refusal under saturation but not body-read
+timing; the unit pin adds real mutation-sensitivity (including
+`Exit()` slot accounting), though the `null!` collaborator technique
+is blunt. Unit pin added at `90b97b3`. Per-client rate limiting
+remains deferred to SIEM ingest hardening. Remedy verification at
+`90b97b3` (2026-07-20): VERDICT: ACCEPT, via fresh codex thread
+`019f7dbb-86b2-7f11-a539-42f67c6026d9` (original review thread lost to
+an idle timeout). Review closed.

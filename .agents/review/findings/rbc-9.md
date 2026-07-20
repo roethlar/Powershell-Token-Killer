@@ -1,7 +1,7 @@
 # rbc-9: WorkerOperationScheduler ignores injected TaskScheduler for outer admit dispatch
 
 **Severity**: MAJOR
-**Status**: Triaged 2026-07-19 — confirmed at `ec4d292` (outer admit hop `WorkerOperationScheduler.cs:145-149` on `TaskScheduler.Default`; inner hop `:255-259` on `_taskScheduler`). Fix approved: route the outer hop through `_taskScheduler` + hop-counting guard. Queued in fix batch 2.
+**Status**: Triaged 2026-07-19 — confirmed at `ec4d292` (outer admit hop `WorkerOperationScheduler.cs:145-149` on `TaskScheduler.Default`; inner hop `:255-259` on `_taskScheduler`). Fix committed 2026-07-19 at `27511b1` on `fix/rbc-batch2-scheduler-kestrel-admission`: outer admit hop routed through `_taskScheduler`; scheduler suite 20/20 green (deterministic scheduler now controls both hops).
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `server/PtkMcpServer/Worker/WorkerOperationScheduler.cs:145-149`
 
@@ -40,10 +40,19 @@ One line in `WorkerOperationScheduler.cs`. No architectural change.
 
 ## Guard proof
 
-Not yet written. A guard should inject a custom `TaskScheduler` that
-counts hops and assert both the outer and inner hops run on it.
+Written at `27511b1` (counting scheduler asserts injected-scheduler
+dispatch). External review found the assertion (`QueueCount > 0`) too
+weak: it stays green if the outer admit hop regresses to
+`TaskScheduler.Default`. Hardened at `90b97b3`: assertion now requires
+`QueueCount >= 2` with a failure message naming both hops
+(`WorkerOperationSchedulerTests.cs`).
 
 ## Reviewer comments
 
 Read-only review by Hermes subagent (execution/worker subsystem pass).
-No external fixed-SHA review has been dispatched.
+External fixed-SHA codex review of `27511b1`, turn 1: guard-weakness
+finding. Adjudicated VALID — the guard as committed did not fail on
+the exact mutation it was built to catch. Hardened at `90b97b3`.
+Remedy verification at `90b97b3` (2026-07-20): VERDICT: ACCEPT, via
+fresh codex thread `019f7dbb-86b2-7f11-a539-42f67c6026d9` (original
+review thread lost to an idle timeout). Review closed.

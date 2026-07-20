@@ -1,7 +1,7 @@
 # rbc-10: SIEM receiver Kestrel MaxRequestBodySize disabled (defense-in-depth gap)
 
 **Severity**: MAJOR
-**Status**: Triaged 2026-07-19 — confirmed at `ec4d292` (line anchor now `ReceiverApplication.cs:115`). Fix approved: set a Kestrel-level `MaxRequestBodySize` bound above `MaxRequestBytes` so `/v1/logs` rejection/custody semantics stay endpoint-owned while Kestrel backstops any future endpoint. Queued in fix batch 2.
+**Status**: Triaged 2026-07-19 — confirmed at `ec4d292` (line anchor now `ReceiverApplication.cs:115`). Fix committed 2026-07-19 at `27511b1` on `fix/rbc-batch2-scheduler-kestrel-admission`: `kestrel.Limits.MaxRequestBodySize = MaxRequestBytes + 1`; sandwich guards pin the bound exactly (bound+1 still yields endpoint-owned `request_too_large`; bound+2 refused by the transport with 413 before commit/quarantine).
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **File**: `siem/PtkSiemReceiver/Ingest/ReceiverApplication.cs:40`
 
@@ -34,11 +34,23 @@ One line in `ReceiverApplication.cs`. No architectural change.
 
 ## Guard proof
 
-Not yet written. A guard should assert that a request body larger than
-`MaxRequestBodySize` is rejected by Kestrel before reaching the
-endpoint, regardless of which endpoint handles it.
+Written at `27511b1` (sandwich guards: bound+1 endpoint-owned
+`request_too_large`; bound+2 refused 413 before commit/quarantine).
+External review noted the bound+2 test used `ByteArrayContent`
+(declared Content-Length), leaving the streamed/chunked path unpinned.
+At `90b97b3` the comment names the declared-length path explicitly and
+`Chunked_body_beyond_kestrel_backstop_fails_closed_mid_stream` pins
+the undeclared/chunked bound+2 path (413 or transport abort; no
+commit/quarantine) (`OtlpIngestIntegrationTests.cs`).
 
 ## Reviewer comments
 
-Read-only review by Hermes subagent (SIEM receiver pass). No external
-fixed-SHA review has been dispatched.
+Read-only review by Hermes subagent (SIEM receiver pass). External
+fixed-SHA codex review of `27511b1`, turn 1: test-framing finding
+(declared vs. chunked path). Adjudicated TECHNICALLY CORRECT, MARGINAL
+— chunked enforcement is Kestrel framework behavior, so the added test
+pins Kestrel's contract, not ours; accepted as cheap belt-and-
+suspenders at `90b97b3`. Remedy verification at `90b97b3`
+(2026-07-20): VERDICT: ACCEPT, via fresh codex thread
+`019f7dbb-86b2-7f11-a539-42f67c6026d9` (original review thread lost to
+an idle timeout). Review closed.

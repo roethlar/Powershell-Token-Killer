@@ -465,7 +465,15 @@ public sealed class WorkerOperationSchedulerTests
         release.Set();
         await writer.WaitForOneAsync();
         await scheduler.CancelAndDrainAsync().WaitAsync(TimeSpan.FromSeconds(10));
-        Assert.True(inlineScheduler.QueueCount > 0);
+        // rbc-9 mutation guard: one admitted request must route BOTH hops
+        // through the injected scheduler — the outer admit hop
+        // (Admit -> RunScheduledRequestAsync) and the inner execution hop
+        // (-> RunRequestAsync). Reverting the outer hop to
+        // TaskScheduler.Default leaves QueueCount at 1, so `> 0` would stay
+        // green and hide the regression; require both.
+        Assert.True(
+            inlineScheduler.QueueCount >= 2,
+            $"expected both scheduler hops on the injected scheduler, saw {inlineScheduler.QueueCount}");
     }
 
     [Fact]

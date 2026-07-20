@@ -120,6 +120,8 @@ internal sealed class WorkerOperationScheduler
 
     private void AdmitRequest(WorkerOperationRequest request)
     {
+        ActiveRequest active;
+        Exception? scheduleFailure = null;
         lock (_gate)
         {
             ThrowIfUnavailable();
@@ -140,14 +142,41 @@ internal sealed class WorkerOperationScheduler
                     "Worker operation request capacity is exhausted.");
             }
 
-            var active = new ActiveRequest(request);
+            active = new ActiveRequest(request);
             _active.Add(request.RequestId, active);
-            active.OwnerTask = Task.Factory.StartNew(
-                () => RunScheduledRequestAsync(active),
-                CancellationToken.None,
-                TaskCreationOptions.DenyChildAttach,
-                TaskScheduler.Default).Unwrap();
+            // The outer admit hop must honor the injected scheduler (rbc-9):
+            // dispatching on TaskScheduler.Default here silently bypassed the
+            // deterministic test scheduler and hid ordering races.
+            try
+            {
+                active.OwnerTask = Task.Factory.StartNew(
+                    () => RunScheduledRequestAsync(active),
+                    CancellationToken.None,
+                    TaskCreationOptions.DenyChildAttach,
+                    _taskScheduler).Unwrap();
+            }
+            catch (Exception exception)
+            {
+                // A scheduler that cannot accept the hop is a terminal
+                // scheduler fault, not a caller protocol error: release the
+                // reservation so the slot is not leaked, then latch fatal
+                // outside the lock (rbc-9).
+                scheduleFailure = exception;
+                _active.Remove(request.RequestId);
+            }
         }
+
+        if (scheduleFailure is not null)
+        {
+            active.Dispose();
+            LatchFatal(scheduleFailure);
+            return;
+        }
+
+        // Release the admission gate only after the scheduler lock is free so
+        // an inline-executing scheduler can never run the executor on the
+        // admission call stack (rbc-9).
+        active.ReleaseAdmissionGate();
     }
 
     private void AdmitCancel(WorkerOperationCancel cancel)
@@ -252,6 +281,11 @@ internal sealed class WorkerOperationScheduler
     {
         try
         {
+            // Park until Admit has released the scheduler lock. An inline-
+            // executing scheduler otherwise runs the executor on the admission
+            // call stack; RunContinuationsAsynchronously guarantees the resume
+            // is never inlined onto the admitting thread (rbc-9).
+            await active.AdmissionSettled.ConfigureAwait(false);
             await Task.Factory.StartNew(
                 () => RunRequestAsync(active),
                 CancellationToken.None,
@@ -370,6 +404,8 @@ internal sealed class WorkerOperationScheduler
         private readonly CancellationTokenSource _execution = new();
         private readonly CancellationTokenSource _deadline = new();
         private readonly object _cancellationGate = new();
+        private readonly TaskCompletionSource _admissionGate =
+            new(TaskCreationOptions.RunContinuationsAsynchronously);
         private Task? _cancellationTask;
         private CancellationReason _reason;
         private bool _terminal;
@@ -389,6 +425,9 @@ internal sealed class WorkerOperationScheduler
         }
         internal Task? OwnerTask { get; set; }
         internal Task? DeadlineTask { get; set; }
+        internal Task AdmissionSettled => _admissionGate.Task;
+
+        internal void ReleaseAdmissionGate() => _admissionGate.TrySetResult();
 
         internal void RequestCancellation(CancellationReason reason)
         {

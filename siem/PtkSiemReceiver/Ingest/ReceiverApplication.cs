@@ -112,7 +112,12 @@ internal static class ReceiverApplication
                 builder.WebHost.ConfigureKestrel(kestrel =>
                 {
                     kestrel.AddServerHeader = false;
-                    kestrel.Limits.MaxRequestBodySize = null;
+                    // rbc-10: never leave the transport unbounded. The cap sits
+                    // exactly one byte above the application bound so that
+                    // ReadBoundedAsync still observes the first overflowing byte
+                    // and returns the deterministic OTLP request_too_large
+                    // response instead of a Kestrel 413 connection abort.
+                    kestrel.Limits.MaxRequestBodySize = (long)options.MaxRequestBytes + 1;
                     kestrel.Listen(options.IngestBindAddress, options.IngestPort, listen =>
                     {
                         listen.Protocols = HttpProtocols.Http1AndHttp2;
@@ -136,6 +141,8 @@ internal static class ReceiverApplication
                 builder.Services.AddSingleton<X509Certificate2>(_ => serverCertificate);
                 builder.Services.AddSingleton<ReceiverTrustStore>(_ => trustStore);
                 builder.Services.AddSingleton(timeProvider ?? TimeProvider.System);
+                builder.Services.AddSingleton<IngestAdmissionGate>(
+                    _ => new IngestAdmissionGate(options.MaxConcurrentRequests));
                 if (ownedStore is not null)
                 {
                     builder.Services.AddSingleton<IIngestCommitter>(_ => ownedStore);
@@ -151,6 +158,7 @@ internal static class ReceiverApplication
                 _ = application.Services.GetRequiredService<X509Certificate2>();
                 _ = application.Services.GetRequiredService<ReceiverTrustStore>();
                 _ = application.Services.GetRequiredService<IIngestCommitter>();
+                _ = application.Services.GetRequiredService<IngestAdmissionGate>();
                 application.MapPost("/v1/logs", HandleIngestAsync);
                 return application;
             }
@@ -235,7 +243,37 @@ internal static class ReceiverApplication
         return protectedRead;
     }
 
-    private static async Task HandleIngestAsync(
+    // internal (not private) solely so PtkSiemReceiver.Tests can pin the
+    // rbc-12 refusal-before-buffering contract with a throwing body stream.
+    internal static async Task HandleIngestAsync(
+        HttpContext context,
+        SiemReceiverOptions options,
+        IIngestCommitter committer,
+        TimeProvider timeProvider,
+        IngestAdmissionGate admissionGate)
+    {
+        // rbc-12: refuse before any buffering so a saturated receiver
+        // holds no additional per-request memory.
+        if (!admissionGate.TryEnter())
+        {
+            await OtlpHttpResponse.WriteTransientAsync(
+                context.Response,
+                "admission_capacity",
+                context.RequestAborted);
+            return;
+        }
+
+        try
+        {
+            await HandleAdmittedIngestAsync(context, options, committer, timeProvider);
+        }
+        finally
+        {
+            admissionGate.Exit();
+        }
+    }
+
+    private static async Task HandleAdmittedIngestAsync(
         HttpContext context,
         SiemReceiverOptions options,
         IIngestCommitter committer,

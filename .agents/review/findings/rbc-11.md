@@ -1,7 +1,7 @@
 # rbc-11: SIEM receiver has no retention enforcement on master
 
 **Severity**: MAJOR
-**Status**: Triaged 2026-07-19 — confirmed (retention options parsed in `SiemReceiverConfiguration.cs:59-60,93-95`, referenced nowhere else on master). Deferred: gated on the S3H `plan/mini-siem-storage-hardening` land/park decision; interim deployment warning to be added to SIEM receiver docs.
+**Status**: Triaged 2026-07-19 — confirmed (retention options parsed in `SiemReceiverConfiguration.cs:59-60,93-95`, referenced nowhere else on master). Deferred: gated on the S3H `plan/mini-siem-storage-hardening` land/park decision. Interim deployment warning landed in `siem/PtkSiemReceiver/README.md` and the gate recorded in `.agents/decisions.md` (2026-07-19, rbc-batch branch); docs follow-up complete.
 **Source**: read-only codebase review 2026-07-17, head `f6a2caa`
 **Files**: `siem/PtkSiemReceiver/Configuration/SiemReceiverConfiguration.cs:271-284`,
 `siem/PtkSiemReceiver/Storage/SqliteIngestStore.cs` (no enforcement)

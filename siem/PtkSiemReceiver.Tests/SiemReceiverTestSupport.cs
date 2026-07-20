@@ -173,6 +173,7 @@ internal sealed class SiemReceiverTestHost : IAsyncDisposable
         IIngestCommitter? committer = null,
         X509RevocationMode revocationMode = X509RevocationMode.NoCheck,
         int maximumRequestBytes = 1024 * 1024,
+        int maximumConcurrentRequests = SiemReceiverConfigurationLoader.DefaultMaxConcurrentRequests,
         TimeProvider? timeProvider = null,
         ISqliteIngestFaultInjector? storageFaultInjector = null)
     {
@@ -204,6 +205,7 @@ internal sealed class SiemReceiverTestHost : IAsyncDisposable
             [authorityPath],
             revocationMode,
             maximumRequestBytes,
+            maximumConcurrentRequests,
             IPAddress.Loopback,
             9,
             new string('t', 32),
