@@ -2644,6 +2644,7 @@ subsystem, SIEM receiver). Per-finding detail: `.agents/review/findings/rbc-*.md
 | rbc-12 | MAJOR   | SIEM receiver has no rate limiting or backpressure | `[x]` merged (`6452945`) — fix `27511b1`; external turn-1 no-unit-pin finding adjudicated PARTIALLY VALID, unit pin added `90b97b3`; per-client limit deferred; remedy verification VERDICT: ACCEPT (2026-07-20) | n/a |
 | rbc-13 | NOTE    | ColdCommandResolution MatchesCurrentResolution PATH race (safe but racy; downgraded from blocker) | `[x]` refuted as defect — fail-closed by design (triage 2026-07-19); design requirement documented at `MatchesCurrentResolution` (2026-07-19) | n/a |
 | rbc-14 | MAJOR   | OutputStore retention deletes artifact files while holding the store gate | `[x]` merged (`897bdbc`) — fix `5fc84ad` + stale-pulse remedy `f624796`; codex turn-3 ACCEPT, finding closed | `fix/rbc-14-retention-delete-offgate` (intake 2026-07-19, from rbc-7 external review) |
+| rbc-15 | MAJOR   | Process-tree containment gap for background jobs (escaped orphans / recycled-pid kills) | `[ ]` remedies committed on branch at `a216734` (`b4432dc` → `c17c1f9` → `08da8f5` → `a216734`); full suite 1587/1587 green; awaiting external fixed-SHA review, then master-push queue | `fix/rbc-15-process-tree-containment` (record: `.agents/review/findings/rbc-15.md`) |
 
 **Loop OPEN 2026-07-18T00:12Z:** 13 findings (1 blocker, 12 major), all at
 intake awaiting owner triage. No fixes have been written. This is a
