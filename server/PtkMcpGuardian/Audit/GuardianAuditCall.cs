@@ -141,6 +141,17 @@ internal sealed class GuardianAuditCall : AuditCallLifecycle
         }
     }
 
+    internal CanonicalAlias RequestedSessionAlias
+    {
+        get
+        {
+            EnsureActive();
+            return new CanonicalAlias(_request!.SessionRequested ??
+                throw new InvalidOperationException(
+                    "The admitted guardian call has no requested session alias."));
+        }
+    }
+
     internal bool TryAuthorizeDispatch(
         GuardianAuditDispatchAuthorization authorization)
     {
@@ -152,10 +163,25 @@ internal sealed class GuardianAuditCall : AuditCallLifecycle
                 "The guardian dispatch was already authorized.");
         }
 
+        if (!MatchesAcceptedOperation(_request!, authorization.OperationKind))
+        {
+            throw new InvalidOperationException(
+                "The guardian dispatch operation does not match the accepted request.");
+        }
+        if (!StringComparer.Ordinal.Equals(
+                _request!.SessionRequested,
+                authorization.Session.Session.Name))
+        {
+            throw new InvalidOperationException(
+                "The guardian dispatch session does not match the accepted request.");
+        }
+
         var publicJobId = authorization.PublicJobId?.Value;
-        if (_request!.JobId is { } requestedJobId &&
-            publicJobId is { } authorizedJobId &&
-            requestedJobId != authorizedJobId)
+        var addressesExistingJob = authorization.OperationKind is
+            GuardianHostOperationKind.JobStatus or
+            GuardianHostOperationKind.JobOutput or
+            GuardianHostOperationKind.JobKill;
+        if (addressesExistingJob && _request.JobId != publicJobId)
         {
             throw new InvalidOperationException(
                 "The guardian dispatch job ID does not match the accepted request.");
@@ -186,6 +212,34 @@ internal sealed class GuardianAuditCall : AuditCallLifecycle
             return false;
         }
     }
+
+    private static bool MatchesAcceptedOperation(
+        AuditRequest request,
+        GuardianHostOperationKind operationKind) => request.Tool switch
+    {
+        "ptk_invoke" when StringComparer.Ordinal.Equals(request.Action, "invoke") =>
+            request.Background == true
+                ? operationKind == GuardianHostOperationKind.InvokeBackground
+                : operationKind == GuardianHostOperationKind.InvokeForeground,
+        "ptk_job" => request.Action switch
+        {
+            "list" => operationKind == GuardianHostOperationKind.JobList,
+            "status" => operationKind == GuardianHostOperationKind.JobStatus,
+            "output" => operationKind == GuardianHostOperationKind.JobOutput,
+            "kill" => operationKind == GuardianHostOperationKind.JobKill,
+            _ => false,
+        },
+        "ptk_reset" when StringComparer.Ordinal.Equals(request.Action, "reset") =>
+            operationKind == GuardianHostOperationKind.Reset,
+        "ptk_session" => request.Action switch
+        {
+            "open" => operationKind == GuardianHostOperationKind.SessionOpen,
+            "close" => operationKind == GuardianHostOperationKind.SessionClose,
+            "restart" => operationKind == GuardianHostOperationKind.SessionRestart,
+            _ => false,
+        },
+        _ => false,
+    };
 
     /// <summary>
     /// Closes an admitted call whose private write was proved not to have

@@ -135,6 +135,7 @@ internal interface IGuardianHostSupervisorSessionSource
     IReadOnlyList<PublicSessionStateSnapshot> SnapshotSessions();
 
     bool TryGetJobListTarget(
+        CanonicalAlias alias,
         [NotNullWhen(true)] out GuardianHostJobListTarget? target);
 
     /// <summary>

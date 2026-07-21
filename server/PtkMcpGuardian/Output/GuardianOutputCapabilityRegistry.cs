@@ -79,6 +79,10 @@ internal sealed class GuardianOutputCapabilityRegistry : IDisposable
         get { lock (_gate) return _entries.Count; }
     }
 
+    internal int MaximumCaptureBytes => checked((int)Math.Min(
+        _store.MaximumArtifactBytes,
+        ContractLimits.MaximumOutputBytes));
+
     internal bool TryRegister(
         OperationRequest request,
         out GuardianOutputRegistration? registration,

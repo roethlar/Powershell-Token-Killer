@@ -394,10 +394,14 @@ internal sealed class R3FakeSessionSource : IGuardianHostSupervisorSessionSource
     }
 
     public bool TryGetJobListTarget(
+        CanonicalAlias alias,
         [NotNullWhen(true)] out GuardianHostJobListTarget? target)
     {
-        target = _profile.JobListTarget;
-        return true;
+        ArgumentNullException.ThrowIfNull(alias);
+        target = _profile.JobListTarget.Alias == alias
+            ? _profile.JobListTarget
+            : null;
+        return target is not null;
     }
 
     public bool TryGetJobListTargetInvalidation(

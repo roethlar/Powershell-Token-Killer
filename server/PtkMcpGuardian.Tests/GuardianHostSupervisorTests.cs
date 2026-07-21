@@ -565,6 +565,68 @@ public sealed class GuardianHostSupervisorTests
     }
 
     [Fact]
+    public async Task Public_job_dispatch_routes_every_frozen_action()
+    {
+        var session = new CanonicalAlias("build");
+        await using var rig = new TestRig(
+            session,
+            enableOutput: true,
+            new AttemptPlan(HostBehavior.BackgroundJobControls));
+        await rig.StartAsync();
+        var resource = rig.Factory.Resources[0];
+        var jobId = new PublicJobId(1);
+
+        Assert.False((await rig.DispatchBackgroundInvokeAsync(Token(54), session: session.Value)
+            .WaitAsync(TestTimeout)).IsError);
+        var list = await rig.DispatchPublicJobAsync("list", session: session.Value)
+            .WaitAsync(TestTimeout);
+        var status = await rig.DispatchPublicJobAsync("status", jobId, session: session.Value)
+            .WaitAsync(TestTimeout);
+        var output = await rig.DispatchPublicJobAsync(
+                "output",
+                jobId,
+                offset: 11,
+                session: session.Value)
+            .WaitAsync(TestTimeout);
+        var kill = await rig.DispatchPublicJobAsync("kill", jobId, session: session.Value)
+            .WaitAsync(TestTimeout);
+
+        Assert.False(list.IsError);
+        Assert.Equal("jobs-generation-1", list.Text);
+        Assert.False(status.IsError);
+        Assert.Equal("status job 1", status.Text);
+        Assert.False(output.IsError);
+        Assert.Contains("job output shaped", output.Text, StringComparison.Ordinal);
+        Assert.DoesNotContain(
+            GuardianOutputResponseDecorator.GenericUnavailableMarker,
+            output.Text,
+            StringComparison.Ordinal);
+        Assert.Contains(
+            "recovery=available: ptk_output handle=",
+            output.Text,
+            StringComparison.Ordinal);
+        Assert.False(kill.IsError);
+        Assert.Equal("kill job 1", kill.Text);
+        Assert.Collection(
+            resource.JobControls,
+            observed => AssertJobControl(
+                observed,
+                GuardianHostOperationKind.JobStatus,
+                jobId,
+                offset: 0),
+            observed => AssertJobControl(
+                observed,
+                GuardianHostOperationKind.JobOutput,
+                jobId,
+                offset: 11),
+            observed => AssertJobControl(
+                observed,
+                GuardianHostOperationKind.JobKill,
+                jobId,
+                offset: 0));
+    }
+
+    [Fact]
     public async Task Unknown_job_output_is_refused_before_output_reservation_or_write()
     {
         await using var rig = new TestRig(
@@ -1251,6 +1313,29 @@ public sealed class GuardianHostSupervisorTests
         };
     }
 
+    private static IReadOnlyDictionary<string, JsonElement> JobArguments(
+        string action,
+        PublicJobId? publicJobId,
+        long offset,
+        string session)
+    {
+        var values = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["action"] = action,
+            ["session"] = session,
+        };
+        if (publicJobId is not null)
+            values["id"] = publicJobId.Value;
+        if (StringComparer.Ordinal.Equals(action, "output"))
+            values["offset"] = offset;
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(values));
+        return document.RootElement.EnumerateObject().ToDictionary(
+            property => property.Name,
+            property => property.Value.Clone(),
+            StringComparer.Ordinal);
+    }
+
     private static IReadOnlyDictionary<string, JsonElement> EmptyArguments() =>
         new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
@@ -1299,6 +1384,20 @@ public sealed class GuardianHostSupervisorTests
                 enableOutput,
                 enableJobs,
                 GuardianJobCapabilityRegistry.DefaultMaximumTrackedJobs,
+                Alias,
+                plans)
+        {
+        }
+
+        internal TestRig(
+            CanonicalAlias sessionAlias,
+            bool enableOutput,
+            params AttemptPlan[] plans)
+            : this(
+                enableOutput,
+                enableJobs: enableOutput,
+                GuardianJobCapabilityRegistry.DefaultMaximumTrackedJobs,
+                sessionAlias,
                 plans)
         {
         }
@@ -1308,11 +1407,27 @@ public sealed class GuardianHostSupervisorTests
             bool enableJobs,
             int maximumTrackedJobs,
             params AttemptPlan[] plans)
+            : this(
+                enableOutput,
+                enableJobs,
+                maximumTrackedJobs,
+                Alias,
+                plans)
         {
+        }
+
+        internal TestRig(
+            bool enableOutput,
+            bool enableJobs,
+            int maximumTrackedJobs,
+            CanonicalAlias sessionAlias,
+            params AttemptPlan[] plans)
+        {
+            ArgumentNullException.ThrowIfNull(sessionAlias);
             Clock = new ManualTimeProvider();
             Scheduler = new ManualScheduler(Clock);
             Observer = new BlockingDispatchObserver();
-            Sessions = new StaticSessionSource();
+            Sessions = new StaticSessionSource(sessionAlias);
             Factory = new FakeAttemptFactory(plans, CreatePins(), Clock);
             if (enableOutput)
             {
@@ -1349,7 +1464,7 @@ public sealed class GuardianHostSupervisorTests
             Supervisor = new GuardianHostSupervisor(
                 Guardian,
                 lifecycle,
-                new FrozenManifestSource(),
+                new FrozenManifestSource(sessionAlias),
                 new MonotonicPrivateRequestIdAllocator(),
                 Clock,
                 Scheduler,
@@ -1386,6 +1501,28 @@ public sealed class GuardianHostSupervisorTests
         internal Task<GuardianToolResult> DispatchJobListAsync() =>
             DispatchPublicAsync("ptk_job", "list", JobListArguments());
 
+        internal Task<GuardianToolResult> DispatchPublicJobAsync(
+            string action,
+            PublicJobId? publicJobId = null,
+            long offset = 0,
+            string session = "default")
+        {
+            var arguments = JobArguments(action, publicJobId, offset, session);
+            return DispatchAuditedAsync(
+                Metadata(
+                    "ptk_job",
+                    action,
+                    maximumCallRecordSlots: action == "output" ? 6 : 4,
+                    jobId: publicJobId?.Value,
+                    session: session),
+                exactSubmittedScript: null,
+                auditCall => Supervisor.DispatchAsync(
+                    "ptk_job",
+                    arguments,
+                    auditCall,
+                    CancellationToken.None));
+        }
+
         internal Task<GuardianToolResult> DispatchSessionOperationAsync(
             GuardianHostOperation operation,
             GuardianHostOperationIdentity? operationIdentity)
@@ -1420,7 +1557,8 @@ public sealed class GuardianHostSupervisorTests
 
         internal Task<GuardianToolResult> DispatchBackgroundInvokeAsync(
             CapabilityToken outputToken,
-            long? outputExpiresUnixTimeMilliseconds = null)
+            long? outputExpiresUnixTimeMilliseconds = null,
+            string session = "default")
         {
             var expires = Clock.GetUtcNow().AddMinutes(1)
                 .ToUnixTimeMilliseconds();
@@ -1431,7 +1569,8 @@ public sealed class GuardianHostSupervisorTests
                     "invoke",
                     maximumCallRecordSlots: 11,
                     persistentJobTerminalSlots: 1,
-                    background: true),
+                    background: true,
+                    session: session),
                 script,
                 auditCall => Supervisor.DispatchBackgroundInvokeAsync(
                     auditCall.PublicCallId,
@@ -1548,7 +1687,8 @@ public sealed class GuardianHostSupervisorTests
             int maximumCallRecordSlots,
             int persistentJobTerminalSlots = 0,
             bool? background = null,
-            long? jobId = null) => new(
+            long? jobId = null,
+            string session = "default") => new(
                 new AuditActor
                 {
                     Transport = "mcp_stdio",
@@ -1559,7 +1699,7 @@ public sealed class GuardianHostSupervisorTests
                     Tool = tool,
                     Action = action,
                     ProvidedFields = [],
-                    SessionRequested = "default",
+                    SessionRequested = session,
                     Background = background,
                     JobId = jobId,
                 },
@@ -1697,32 +1837,40 @@ public sealed class GuardianHostSupervisorTests
 
         private static Sha256Digest Digest(char value) => new(new string(value, 64));
 
-        private sealed class FrozenManifestSource : IGuardianHostRecoveryManifestSource
+        private sealed class FrozenManifestSource(CanonicalAlias alias) :
+            IGuardianHostRecoveryManifestSource
         {
-            public RecoveryManifest Create(GuardianHostIdentity identity) => new(
-                Guardian,
-                identity.HostGeneration,
-                CatalogDigest,
-                ConfigurationDigest,
-                [],
-                [
-                    new RecoveryBinding(
-                        Alias,
-                        RecoveryBindingKind.Default,
+            public RecoveryManifest Create(GuardianHostIdentity identity)
+            {
+                var defaultAlias = new CanonicalAlias("default");
+                CanonicalAlias[] aliases = alias == defaultAlias
+                    ? [defaultAlias]
+                    : new[] { alias, defaultAlias }
+                        .OrderBy(value => value.Value, StringComparer.Ordinal)
+                        .ToArray();
+                return new RecoveryManifest(
+                    Guardian,
+                    identity.HostGeneration,
+                    CatalogDigest,
+                    ConfigurationDigest,
+                    [],
+                    aliases.Select(value => new RecoveryBinding(
+                        value,
+                        value == defaultAlias
+                            ? RecoveryBindingKind.Default
+                            : RecoveryBindingKind.Dynamic,
                         null,
                         null,
                         null,
                         false,
                         DesiredSessionState.Ready,
                         Transition,
-                        BindingDigest),
-                ],
-                [
-                    new WorkerGenerationHighWatermarkEntry(
-                        Alias,
-                        new WorkerGenerationHighWatermark(1)),
-                ],
-                identity.HostGeneration);
+                        BindingDigest)),
+                    aliases.Select(value => new WorkerGenerationHighWatermarkEntry(
+                        value,
+                        new WorkerGenerationHighWatermark(1))),
+                    identity.HostGeneration);
+            }
         }
 
         internal interface ITestSessionControl : IGuardianHostSupervisorSessionSource
@@ -1736,10 +1884,16 @@ public sealed class GuardianHostSupervisorTests
         private sealed class StaticSessionSource : ITestSessionControl
         {
             private readonly object _sync = new();
+            private readonly CanonicalAlias _alias;
             private long _workerGeneration = 1;
             private long _transitionVersion = 1;
             private long _recoveryAttempt;
             private GuardianHostJobListTargetInvalidation? _invalidation;
+
+            internal StaticSessionSource(CanonicalAlias alias)
+            {
+                _alias = alias ?? throw new ArgumentNullException(nameof(alias));
+            }
 
             public IReadOnlyList<PublicSessionStateSnapshot> SnapshotSessions()
             {
@@ -1748,7 +1902,7 @@ public sealed class GuardianHostSupervisorTests
                     return
                     [
                         new PublicSessionStateSnapshot(
-                            Alias,
+                            _alias,
                             DesiredSessionState.Ready,
                             PublicSessionState.Ready,
                             Worker.BootId,
@@ -1766,11 +1920,13 @@ public sealed class GuardianHostSupervisorTests
             }
 
             public bool TryGetJobListTarget(
+                CanonicalAlias alias,
                 [NotNullWhen(true)] out GuardianHostJobListTarget? target)
             {
+                ArgumentNullException.ThrowIfNull(alias);
                 lock (_sync)
-                    target = CreateTargetLocked();
-                return true;
+                    target = _alias == alias ? CreateTargetLocked() : null;
+                return target is not null;
             }
 
             public bool TryGetJobListTargetInvalidation(
@@ -1819,8 +1975,10 @@ public sealed class GuardianHostSupervisorTests
                     Worker.BootId,
                     new WorkerGeneration(_workerGeneration));
                 var binding = new RecoveryBinding(
-                    Alias,
-                    RecoveryBindingKind.Default,
+                    _alias,
+                    _alias == new CanonicalAlias("default")
+                        ? RecoveryBindingKind.Default
+                        : RecoveryBindingKind.Dynamic,
                     null,
                     null,
                     null,
@@ -1829,7 +1987,7 @@ public sealed class GuardianHostSupervisorTests
                     transition,
                     BindingDigest);
                 return new GuardianHostJobListTarget(
-                    Alias,
+                    _alias,
                     transition,
                     worker,
                     new GuardianAuditSession(binding, worker.Generation),

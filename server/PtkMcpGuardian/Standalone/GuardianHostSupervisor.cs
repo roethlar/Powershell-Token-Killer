@@ -24,7 +24,7 @@ internal sealed class GuardianHostSupervisor :
     internal const int MaximumOutstandingCalls = 64;
 
     private const string UnsupportedToolText =
-        "This standalone guardian routes only ptk_state and ptk_job action=list.";
+        "The guardian does not support that public tool operation.";
     private const string CapacityText =
         "The guardian call registry is full; no backend work started.";
     private const string OutputAdmissionText =
@@ -188,16 +188,65 @@ internal sealed class GuardianHostSupervisor :
         }
 
         if (!StringComparer.Ordinal.Equals(toolName, "ptk_job") ||
-            !arguments.TryGetValue("action", out var action) ||
-            action.ValueKind != JsonValueKind.String ||
-            !StringComparer.Ordinal.Equals(action.GetString(), "list"))
+            !TryReadJobArguments(
+                arguments,
+                auditCall.RequestedSessionAlias,
+                out var action,
+                out var publicJobId,
+                out var offset))
         {
             return ValueTask.FromResult(new GuardianToolResult(
                 UnsupportedToolText,
                 isError: true));
         }
 
-        return DispatchJobListAsync(auditCall, cancellationToken);
+        if (StringComparer.Ordinal.Equals(action, "list"))
+            return DispatchJobListAsync(auditCall, cancellationToken);
+
+        if (_jobCapabilities is null ||
+            (StringComparer.Ordinal.Equals(action, "output") &&
+                _outputCoordinator is null))
+        {
+            return ValueTask.FromResult(new GuardianToolResult(
+                UnsupportedToolText,
+                isError: true));
+        }
+
+        var callId = auditCall.PublicCallId;
+        var expires = FutureUnixTimeMilliseconds(DispatchCapabilityLifetime);
+        var dispatch = new DispatchCapability(
+            NewCapabilityToken(),
+            callId,
+            expires);
+        return action switch
+        {
+            "status" => DispatchJobStatusAsync(
+                callId,
+                dispatch,
+                publicJobId!,
+                auditCall,
+                cancellationToken),
+            "output" => DispatchJobOutputAsync(
+                callId,
+                dispatch,
+                new OutputCapability(
+                    NewCapabilityToken(),
+                    _outputCoordinator!.MaximumCaptureBytes,
+                    expires),
+                publicJobId!,
+                offset,
+                auditCall,
+                cancellationToken),
+            "kill" => DispatchJobKillAsync(
+                callId,
+                dispatch,
+                publicJobId!,
+                auditCall,
+                cancellationToken),
+            _ => ValueTask.FromResult(new GuardianToolResult(
+                UnsupportedToolText,
+                isError: true)),
+        };
     }
 
     internal PublicStateSnapshot SnapshotState()
@@ -224,6 +273,68 @@ internal sealed class GuardianHostSupervisor :
         await ShutdownAsync().ConfigureAwait(false);
         _lifetime.Dispose();
         _authority.Dispose();
+    }
+
+    private static bool TryReadJobArguments(
+        IReadOnlyDictionary<string, JsonElement> arguments,
+        CanonicalAlias admittedSessionAlias,
+        out string action,
+        out PublicJobId? publicJobId,
+        out long offset)
+    {
+        action = string.Empty;
+        publicJobId = null;
+        offset = 0;
+        if (arguments.Keys.Any(static key => key is not (
+                "action" or "id" or "offset" or "session")) ||
+            !arguments.TryGetValue("action", out var actionElement) ||
+            actionElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+
+        action = actionElement.GetString()!.ToLowerInvariant();
+        var sessionAlias = admittedSessionAlias;
+        if (arguments.TryGetValue("session", out var sessionElement))
+        {
+            if (sessionElement.ValueKind != JsonValueKind.String)
+                return false;
+            try
+            {
+                sessionAlias = new CanonicalAlias(sessionElement.GetString()!);
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+        if (sessionAlias != admittedSessionAlias)
+            return false;
+
+        if (arguments.TryGetValue("id", out var idElement))
+        {
+            if (idElement.ValueKind != JsonValueKind.Number ||
+                !idElement.TryGetInt64(out var value) ||
+                value < 1)
+            {
+                return false;
+            }
+            publicJobId = new PublicJobId(value);
+        }
+        if (arguments.TryGetValue("offset", out var offsetElement) &&
+            (offsetElement.ValueKind != JsonValueKind.Number ||
+                !offsetElement.TryGetInt64(out offset) ||
+                offset < 0))
+        {
+            return false;
+        }
+
+        return action switch
+        {
+            "list" => true,
+            "status" or "output" or "kill" => publicJobId is not null,
+            _ => false,
+        };
     }
 
     private ValueTask<GuardianToolResult> DispatchJobListAsync(
@@ -445,7 +556,9 @@ internal sealed class GuardianHostSupervisor :
                 "The private operation call ID must match the admitted guardian audit call.");
         }
 
-        var admission = await CaptureDispatchAsync(cancellationToken)
+        var admission = await CaptureDispatchAsync(
+                auditCall.RequestedSessionAlias,
+                cancellationToken)
             .ConfigureAwait(false);
         if (admission.Terminal is { } refused)
         {
@@ -697,6 +810,7 @@ internal sealed class GuardianHostSupervisor :
     }
 
     private async Task<DispatchAdmission> CaptureDispatchAsync(
+        CanonicalAlias requestedAlias,
         CancellationToken cancellationToken)
     {
         await _authority.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -705,7 +819,7 @@ internal sealed class GuardianHostSupervisor :
             if (_active is { } currentActive)
                 SynchronizeFaultedClientLossLocked(currentActive);
 
-            if (!_sessionSource.TryGetJobListTarget(out var target))
+            if (!_sessionSource.TryGetJobListTarget(requestedAlias, out var target))
             {
                 return new DispatchAdmission(
                     null,
@@ -759,7 +873,7 @@ internal sealed class GuardianHostSupervisor :
                     expectedTarget.Alias);
             }
 
-            if (!_sessionSource.TryGetJobListTarget(out var current) ||
+            if (!_sessionSource.TryGetJobListTarget(expectedTarget.Alias, out var current) ||
                 !current.ReadyForEffects)
             {
                 return CreateSessionRefusal(expectedTarget.Alias);
@@ -780,7 +894,7 @@ internal sealed class GuardianHostSupervisor :
         GuardianHostJobListTarget expectedTarget)
     {
         if (!ReferenceEquals(_active, call.Attempt) || _stopping ||
-            !_sessionSource.TryGetJobListTarget(out var current) ||
+            !_sessionSource.TryGetJobListTarget(expectedTarget.Alias, out var current) ||
             !current.ReadyForEffects ||
             !expectedTarget.SameDispatchIdentity(current))
         {
@@ -1603,7 +1717,7 @@ internal sealed class GuardianHostSupervisor :
     private GuardianHostSupervisorTerminal CreatePrewriteSessionRefusal(
         GuardianHostJobListTarget expectedTarget)
     {
-        if (_sessionSource.TryGetJobListTarget(out var current) &&
+        if (_sessionSource.TryGetJobListTarget(expectedTarget.Alias, out var current) &&
             current.ReadyForEffects &&
             !expectedTarget.SameDispatchIdentity(current))
         {

@@ -120,6 +120,36 @@ public sealed class GuardianAuditCallTests
         call.CompleteCall("not_started", "mismatch");
     }
 
+    [Fact]
+    public void Dispatch_authorization_must_match_the_admitted_action_and_session()
+    {
+        using (var fixture = new Fixture())
+        {
+            var call = fixture.CreateCall();
+            Assert.True(call.TryBegin(Metadata(), null, out var failure), failure);
+            Assert.Throws<InvalidOperationException>(() =>
+                call.TryAuthorizeDispatch(new GuardianAuditDispatchAuthorization(
+                    GuardianHostOperationKind.JobStatus,
+                    TemplateSession(),
+                    new PublicJobId(42))));
+            Assert.False(call.EffectAuthorized);
+            call.CompleteCall("not_started", "action mismatch");
+        }
+
+        using (var fixture = new Fixture())
+        {
+            var call = fixture.CreateCall();
+            Assert.True(call.TryBegin(Metadata(), null, out var failure), failure);
+            Assert.Throws<InvalidOperationException>(() =>
+                call.TryAuthorizeDispatch(new GuardianAuditDispatchAuthorization(
+                    GuardianHostOperationKind.JobKill,
+                    DefaultSession(),
+                    new PublicJobId(42))));
+            Assert.False(call.EffectAuthorized);
+            call.CompleteCall("not_started", "session mismatch");
+        }
+    }
+
     [Theory]
     [InlineData(false, GuardianAuditCall.DispatchCompletedEvent, "completed", "confirmed")]
     [InlineData(true, GuardianAuditCall.DispatchFailedEvent, "failed", "confirmed")]
@@ -279,6 +309,21 @@ public sealed class GuardianAuditCallTests
             binding,
             generation is null ? null : new WorkerGeneration(generation.Value),
             template);
+    }
+
+    private static GuardianAuditSession DefaultSession()
+    {
+        var binding = new RecoveryBinding(
+            new CanonicalAlias("default"),
+            RecoveryBindingKind.Default,
+            templateName: null,
+            templateDigest: null,
+            bootstrapDigest: null,
+            allowColdBackground: false,
+            DesiredSessionState.Ready,
+            new SessionTransitionVersion(1),
+            BindingDigest);
+        return new GuardianAuditSession(binding, new WorkerGeneration(1));
     }
 
     private static AuditCallMetadata Metadata() => new(
