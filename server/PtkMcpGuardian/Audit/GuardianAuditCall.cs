@@ -1,21 +1,21 @@
+using System.Text;
 using PtkSharedContracts;
 
 namespace PtkMcpServer.Audit;
 
 /// <summary>
-/// Frozen guardian-owned projection of one exact session generation. It is
-/// constructed only from the startup-frozen recovery binding and a monotonic
-/// worker generation; no private host state is reread to reconstruct it.
+/// Frozen guardian-owned projection of one desired session binding and its
+/// exact worker generation when one has been allocated. No private host state
+/// is reread to reconstruct these facts.
 /// </summary>
 internal sealed record GuardianAuditSession
 {
     internal GuardianAuditSession(
         RecoveryBinding binding,
-        WorkerGeneration generation,
+        WorkerGeneration? generation,
         RecoveryTemplate? template = null)
     {
         ArgumentNullException.ThrowIfNull(binding);
-        ArgumentNullException.ThrowIfNull(generation);
 
         var templateBinding = binding.BindingKind == RecoveryBindingKind.Template;
         if (templateBinding != (template is not null))
@@ -38,7 +38,7 @@ internal sealed record GuardianAuditSession
         Session = new AuditSession
         {
             Name = binding.Alias.Value,
-            Generation = generation.Value,
+            Generation = generation?.Value,
             BindingKind = binding.BindingKind switch
             {
                 RecoveryBindingKind.Default => "default",
@@ -75,6 +75,12 @@ internal sealed record GuardianAuditDispatchAuthorization
         if (!Enum.IsDefined(operationKind))
             throw new ArgumentOutOfRangeException(nameof(operationKind));
         ArgumentNullException.ThrowIfNull(session);
+        if (session.Session.Generation is null)
+        {
+            throw new ArgumentException(
+                "A private dispatch authorization requires an exact worker generation.",
+                nameof(session));
+        }
 
         var requiresJobId = operationKind is
             GuardianHostOperationKind.InvokeBackground or
@@ -108,7 +114,16 @@ internal sealed record GuardianAuditDispatchAuthorization
 /// </summary>
 internal sealed class GuardianAuditCall : AuditCallLifecycle
 {
+    private static readonly UTF8Encoding Utf8 = new(false);
+
     internal const string DispatchAuthorizedEvent = "guardian.dispatch_authorized";
+    internal const string DispatchNotStartedEvent = "guardian.dispatch_not_started";
+    internal const string DispatchCompletedEvent = "guardian.dispatch_completed";
+    internal const string DispatchFailedEvent = "guardian.dispatch_failed";
+    internal const string DispatchOutcomeUnknownEvent = "guardian.dispatch_outcome_unknown";
+
+    private bool _privateWriteMayHaveStarted;
+    private bool _dispatchTerminalObserved;
 
     internal GuardianAuditCall(
         AuditJournal journal,
@@ -169,6 +184,122 @@ internal sealed class GuardianAuditCall : AuditCallLifecycle
             _ = ProjectSession(previousSession);
             _authorizationPersistenceFailed = true;
             return false;
+        }
+    }
+
+    /// <summary>
+    /// Closes an admitted call whose private write was proved not to have
+    /// started. This is valid both for an early readiness refusal and for a
+    /// dispatch authorization invalidated by the final pre-write recheck.
+    /// </summary>
+    internal void RecordNotDispatched(
+        GuardianAuditSession session,
+        string detailCode,
+        string response)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        ArgumentException.ThrowIfNullOrWhiteSpace(detailCode);
+        EnsureDispatchTerminalAvailable();
+        if (_privateWriteMayHaveStarted)
+        {
+            throw new InvalidOperationException(
+                "A possibly written guardian dispatch cannot be recorded as not started.");
+        }
+        if (_effectAuthorized)
+        {
+            if (_session != session.Session)
+            {
+                throw new InvalidOperationException(
+                    "The no-start session does not match the authorized guardian dispatch.");
+            }
+        }
+        else
+        {
+            _ = ProjectSession(session.Session);
+        }
+
+        _dispatchTerminalObserved = true;
+        TryAppend(
+            DispatchNotStartedEvent,
+            outcomeState: "not_started",
+            detailCode,
+            bytesReturned: Utf8.GetByteCount(response ?? string.Empty),
+            terminationCertainty: "not_applicable",
+            rootCoverage: "none");
+        CompleteCall("not_started", response ?? string.Empty);
+    }
+
+    /// <summary>
+    /// Advances the in-memory delivery fence immediately before the first
+    /// possibly-writing private API. The durable authorization must already
+    /// exist; no later path may claim proved-no-start after this edge.
+    /// </summary>
+    internal void MarkPrivateWriteStarting()
+    {
+        EnsureActive();
+        if (!_effectAuthorized)
+        {
+            throw new InvalidOperationException(
+                "A private write cannot start without durable guardian authorization.");
+        }
+        if (_privateWriteMayHaveStarted)
+            throw new InvalidOperationException("The guardian private write already started.");
+
+        _privateWriteMayHaveStarted = true;
+        // At this boundary the private host may begin the requested work. The
+        // inherited flag is conservative: a later audit failure must never be
+        // rewritten as a pre-effect authorization refusal.
+        _userExecutionStarted = true;
+    }
+
+    internal void RecordDecodedTerminal(
+        bool isError,
+        string response,
+        string? detailCode = null)
+    {
+        EnsureWrittenDispatchTerminalAvailable();
+        _dispatchTerminalObserved = true;
+        TryAppend(
+            isError ? DispatchFailedEvent : DispatchCompletedEvent,
+            outcomeState: isError ? "failed" : "completed",
+            detailCode,
+            bytesReturned: Utf8.GetByteCount(response ?? string.Empty),
+            terminationCertainty: "confirmed",
+            rootCoverage: "unknown");
+        CompleteCall(isError ? "failed" : "completed", response ?? string.Empty);
+    }
+
+    internal void RecordOutcomeUnknown(string response)
+    {
+        EnsureWrittenDispatchTerminalAvailable();
+        _dispatchTerminalObserved = true;
+        TryAppend(
+            DispatchOutcomeUnknownEvent,
+            outcomeState: "outcome_unknown",
+            detailCode: "outcome_unknown",
+            bytesReturned: Utf8.GetByteCount(response ?? string.Empty),
+            terminationCertainty: "unknown",
+            rootCoverage: "unknown");
+        CompleteCall(
+            "failed",
+            response ?? string.Empty,
+            terminationCertainty: "unknown");
+    }
+
+    private void EnsureDispatchTerminalAvailable()
+    {
+        EnsureActive();
+        if (_dispatchTerminalObserved)
+            throw new InvalidOperationException("The guardian dispatch is already terminal.");
+    }
+
+    private void EnsureWrittenDispatchTerminalAvailable()
+    {
+        EnsureDispatchTerminalAvailable();
+        if (!_privateWriteMayHaveStarted)
+        {
+            throw new InvalidOperationException(
+                "A guardian dispatch without a private write cannot have a backend terminal.");
         }
     }
 

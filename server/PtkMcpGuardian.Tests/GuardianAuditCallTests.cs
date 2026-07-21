@@ -120,12 +120,139 @@ public sealed class GuardianAuditCallTests
         call.CompleteCall("not_started", "mismatch");
     }
 
+    [Theory]
+    [InlineData(false, GuardianAuditCall.DispatchCompletedEvent, "completed", "confirmed")]
+    [InlineData(true, GuardianAuditCall.DispatchFailedEvent, "failed", "confirmed")]
+    public void Decoded_private_terminal_closes_the_authorized_delivery(
+        bool isError,
+        string expectedEvent,
+        string expectedState,
+        string expectedCertainty)
+    {
+        using var fixture = new Fixture();
+        var call = fixture.CreateCall();
+        Assert.True(call.TryBegin(Metadata(), null, out var failure), failure);
+        Assert.True(call.TryAuthorizeDispatch(new GuardianAuditDispatchAuthorization(
+            GuardianHostOperationKind.JobKill,
+            TemplateSession(),
+            new PublicJobId(42))));
+
+        call.MarkPrivateWriteStarting();
+        call.RecordDecodedTerminal(isError, "private terminal", "private_terminal");
+
+        Assert.True(call.UserExecutionStarted);
+        Assert.True(call.TerminalWritten);
+        Assert.Equal(0, fixture.Journal.ReservedBytes);
+        var events = fixture.Sink.Lines.Select(Parse).ToArray();
+        Assert.Equal(
+            ["call.accepted", GuardianAuditCall.DispatchAuthorizedEvent, expectedEvent,
+                isError ? "call.failed" : "call.completed"],
+            events.Select(EventType));
+        var dispatchTerminal = events[2];
+        Assert.Equal(
+            expectedState,
+            dispatchTerminal.GetProperty("outcome").GetProperty("state").GetString());
+        Assert.Equal(
+            expectedCertainty,
+            dispatchTerminal.GetProperty("outcome").GetProperty("termination_certainty").GetString());
+        Assert.Equal(
+            Encoding.UTF8.GetByteCount("private terminal"),
+            dispatchTerminal.GetProperty("outcome").GetProperty("bytes_returned").GetInt64());
+        Assert.Throws<InvalidOperationException>(() =>
+            call.RecordDecodedTerminal(isError, "duplicate"));
+    }
+
+    [Fact]
+    public void Prewrite_refusal_is_proved_not_started_with_or_without_authorization()
+    {
+        using var earlyFixture = new Fixture();
+        var early = earlyFixture.CreateCall();
+        Assert.True(early.TryBegin(Metadata(), null, out var earlyFailure), earlyFailure);
+        early.RecordNotDispatched(
+            TemplateSession(generation: null),
+            "host_recovering",
+            "recovering");
+        var earlyEvents = earlyFixture.Sink.Lines.Select(Parse).ToArray();
+        Assert.Equal(
+            ["call.accepted", GuardianAuditCall.DispatchNotStartedEvent, "call.not_started"],
+            earlyEvents.Select(EventType));
+        Assert.Equal(
+            "build",
+            earlyEvents[1].GetProperty("session").GetProperty("name").GetString());
+        Assert.Equal(
+            JsonValueKind.Null,
+            earlyEvents[1].GetProperty("session").GetProperty("generation").ValueKind);
+
+        using var revalidatedFixture = new Fixture();
+        var revalidated = revalidatedFixture.CreateCall();
+        Assert.True(revalidated.TryBegin(Metadata(), null, out var revalidatedFailure), revalidatedFailure);
+        Assert.True(revalidated.TryAuthorizeDispatch(new GuardianAuditDispatchAuthorization(
+            GuardianHostOperationKind.JobKill,
+            TemplateSession(),
+            new PublicJobId(42))));
+        revalidated.RecordNotDispatched(
+            TemplateSession(),
+            "backend_lost_before_dispatch",
+            "retry later");
+        var events = revalidatedFixture.Sink.Lines.Select(Parse).ToArray();
+        Assert.Equal(
+            ["call.accepted", GuardianAuditCall.DispatchAuthorizedEvent,
+                GuardianAuditCall.DispatchNotStartedEvent, "call.not_started"],
+            events.Select(EventType));
+        Assert.Equal(
+            "none",
+            events[2].GetProperty("coverage").GetProperty("root_process_observed").GetString());
+        Assert.Equal(
+            "not_applicable",
+            events[2].GetProperty("outcome").GetProperty("termination_certainty").GetString());
+    }
+
+    [Fact]
+    public void Postwrite_loss_is_terminally_audited_as_outcome_unknown()
+    {
+        using var fixture = new Fixture();
+        var call = fixture.CreateCall();
+        Assert.True(call.TryBegin(Metadata(), null, out var failure), failure);
+        Assert.Throws<InvalidOperationException>(() => call.MarkPrivateWriteStarting());
+        Assert.True(call.TryAuthorizeDispatch(new GuardianAuditDispatchAuthorization(
+            GuardianHostOperationKind.JobKill,
+            TemplateSession(),
+            new PublicJobId(42))));
+        Assert.Throws<InvalidOperationException>(() =>
+            call.RecordDecodedTerminal(isError: true, "not written"));
+
+        call.MarkPrivateWriteStarting();
+        Assert.Throws<InvalidOperationException>(() =>
+            call.RecordNotDispatched(
+                TemplateSession(),
+                "backend_lost_before_dispatch",
+                "unsafe"));
+        call.RecordOutcomeUnknown("unknown terminal");
+
+        var events = fixture.Sink.Lines.Select(Parse).ToArray();
+        Assert.Equal(
+            ["call.accepted", GuardianAuditCall.DispatchAuthorizedEvent,
+                GuardianAuditCall.DispatchOutcomeUnknownEvent, "call.failed"],
+            events.Select(EventType));
+        foreach (var value in events[2..])
+        {
+            Assert.Equal(
+                "unknown",
+                value.GetProperty("outcome").GetProperty("termination_certainty").GetString());
+        }
+        Assert.Equal(
+            "outcome_unknown",
+            events[2].GetProperty("outcome").GetProperty("state").GetString());
+        Assert.False(events[2].GetProperty("request").GetProperty("job_id").ValueKind ==
+            JsonValueKind.Null);
+    }
+
     private static readonly byte[] BootstrapBytes = Encoding.UTF8.GetBytes("Write-Output ready");
     private static readonly Sha256Digest BootstrapDigest = Sha256Digest.Compute(BootstrapBytes);
     private static readonly Sha256Digest TemplateDigest = new(new string('a', 64));
     private static readonly Sha256Digest BindingDigest = new(new string('b', 64));
 
-    private static GuardianAuditSession TemplateSession()
+    private static GuardianAuditSession TemplateSession(long? generation = 17)
     {
         var templateName = new CanonicalAlias("ci");
         var template = new RecoveryTemplate(
@@ -148,7 +275,10 @@ public sealed class GuardianAuditCallTests
             DesiredSessionState.Ready,
             new SessionTransitionVersion(3),
             BindingDigest);
-        return new GuardianAuditSession(binding, new WorkerGeneration(17), template);
+        return new GuardianAuditSession(
+            binding,
+            generation is null ? null : new WorkerGeneration(generation.Value),
+            template);
     }
 
     private static AuditCallMetadata Metadata() => new(
