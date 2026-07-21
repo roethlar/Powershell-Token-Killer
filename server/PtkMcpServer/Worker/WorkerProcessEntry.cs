@@ -36,7 +36,7 @@ internal static class WorkerProcessEntry
 
         // These delegates are deliberately created only after both bootstrap
         // identifiers have been removed from the process environment.
-        return await RunCapturedAsync(
+        return await RunCapturedCoreAsync(
             arguments,
             values,
             openBootstrap: captured => WindowsWorkerBootstrap.Open(captured),
@@ -75,7 +75,7 @@ internal static class WorkerProcessEntry
         ArgumentNullException.ThrowIfNull(bootIdFactory);
         ArgumentNullException.ThrowIfNull(standardErrorFactory);
 
-        return await RunCapturedAsync(
+        return await RunCapturedCoreAsync(
             arguments,
             values,
             openBootstrap,
@@ -84,7 +84,45 @@ internal static class WorkerProcessEntry
             standardErrorFactory).ConfigureAwait(false);
     }
 
-    private static async Task<int> RunCapturedAsync(
+    /// <summary>
+    /// Production handoff for the exact first-action role boundary. Bootstrap
+    /// values have already been captured and removed before this method is
+    /// called, so it must never inspect process environment.
+    /// </summary>
+    internal static Task<int> RunCapturedAsync(
+        WorkerBootstrapValues values,
+        CancellationToken cancellationToken = default) =>
+        RunCapturedAsync(
+            values,
+            openBootstrap: captured => WindowsWorkerBootstrap.Open(captured),
+            runtimeFactory: CreateRuntimeAsync,
+            bootIdFactory: Guid.NewGuid,
+            standardErrorFactory: Console.OpenStandardError,
+            cancellationToken);
+
+    internal static Task<int> RunCapturedAsync(
+        WorkerBootstrapValues values,
+        Func<WorkerBootstrapValues, IWorkerBootstrapStreams> openBootstrap,
+        Func<WorkerInitializeRequest, CancellationToken, Task<ISessionLifetime>> runtimeFactory,
+        Func<Guid> bootIdFactory,
+        Func<Stream> standardErrorFactory,
+        CancellationToken cancellationToken = default)
+    {
+        ArgumentNullException.ThrowIfNull(openBootstrap);
+        ArgumentNullException.ThrowIfNull(runtimeFactory);
+        ArgumentNullException.ThrowIfNull(bootIdFactory);
+        ArgumentNullException.ThrowIfNull(standardErrorFactory);
+        cancellationToken.ThrowIfCancellationRequested();
+        return RunCapturedCoreAsync(
+            [WorkerArgument],
+            values,
+            openBootstrap,
+            runtimeFactory,
+            bootIdFactory,
+            standardErrorFactory);
+    }
+
+    private static async Task<int> RunCapturedCoreAsync(
         IReadOnlyList<string> arguments,
         WorkerBootstrapValues values,
         Func<WorkerBootstrapValues, IWorkerBootstrapStreams> openBootstrap,

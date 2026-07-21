@@ -137,6 +137,58 @@ public sealed class WorkerProcessEntryTests
     }
 
     [Fact]
+    public async Task Precaptured_handoff_uses_supplied_values_without_environment_recapture()
+    {
+        var diagnostic = new MemoryStream();
+        var supplied = new WorkerBootstrapValues("captured-request", "captured-event");
+        var runtimeCalls = 0;
+
+        var exitCode = await WorkerProcessEntry.RunCapturedAsync(
+            supplied,
+            values =>
+            {
+                Assert.Equal(supplied, values);
+                throw new WorkerBootstrapException("handle_invalid");
+            },
+            (_, _) =>
+            {
+                runtimeCalls++;
+                throw new InvalidOperationException("runtime must not run");
+            },
+            () => BootId,
+            () => diagnostic);
+
+        Assert.Equal(80, exitCode);
+        Assert.Equal(0, runtimeCalls);
+        Assert.Equal(
+            "ptk_worker_exit kind=bootstrap_failure detail=handle_invalid\n",
+            Encoding.ASCII.GetString(diagnostic.ToArray()));
+    }
+
+    [Fact]
+    public async Task Canceled_precaptured_handoff_starts_no_platform_effect()
+    {
+        using var cancellation = new CancellationTokenSource();
+        cancellation.Cancel();
+        var openCalls = 0;
+
+        await Assert.ThrowsAnyAsync<OperationCanceledException>(() =>
+            WorkerProcessEntry.RunCapturedAsync(
+                new WorkerBootstrapValues("captured-request", "captured-event"),
+                _ =>
+                {
+                    openCalls++;
+                    throw new InvalidOperationException("bootstrap must not open");
+                },
+                (_, _) => throw new InvalidOperationException("runtime must not run"),
+                () => BootId,
+                () => new MemoryStream(),
+                cancellation.Token));
+
+        Assert.Equal(0, openCalls);
+    }
+
+    [Fact]
     public async Task Capture_failure_still_attempts_both_environment_removals()
     {
         var environment = EnvironmentWithHandles();
@@ -473,7 +525,12 @@ public sealed class WorkerProcessEntryTests
         Assert.DoesNotContain("System.Console", exitSource, StringComparison.Ordinal);
 
         Assert.Equal(
-            ["OpenStandardError", "OpenStandardError", "OpenStandardError"],
+            [
+                "OpenStandardError",
+                "OpenStandardError",
+                "OpenStandardError",
+                "OpenStandardError",
+            ],
             FindConsoleMembers(entrySource));
         Assert.DoesNotContain("System.Console", entrySource, StringComparison.Ordinal);
         foreach (var bypass in new[]
