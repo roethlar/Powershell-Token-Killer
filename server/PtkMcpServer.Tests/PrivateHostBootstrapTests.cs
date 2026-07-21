@@ -48,10 +48,11 @@ public sealed class PrivateHostBootstrapTests
         Assert.Equal("PTK_HOST_CONFIGURATION_SHA256", PrivateHostBootstrapEnvironment.ConfigurationDigest);
         Assert.Equal("PTK_HOST_PACKAGE_MANIFEST_SHA256", PrivateHostBootstrapEnvironment.PackageManifestDigest);
         Assert.Equal(ExpectedHostVariables, PrivateHostBootstrapEnvironment.VariablesInCaptureOrder);
-        Assert.True(new HashSet<string>(
-            ExpectedHostVariables,
-            StringComparer.OrdinalIgnoreCase).SetEquals(
-                PrivateHostBootstrapEnvironment.ReservedVariables));
+        Assert.All(ExpectedHostVariables, variable =>
+            Assert.True(PrivateHostBootstrapEnvironment.IsReserved(variable)));
+        Assert.True(PrivateHostBootstrapEnvironment.IsReserved(
+            "ptk_host_request_read_handle"));
+        Assert.False(PrivateHostBootstrapEnvironment.IsReserved("PTK_HOST_UNKNOWN"));
     }
 
     [Fact]
