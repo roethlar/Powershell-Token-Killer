@@ -3,8 +3,10 @@ using System.Text;
 using System.Text.Json;
 using System.Text.RegularExpressions;
 using System.Threading.Channels;
+using PtkMcpServer.GuardianHost;
 using PtkMcpServer.Sessions;
 using PtkMcpServer.Worker;
+using PtkSharedContracts;
 
 namespace PtkMcpServer.Tests;
 
@@ -13,19 +15,6 @@ public sealed class WorkerProcessEntryTests
 {
     private static readonly Guid BootId =
         Guid.Parse("27e13a09-3106-4c60-936d-2f6e165f54ad");
-
-    [Fact]
-    public void Classification_finds_only_the_exact_worker_token_in_any_position()
-    {
-        Assert.True(WorkerProcessEntry.IsWorkerInvocation(["--worker"]));
-        Assert.True(WorkerProcessEntry.IsWorkerInvocation(["extra", "--worker"]));
-        Assert.True(WorkerProcessEntry.IsWorkerInvocation(["--worker", "extra"]));
-
-        Assert.False(WorkerProcessEntry.IsWorkerInvocation([]));
-        Assert.False(WorkerProcessEntry.IsWorkerInvocation(["--Worker"]));
-        Assert.False(WorkerProcessEntry.IsWorkerInvocation(["--worker=extra"]));
-        Assert.False(WorkerProcessEntry.IsWorkerInvocation(["worker"]));
-    }
 
     [Fact]
     public async Task Malformed_worker_arguments_remove_environment_and_start_nothing()
@@ -527,9 +516,6 @@ public sealed class WorkerProcessEntryTests
         Assert.Equal(
             [
                 "OpenStandardError",
-                "OpenStandardError",
-                "OpenStandardError",
-                "OpenStandardError",
             ],
             FindConsoleMembers(entrySource));
         Assert.DoesNotContain("System.Console", entrySource, StringComparison.Ordinal);
@@ -548,7 +534,7 @@ public sealed class WorkerProcessEntryTests
     }
 
     [Fact]
-    public void Program_worker_return_precedes_every_supervisor_startup_boundary()
+    public void Program_private_role_return_precedes_every_public_startup_boundary()
     {
         var source = File.ReadAllText(Path.Combine(
             FindRepositoryRoot(),
@@ -558,14 +544,16 @@ public sealed class WorkerProcessEntryTests
 
         var classification = RequiredIndex(
             source,
-            "WorkerProcessEntry.IsWorkerInvocation(args)");
-        var workerRun = RequiredIndex(
+            "PrivateHostProcessEntry.Classify(args)");
+        var privateRun = RequiredIndex(
             source,
-            "WorkerProcessEntry.RunAsync(args)");
-        var workerReturn = source.IndexOf("return;", workerRun, StringComparison.Ordinal);
-        Assert.True(workerReturn > workerRun, "worker branch must return after worker execution");
+            "PrivateHostProcessEntry.RunClassifiedProductionAsync(privateRole)");
+        var privateReturn = source.IndexOf("return;", privateRun, StringComparison.Ordinal);
+        Assert.True(
+            privateReturn > privateRun,
+            "private branch must return after private-role execution");
 
-        Assert.True(classification < workerRun);
+        Assert.True(classification < privateRun);
         foreach (var supervisorBoundary in new[]
         {
             "Host.CreateApplicationBuilder(args)",
@@ -578,52 +566,25 @@ public sealed class WorkerProcessEntryTests
         })
         {
             Assert.True(
-                workerReturn < RequiredIndex(source, supervisorBoundary),
-                $"worker return must precede {supervisorBoundary}");
+                privateReturn < RequiredIndex(source, supervisorBoundary),
+                $"private return must precede {supervisorBoundary}");
         }
-    }
-
-    [Fact]
-    public void Production_entry_removes_environment_before_runtime_factory_exists()
-    {
-        var source = File.ReadAllText(Path.Combine(
-            FindRepositoryRoot(),
-            "server",
-            "PtkMcpServer",
-            "Worker",
-            "WorkerProcessEntry.cs"));
-
-        var productionRun = RequiredIndex(
-            source,
-            "internal static async Task<int> RunAsync(IReadOnlyList<string> arguments)");
-        var capture = source.IndexOf(
-            "WorkerBootstrapCapture.CaptureAndRemove()",
-            productionRun,
-            StringComparison.Ordinal);
-        var runtimeFactory = source.IndexOf(
-            "runtimeFactory: CreateRuntimeAsync",
-            productionRun,
-            StringComparison.Ordinal);
-        Assert.True(capture > productionRun);
-        Assert.True(runtimeFactory > capture);
     }
 
     [Fact]
     public async Task Subprocess_malformed_worker_bypasses_poisoned_audit_startup()
     {
-        var result = await RunWorkerSubprocessAsync("--worker", "extra");
+        var result = await RunPrivateSubprocessAsync("--worker", "extra");
 
         Assert.Equal(64, result.ExitCode);
         Assert.Equal(string.Empty, result.StandardOutput);
-        Assert.Equal(
-            "ptk_worker_exit kind=invocation_error detail=invalid_arguments\n",
-            result.StandardError);
+        Assert.Equal(string.Empty, result.StandardError);
     }
 
     [Fact]
     public async Task Subprocess_missing_handles_bypasses_poisoned_audit_startup()
     {
-        var result = await RunWorkerSubprocessAsync("--worker");
+        var result = await RunPrivateSubprocessAsync("--worker");
 
         var expectedDetail = OperatingSystem.IsWindows()
             ? "handle_missing"
@@ -632,6 +593,18 @@ public sealed class WorkerProcessEntryTests
         Assert.Equal(string.Empty, result.StandardOutput);
         Assert.Equal(
             $"ptk_worker_exit kind=bootstrap_failure detail={expectedDetail}\n",
+            result.StandardError);
+    }
+
+    [Fact]
+    public async Task Subprocess_missing_host_handles_bypasses_poisoned_audit_startup()
+    {
+        var result = await RunPrivateSubprocessAsync("--host");
+
+        Assert.Equal(PrivateHostProcessExit.BootstrapFailureExitCode, result.ExitCode);
+        Assert.Equal(string.Empty, result.StandardOutput);
+        Assert.Equal(
+            "ptk_host_exit kind=bootstrap_failure detail=handle_missing\n",
             result.StandardError);
     }
 
@@ -776,7 +749,7 @@ public sealed class WorkerProcessEntryTests
             WorkerBootstrapEnvironment.EventHandle));
     }
 
-    private static async Task<SubprocessResult> RunWorkerSubprocessAsync(
+    private static async Task<SubprocessResult> RunPrivateSubprocessAsync(
         params string[] arguments)
     {
         var serverDll = Path.Combine(AppContext.BaseDirectory, "PtkMcpServer.dll");
@@ -795,6 +768,8 @@ public sealed class WorkerProcessEntryTests
         start.ArgumentList.Add(serverDll);
         foreach (var argument in arguments) start.ArgumentList.Add(argument);
         start.Environment["PTK_AUDIT_EXPORT_CONFIG"] = string.Empty;
+        foreach (var variable in PrivateHostBootstrapEnvironment.VariablesInCaptureOrder)
+            start.Environment.Remove(variable);
         start.Environment.Remove(WorkerBootstrapEnvironment.RequestHandle);
         start.Environment.Remove(WorkerBootstrapEnvironment.EventHandle);
 

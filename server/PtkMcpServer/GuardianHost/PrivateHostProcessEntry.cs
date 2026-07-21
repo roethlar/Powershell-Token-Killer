@@ -1,3 +1,5 @@
+using PtkMcpServer.Worker;
+
 namespace PtkMcpServer.GuardianHost;
 
 internal enum PrivateServerProcessRole
@@ -75,6 +77,26 @@ internal static class PrivateHostProcessEntry
         // be touched before the exact process role is known.
         var role = Classify(arguments);
 
+        return await RunClassifiedActionAsync(
+            role,
+            bootstrapBoundary,
+            runHost,
+            runWorker,
+            cancellationToken).ConfigureAwait(false);
+    }
+
+    internal static async Task<PrivateServerFirstActionResult> RunClassifiedActionAsync<
+        THostBootstrap,
+        TWorkerBootstrap>(
+        PrivateServerProcessRole role,
+        IPrivateProcessBootstrapBoundary<THostBootstrap, TWorkerBootstrap>? bootstrapBoundary,
+        Func<THostBootstrap, CancellationToken, Task<int>>? runHost,
+        Func<TWorkerBootstrap, CancellationToken, Task<int>>? runWorker,
+        CancellationToken cancellationToken = default)
+    {
+        if (!Enum.IsDefined(role))
+            throw new ArgumentOutOfRangeException(nameof(role));
+
         switch (role)
         {
             case PrivateServerProcessRole.TransitionalDevelopment:
@@ -107,4 +129,66 @@ internal static class PrivateHostProcessEntry
                 throw new InvalidOperationException("Unknown private server process role.");
         }
     }
+
+    /// <summary>
+    /// Production composition after Program has classified the role as its
+    /// first executable action. No public host, audit, output, or MCP boundary
+    /// exists on this path.
+    /// </summary>
+    internal static async Task<int> RunClassifiedProductionAsync(
+        PrivateServerProcessRole role,
+        CancellationToken cancellationToken = default)
+    {
+        if (role == PrivateServerProcessRole.TransitionalDevelopment)
+        {
+            throw new ArgumentException(
+                "The transitional development role has no private action.",
+                nameof(role));
+        }
+
+        try
+        {
+            var result = await RunClassifiedActionAsync(
+                    role,
+                    new PrivateProcessBootstrapBoundary(),
+                    static (bootstrap, token) => PrivateHostProcessRunner.RunAsync(
+                        bootstrap,
+                        DefaultPrivateHostRuntimeFactory.Create,
+                        token),
+                    static (bootstrap, token) => WorkerProcessEntry.RunCapturedAsync(
+                        bootstrap,
+                        token),
+                    cancellationToken)
+                .ConfigureAwait(false);
+            return result.ExitCode;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            return 0;
+        }
+        catch (WorkerBootstrapException exception)
+            when (role == PrivateServerProcessRole.Worker)
+        {
+            return WorkerProcessEntry.CompleteCapturedBootstrapFailure(
+                exception.DetailCode,
+                Console.OpenStandardError);
+        }
+        catch (PrivateHostBootstrapException exception)
+        {
+            return PrivateHostProcessExit.CompleteBootstrapFailure(
+                exception.DetailCode);
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            return role == PrivateServerProcessRole.Worker
+                ? WorkerProcessEntry.CompleteCapturedBootstrapFailure(
+                    "bootstrap_failure",
+                    Console.OpenStandardError)
+                : PrivateHostProcessExit.CompleteRuntimeFailure();
+        }
+    }
+
+    private static bool IsFatal(Exception exception) =>
+        exception is OutOfMemoryException or StackOverflowException or
+            AccessViolationException or AppDomainUnloadedException;
 }

@@ -5,6 +5,42 @@ namespace PtkMcpServer.Tests;
 public sealed class PrivateHostProcessEntryTests
 {
     [Fact]
+    public void Program_classifies_the_exact_private_role_before_any_host_boundary()
+    {
+        var source = File.ReadAllText(Path.Combine(
+            FindRepositoryRoot(),
+            "server",
+            "PtkMcpServer",
+            "Program.cs"));
+
+        var classification = RequiredIndex(
+            source,
+            "PrivateHostProcessEntry.Classify(args)");
+        var dispatch = RequiredIndex(
+            source,
+            "PrivateHostProcessEntry.RunClassifiedProductionAsync(privateRole)");
+        var roleReturn = source.IndexOf("return;", dispatch, StringComparison.Ordinal);
+        Assert.True(roleReturn > dispatch, "private role must return after execution");
+        Assert.True(classification < dispatch);
+
+        foreach (var publicBoundary in new[]
+        {
+            "Host.CreateApplicationBuilder(args)",
+            "DefaultSessionRuntimeFactory.ReadCallTimeout()",
+            "JobPwshExecutable.ResolveFromPath()",
+            "AuditStartupConfiguration.LoadFromEnvironment()",
+            "new OutputStore(",
+            ".AddMcpServer(",
+            "ChildStdinGuard.DetachChildStdin()",
+        })
+        {
+            Assert.True(
+                roleReturn < RequiredIndex(source, publicBoundary),
+                $"private role return must precede {publicBoundary}");
+        }
+    }
+
+    [Fact]
     public void Classifier_accepts_only_the_three_transitional_startup_forms()
     {
         Assert.Equal(
@@ -228,4 +264,30 @@ public sealed class PrivateHostProcessEntryTests
     }
 
     private sealed class BootstrapCaptureTestException : Exception;
+
+    private static int RequiredIndex(string source, string value)
+    {
+        var index = source.IndexOf(value, StringComparison.Ordinal);
+        Assert.True(index >= 0, $"Required source marker was absent: {value}");
+        return index;
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        for (var directory = new DirectoryInfo(AppContext.BaseDirectory);
+             directory is not null;
+             directory = directory.Parent)
+        {
+            if (File.Exists(Path.Combine(
+                    directory.FullName,
+                    "server",
+                    "PtkMcpServer",
+                    "Program.cs")))
+            {
+                return directory.FullName;
+            }
+        }
+        throw new InvalidOperationException(
+            "Repository root not found upward from the test base directory.");
+    }
 }

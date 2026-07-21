@@ -444,8 +444,8 @@ internal static class PrivateHostBootstrapCapture
 }
 
 /// <summary>
-/// Concrete process bootstrap boundary for the exact private roles. It remains
-/// unwired until the private role cutover composes it in Program.
+/// Concrete process bootstrap boundary composed only after Program's exact
+/// private-role classification.
 /// </summary>
 internal sealed class PrivateProcessBootstrapBoundary :
     IPrivateProcessBootstrapBoundary<PrivateHostBootstrapValues, WorkerBootstrapValues>

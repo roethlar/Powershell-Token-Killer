@@ -4,14 +4,17 @@ using Microsoft.Extensions.Logging;
 using PtkMcpGuardian.Ownership;
 using PtkMcpServer;
 using PtkMcpServer.Audit;
+using PtkMcpServer.GuardianHost;
 using PtkMcpServer.Sessions;
 using PtkMcpServer.Worker;
 
-// Worker classification is the first executable action. An internal worker
-// attempt must never enter supervisor host, audit, output, or MCP startup.
-if (WorkerProcessEntry.IsWorkerInvocation(args))
+// Exact private-role classification is the first executable action. A host or
+// worker attempt must never enter public host, audit, output, or MCP startup.
+var privateRole = PrivateHostProcessEntry.Classify(args);
+if (privateRole != PrivateServerProcessRole.TransitionalDevelopment)
 {
-    Environment.ExitCode = await WorkerProcessEntry.RunAsync(args).ConfigureAwait(false);
+    Environment.ExitCode = await PrivateHostProcessEntry.RunClassifiedProductionAsync(privateRole)
+        .ConfigureAwait(false);
     return;
 }
 

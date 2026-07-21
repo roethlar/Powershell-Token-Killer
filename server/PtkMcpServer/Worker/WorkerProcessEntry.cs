@@ -6,45 +6,6 @@ internal static class WorkerProcessEntry
 {
     private const string WorkerArgument = "--worker";
 
-    internal static bool IsWorkerInvocation(IReadOnlyList<string> arguments) =>
-        arguments.Any(argument => string.Equals(
-            argument,
-            WorkerArgument,
-            StringComparison.Ordinal));
-
-    internal static async Task<int> RunAsync(IReadOnlyList<string> arguments)
-    {
-        WorkerBootstrapValues values;
-        try
-        {
-            values = WorkerBootstrapCapture.CaptureAndRemove();
-        }
-        catch (WorkerBootstrapException exception)
-        {
-            return CompleteBootstrapFailure(
-                exception.DetailCode,
-                Console.OpenStandardError);
-        }
-        catch (Exception exception) when (!IsFatal(exception))
-        {
-            return CompleteBootstrapFailure(
-                "bootstrap_failure",
-                Console.OpenStandardError);
-        }
-
-        ArgumentNullException.ThrowIfNull(arguments);
-
-        // These delegates are deliberately created only after both bootstrap
-        // identifiers have been removed from the process environment.
-        return await RunCapturedCoreAsync(
-            arguments,
-            values,
-            openBootstrap: captured => WindowsWorkerBootstrap.Open(captured),
-            runtimeFactory: CreateRuntimeAsync,
-            bootIdFactory: Guid.NewGuid,
-            standardErrorFactory: Console.OpenStandardError).ConfigureAwait(false);
-    }
-
     internal static async Task<int> RunAsync(
         IReadOnlyList<string> arguments,
         IWorkerBootstrapEnvironmentSource? environment,
@@ -99,6 +60,13 @@ internal static class WorkerProcessEntry
             bootIdFactory: Guid.NewGuid,
             standardErrorFactory: Console.OpenStandardError,
             cancellationToken);
+
+    internal static int CompleteCapturedBootstrapFailure(
+        string detailCode,
+        Func<Stream> standardErrorFactory) =>
+        CompleteBootstrapFailure(
+            detailCode,
+            standardErrorFactory);
 
     internal static Task<int> RunCapturedAsync(
         WorkerBootstrapValues values,
