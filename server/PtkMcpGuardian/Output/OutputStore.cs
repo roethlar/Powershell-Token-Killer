@@ -1,4 +1,3 @@
-using System.Buffers;
 using System.Collections.Concurrent;
 using System.Globalization;
 using System.Security.Cryptography;
@@ -1070,7 +1069,7 @@ public sealed class OutputStore :
         }
 
         var path = Path.Combine(_root, $"artifact-{artifactId:N}.out");
-        RenderResult rendered;
+        OutputArtifactRenderResult rendered;
         FileStream? stream = null;
         var pathLinked = false;
         try
@@ -1096,7 +1095,10 @@ public sealed class OutputStore :
                     _options.ArtifactUnlinkIdentityVerifiedForTests?.Invoke(path));
             pathLinked = false;
             _options.ArtifactWriteStartingForTests?.Invoke(path);
-            rendered = Render(stream, content, _options.MaximumArtifactBytes);
+            rendered = OutputArtifactRenderer.Render(
+                stream,
+                content,
+                _options.MaximumArtifactBytes);
             stream.Flush(flushToDisk: true);
         }
         catch
@@ -1663,70 +1665,6 @@ public sealed class OutputStore :
         return normalized.Length == 0 ? "capture_incomplete" : normalized;
     }
 
-    private static RenderResult Render(
-        FileStream stream,
-        OutputArtifactContent content,
-        long maximumBytes)
-    {
-        using var writer = new CappedUtf8Writer(stream, maximumBytes);
-        var segments = new List<ArtifactSegment>();
-
-        WriteSegment(writer, segments, "stdout", content.StandardOutput);
-        if (content.ExitCode is int exitCode)
-        {
-            EnsureLineBoundary(writer, content.StandardOutput);
-            WriteSegment(writer, segments, "exit", $"[exit] {exitCode}");
-        }
-        WriteLines(writer, segments, "stderr", "[stderr]", content.StandardError);
-        WriteLines(writer, segments, "errors", "[errors]", content.Errors);
-        WriteLines(writer, segments, "warnings", "[warnings]", content.Warnings);
-
-        return new RenderResult(writer.BytesWritten, writer.Truncated, [.. segments]);
-    }
-
-    private static void WriteLines(
-        CappedUtf8Writer writer,
-        List<ArtifactSegment> segments,
-        string name,
-        string label,
-        IReadOnlyList<string> lines)
-    {
-        if (lines.Count == 0 || writer.Truncated) return;
-        EnsureLineBoundary(writer, previousText: null);
-        var start = writer.BytesWritten;
-        writer.Write(label);
-        writer.Write(Environment.NewLine);
-        for (var index = 0; index < lines.Count && !writer.Truncated; index++)
-        {
-            writer.Write(lines[index] ?? string.Empty);
-            if (index + 1 < lines.Count) writer.Write(Environment.NewLine);
-        }
-        segments.Add(new ArtifactSegment(name, start, writer.BytesWritten - start));
-    }
-
-    private static void WriteSegment(
-        CappedUtf8Writer writer,
-        List<ArtifactSegment> segments,
-        string name,
-        string text)
-    {
-        if (string.IsNullOrEmpty(text) || writer.Truncated) return;
-        var start = writer.BytesWritten;
-        writer.Write(text);
-        segments.Add(new ArtifactSegment(name, start, writer.BytesWritten - start));
-    }
-
-    private static void EnsureLineBoundary(CappedUtf8Writer writer, string? previousText)
-    {
-        if (writer.BytesWritten == 0) return;
-        if (previousText is not null &&
-            (previousText.EndsWith('\n') || previousText.EndsWith('\r')))
-        {
-            return;
-        }
-        writer.Write(Environment.NewLine);
-    }
-
     private static byte[] ReadUtf8Chunk(
         SafeFileHandle handle,
         long offset,
@@ -1796,76 +1734,6 @@ public sealed class OutputStore :
             .Replace("\n", " ⏎ ", StringComparison.Ordinal);
     }
 
-    private sealed class CappedUtf8Writer(FileStream stream, long maximumBytes) : IDisposable
-    {
-        private readonly Encoder _encoder = StrictUtf8.GetEncoder();
-        private byte[]? _buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
-
-        internal long BytesWritten { get; private set; }
-        internal bool Truncated { get; private set; }
-
-        internal void Write(string text)
-        {
-            if (Truncated || string.IsNullOrEmpty(text)) return;
-            var chars = text.AsSpan();
-            while (!chars.IsEmpty)
-            {
-                var remaining = maximumBytes - BytesWritten;
-                if (remaining <= 0)
-                {
-                    Truncated = true;
-                    return;
-                }
-
-                var buffer = _buffer ?? throw new ObjectDisposedException(nameof(CappedUtf8Writer));
-                var target = buffer.AsSpan();
-                _encoder.Convert(
-                    chars,
-                    target,
-                    flush: true,
-                    out var charsUsed,
-                    out var bytesUsed,
-                    out _);
-                var writable = (int)Math.Min(bytesUsed, remaining);
-                while (writable < bytesUsed &&
-                       writable > 0 &&
-                       (buffer[writable] & 0b1100_0000) == 0b1000_0000)
-                {
-                    writable--;
-                }
-                if (writable > 0)
-                {
-                    stream.Write(target[..writable]);
-                    BytesWritten += writable;
-                }
-                if (writable < bytesUsed)
-                {
-                    Truncated = true;
-                    return;
-                }
-                chars = chars[charsUsed..];
-                if (charsUsed == 0)
-                {
-                    Truncated = true;
-                    return;
-                }
-            }
-        }
-
-        public void Dispose()
-        {
-            var buffer = Interlocked.Exchange(ref _buffer, null);
-            if (buffer is not null) ArrayPool<byte>.Shared.Return(buffer);
-        }
-    }
-
-    private sealed record ArtifactSegment(string Name, long Offset, long Length);
-
-    private sealed record RenderResult(
-        long Bytes,
-        bool Truncated,
-        ArtifactSegment[] Segments);
-
     private sealed class ArtifactEntry(
         Guid id,
         string handle,
@@ -1891,6 +1759,6 @@ public sealed class OutputStore :
         internal DateTimeOffset? SealedUtc { get; set; }
         internal DateTimeOffset? ExpiresUtc { get; set; }
         internal DateTimeOffset? TombstonedUtc { get; set; }
-        internal ArtifactSegment[] Segments { get; set; } = [];
+        internal OutputArtifactSegment[] Segments { get; set; } = [];
     }
 }
