@@ -22,6 +22,7 @@ internal class AuditCallLifecycle : IAuditBoundaryCall
     protected AuditCallMetadata? _metadata;
     protected AuditRequest? _request;
     protected AuditRouting _routing = new();
+    protected AuditSession _session = DefaultCallSession();
     protected Guid _callId;
     protected Guid? _parentEventId;
     protected Guid? _planId;
@@ -117,7 +118,7 @@ internal class AuditCallLifecycle : IAuditBoundaryCall
                         _journal,
                         new AuditEvidenceRetentionContext(
                             _callId,
-                            CallSession(),
+                            _session,
                             metadata.Actor));
                 }
                 catch (ArgumentOutOfRangeException)
@@ -356,6 +357,27 @@ internal class AuditCallLifecycle : IAuditBoundaryCall
             throw new InvalidOperationException("Audit call is already terminal.");
     }
 
+    /// <summary>
+    /// Replaces the acceptance-time compatibility projection with one frozen
+    /// session snapshot before a durable effect authorization. The previous
+    /// projection is returned so a specialized authorizer can restore it when
+    /// its append fails before crossing the persistence barrier.
+    /// </summary>
+    protected AuditSession ProjectSession(AuditSession session)
+    {
+        ArgumentNullException.ThrowIfNull(session);
+        EnsureActive();
+        if (_effectAuthorized)
+        {
+            throw new InvalidOperationException(
+                "An effect-authorized audit call cannot change its session projection.");
+        }
+
+        var previous = _session;
+        _session = session;
+        return previous;
+    }
+
     private AuditEventInput BuildInput(
         string eventType,
         AuditActor actor,
@@ -374,7 +396,7 @@ internal class AuditCallLifecycle : IAuditBoundaryCall
         return new AuditEventInput
         {
             EventType = eventType,
-            Session = CallSession(),
+            Session = _session,
             Actor = actor,
             Correlation = correlation,
             Request = request,
@@ -413,7 +435,7 @@ internal class AuditCallLifecycle : IAuditBoundaryCall
         };
     }
 
-    private static AuditSession CallSession() => new()
+    private static AuditSession DefaultCallSession() => new()
     {
         Name = "default",
         Generation = 0,

@@ -63,6 +63,82 @@ public sealed class AuditCallLifecycleTests
     }
 
     [Fact]
+    public void Guardian_safe_lifecycle_freezes_bound_session_after_authorization()
+    {
+        var options = AuditOptions.Create(
+            Path.Combine(Path.GetTempPath(), "ptk-guardian-session-" + Guid.NewGuid().ToString("N")),
+            maxRecordBytes: AuditEventSerializer.MaximumLineBytes,
+            segmentBytes: AuditEventSerializer.MaximumLineBytes * 16L,
+            aggregateBytes: AuditEventSerializer.MaximumLineBytes * 16L,
+            emergencyReserveBytes: AuditEventSerializer.MaximumLineBytes * 2L,
+            retentionAge: TimeSpan.FromMinutes(10),
+            maxEvidenceBytes: ScriptEvidenceStore.MaximumScriptBytes,
+            evidenceAggregateBytes: ScriptEvidenceStore.MaximumScriptBytes * 2L,
+            evidenceRetentionAge: TimeSpan.FromMinutes(10));
+        var health = new AuditHealth(options);
+        var sink = new InMemoryAuditJournalSink(
+            options.SegmentBytes,
+            options.AggregateBytes,
+            options.ProtectionMode,
+            options.RetentionAge);
+        using var journal = new AuditJournal(
+            options,
+            health,
+            sink,
+            "guardian-session-test",
+            binaryDigest: null,
+            hostId: Guid.Parse("13345678-1234-4abc-8def-0123456789ab"),
+            supervisorBootId: Guid.Parse("23345678-1234-4abc-8def-0123456789ab"));
+        var call = new SessionProjectingAuditCall(
+            journal,
+            new ScriptEvidenceStore(options.EvidenceDirectory));
+
+        Assert.True(call.TryBegin(Metadata(), null, out var failure), failure);
+        call.Authorize(new AuditSession
+        {
+            Name = "build",
+            Generation = 17,
+            BindingKind = "template",
+            TemplateName = "ci",
+            TemplateDigest = new string('1', 64),
+            BootstrapDigest = new string('2', 64),
+            DeclaredPurpose = "compile",
+            DeclaredTarget = "local",
+            DeclaredIdentity = "builder",
+            EffectiveIdentity = "builder-effective",
+            AllowColdBackground = false,
+        });
+        Assert.Throws<InvalidOperationException>(() => call.Authorize(new AuditSession
+        {
+            Name = "other",
+            Generation = 18,
+            BindingKind = "dynamic",
+        }));
+        call.CompleteCall("completed", "ok");
+
+        var events = sink.Lines.Select(Parse).ToArray();
+        Assert.Equal(
+            ["call.accepted", "job.kill_requested", "call.completed"],
+            events.Select(EventType));
+        Assert.Equal("default", events[0].GetProperty("session").GetProperty("name").GetString());
+        foreach (var value in events[1..])
+        {
+            var session = value.GetProperty("session");
+            Assert.Equal("build", session.GetProperty("name").GetString());
+            Assert.Equal(17, session.GetProperty("generation").GetInt64());
+            Assert.Equal("template", session.GetProperty("binding_kind").GetString());
+            Assert.Equal("ci", session.GetProperty("template_name").GetString());
+            Assert.Equal(new string('1', 64), session.GetProperty("template_digest").GetString());
+            Assert.Equal(new string('2', 64), session.GetProperty("bootstrap_digest").GetString());
+            Assert.Equal("compile", session.GetProperty("declared_purpose").GetString());
+            Assert.Equal("local", session.GetProperty("declared_target").GetString());
+            Assert.Equal("builder", session.GetProperty("declared_identity").GetString());
+            Assert.Equal("builder-effective", session.GetProperty("effective_identity").GetString());
+            Assert.False(session.GetProperty("allow_cold_background").GetBoolean());
+        }
+    }
+
+    [Fact]
     public void Guardian_gate_admits_the_exact_lifecycle_from_its_factory()
     {
         var options = AuditOptions.Create(
@@ -294,6 +370,31 @@ public sealed class AuditCallLifecycleTests
         {
             CreateCount++;
             return Created = new AuditCallLifecycle(journal, evidence);
+        }
+    }
+
+    private sealed class SessionProjectingAuditCall : AuditCallLifecycle
+    {
+        internal SessionProjectingAuditCall(
+            AuditJournal journal,
+            ScriptEvidenceStore evidence)
+            : base(journal, evidence)
+        {
+        }
+
+        internal void Authorize(AuditSession session)
+        {
+            var previous = ProjectSession(session);
+            try
+            {
+                Append("job.kill_requested", "requested", jobId: 42);
+                _effectAuthorized = true;
+            }
+            catch
+            {
+                _ = ProjectSession(previous);
+                throw;
+            }
         }
     }
 }
