@@ -280,7 +280,7 @@ internal static class AuditCallMetadataCapture
                 {
                     "output" => 6,
                     "kill" => 4,
-                    "list" or "status" => 3,
+                    "list" or "status" => 4,
                     _ => 2,
                 },
                 0,

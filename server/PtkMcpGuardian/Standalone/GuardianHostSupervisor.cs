@@ -237,19 +237,23 @@ internal sealed class GuardianHostSupervisor :
                 callId,
                 new DispatchCapability(NewCapabilityToken(), callId, expires)),
             operationIdentity: null,
+            auditCall,
             cancellationToken);
     }
 
     /// <summary>
     /// Shared private dispatch core for session-scoped operations. Public tool
-    /// parsing and audit admission remain outside this still-internal seam.
+    /// parsing and audit admission remain outside this seam; the resulting
+    /// audit capability is mandatory here and consumed at final authorization.
     /// </summary>
     internal async ValueTask<GuardianToolResult> DispatchSessionOperationAsync(
         GuardianHostOperation operation,
         GuardianHostOperationIdentity? operationIdentity,
+        GuardianAuditCall auditCall,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(auditCall);
         if (operation.Kind is not (
                 GuardianHostOperationKind.InvokeForeground or
                 GuardianHostOperationKind.JobList))
@@ -277,6 +281,7 @@ internal sealed class GuardianHostSupervisor :
                 backgroundInvoke: null,
                 jobControl: null,
                 operationIdentity,
+                auditCall,
                 cancellationToken)
             .ConfigureAwait(false);
     }
@@ -285,8 +290,8 @@ internal sealed class GuardianHostSupervisor :
     /// Guardian-owned background-start boundary. The public job identifier is
     /// reserved against the exact selected host/session/worker only inside the
     /// first-write authority, then inserted into the private operation. Public
-    /// argument parsing and mandatory audit authorization remain outside this
-    /// still-internal seam.
+    /// argument parsing and audit admission remain outside this seam; the
+    /// resulting capability is authorized here against the reserved job ID.
     /// </summary>
     internal ValueTask<GuardianToolResult> DispatchBackgroundInvokeAsync(
         CallId callId,
@@ -296,9 +301,11 @@ internal sealed class GuardianHostSupervisor :
         bool raw,
         GuardianHostInvokeRoute route,
         GuardianHostOperationIdentity operationIdentity,
+        GuardianAuditCall auditCall,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(operationIdentity);
+        ArgumentNullException.ThrowIfNull(auditCall);
         if (_jobCapabilities is null)
         {
             throw new InvalidOperationException(
@@ -322,6 +329,7 @@ internal sealed class GuardianHostSupervisor :
             backgroundInvoke,
             jobControl: null,
             operationIdentity,
+            auditCall,
             cancellationToken);
     }
 
@@ -329,6 +337,7 @@ internal sealed class GuardianHostSupervisor :
         CallId callId,
         DispatchCapability dispatchCapability,
         PublicJobId publicJobId,
+        GuardianAuditCall auditCall,
         CancellationToken cancellationToken) =>
         DispatchJobControlAsync(
             new JobControlDispatch(
@@ -338,6 +347,7 @@ internal sealed class GuardianHostSupervisor :
                 outputCapability: null,
                 publicJobId,
                 offset: 0),
+            auditCall,
             cancellationToken);
 
     internal ValueTask<GuardianToolResult> DispatchJobOutputAsync(
@@ -346,6 +356,7 @@ internal sealed class GuardianHostSupervisor :
         OutputCapability outputCapability,
         PublicJobId publicJobId,
         long offset,
+        GuardianAuditCall auditCall,
         CancellationToken cancellationToken) =>
         DispatchJobControlAsync(
             new JobControlDispatch(
@@ -355,12 +366,14 @@ internal sealed class GuardianHostSupervisor :
                 outputCapability,
                 publicJobId,
                 offset),
+            auditCall,
             cancellationToken);
 
     internal ValueTask<GuardianToolResult> DispatchJobKillAsync(
         CallId callId,
         DispatchCapability dispatchCapability,
         PublicJobId publicJobId,
+        GuardianAuditCall auditCall,
         CancellationToken cancellationToken) =>
         DispatchJobControlAsync(
             new JobControlDispatch(
@@ -370,17 +383,20 @@ internal sealed class GuardianHostSupervisor :
                 outputCapability: null,
                 publicJobId,
                 offset: 0),
+            auditCall,
             cancellationToken);
 
     /// <summary>
     /// Resolves one guardian-held job capability only under the same authority
-    /// that guards first write. Public argument parsing and mandatory audit
-    /// authorization remain outside this still-internal seam.
+    /// that guards first write. Public argument parsing and audit admission
+    /// remain outside this seam; final audit authorization happens here.
     /// </summary>
     private ValueTask<GuardianToolResult> DispatchJobControlAsync(
         JobControlDispatch jobControl,
+        GuardianAuditCall auditCall,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(auditCall);
         if (_jobCapabilities is null)
         {
             throw new InvalidOperationException(
@@ -397,6 +413,7 @@ internal sealed class GuardianHostSupervisor :
             backgroundInvoke: null,
             jobControl,
             operationIdentity: null,
+            auditCall,
             cancellationToken);
     }
 
@@ -405,8 +422,10 @@ internal sealed class GuardianHostSupervisor :
         BackgroundInvokeDispatch? backgroundInvoke,
         JobControlDispatch? jobControl,
         GuardianHostOperationIdentity? operationIdentity,
+        GuardianAuditCall auditCall,
         CancellationToken cancellationToken)
     {
+        ArgumentNullException.ThrowIfNull(auditCall);
         var operationSourceCount = (operation is null ? 0 : 1) +
             (backgroundInvoke is null ? 0 : 1) +
             (jobControl is null ? 0 : 1);
@@ -416,19 +435,44 @@ internal sealed class GuardianHostSupervisor :
                 "Exactly one private session operation source is required.");
         }
 
+        var publicCallId = auditCall.PublicCallId;
+        var sourceCallId = operation?.CallId ??
+            backgroundInvoke?.CallId ??
+            jobControl!.CallId;
+        if (sourceCallId != publicCallId)
+        {
+            throw new ArgumentException(
+                "The private operation call ID must match the admitted guardian audit call.");
+        }
+
+        var admission = await CaptureDispatchAsync(cancellationToken)
+            .ConfigureAwait(false);
+        if (admission.Terminal is { } refused)
+        {
+            return RecordNoDispatch(
+                auditCall,
+                admission.Target,
+                refused,
+                "guardian_dispatch_not_started");
+        }
+
+        var active = admission.Active!;
+        var target = admission.Target!;
         if (!TryReserveCall())
-            return new GuardianToolResult(CapacityText, isError: true);
+        {
+            return RecordNoDispatch(
+                auditCall,
+                target,
+                new GuardianHostSupervisorTerminal(
+                    CapacityText,
+                    isError: true,
+                    auditDetailCode: "guardian_capacity"),
+                "guardian_capacity");
+        }
 
         ActiveCall? call = null;
         try
         {
-            var admission = await CaptureDispatchAsync(cancellationToken)
-                .ConfigureAwait(false);
-            if (admission.Terminal is { } refused)
-                return ToToolResult(refused);
-
-            var active = admission.Active!;
-            var target = admission.Target!;
             var observation = new GuardianHostDispatchObservation(
                 active.Lease.Identity,
                 target,
@@ -442,7 +486,13 @@ internal sealed class GuardianHostSupervisor :
             var revalidated = await RevalidateDispatchAsync(active, target, cancellationToken)
                 .ConfigureAwait(false);
             if (revalidated is { } changed)
-                return ToToolResult(changed);
+            {
+                return RecordNoDispatch(
+                    auditCall,
+                    target,
+                    changed,
+                    "guardian_dispatch_not_started");
+            }
 
             try
             {
@@ -525,26 +575,49 @@ internal sealed class GuardianHostSupervisor :
                                     active,
                                     target,
                                     tracker,
+                                    auditCall,
                                     outputRegistration,
                                     jobRegistration);
                                 AddCallUnderAuthority(call);
                                 callAdded = true;
+                                var publicJobId = dispatchedOperation switch
+                                {
+                                    InvokeBackgroundOperation background =>
+                                        background.PublicJobId,
+                                    GuardianHostJobIdentityOperation job =>
+                                        job.PublicJobId,
+                                    _ => null,
+                                };
+                                if (!auditCall.TryAuthorizeDispatch(
+                                        new GuardianAuditDispatchAuthorization(
+                                            dispatchedOperation.Kind,
+                                            target.AuditSession,
+                                            publicJobId)))
+                                {
+                                    throw new AuditAuthorizationException();
+                                }
                                 return request;
                             }
                             catch
                             {
-                                if (!callAdded)
+                                var registryRemoved = true;
+                                if (callAdded)
                                 {
-                                    var outputCanceled = outputRegistration is null ||
-                                        _outputCoordinator!.TryCancel(outputRegistration);
-                                    var jobCanceled = jobRegistration is null ||
-                                        _jobCapabilities!.TryCancel(jobRegistration);
-                                    call = null;
-                                    if (!outputCanceled || !jobCanceled)
-                                    {
-                                        throw new InvalidOperationException(
-                                            "The rejected guardian call lost capability ownership.");
-                                    }
+                                    registryRemoved = _calls.Remove(
+                                            call!.Tracker.Identity.RequestId.Value,
+                                            out var removed) &&
+                                        ReferenceEquals(removed, call);
+                                    callAdded = false;
+                                }
+                                var outputCanceled = outputRegistration is null ||
+                                    _outputCoordinator!.TryCancel(outputRegistration);
+                                var jobCanceled = jobRegistration is null ||
+                                    _jobCapabilities!.TryCancel(jobRegistration);
+                                call = null;
+                                if (!registryRemoved || !outputCanceled || !jobCanceled)
+                                {
+                                    throw new InvalidOperationException(
+                                        "The rejected guardian call lost ownership during rollback.");
                                 }
                                 throw;
                             }
@@ -557,27 +630,58 @@ internal sealed class GuardianHostSupervisor :
             }
             catch (OutputAdmissionException)
             {
-                return new GuardianToolResult(OutputAdmissionText, isError: true);
+                return RecordNoDispatch(
+                    auditCall,
+                    target,
+                    new GuardianHostSupervisorTerminal(
+                        OutputAdmissionText,
+                        isError: true,
+                        auditDetailCode: "output_admission_failed"),
+                    "output_admission_failed");
             }
             catch (JobAdmissionException)
             {
-                return new GuardianToolResult(JobAdmissionText, isError: true);
+                return RecordNoDispatch(
+                    auditCall,
+                    target,
+                    new GuardianHostSupervisorTerminal(
+                        JobAdmissionText,
+                        isError: true,
+                        auditDetailCode: "job_admission_failed"),
+                    "job_admission_failed");
             }
             catch (JobLookupException)
             {
-                return new GuardianToolResult(JobLookupText, isError: true);
+                return RecordNoDispatch(
+                    auditCall,
+                    target,
+                    new GuardianHostSupervisorTerminal(
+                        JobLookupText,
+                        isError: true,
+                        auditDetailCode: "job_lookup_failed"),
+                    "job_lookup_failed");
+            }
+            catch (AuditAuthorizationException)
+            {
+                return new GuardianToolResult(
+                    "The guardian audit authorization could not be persisted; no backend work started.",
+                    isError: true);
             }
             catch (Exception exception) when (!IsFatalRuntimeException(exception))
             {
                 if (call is null)
                 {
-                    return ToToolResult(
-                        await CurrentHostRefusalAsync(
-                                active,
-                                backendLostBeforeDispatch: true,
-                                target.Alias,
-                                cancellationToken)
-                            .ConfigureAwait(false));
+                    var currentRefusal = await CurrentHostRefusalAsync(
+                            active,
+                            backendLostBeforeDispatch: true,
+                            target.Alias,
+                            cancellationToken)
+                        .ConfigureAwait(false);
+                    return RecordNoDispatch(
+                        auditCall,
+                        target,
+                        currentRefusal,
+                        "guardian_dispatch_not_started");
                 }
 
                 await ClassifyFailedSendAsync(call, target, exception)
@@ -614,7 +718,7 @@ internal sealed class GuardianHostSupervisor :
             {
                 return new DispatchAdmission(
                     null,
-                    null,
+                    target,
                     CreateHostRefusalLocked(
                         backendLostBeforeDispatch: false,
                         target.Alias));
@@ -624,7 +728,7 @@ internal sealed class GuardianHostSupervisor :
             {
                 return new DispatchAdmission(
                     null,
-                    null,
+                    target,
                     CreateSessionRefusal(target?.Alias));
             }
 
@@ -688,6 +792,7 @@ internal sealed class GuardianHostSupervisor :
             expectedTarget,
             call.Tracker.Identity.RequestId);
         _dispatchObserver.OnWriteStarting(observation);
+        call.AuditCall.MarkPrivateWriteStarting();
         call.Tracker.BeginFirstWriteAsync(
                 static (_, _) => ValueTask.CompletedTask,
                 CancellationToken.None)
@@ -1305,13 +1410,28 @@ internal sealed class GuardianHostSupervisor :
         {
             terminal = new GuardianHostSupervisorTerminal(
                 GuardianOutputResponseDecorator.Decorate(terminal.Text, recovery),
-                terminal.IsError);
+                terminal.IsError,
+                terminal.AuditDetailCode);
         }
         if (call.Tracker.TryDecodeTerminal(identity, terminal) !=
             GuardianTerminalCorrelationResult.Accepted)
         {
             throw new GuardianHostClientException(
                 GuardianHostClientFailureKind.ResponseCorrelationMismatch);
+        }
+
+        if (StringComparer.Ordinal.Equals(
+                terminal.AuditDetailCode,
+                "outcome_unknown"))
+        {
+            call.AuditCall.RecordOutcomeUnknown(terminal.Text);
+        }
+        else
+        {
+            call.AuditCall.RecordDecodedTerminal(
+                terminal.IsError,
+                terminal.Text,
+                terminal.AuditDetailCode);
         }
 
         _dispatchObserver.OnTerminalDecoded(new GuardianHostDispatchObservation(
@@ -1560,7 +1680,8 @@ internal sealed class GuardianHostSupervisor :
         } => OutcomeUnknown(),
         GuardianHostErrorResponse error => new GuardianHostSupervisorTerminal(
             $"private_host_error:{error.Error.DetailCode}",
-            isError: true),
+            isError: true,
+            auditDetailCode: "private_host_error"),
         _ => throw new GuardianHostClientException(
             GuardianHostClientFailureKind.ResponseCorrelationMismatch),
     };
@@ -1568,11 +1689,31 @@ internal sealed class GuardianHostSupervisor :
     private static GuardianHostSupervisorTerminal RecoveryTerminal(
         PublicRecoveryError error) => new(
             Encoding.UTF8.GetString(PublicRecoveryCodec.Encode(error)),
-            isError: true);
+            isError: true,
+            auditDetailCode: PublicRecoveryCodec.DetailCode(error.DetailCode));
 
     private static GuardianToolResult ToToolResult(
         GuardianHostSupervisorTerminal terminal) =>
         new(terminal.Text, terminal.IsError);
+
+    private static GuardianToolResult RecordNoDispatch(
+        GuardianAuditCall auditCall,
+        GuardianHostJobListTarget? target,
+        GuardianHostSupervisorTerminal terminal,
+        string fallbackDetailCode)
+    {
+        ArgumentNullException.ThrowIfNull(auditCall);
+        ArgumentNullException.ThrowIfNull(terminal);
+        ArgumentException.ThrowIfNullOrWhiteSpace(fallbackDetailCode);
+        if (target is not null)
+        {
+            auditCall.RecordNotDispatched(
+                target.AuditSession,
+                terminal.AuditDetailCode ?? fallbackDetailCode,
+                terminal.Text);
+        }
+        return ToToolResult(terminal);
+    }
 
     private string EncodeStateSnapshot() =>
         Encoding.UTF8.GetString(PublicStateCodec.Encode(SnapshotState()));
@@ -1591,8 +1732,16 @@ internal sealed class GuardianHostSupervisor :
         GuardianHostSupervisorTerminal terminal)
     {
         var result = call.Tracker.TrySetLocalTerminal(terminal);
-        if (result is GuardianLocalTerminalResult.Accepted or
-            GuardianLocalTerminalResult.TerminalAlreadyDecoded or
+        if (result == GuardianLocalTerminalResult.Accepted)
+        {
+            call.AuditCall.RecordNotDispatched(
+                call.Target.AuditSession,
+                terminal.AuditDetailCode ?? "guardian_dispatch_not_started",
+                terminal.Text);
+            call.TerminalAvailable.TrySetResult(true);
+            return;
+        }
+        if (result is GuardianLocalTerminalResult.TerminalAlreadyDecoded or
             GuardianLocalTerminalResult.PublicTerminalAlreadySent)
         {
             call.TerminalAvailable.TrySetResult(true);
@@ -1607,6 +1756,7 @@ internal sealed class GuardianHostSupervisor :
     {
         if (call.ClassifiedLossTerminal is not null)
             return;
+        call.AuditCall.RecordOutcomeUnknown(terminal.Text);
         call.ClassifiedLossTerminal = terminal;
         call.TerminalAvailable.TrySetResult(true);
     }
@@ -1870,12 +2020,15 @@ internal sealed class GuardianHostSupervisor :
         ActiveAttempt attempt,
         GuardianHostJobListTarget target,
         GuardianCallDeliveryTracker<GuardianHostSupervisorTerminal> tracker,
+        GuardianAuditCall auditCall,
         GuardianOutputRegistration? outputRegistration,
         GuardianJobRegistration? jobRegistration)
     {
         internal ActiveAttempt Attempt { get; } = attempt;
         internal GuardianHostJobListTarget Target { get; } = target;
         internal GuardianCallDeliveryTracker<GuardianHostSupervisorTerminal> Tracker { get; } = tracker;
+        internal GuardianAuditCall AuditCall { get; } = auditCall ??
+            throw new ArgumentNullException(nameof(auditCall));
         internal GuardianOutputRegistration? OutputRegistration { get; } = outputRegistration;
         internal GuardianJobRegistration? JobRegistration { get; } = jobRegistration;
         internal bool OutputResponseResolved { get; set; }
@@ -1900,6 +2053,8 @@ internal sealed class GuardianHostSupervisor :
     private sealed class JobAdmissionException : InvalidOperationException;
 
     private sealed class JobLookupException : InvalidOperationException;
+
+    private sealed class AuditAuthorizationException : InvalidOperationException;
 
     private sealed class BackgroundInvokeDispatch
     {
@@ -1946,6 +2101,8 @@ internal sealed class GuardianHostSupervisor :
                 _raw,
                 _route,
                 publicJobId);
+
+        internal CallId CallId => _callId;
     }
 
     private sealed class JobControlDispatch
@@ -2002,6 +2159,8 @@ internal sealed class GuardianHostSupervisor :
         internal OutputCapability? OutputCapability { get; }
 
         internal PublicJobId PublicJobId { get; }
+
+        internal CallId CallId => _callId;
 
         internal GuardianHostOperation CreateOperation(
             GuardianJobCapability capability)

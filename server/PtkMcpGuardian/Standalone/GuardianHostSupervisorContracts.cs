@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using PtkMcpGuardian.Lifecycle;
+using PtkMcpServer.Audit;
 using PtkSharedContracts;
 
 namespace PtkMcpGuardian.Standalone;
@@ -47,6 +48,7 @@ internal sealed record GuardianHostJobListTarget
         CanonicalAlias alias,
         SessionTransitionVersion transitionVersion,
         GuardianHostWorkerIdentity workerIdentity,
+        GuardianAuditSession auditSession,
         bool readyForEffects)
     {
         Alias = alias ?? throw new ArgumentNullException(nameof(alias));
@@ -54,6 +56,15 @@ internal sealed record GuardianHostJobListTarget
             throw new ArgumentNullException(nameof(transitionVersion));
         WorkerIdentity = workerIdentity ??
             throw new ArgumentNullException(nameof(workerIdentity));
+        AuditSession = auditSession ??
+            throw new ArgumentNullException(nameof(auditSession));
+        if (!StringComparer.Ordinal.Equals(auditSession.Session.Name, alias.Value) ||
+            auditSession.Session.Generation != workerIdentity.Generation.Value)
+        {
+            throw new ArgumentException(
+                "The audit session must match the exact dispatch alias and worker generation.",
+                nameof(auditSession));
+        }
         ReadyForEffects = readyForEffects;
     }
 
@@ -63,6 +74,8 @@ internal sealed record GuardianHostJobListTarget
 
     internal GuardianHostWorkerIdentity WorkerIdentity { get; }
 
+    internal GuardianAuditSession AuditSession { get; }
+
     internal bool ReadyForEffects { get; }
 
     internal bool SameDispatchIdentity(GuardianHostJobListTarget other) =>
@@ -70,6 +83,7 @@ internal sealed record GuardianHostJobListTarget
         TransitionVersion == other.TransitionVersion &&
         WorkerIdentity.BootId == other.WorkerIdentity.BootId &&
         WorkerIdentity.Generation == other.WorkerIdentity.Generation &&
+        AuditSession.Session == other.AuditSession.Session &&
         ReadyForEffects == other.ReadyForEffects;
 }
 
@@ -193,13 +207,19 @@ internal sealed record GuardianHostSupervisorPins
 
 internal sealed record GuardianHostSupervisorTerminal
 {
-    internal GuardianHostSupervisorTerminal(string text, bool isError)
+    internal GuardianHostSupervisorTerminal(
+        string text,
+        bool isError,
+        string? auditDetailCode = null)
     {
         Text = text ?? throw new ArgumentNullException(nameof(text));
         IsError = isError;
+        AuditDetailCode = auditDetailCode;
     }
 
     internal string Text { get; }
 
     internal bool IsError { get; }
+
+    internal string? AuditDetailCode { get; }
 }

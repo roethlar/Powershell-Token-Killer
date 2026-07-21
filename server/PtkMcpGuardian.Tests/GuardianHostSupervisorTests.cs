@@ -23,6 +23,29 @@ public sealed class GuardianHostSupervisorTests
         new OperationId(Guid.Parse("44444444-4444-4444-8444-444444444444")));
 
     [Fact]
+    public void Every_private_dispatch_entry_requires_the_admitted_guardian_audit_call()
+    {
+        string[] dispatchEntries =
+        [
+            "DispatchSessionOperationAsync",
+            "DispatchBackgroundInvokeAsync",
+            "DispatchJobStatusAsync",
+            "DispatchJobOutputAsync",
+            "DispatchJobKillAsync",
+        ];
+
+        var methods = typeof(GuardianHostSupervisor).GetMethods(
+            BindingFlags.Instance | BindingFlags.NonPublic);
+        foreach (var entry in dispatchEntries)
+        {
+            var method = Assert.Single(methods, candidate => candidate.Name == entry);
+            Assert.Single(
+                method.GetParameters(),
+                parameter => parameter.ParameterType == typeof(GuardianAuditCall));
+        }
+    }
+
+    [Fact]
     public async Task Loss_before_write_authorization_is_safe_and_never_dispatched()
     {
         await using var rig = new TestRig(
@@ -53,6 +76,9 @@ public sealed class GuardianHostSupervisorTests
         Assert.Equal(RecoveryPhase.Containment, error.RecoveryPhase);
         Assert.Equal(0, old.OperationCount);
         Assert.Equal(0, rig.Factory.Resources[1].OperationCount);
+        Assert.Equal(
+            ["call.accepted", GuardianAuditCall.DispatchNotStartedEvent, "call.not_started"],
+            rig.AuditEventTypes());
     }
 
     [Fact]
@@ -243,6 +269,14 @@ public sealed class GuardianHostSupervisorTests
         Assert.Null(error.RetryGate);
         Assert.Equal(1, old.OperationCount);
         Assert.Single(rig.Factory.Resources);
+        Assert.Equal(
+            [
+                "call.accepted",
+                GuardianAuditCall.DispatchAuthorizedEvent,
+                GuardianAuditCall.DispatchOutcomeUnknownEvent,
+                "call.failed",
+            ],
+            rig.AuditEventTypes());
 
         old.ConfirmContainment();
         await WaitUntilAsync(() => rig.Factory.Resources.Count == 2);
@@ -267,6 +301,14 @@ public sealed class GuardianHostSupervisorTests
         Assert.Equal("jobs-generation-1", result.Text);
         Assert.Equal(1, old.OperationCount);
         Assert.Single(rig.Factory.Resources);
+        Assert.Equal(
+            [
+                "call.accepted",
+                GuardianAuditCall.DispatchAuthorizedEvent,
+                GuardianAuditCall.DispatchCompletedEvent,
+                "call.completed",
+            ],
+            rig.AuditEventTypes());
         old.ConfirmContainment();
     }
 
@@ -1329,6 +1371,16 @@ public sealed class GuardianHostSupervisorTests
         internal GuardianOutputCoordinator? OutputCoordinator { get; }
         internal GuardianJobCapabilityRegistry? JobCapabilities { get; }
 
+        internal string[] AuditEventTypes() => _audit.Sink.Lines
+            .Select(static line =>
+            {
+                using var document = JsonDocument.Parse(line);
+                return document.RootElement
+                    .GetProperty("event_type")
+                    .GetString()!;
+            })
+            .ToArray();
+
         internal Task StartAsync() => Supervisor.StartAsync();
 
         internal Task<GuardianToolResult> DispatchJobListAsync() =>
@@ -1336,45 +1388,85 @@ public sealed class GuardianHostSupervisorTests
 
         internal Task<GuardianToolResult> DispatchSessionOperationAsync(
             GuardianHostOperation operation,
-            GuardianHostOperationIdentity? operationIdentity) =>
-            Supervisor.DispatchSessionOperationAsync(
-                    operation,
+            GuardianHostOperationIdentity? operationIdentity)
+        {
+            ArgumentNullException.ThrowIfNull(operation);
+            var invoke = operation as InvokeForegroundOperation;
+            return DispatchAuditedAsync(
+                invoke is null
+                    ? Metadata("ptk_job", "list", maximumCallRecordSlots: 4)
+                    : Metadata(
+                        "ptk_invoke",
+                        "invoke",
+                        maximumCallRecordSlots: 11,
+                        background: false),
+                invoke?.Script,
+                auditCall => Supervisor.DispatchSessionOperationAsync(
+                    invoke is null
+                        ? operation
+                        : new InvokeForegroundOperation(
+                            auditCall.PublicCallId,
+                            RebindDispatch(
+                                operation.DispatchCapability,
+                                auditCall.PublicCallId),
+                            invoke.OutputCapability!,
+                            invoke.Script,
+                            invoke.Raw,
+                            invoke.Route),
                     operationIdentity,
-                    CancellationToken.None)
-                .AsTask();
+                    auditCall,
+                    CancellationToken.None));
+        }
 
         internal Task<GuardianToolResult> DispatchBackgroundInvokeAsync(
             CapabilityToken outputToken,
             long? outputExpiresUnixTimeMilliseconds = null)
         {
-            var callId = new CallId(Guid.CreateVersion7());
             var expires = Clock.GetUtcNow().AddMinutes(1)
                 .ToUnixTimeMilliseconds();
-            return Supervisor.DispatchBackgroundInvokeAsync(
-                    callId,
-                    new DispatchCapability(Token(202), callId, expires),
+            const string script = "Write-Output secret";
+            return DispatchAuditedAsync(
+                Metadata(
+                    "ptk_invoke",
+                    "invoke",
+                    maximumCallRecordSlots: 11,
+                    persistentJobTerminalSlots: 1,
+                    background: true),
+                script,
+                auditCall => Supervisor.DispatchBackgroundInvokeAsync(
+                    auditCall.PublicCallId,
+                    new DispatchCapability(
+                        Token(202),
+                        auditCall.PublicCallId,
+                        expires),
                     new OutputCapability(
                         outputToken,
                         maximumBytes: 1024,
                         outputExpiresUnixTimeMilliseconds ?? expires),
-                    "Write-Output secret",
+                    script,
                     raw: false,
                     GuardianHostInvokeRoute.Auto,
                     OperationIdentity,
-                    CancellationToken.None)
-                .AsTask();
+                    auditCall,
+                    CancellationToken.None));
         }
 
         internal Task<GuardianToolResult> DispatchJobStatusAsync(
             PublicJobId publicJobId)
         {
-            var (callId, dispatch) = NewDispatch(Token(203));
-            return Supervisor.DispatchJobStatusAsync(
-                    callId,
-                    dispatch,
+            return DispatchAuditedAsync(
+                Metadata(
+                    "ptk_job",
+                    "status",
+                    maximumCallRecordSlots: 4,
+                    jobId: publicJobId.Value),
+                exactSubmittedScript: null,
+                auditCall => Supervisor.DispatchJobStatusAsync(
+                    auditCall.PublicCallId,
+                    NewDispatch(Token(203), auditCall.PublicCallId),
                     publicJobId,
-                    CancellationToken.None)
-                .AsTask();
+                    auditCall,
+                    CancellationToken.None));
         }
 
         internal Task<GuardianToolResult> DispatchJobOutputAsync(
@@ -1382,41 +1474,55 @@ public sealed class GuardianHostSupervisorTests
             CapabilityToken outputToken,
             long offset)
         {
-            var (callId, dispatch) = NewDispatch(Token(204));
-            return Supervisor.DispatchJobOutputAsync(
-                    callId,
-                    dispatch,
-                    new OutputCapability(
-                        outputToken,
-                        maximumBytes: 1024,
-                        dispatch.ExpiresUnixTimeMilliseconds),
-                    publicJobId,
-                    offset,
-                    CancellationToken.None)
-                .AsTask();
+            return DispatchAuditedAsync(
+                Metadata(
+                    "ptk_job",
+                    "output",
+                    maximumCallRecordSlots: 6,
+                    jobId: publicJobId.Value),
+                exactSubmittedScript: null,
+                auditCall =>
+                {
+                    var dispatch = NewDispatch(Token(204), auditCall.PublicCallId);
+                    return Supervisor.DispatchJobOutputAsync(
+                        auditCall.PublicCallId,
+                        dispatch,
+                        new OutputCapability(
+                            outputToken,
+                            maximumBytes: 1024,
+                            dispatch.ExpiresUnixTimeMilliseconds),
+                        publicJobId,
+                        offset,
+                        auditCall,
+                        CancellationToken.None);
+                });
         }
 
         internal Task<GuardianToolResult> DispatchJobKillAsync(
             PublicJobId publicJobId)
         {
-            var (callId, dispatch) = NewDispatch(Token(205));
-            return Supervisor.DispatchJobKillAsync(
-                    callId,
-                    dispatch,
+            return DispatchAuditedAsync(
+                Metadata(
+                    "ptk_job",
+                    "kill",
+                    maximumCallRecordSlots: 4,
+                    jobId: publicJobId.Value),
+                exactSubmittedScript: null,
+                auditCall => Supervisor.DispatchJobKillAsync(
+                    auditCall.PublicCallId,
+                    NewDispatch(Token(205), auditCall.PublicCallId),
                     publicJobId,
-                    CancellationToken.None)
-                .AsTask();
+                    auditCall,
+                    CancellationToken.None));
         }
 
-        private (CallId CallId, DispatchCapability Dispatch) NewDispatch(
-            CapabilityToken token)
+        private DispatchCapability NewDispatch(
+            CapabilityToken token,
+            CallId callId)
         {
-            var callId = new CallId(Guid.CreateVersion7());
             var expires = Clock.GetUtcNow().AddMinutes(1)
                 .ToUnixTimeMilliseconds();
-            return (
-                callId,
-                new DispatchCapability(token, callId, expires));
+            return new DispatchCapability(token, callId, expires);
         }
 
         internal async Task<PublicStateSnapshot> ReadStateAsync()
@@ -1427,6 +1533,85 @@ public sealed class GuardianHostSupervisorTests
                 EmptyArguments());
             Assert.False(result.IsError);
             return PublicStateCodec.Decode(Encoding.UTF8.GetBytes(result.Text));
+        }
+
+        private static DispatchCapability RebindDispatch(
+            DispatchCapability source,
+            CallId callId) => new(
+                source.Token,
+                callId,
+                source.ExpiresUnixTimeMilliseconds);
+
+        private static AuditCallMetadata Metadata(
+            string tool,
+            string action,
+            int maximumCallRecordSlots,
+            int persistentJobTerminalSlots = 0,
+            bool? background = null,
+            long? jobId = null) => new(
+                new AuditActor
+                {
+                    Transport = "mcp_stdio",
+                    AttributionStrength = "transport_only",
+                },
+                new AuditRequest
+                {
+                    Tool = tool,
+                    Action = action,
+                    ProvidedFields = [],
+                    SessionRequested = "default",
+                    Background = background,
+                    JobId = jobId,
+                },
+                new AuditOperationProfile(
+                    maximumCallRecordSlots,
+                    persistentJobTerminalSlots,
+                    RequiresScriptEvidence: tool == "ptk_invoke",
+                    MayHaveSideEffects: true));
+
+        private async Task<GuardianToolResult> DispatchAuditedAsync(
+            AuditCallMetadata metadata,
+            string? exactSubmittedScript,
+            Func<GuardianAuditCall, ValueTask<GuardianToolResult>> dispatch)
+        {
+            Assert.True(_audit.Runtime.TryBeginCall(
+                metadata,
+                exactSubmittedScript,
+                out var admitted,
+                out var lease,
+                out var failure), failure);
+            var auditCall = Assert.IsType<GuardianAuditCall>(admitted);
+            using (lease!)
+            {
+                try
+                {
+                    var result = await dispatch(auditCall);
+                    var authorizationRefused =
+                        auditCall.AuthorizationPersistenceFailed &&
+                        !auditCall.UserExecutionStarted;
+                    if (!auditCall.TerminalWritten)
+                    {
+                        auditCall.CompleteFromFilter(
+                            authorizationRefused || result.IsError
+                                ? "failed"
+                                : "completed",
+                            authorizationRefused
+                                ? 0
+                                : Encoding.UTF8.GetByteCount(result.Text));
+                    }
+                    return authorizationRefused
+                        ? new GuardianToolResult(
+                            "audit_unavailable: the guardian could not persist dispatch authorization",
+                            isError: true)
+                        : result;
+                }
+                catch
+                {
+                    if (!auditCall.TerminalWritten)
+                        auditCall.CompleteFromFilter("failed", 0);
+                    throw;
+                }
+            }
         }
 
         private async Task<GuardianToolResult> DispatchPublicAsync(
@@ -1448,41 +1633,18 @@ public sealed class GuardianHostSupervisorTests
                     SessionRequested = "default",
                 },
                 new AuditOperationProfile(
-                    MaximumCallRecordSlots: tool == "ptk_state" ? 5 : 3,
+                    MaximumCallRecordSlots: tool == "ptk_state" ? 5 : 4,
                     PersistentJobTerminalSlots: 0,
                     RequiresScriptEvidence: false,
                     MayHaveSideEffects: true));
-            Assert.True(_audit.Runtime.TryBeginCall(
+            return await DispatchAuditedAsync(
                 metadata,
                 exactSubmittedScript: null,
-                out var admitted,
-                out var lease,
-                out var failure), failure);
-            var auditCall = Assert.IsType<GuardianAuditCall>(admitted);
-            using (lease!)
-            {
-                try
-                {
-                    var result = await Supervisor.DispatchAsync(
-                        tool,
-                        arguments,
-                        auditCall,
-                        CancellationToken.None);
-                    if (!auditCall.TerminalWritten)
-                    {
-                        auditCall.CompleteFromFilter(
-                            result.IsError ? "failed" : "completed",
-                            Encoding.UTF8.GetByteCount(result.Text));
-                    }
-                    return result;
-                }
-                catch
-                {
-                    if (!auditCall.TerminalWritten)
-                        auditCall.CompleteFromFilter("failed", 0);
-                    throw;
-                }
-            }
+                auditCall => Supervisor.DispatchAsync(
+                    tool,
+                    arguments,
+                    auditCall,
+                    CancellationToken.None));
         }
 
         public async ValueTask DisposeAsync()
@@ -1650,13 +1812,29 @@ public sealed class GuardianHostSupervisorTests
                 }
             }
 
-            private GuardianHostJobListTarget CreateTargetLocked() => new(
+            private GuardianHostJobListTarget CreateTargetLocked()
+            {
+                var transition = new SessionTransitionVersion(_transitionVersion);
+                var worker = new GuardianHostWorkerIdentity(
+                    Worker.BootId,
+                    new WorkerGeneration(_workerGeneration));
+                var binding = new RecoveryBinding(
                     Alias,
-                    new SessionTransitionVersion(_transitionVersion),
-                    new GuardianHostWorkerIdentity(
-                        Worker.BootId,
-                        new WorkerGeneration(_workerGeneration)),
+                    RecoveryBindingKind.Default,
+                    null,
+                    null,
+                    null,
+                    false,
+                    DesiredSessionState.Ready,
+                    transition,
+                    BindingDigest);
+                return new GuardianHostJobListTarget(
+                    Alias,
+                    transition,
+                    worker,
+                    new GuardianAuditSession(binding, worker.Generation),
                     readyForEffects: true);
+            }
         }
     }
 

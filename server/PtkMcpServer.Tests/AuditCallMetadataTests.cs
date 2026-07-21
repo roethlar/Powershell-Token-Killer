@@ -109,7 +109,7 @@ public sealed class AuditCallMetadataTests
         Assert.True(Capture(Call("ptk_job", ("action", "list")), new(), out metadata, out _, out _));
         Assert.Null(metadata!.Request.JobId);
         Assert.Null(metadata.Request.Offset);
-        Assert.Equal(3, metadata.OperationProfile.MaximumCallRecordSlots);
+        Assert.Equal(4, metadata.OperationProfile.MaximumCallRecordSlots);
 
         Assert.True(Capture(
             Call("ptk_job", ("action", "list"), ("id", 42L)),

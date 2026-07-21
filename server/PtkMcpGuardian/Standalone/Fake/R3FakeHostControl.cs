@@ -1,19 +1,16 @@
 using System.Collections.Concurrent;
 using PtkMcpGuardian.Lifecycle;
+using PtkMcpServer.Audit;
 using PtkSharedContracts;
 
 namespace PtkMcpGuardian.Standalone.Fake;
 
 internal sealed record R3FakeHostProfile
 {
-    private static readonly GuardianHostJobListTarget DefaultTarget = new(
-        new CanonicalAlias("default"),
-        new SessionTransitionVersion(1),
-        new GuardianHostWorkerIdentity(
-            new WorkerBootId(Guid.Parse(
-                "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")),
-            new WorkerGeneration(1)),
-        readyForEffects: true);
+    private static readonly Sha256Digest DefaultBindingDigest = new(
+        new string('7', 64));
+    private static readonly GuardianHostJobListTarget DefaultTarget =
+        CreateDefaultTarget();
 
     internal R3FakeHostProfile(
         GuardianHostJobListTarget jobListTarget,
@@ -50,8 +47,34 @@ internal sealed record R3FakeHostProfile
 
     internal static R3FakeHostProfile StrictDefault { get; } = new(
         DefaultTarget,
-        new Sha256Digest(new string('7', 64)),
+        DefaultBindingDigest,
         new WorkerGenerationHighWatermark(1));
+
+    private static GuardianHostJobListTarget CreateDefaultTarget()
+    {
+        var alias = new CanonicalAlias("default");
+        var transition = new SessionTransitionVersion(1);
+        var worker = new GuardianHostWorkerIdentity(
+            new WorkerBootId(Guid.Parse(
+                "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee")),
+            new WorkerGeneration(1));
+        var binding = new RecoveryBinding(
+            alias,
+            RecoveryBindingKind.Default,
+            templateName: null,
+            templateDigest: null,
+            bootstrapDigest: null,
+            allowColdBackground: false,
+            DesiredSessionState.Ready,
+            transition,
+            DefaultBindingDigest);
+        return new GuardianHostJobListTarget(
+            alias,
+            transition,
+            worker,
+            new GuardianAuditSession(binding, worker.Generation),
+            readyForEffects: true);
+    }
 }
 
 internal sealed class R3FakeHostBarrier
