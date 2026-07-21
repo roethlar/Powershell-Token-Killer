@@ -104,6 +104,7 @@ public sealed class GuardianArchitectureBoundaryTests
     private static readonly string[] RequiredGuardianOutputCompileInputs =
     [
         "GuardianOutputCapabilityRegistry.cs",
+        "GuardianOutputResponseDecorator.cs",
         "OutputArtifactRenderer.cs",
         "OutputProvenance.cs",
         "OutputRecoverySummary.cs",
@@ -116,6 +117,7 @@ public sealed class GuardianArchitectureBoundaryTests
         "PtkMcpGuardian.Output.GuardianOutputCapabilityFailure",
         "PtkMcpGuardian.Output.GuardianOutputCapabilityRegistry",
         "PtkMcpGuardian.Output.GuardianOutputRegistration",
+        "PtkMcpGuardian.Output.GuardianOutputResponseDecorator",
         "PtkMcpGuardian.Output.GuardianOutputTerminal",
         "PtkMcpServer.ExecutionOutputCaptureAdapter",
         "PtkMcpServer.ForegroundOutputCapture",
