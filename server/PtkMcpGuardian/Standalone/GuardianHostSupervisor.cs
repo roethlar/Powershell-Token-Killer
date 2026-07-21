@@ -4,6 +4,7 @@ using System.Text;
 using System.Text.Json;
 using PtkMcpGuardian.Host;
 using PtkMcpGuardian.Lifecycle;
+using PtkMcpGuardian.Ownership;
 using PtkMcpGuardian.Output;
 using PtkSharedContracts;
 
@@ -27,6 +28,8 @@ internal sealed class GuardianHostSupervisor :
         "The guardian call registry is full; no backend work started.";
     private const string OutputAdmissionText =
         "The guardian could not reserve output recovery; no backend work started.";
+    private const string JobAdmissionText =
+        "The guardian could not reserve a public job identifier; no backend work started.";
     private static readonly TimeSpan DispatchCapabilityLifetime = TimeSpan.FromMinutes(1);
 
     private readonly object _stateSync = new();
@@ -41,6 +44,7 @@ internal sealed class GuardianHostSupervisor :
     private readonly IGuardianHostSupervisorDispatchObserver _dispatchObserver;
     private readonly GuardianHostSupervisorPins _pins;
     private readonly GuardianOutputCoordinator? _outputCoordinator;
+    private readonly GuardianJobCapabilityRegistry? _jobCapabilities;
     private readonly Func<GuardianHostClientException, CancellationToken, ValueTask>
         _beforeClientFatalObservation;
     private readonly CancellationTokenSource _lifetime = new();
@@ -70,7 +74,8 @@ internal sealed class GuardianHostSupervisor :
         GuardianHostSupervisorPins pins,
         Func<GuardianHostClientException, CancellationToken, ValueTask>?
             beforeClientFatalObservation = null,
-        GuardianOutputCoordinator? outputCoordinator = null)
+        GuardianOutputCoordinator? outputCoordinator = null,
+        GuardianJobCapabilityRegistry? jobCapabilities = null)
     {
         _guardianBootId = guardianBootId ??
             throw new ArgumentNullException(nameof(guardianBootId));
@@ -86,6 +91,7 @@ internal sealed class GuardianHostSupervisor :
             throw new ArgumentNullException(nameof(dispatchObserver));
         _pins = pins ?? throw new ArgumentNullException(nameof(pins));
         _outputCoordinator = outputCoordinator;
+        _jobCapabilities = jobCapabilities;
         _beforeClientFatalObservation = beforeClientFatalObservation ??
             (static (_, cancellationToken) =>
             {
@@ -240,7 +246,6 @@ internal sealed class GuardianHostSupervisor :
         ArgumentNullException.ThrowIfNull(operation);
         if (operation.Kind is not (
                 GuardianHostOperationKind.InvokeForeground or
-                GuardianHostOperationKind.InvokeBackground or
                 GuardianHostOperationKind.JobList or
                 GuardianHostOperationKind.JobStatus or
                 GuardianHostOperationKind.JobOutput or
@@ -250,9 +255,8 @@ internal sealed class GuardianHostSupervisor :
                 "The operation does not use a session dispatch gate.",
                 nameof(operation));
         }
-        var needsOperationIdentity = operation.Kind is
-            GuardianHostOperationKind.InvokeForeground or
-            GuardianHostOperationKind.InvokeBackground;
+        var needsOperationIdentity = operation.Kind ==
+            GuardianHostOperationKind.InvokeForeground;
         if (needsOperationIdentity != (operationIdentity is not null))
         {
             throw new ArgumentException(
@@ -263,6 +267,69 @@ internal sealed class GuardianHostSupervisor :
         {
             throw new InvalidOperationException(
                 "An output operation requires guardian output ownership.");
+        }
+
+        return await DispatchSessionOperationCoreAsync(
+                operation,
+                backgroundInvoke: null,
+                operationIdentity,
+                cancellationToken)
+            .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Guardian-owned background-start boundary. The public job identifier is
+    /// reserved against the exact selected host/session/worker only inside the
+    /// first-write authority, then inserted into the private operation. Public
+    /// argument parsing and mandatory audit authorization remain outside this
+    /// still-internal seam.
+    /// </summary>
+    internal ValueTask<GuardianToolResult> DispatchBackgroundInvokeAsync(
+        CallId callId,
+        DispatchCapability dispatchCapability,
+        OutputCapability outputCapability,
+        string script,
+        bool raw,
+        GuardianHostInvokeRoute route,
+        GuardianHostOperationIdentity operationIdentity,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(operationIdentity);
+        if (_jobCapabilities is null)
+        {
+            throw new InvalidOperationException(
+                "A background invoke requires guardian job ownership.");
+        }
+        if (_outputCoordinator is null)
+        {
+            throw new InvalidOperationException(
+                "A background invoke requires guardian output ownership.");
+        }
+
+        var backgroundInvoke = new BackgroundInvokeDispatch(
+            callId,
+            dispatchCapability,
+            outputCapability,
+            script,
+            raw,
+            route);
+        return DispatchSessionOperationCoreAsync(
+            operation: null,
+            backgroundInvoke,
+            operationIdentity,
+            cancellationToken);
+    }
+
+    private async ValueTask<GuardianToolResult> DispatchSessionOperationCoreAsync(
+        GuardianHostOperation? operation,
+        BackgroundInvokeDispatch? backgroundInvoke,
+        GuardianHostOperationIdentity? operationIdentity,
+        CancellationToken cancellationToken)
+    {
+        if ((operation is null) == (backgroundInvoke is null))
+        {
+            throw new InvalidOperationException(
+                "Exactly one private session operation source is required.");
         }
 
         if (!TryReserveCall())
@@ -298,54 +365,89 @@ internal sealed class GuardianHostSupervisor :
                 _ = await active.Client!.SendRequestAsync(
                         (guardian, host, generation, requestId) =>
                         {
-                            var request = new OperationRequest(
-                                guardian,
-                                host,
-                                generation,
-                                requestId,
-                                operation.DispatchCapability.ExpiresUnixTimeMilliseconds,
-                                target.Alias,
-                                target.TransitionVersion,
-                                target.WorkerIdentity,
-                                operationIdentity,
-                                operation);
+                            GuardianJobRegistration? jobRegistration = null;
                             GuardianOutputRegistration? outputRegistration = null;
-                            if (operation.OutputCapability is not null &&
-                                !_outputCoordinator!.TryRegister(
-                                    request,
-                                    out outputRegistration,
-                                    out _))
-                            {
-                                throw new OutputAdmissionException();
-                            }
-
-                            var identity = new GuardianPrivateRequestIdentity(
-                                host,
-                                generation,
-                                requestId);
-                            var tracker = new GuardianCallDeliveryTracker<
-                                GuardianHostSupervisorTerminal>(identity);
-                            call = new ActiveCall(
-                                active,
-                                target,
-                                tracker,
-                                outputRegistration);
+                            var callAdded = false;
                             try
                             {
+                                var dispatchedOperation = operation;
+                                if (backgroundInvoke is not null)
+                                {
+                                    try
+                                    {
+                                        if (!_jobCapabilities!.TryReserve(
+                                                active.Lease.Identity,
+                                                target.Alias,
+                                                target.TransitionVersion,
+                                                target.WorkerIdentity,
+                                                out jobRegistration,
+                                                out _))
+                                        {
+                                            throw new JobAdmissionException();
+                                        }
+                                    }
+                                    catch (PublicJobIdExhaustedException)
+                                    {
+                                        throw new JobAdmissionException();
+                                    }
+                                    dispatchedOperation = backgroundInvoke.CreateOperation(
+                                        jobRegistration!.PublicJobId);
+                                }
+
+                                var request = new OperationRequest(
+                                    guardian,
+                                    host,
+                                    generation,
+                                    requestId,
+                                    dispatchedOperation!.DispatchCapability
+                                        .ExpiresUnixTimeMilliseconds,
+                                    target.Alias,
+                                    target.TransitionVersion,
+                                    target.WorkerIdentity,
+                                    operationIdentity,
+                                    dispatchedOperation);
+                                if (dispatchedOperation.OutputCapability is not null &&
+                                    !_outputCoordinator!.TryRegister(
+                                        request,
+                                        out outputRegistration,
+                                        out _))
+                                {
+                                    throw new OutputAdmissionException();
+                                }
+
+                                var identity = new GuardianPrivateRequestIdentity(
+                                    host,
+                                    generation,
+                                    requestId);
+                                var tracker = new GuardianCallDeliveryTracker<
+                                    GuardianHostSupervisorTerminal>(identity);
+                                call = new ActiveCall(
+                                    active,
+                                    target,
+                                    tracker,
+                                    outputRegistration,
+                                    jobRegistration);
                                 AddCallUnderAuthority(call);
+                                callAdded = true;
+                                return request;
                             }
                             catch
                             {
-                                if (outputRegistration is not null &&
-                                    !_outputCoordinator!.TryCancel(outputRegistration))
+                                if (!callAdded)
                                 {
-                                    throw new InvalidOperationException(
-                                        "The rejected guardian call lost output ownership.");
+                                    var outputCanceled = outputRegistration is null ||
+                                        _outputCoordinator!.TryCancel(outputRegistration);
+                                    var jobCanceled = jobRegistration is null ||
+                                        _jobCapabilities!.TryCancel(jobRegistration);
+                                    call = null;
+                                    if (!outputCanceled || !jobCanceled)
+                                    {
+                                        throw new InvalidOperationException(
+                                            "The rejected guardian call lost capability ownership.");
+                                    }
                                 }
-                                call = null;
                                 throw;
                             }
-                            return request;
                         },
                         onWriteStarting: () => BeginCallWriteUnderAuthority(
                             call!,
@@ -356,6 +458,10 @@ internal sealed class GuardianHostSupervisor :
             catch (OutputAdmissionException)
             {
                 return new GuardianToolResult(OutputAdmissionText, isError: true);
+            }
+            catch (JobAdmissionException)
+            {
+                return new GuardianToolResult(JobAdmissionText, isError: true);
             }
             catch (Exception exception) when (!IsFatalRuntimeException(exception))
             {
@@ -563,6 +669,13 @@ internal sealed class GuardianHostSupervisor :
             {
                 _outputCoordinator!.AbandonCall(
                     call.Tracker.Identity.RequestId);
+            }
+            if (call.JobRegistration is not null &&
+                !call.JobResponseResolved &&
+                !_jobCapabilities!.TryCancel(call.JobRegistration))
+            {
+                throw new InvalidOperationException(
+                    "The terminal guardian call lost its pending job reservation.");
             }
             if (!_calls.Remove(call.Tracker.Identity.RequestId.Value, out var removed) ||
                 !ReferenceEquals(removed, call))
@@ -1076,6 +1189,7 @@ internal sealed class GuardianHostSupervisor :
             response.HostBootId,
             response.HostGeneration,
             response.RequestId);
+        ResolveJobResponse(call, response);
         var recovery = call.OutputRegistration is null
             ? null
             : _outputCoordinator!.ResolveResponse(
@@ -1103,6 +1217,31 @@ internal sealed class GuardianHostSupervisor :
         call.TerminalAvailable.TrySetResult(true);
         _ = request;
         return ValueTask.CompletedTask;
+    }
+
+    private void ResolveJobResponse(
+        ActiveCall call,
+        GuardianHostResponse response)
+    {
+        if (call.JobRegistration is not { } registration)
+            return;
+
+        var resolved = response is GuardianHostSuccessResponse
+        {
+            Payload: OperationCompleted { Result: InvokeBackgroundResult result },
+        }
+            ? _jobCapabilities!.TryActivate(
+                registration,
+                result,
+                out _,
+                out _)
+            : _jobCapabilities!.TryCancel(registration);
+        if (!resolved)
+        {
+            throw new GuardianHostClientException(
+                GuardianHostClientFailureKind.ResponseCorrelationMismatch);
+        }
+        call.JobResponseResolved = true;
     }
 
     private async Task<GuardianHostSupervisorTerminal> CurrentHostRefusalAsync(
@@ -1627,13 +1766,16 @@ internal sealed class GuardianHostSupervisor :
         ActiveAttempt attempt,
         GuardianHostJobListTarget target,
         GuardianCallDeliveryTracker<GuardianHostSupervisorTerminal> tracker,
-        GuardianOutputRegistration? outputRegistration)
+        GuardianOutputRegistration? outputRegistration,
+        GuardianJobRegistration? jobRegistration)
     {
         internal ActiveAttempt Attempt { get; } = attempt;
         internal GuardianHostJobListTarget Target { get; } = target;
         internal GuardianCallDeliveryTracker<GuardianHostSupervisorTerminal> Tracker { get; } = tracker;
         internal GuardianOutputRegistration? OutputRegistration { get; } = outputRegistration;
+        internal GuardianJobRegistration? JobRegistration { get; } = jobRegistration;
         internal bool OutputResponseResolved { get; set; }
+        internal bool JobResponseResolved { get; set; }
         internal GuardianHostSupervisorTerminal? ClassifiedLossTerminal { get; set; }
         internal TaskCompletionSource<bool> TerminalAvailable { get; } = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
@@ -1650,6 +1792,55 @@ internal sealed class GuardianHostSupervisor :
     private sealed class DispatchRefusedException : InvalidOperationException;
 
     private sealed class OutputAdmissionException : InvalidOperationException;
+
+    private sealed class JobAdmissionException : InvalidOperationException;
+
+    private sealed class BackgroundInvokeDispatch
+    {
+        private readonly CallId _callId;
+        private readonly DispatchCapability _dispatchCapability;
+        private readonly OutputCapability _outputCapability;
+        private readonly string _script;
+        private readonly bool _raw;
+        private readonly GuardianHostInvokeRoute _route;
+
+        internal BackgroundInvokeDispatch(
+            CallId callId,
+            DispatchCapability dispatchCapability,
+            OutputCapability outputCapability,
+            string script,
+            bool raw,
+            GuardianHostInvokeRoute route)
+        {
+            ArgumentNullException.ThrowIfNull(callId);
+            ArgumentNullException.ThrowIfNull(dispatchCapability);
+            ArgumentNullException.ThrowIfNull(outputCapability);
+            GuardianHostDtoValidation.RequireScript(script, nameof(script));
+            GuardianHostDtoValidation.RequireDefined(route, nameof(route));
+            if (dispatchCapability.CallId != callId)
+            {
+                throw new ArgumentException(
+                    "Dispatch capability call ID must match the operation call ID.",
+                    nameof(dispatchCapability));
+            }
+            _callId = callId;
+            _dispatchCapability = dispatchCapability;
+            _outputCapability = outputCapability;
+            _script = script;
+            _raw = raw;
+            _route = route;
+        }
+
+        internal InvokeBackgroundOperation CreateOperation(PublicJobId publicJobId) =>
+            new(
+                _callId,
+                _dispatchCapability,
+                _outputCapability,
+                _script,
+                _raw,
+                _route,
+                publicJobId);
+    }
 
     private readonly record struct DispatchAdmission(
         ActiveAttempt? Active,
