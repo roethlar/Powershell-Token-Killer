@@ -694,6 +694,98 @@ public sealed class GuardianHostSupervisorTests
     }
 
     [Fact]
+    public async Task Public_output_reads_searches_and_reports_guardian_local_artifacts()
+    {
+        await using var rig = new TestRig(
+            enableOutput: true,
+            new AttemptPlan(HostBehavior.ForegroundOutput));
+        await rig.StartAsync();
+        var invoke = await rig.DispatchPublicInvokeAsync(
+                "'capture'",
+                raw: false,
+                route: "auto",
+                background: false,
+                timeoutSeconds: 30,
+                session: "default")
+            .WaitAsync(TestTimeout);
+        const string marker = "recovery=available: ptk_output handle=";
+        var markerIndex = invoke.Text.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(markerIndex >= 0);
+        var handle = invoke.Text[(markerIndex + marker.Length)..];
+        var hostOperationCount = rig.Factory.Resources[0].OperationCount;
+
+        var read = await rig.DispatchPublicOutputAsync(
+                "read",
+                handle,
+                offset: 0,
+                maximumBytes: 10)
+            .WaitAsync(TestTimeout);
+        var search = await rig.DispatchPublicOutputAsync(
+                "search",
+                handle,
+                offset: 0,
+                maximumBytes: 1024,
+                pattern: "exact")
+            .WaitAsync(TestTimeout);
+        var status = await rig.DispatchPublicOutputAsync("status", handle)
+            .WaitAsync(TestTimeout);
+
+        Assert.False(read.IsError);
+        Assert.Contains("action=read state=available", read.Text, StringComparison.Ordinal);
+        Assert.Contains("bytes_returned=10", read.Text, StringComparison.Ordinal);
+        Assert.EndsWith("foreground", read.Text, StringComparison.Ordinal);
+        Assert.False(search.IsError);
+        Assert.Contains("action=search state=available", search.Text, StringComparison.Ordinal);
+        Assert.Contains("matches=1", search.Text, StringComparison.Ordinal);
+        Assert.Contains("exact output", search.Text, StringComparison.Ordinal);
+        Assert.False(status.IsError);
+        Assert.Contains("action=status state=available", status.Text, StringComparison.Ordinal);
+        Assert.Contains("complete=true", status.Text, StringComparison.Ordinal);
+        Assert.Equal(hostOperationCount, rig.Factory.Resources[0].OperationCount);
+        Assert.Equal(
+            [
+                "output.read_accessed",
+                "call.completed",
+                "call.accepted",
+                "output.search_accessed",
+                "call.completed",
+                "call.accepted",
+                "output.status_accessed",
+                "call.completed",
+            ],
+            rig.AuditEventTypes()[^8..]);
+    }
+
+    [Fact]
+    public async Task Public_output_rejects_raw_values_not_bound_to_audit_admission()
+    {
+        await using var rig = new TestRig(
+            enableOutput: true,
+            new AttemptPlan(HostBehavior.Respond));
+        await rig.StartAsync();
+
+        var handleMismatch = await rig.DispatchPublicOutputAsync(
+                "status",
+                "actual-handle",
+                admittedHandle: "different-handle")
+            .WaitAsync(TestTimeout);
+        var patternMismatch = await rig.DispatchPublicOutputAsync(
+                "search",
+                "same-handle",
+                maximumBytes: 1024,
+                pattern: "actual-pattern",
+                admittedPattern: "different-pattern")
+            .WaitAsync(TestTimeout);
+
+        Assert.True(handleMismatch.IsError);
+        Assert.True(patternMismatch.IsError);
+        Assert.Equal(0, rig.Factory.Resources[0].OperationCount);
+        Assert.DoesNotContain(
+            rig.AuditEventTypes(),
+            eventType => eventType.StartsWith("output.", StringComparison.Ordinal));
+    }
+
+    [Fact]
     public async Task Unknown_job_output_is_refused_before_output_reservation_or_write()
     {
         await using var rig = new TestRig(
@@ -1453,6 +1545,33 @@ public sealed class GuardianHostSupervisorTests
             StringComparer.Ordinal);
     }
 
+    private static IReadOnlyDictionary<string, JsonElement> OutputArguments(
+        string action,
+        string handle,
+        long offset,
+        int maximumBytes,
+        string? pattern)
+    {
+        var values = new Dictionary<string, object?>(StringComparer.Ordinal)
+        {
+            ["handle"] = handle,
+            ["action"] = action,
+        };
+        if (!StringComparer.Ordinal.Equals(action, "status"))
+        {
+            values["offset"] = offset;
+            values["maxBytes"] = maximumBytes;
+        }
+        if (StringComparer.Ordinal.Equals(action, "search"))
+            values["pattern"] = pattern;
+
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(values));
+        return document.RootElement.EnumerateObject().ToDictionary(
+            property => property.Name,
+            property => property.Value.Clone(),
+            StringComparer.Ordinal);
+    }
+
     private static IReadOnlyDictionary<string, JsonElement> EmptyArguments() =>
         new Dictionary<string, JsonElement>(StringComparer.Ordinal);
 
@@ -1590,7 +1709,8 @@ public sealed class GuardianHostSupervisorTests
                 CreatePins(),
                 Observer.BeforeClientFatalObservationAsync,
                 OutputCoordinator,
-                JobCapabilities);
+                JobCapabilities,
+                _audit.OutputProtector);
         }
 
         internal ManualTimeProvider Clock { get; }
@@ -1672,6 +1792,57 @@ public sealed class GuardianHostSupervisorTests
                 script,
                 auditCall => Supervisor.DispatchAsync(
                     "ptk_invoke",
+                    arguments,
+                    auditCall,
+                    CancellationToken.None));
+        }
+
+        internal Task<GuardianToolResult> DispatchPublicOutputAsync(
+            string action,
+            string handle,
+            long offset = 0,
+            int maximumBytes = OutputStore.DefaultReadBytes,
+            string? pattern = null,
+            string? admittedHandle = null,
+            string? admittedPattern = null)
+        {
+            var arguments = OutputArguments(
+                action,
+                handle,
+                offset,
+                maximumBytes,
+                pattern);
+            var metadata = new AuditCallMetadata(
+                new AuditActor
+                {
+                    Transport = "mcp_stdio",
+                    AttributionStrength = "transport_only",
+                },
+                new AuditRequest
+                {
+                    Tool = "ptk_output",
+                    Action = action,
+                    ProvidedFields = arguments.Keys.Order(StringComparer.Ordinal).ToArray(),
+                    SessionRequested = "default",
+                    Offset = action == "status" ? null : offset,
+                    MaxBytes = action == "status" ? null : maximumBytes,
+                    PatternFingerprint = pattern is null
+                        ? null
+                        : _audit.OutputProtector.PatternFingerprint(
+                            admittedPattern ?? pattern),
+                    OutputHandleDigest = _audit.OutputProtector.HandleDigest(
+                        admittedHandle ?? handle),
+                },
+                new AuditOperationProfile(
+                    MaximumCallRecordSlots: 3,
+                    PersistentJobTerminalSlots: 0,
+                    RequiresScriptEvidence: false,
+                    MayHaveSideEffects: false));
+            return DispatchAuditedAsync(
+                metadata,
+                exactSubmittedScript: null,
+                auditCall => Supervisor.DispatchAsync(
+                    "ptk_output",
                     arguments,
                     auditCall,
                     CancellationToken.None));

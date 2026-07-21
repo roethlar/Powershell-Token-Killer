@@ -83,6 +83,8 @@ internal sealed class GuardianOutputCapabilityRegistry : IDisposable
         _store.MaximumArtifactBytes,
         ContractLimits.MaximumOutputBytes));
 
+    internal IOutputArtifactReader ArtifactReader => _store;
+
     internal bool TryRegister(
         OperationRequest request,
         out GuardianOutputRegistration? registration,

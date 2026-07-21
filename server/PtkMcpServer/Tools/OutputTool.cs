@@ -1,7 +1,5 @@
 using System.ComponentModel;
 using System.ComponentModel.DataAnnotations;
-using System.Globalization;
-using System.Text;
 using ModelContextProtocol.Server;
 using PtkMcpServer.Audit;
 
@@ -64,144 +62,25 @@ public static class OutputTool
         CancellationToken cancellationToken,
         AuditCallContextAccessor? auditContext)
     {
-        ArgumentNullException.ThrowIfNull(reader);
-        cancellationToken.ThrowIfCancellationRequested();
-        action = action?.ToLowerInvariant() ?? "read";
+        var result = OutputToolRuntime.Execute(
+            reader,
+            handle,
+            action,
+            offset,
+            maxBytes,
+            pattern,
+            cancellationToken);
         var audit = auditContext?.Current;
-
-        switch (action)
+        if (result.AuditOutcome is { } outcome)
         {
-            case "status":
-            {
-                var status = reader.Status(handle);
-                var response = FormatStatus(status);
-                audit?.CommitReadOutcome(
-                    "output.status_accessed",
-                    status.State.ToMachineCode(),
-                    response,
-                    detailCode: status.DetailCode);
-                return response;
-            }
-            case "search":
-            {
-                if (pattern is null)
-                    return "[ptk output] invalid request: action=search requires pattern.";
-                OutputSearchResult result;
-                try
-                {
-                    result = reader.Search(handle, pattern, offset, maxBytes);
-                }
-                catch (ArgumentOutOfRangeException)
-                {
-                    return "[ptk output] invalid request: offset, maxBytes, or pattern is outside the bounded contract.";
-                }
-                var response = FormatSearch(result);
-                audit?.CommitReadOutcome(
-                    "output.search_accessed",
-                    result.State.ToMachineCode(),
-                    response,
-                    detailCode: result.DetailCode,
-                    nextOffset: result.NextOffset);
-                return response;
-            }
-            case "read":
-            {
-                OutputReadResult result;
-                try
-                {
-                    result = reader.Read(handle, offset, maxBytes);
-                }
-                catch (ArgumentOutOfRangeException)
-                {
-                    return "[ptk output] invalid request: offset or maxBytes is outside the bounded contract.";
-                }
-                var response = FormatRead(result);
-                audit?.CommitReadOutcome(
-                    "output.read_accessed",
-                    result.State.ToMachineCode(),
-                    response,
-                    detailCode: result.DetailCode,
-                    nextOffset: result.NextOffset,
-                    bytesReturnedOverride: result.BytesRead);
-                return response;
-            }
-            default:
-                return "[ptk output] unknown action - use read | search | status.";
+            audit?.CommitReadOutcome(
+                outcome.EventType,
+                outcome.State,
+                result.Text,
+                detailCode: outcome.DetailCode,
+                nextOffset: outcome.NextOffset,
+                bytesReturnedOverride: outcome.BytesReturnedOverride);
         }
-    }
-
-    private static string FormatStatus(OutputArtifactStatus status)
-    {
-        var sb = new StringBuilder("[ptk output] action=status");
-        AppendCommon(
-            sb,
-            status.State,
-            status.Complete,
-            status.Provenance,
-            status.Bytes,
-            status.DetailCode);
-        if (status.ExpiresUtc is { } expires)
-            sb.Append(" expires_utc=").Append(expires.ToString("O", CultureInfo.InvariantCulture));
-        return sb.ToString();
-    }
-
-    private static string FormatRead(OutputReadResult result)
-    {
-        var sb = new StringBuilder("[ptk output] action=read");
-        AppendCommon(
-            sb,
-            result.State,
-            result.Complete,
-            result.Provenance,
-            result.TotalBytes,
-            result.DetailCode);
-        sb.Append(" offset=").Append(result.Offset.ToString(CultureInfo.InvariantCulture));
-        sb.Append(" next_offset=").Append(result.NextOffset.ToString(CultureInfo.InvariantCulture));
-        sb.Append(" bytes_returned=").Append(result.BytesRead.ToString(CultureInfo.InvariantCulture));
-        if (result.Text.Length > 0)
-            sb.AppendLine().Append(result.Text);
-        else if (result.State is OutputArtifactState.Available or OutputArtifactState.Incomplete)
-            sb.AppendLine().Append("(no captured bytes)");
-        return sb.ToString();
-    }
-
-    private static string FormatSearch(OutputSearchResult result)
-    {
-        var sb = new StringBuilder("[ptk output] action=search");
-        AppendCommon(
-            sb,
-            result.State,
-            result.Complete,
-            result.Provenance,
-            result.TotalBytes,
-            result.DetailCode);
-        sb.Append(" offset=").Append(result.Offset.ToString(CultureInfo.InvariantCulture));
-        sb.Append(" next_offset=").Append(result.NextOffset.ToString(CultureInfo.InvariantCulture));
-        sb.Append(" bytes_scanned=").Append(result.BytesScanned.ToString(CultureInfo.InvariantCulture));
-        sb.Append(" matches=").Append(result.Matches.Length.ToString(CultureInfo.InvariantCulture));
-        foreach (var match in result.Matches)
-        {
-            sb.AppendLine();
-            sb.Append("offset=").Append(match.Offset.ToString(CultureInfo.InvariantCulture));
-            sb.Append(": ").Append(match.Preview);
-        }
-        return sb.ToString();
-    }
-
-    private static void AppendCommon(
-        StringBuilder sb,
-        OutputArtifactState state,
-        bool complete,
-        OutputProvenance? provenance,
-        long bytes,
-        string? detailCode)
-    {
-        sb.Append(" state=").Append(state.ToMachineCode());
-        sb.Append(" complete=").Append(complete ? "true" : "false");
-        sb.Append(" bytes=").Append(bytes.ToString(CultureInfo.InvariantCulture));
-        if (provenance is { } value)
-            sb.Append(" provenance=").Append(value.ToMachineCode());
-        if (detailCode is not null)
-            sb.Append(" detail=").Append(detailCode);
+        return result.Text;
     }
 }

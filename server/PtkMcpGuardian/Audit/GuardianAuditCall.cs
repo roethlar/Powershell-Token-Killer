@@ -120,6 +120,60 @@ internal sealed record GuardianAuditInvokeDispatch
 }
 
 /// <summary>
+/// Protected guardian-local output request facts captured before the raw
+/// handle or search pattern can reach the immutable artifact reader.
+/// </summary>
+internal sealed record GuardianAuditOutputFacts
+{
+    internal GuardianAuditOutputFacts(
+        string action,
+        Sha256Digest handleDigest,
+        Sha256Digest? patternFingerprint,
+        long? offset,
+        int? maximumBytes)
+    {
+        ArgumentNullException.ThrowIfNull(action);
+        ArgumentNullException.ThrowIfNull(handleDigest);
+        if (action is not ("read" or "search" or "status"))
+            throw new ArgumentOutOfRangeException(nameof(action));
+        if (action == "status" &&
+            (patternFingerprint is not null || offset is not null || maximumBytes is not null))
+        {
+            throw new ArgumentException(
+                "Output status cannot carry read or search bounds.");
+        }
+        if (action != "status" &&
+            (offset is null or < 0 ||
+             maximumBytes is null or < 1 or > OutputStore.MaximumReadBytes))
+        {
+            throw new ArgumentException(
+                "Output read and search require bounded offset facts.");
+        }
+        if ((action == "search") != (patternFingerprint is not null))
+        {
+            throw new ArgumentException(
+                "Only output search may carry a pattern fingerprint.");
+        }
+
+        Action = action;
+        HandleDigest = handleDigest;
+        PatternFingerprint = patternFingerprint;
+        Offset = offset;
+        MaximumBytes = maximumBytes;
+    }
+
+    internal string Action { get; }
+
+    internal Sha256Digest HandleDigest { get; }
+
+    internal Sha256Digest? PatternFingerprint { get; }
+
+    internal long? Offset { get; }
+
+    internal int? MaximumBytes { get; }
+}
+
+/// <summary>
 /// Exact immutable facts consumed by the guardian-to-host pre-write audit
 /// barrier. A public job ID is mandatory exactly when the private operation
 /// addresses or creates guardian-owned job state.
@@ -205,6 +259,7 @@ internal sealed class GuardianAuditCall : AuditCallLifecycle
 
     private bool _privateWriteMayHaveStarted;
     private bool _dispatchTerminalObserved;
+    private bool _outputAccessObserved;
 
     internal GuardianAuditCall(
         AuditJournal journal,
@@ -257,6 +312,67 @@ internal sealed class GuardianAuditCall : AuditCallLifecycle
                 _request.Background.Value,
                 _request.DeadlineUtc.Value.ToUnixTimeMilliseconds());
         }
+    }
+
+    internal GuardianAuditOutputFacts AcceptedOutputFacts
+    {
+        get
+        {
+            EnsureActive();
+            if (!StringComparer.Ordinal.Equals(_request!.Tool, "ptk_output") ||
+                _request.Action is not ("read" or "search" or "status") ||
+                _request.OutputHandleDigest is null)
+            {
+                throw new InvalidOperationException(
+                    "The admitted guardian call has no complete output request facts.");
+            }
+
+            return new GuardianAuditOutputFacts(
+                _request.Action,
+                new Sha256Digest(_request.OutputHandleDigest),
+                _request.PatternFingerprint is null
+                    ? null
+                    : new Sha256Digest(_request.PatternFingerprint),
+                _request.Offset,
+                _request.MaxBytes is null
+                    ? null
+                    : checked((int)_request.MaxBytes.Value));
+        }
+    }
+
+    internal void RecordOutputAccess(
+        OutputAccessAuditOutcome outcome,
+        string response)
+    {
+        ArgumentNullException.ThrowIfNull(outcome);
+        EnsureActive();
+        if (_outputAccessObserved)
+            throw new InvalidOperationException("The guardian output access is already recorded.");
+
+        var expectedEvent = AcceptedOutputFacts.Action switch
+        {
+            "read" => "output.read_accessed",
+            "search" => "output.search_accessed",
+            "status" => "output.status_accessed",
+            _ => throw new InvalidOperationException(
+                "The admitted guardian output action is unknown."),
+        };
+        if (!StringComparer.Ordinal.Equals(outcome.EventType, expectedEvent))
+        {
+            throw new InvalidOperationException(
+                "The guardian output result does not match the accepted action.");
+        }
+
+        Append(
+            outcome.EventType,
+            outcome.State,
+            outcome.DetailCode,
+            bytesReturned: outcome.BytesReturnedOverride ??
+                Utf8.GetByteCount(response ?? string.Empty),
+            nextOffset: outcome.NextOffset,
+            terminationCertainty: "not_applicable",
+            rootCoverage: "not_applicable");
+        _outputAccessObserved = true;
     }
 
     internal bool TryAuthorizeDispatch(

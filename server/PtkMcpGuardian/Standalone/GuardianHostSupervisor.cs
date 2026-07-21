@@ -6,6 +6,7 @@ using PtkMcpGuardian.Host;
 using PtkMcpGuardian.Lifecycle;
 using PtkMcpGuardian.Ownership;
 using PtkMcpGuardian.Output;
+using PtkMcpServer;
 using PtkMcpServer.Audit;
 using PtkSharedContracts;
 
@@ -49,6 +50,7 @@ internal sealed class GuardianHostSupervisor :
     private readonly GuardianHostSupervisorPins _pins;
     private readonly GuardianOutputCoordinator? _outputCoordinator;
     private readonly GuardianJobCapabilityRegistry? _jobCapabilities;
+    private readonly AuditOutputRequestProtector? _outputProtector;
     private readonly Func<GuardianHostClientException, CancellationToken, ValueTask>
         _beforeClientFatalObservation;
     private readonly CancellationTokenSource _lifetime = new();
@@ -79,7 +81,8 @@ internal sealed class GuardianHostSupervisor :
         Func<GuardianHostClientException, CancellationToken, ValueTask>?
             beforeClientFatalObservation = null,
         GuardianOutputCoordinator? outputCoordinator = null,
-        GuardianJobCapabilityRegistry? jobCapabilities = null)
+        GuardianJobCapabilityRegistry? jobCapabilities = null,
+        AuditOutputRequestProtector? outputProtector = null)
     {
         _guardianBootId = guardianBootId ??
             throw new ArgumentNullException(nameof(guardianBootId));
@@ -96,6 +99,7 @@ internal sealed class GuardianHostSupervisor :
         _pins = pins ?? throw new ArgumentNullException(nameof(pins));
         _outputCoordinator = outputCoordinator;
         _jobCapabilities = jobCapabilities;
+        _outputProtector = outputProtector;
         _beforeClientFatalObservation = beforeClientFatalObservation ??
             (static (_, cancellationToken) =>
             {
@@ -191,6 +195,9 @@ internal sealed class GuardianHostSupervisor :
         if (StringComparer.Ordinal.Equals(toolName, "ptk_invoke"))
             return DispatchInvokeAsync(arguments, auditCall, cancellationToken);
 
+        if (StringComparer.Ordinal.Equals(toolName, "ptk_output"))
+            return DispatchOutput(arguments, auditCall, cancellationToken);
+
         if (!StringComparer.Ordinal.Equals(toolName, "ptk_job") ||
             !TryReadJobArguments(
                 arguments,
@@ -251,6 +258,143 @@ internal sealed class GuardianHostSupervisor :
                 UnsupportedToolText,
                 isError: true)),
         };
+    }
+
+    private ValueTask<GuardianToolResult> DispatchOutput(
+        IReadOnlyDictionary<string, JsonElement> arguments,
+        GuardianAuditCall auditCall,
+        CancellationToken cancellationToken)
+    {
+        if (_outputCoordinator is null || _outputProtector is null)
+        {
+            return ValueTask.FromResult(new GuardianToolResult(
+                UnsupportedToolText,
+                isError: true));
+        }
+
+        var admitted = auditCall.AcceptedOutputFacts;
+        if (!TryReadOutputArguments(
+                arguments,
+                _outputProtector,
+                admitted,
+                out var handle,
+                out var action,
+                out var offset,
+                out var maximumBytes,
+                out var pattern))
+        {
+            return ValueTask.FromResult(new GuardianToolResult(
+                UnsupportedToolText,
+                isError: true));
+        }
+
+        var result = OutputToolRuntime.Execute(
+            _outputCoordinator.ArtifactReader,
+            handle,
+            action,
+            offset,
+            maximumBytes,
+            pattern,
+            cancellationToken);
+        if (result.AuditOutcome is not { } outcome)
+        {
+            return ValueTask.FromResult(new GuardianToolResult(
+                UnsupportedToolText,
+                isError: true));
+        }
+
+        auditCall.RecordOutputAccess(outcome, result.Text);
+        return ValueTask.FromResult(new GuardianToolResult(
+            result.Text,
+            isError: false));
+    }
+
+    private static bool TryReadOutputArguments(
+        IReadOnlyDictionary<string, JsonElement> arguments,
+        AuditOutputRequestProtector protector,
+        GuardianAuditOutputFacts admitted,
+        out string handle,
+        out string action,
+        out long offset,
+        out int maximumBytes,
+        out string? pattern)
+    {
+        handle = string.Empty;
+        action = "read";
+        offset = 0;
+        maximumBytes = OutputStore.DefaultReadBytes;
+        pattern = null;
+        if (arguments.Keys.Any(static key => key is not (
+                "handle" or "action" or "offset" or "maxBytes" or "pattern")) ||
+            !arguments.TryGetValue("handle", out var handleElement) ||
+            handleElement.ValueKind != JsonValueKind.String)
+        {
+            return false;
+        }
+        handle = handleElement.GetString()!;
+
+        if (arguments.TryGetValue("action", out var actionElement))
+        {
+            if (actionElement.ValueKind == JsonValueKind.String)
+                action = actionElement.GetString()!.ToLowerInvariant();
+            else if (actionElement.ValueKind != JsonValueKind.Null)
+                return false;
+        }
+        if (action is not ("read" or "search" or "status"))
+            return false;
+
+        if (arguments.TryGetValue("offset", out var offsetElement) &&
+            (offsetElement.ValueKind != JsonValueKind.Number ||
+             !offsetElement.TryGetInt64(out offset) ||
+             offset < 0))
+        {
+            return false;
+        }
+        if (arguments.TryGetValue("maxBytes", out var maximumElement) &&
+            (maximumElement.ValueKind != JsonValueKind.Number ||
+             !maximumElement.TryGetInt32(out maximumBytes) ||
+             maximumBytes is < 1 or > OutputStore.MaximumReadBytes))
+        {
+            return false;
+        }
+        if (arguments.TryGetValue("pattern", out var patternElement))
+        {
+            if (patternElement.ValueKind == JsonValueKind.String)
+                pattern = patternElement.GetString();
+            else if (patternElement.ValueKind != JsonValueKind.Null)
+                return false;
+        }
+
+        if (action == "status" &&
+            (arguments.ContainsKey("offset") ||
+             arguments.ContainsKey("maxBytes") ||
+             arguments.ContainsKey("pattern")) ||
+            action == "read" && arguments.ContainsKey("pattern") ||
+            action == "search" && string.IsNullOrEmpty(pattern))
+        {
+            return false;
+        }
+
+        try
+        {
+            var actual = new GuardianAuditOutputFacts(
+                action,
+                new Sha256Digest(protector.HandleDigest(handle)),
+                pattern is null
+                    ? null
+                    : new Sha256Digest(protector.PatternFingerprint(pattern)),
+                action == "status" ? null : offset,
+                action == "status" ? null : maximumBytes);
+            if (actual != admitted)
+                return false;
+        }
+        catch (Exception exception) when (exception is
+            EncoderFallbackException or ObjectDisposedException)
+        {
+            return false;
+        }
+
+        return true;
     }
 
     private ValueTask<GuardianToolResult> DispatchInvokeAsync(

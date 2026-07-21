@@ -123,6 +123,7 @@ public sealed class GuardianArchitectureBoundaryTests
         "OutputProvenance.cs",
         "OutputRecoverySummary.cs",
         "OutputStore.cs",
+        "OutputToolRuntime.cs",
     ];
 
     private static readonly string[] RequiredGuardianOutputTypeDefinitions =
@@ -158,6 +159,9 @@ public sealed class GuardianArchitectureBoundaryTests
         "PtkMcpServer.OutputSealResult",
         "PtkMcpServer.OutputStore",
         "PtkMcpServer.OutputStoreOptions",
+        "PtkMcpServer.OutputAccessAuditOutcome",
+        "PtkMcpServer.OutputToolRuntime",
+        "PtkMcpServer.OutputToolRuntimeResult",
     ];
 
     private static readonly StringComparer PathComparer = OperatingSystem.IsWindows()

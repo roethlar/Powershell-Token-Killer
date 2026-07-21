@@ -40,6 +40,8 @@ internal sealed class GuardianOutputCoordinator : IDisposable
 
     internal int MaximumCaptureBytes => _registry.MaximumCaptureBytes;
 
+    internal IOutputArtifactReader ArtifactReader => _registry.ArtifactReader;
+
     internal int JobRecoveryCount
     {
         get { lock (_gate) return _jobRecoveries.Count; }
