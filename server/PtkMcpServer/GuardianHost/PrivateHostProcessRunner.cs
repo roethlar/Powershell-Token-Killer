@@ -2,7 +2,7 @@ namespace PtkMcpServer.GuardianHost;
 
 internal sealed record PrivateHostProcessContext(
     Stream RequestReadStream,
-    Stream EventWriteStream,
+    PrivateHostOutboundChannel OutboundChannel,
     PrivateHostServerIdentity Identity,
     PrivateHostServerPins Pins,
     IPrivateHostRuntime Runtime);
@@ -16,7 +16,11 @@ internal static class PrivateHostProcessRunner
 {
     internal static Task<int> RunAsync(
         PrivateHostBootstrapValues bootstrap,
-        Func<PrivateHostServerIdentity, PrivateHostServerPins, IPrivateHostRuntime>
+        Func<
+            PrivateHostServerIdentity,
+            PrivateHostServerPins,
+            IPrivateHostEventSink,
+            IPrivateHostRuntime>
             runtimeFactory,
         CancellationToken cancellationToken = default) =>
         RunAsync(
@@ -24,7 +28,7 @@ internal static class PrivateHostProcessRunner
             runtimeFactory,
             static (context, token) => new PrivateHostServer(
                 context.RequestReadStream,
-                context.EventWriteStream,
+                context.OutboundChannel,
                 context.Identity,
                 context.Pins,
                 context.Runtime).RunAsync(token),
@@ -33,7 +37,11 @@ internal static class PrivateHostProcessRunner
 
     internal static async Task<int> RunAsync(
         PrivateHostBootstrapValues bootstrap,
-        Func<PrivateHostServerIdentity, PrivateHostServerPins, IPrivateHostRuntime>
+        Func<
+            PrivateHostServerIdentity,
+            PrivateHostServerPins,
+            IPrivateHostEventSink,
+            IPrivateHostRuntime>
             runtimeFactory,
         Func<PrivateHostProcessContext, CancellationToken, Task> runServer,
         int hostProcessId,
@@ -50,12 +58,15 @@ internal static class PrivateHostProcessRunner
             var identity = bootstrap.CreateServerIdentity(hostProcessId);
             var pins = bootstrap.ServerPins;
             using var streams = bootstrap.OpenStreams();
-            var runtime = runtimeFactory(identity, pins) ??
+            var outbound = new PrivateHostOutboundChannel(
+                streams.EventWriteStream,
+                identity);
+            var runtime = runtimeFactory(identity, pins, outbound) ??
                 throw new InvalidOperationException(
                     "Private host runtime factory returned no runtime.");
             var context = new PrivateHostProcessContext(
                 streams.RequestReadStream,
-                streams.EventWriteStream,
+                outbound,
                 identity,
                 pins,
                 runtime);

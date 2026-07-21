@@ -107,21 +107,40 @@ internal sealed class PrivateHostServer
         Func<int, byte[]>? manifestBufferFactory = null,
         Func<long>? unixTimeMilliseconds = null,
         Func<long, CancellationToken, Task>? waitUntilDeadline = null)
+        : this(
+            guardianRequestStream,
+            new PrivateHostOutboundChannel(hostEventStream, identity),
+            identity,
+            pins,
+            runtime,
+            manifestBufferFactory,
+            unixTimeMilliseconds,
+            waitUntilDeadline)
+    {
+    }
+
+    internal PrivateHostServer(
+        Stream guardianRequestStream,
+        PrivateHostOutboundChannel outbound,
+        PrivateHostServerIdentity identity,
+        PrivateHostServerPins pins,
+        IPrivateHostRuntime runtime,
+        Func<int, byte[]>? manifestBufferFactory = null,
+        Func<long>? unixTimeMilliseconds = null,
+        Func<long, CancellationToken, Task>? waitUntilDeadline = null)
     {
         ArgumentNullException.ThrowIfNull(guardianRequestStream);
-        ArgumentNullException.ThrowIfNull(hostEventStream);
+        ArgumentNullException.ThrowIfNull(outbound);
         ArgumentNullException.ThrowIfNull(identity);
         ArgumentNullException.ThrowIfNull(pins);
         ArgumentNullException.ThrowIfNull(runtime);
         if (!guardianRequestStream.CanRead)
             throw new ArgumentException("Guardian request stream must be readable.", nameof(guardianRequestStream));
-        if (!hostEventStream.CanWrite)
-            throw new ArgumentException("Host event stream must be writable.", nameof(hostEventStream));
 
         _reader = new GuardianHostProtocolReader(
             guardianRequestStream,
             GuardianHostPeer.Guardian);
-        _outbound = new PrivateHostOutboundChannel(hostEventStream, identity);
+        _outbound = outbound;
         _identity = identity;
         _pins = pins;
         _runtime = runtime;

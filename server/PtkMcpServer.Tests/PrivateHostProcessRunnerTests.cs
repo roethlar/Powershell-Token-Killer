@@ -25,13 +25,15 @@ public sealed class PrivateHostProcessRunnerTests
         var bootstrap = Bootstrap(request, events);
         var runtime = new RecordingRuntime();
         var timeline = new List<string>();
+        IPrivateHostEventSink? runtimeEventSink = null;
         using var cancellation = new CancellationTokenSource();
 
         var exitCode = await PrivateHostProcessRunner.RunAsync(
             bootstrap,
-            (identity, pins) =>
+            (identity, pins, eventSink) =>
             {
                 timeline.Add("runtime");
+                runtimeEventSink = eventSink;
                 AssertIdentity(identity, hostPid: 4242);
                 Assert.Same(Pins, pins);
                 Assert.Equal(1, request.OpenCalls);
@@ -44,7 +46,7 @@ public sealed class PrivateHostProcessRunnerTests
             {
                 timeline.Add("server");
                 Assert.Same(request.Stream, context.RequestReadStream);
-                Assert.Same(events.Stream, context.EventWriteStream);
+                Assert.Same(context.OutboundChannel, runtimeEventSink);
                 AssertIdentity(context.Identity, hostPid: 4242);
                 Assert.Same(Pins, context.Pins);
                 Assert.Same(runtime, context.Runtime);
@@ -76,7 +78,7 @@ public sealed class PrivateHostProcessRunnerTests
         var exception = await Assert.ThrowsAsync<IOException>(() =>
             PrivateHostProcessRunner.RunAsync(
                 bootstrap,
-                (_, _) => new RecordingRuntime(),
+                (_, _, _) => new RecordingRuntime(),
                 (_, _) => throw new IOException("private protocol failed"),
                 hostProcessId: 4242));
 
@@ -98,7 +100,7 @@ public sealed class PrivateHostProcessRunnerTests
         await Assert.ThrowsAsync<InvalidOperationException>(() =>
             PrivateHostProcessRunner.RunAsync(
                 bootstrap,
-                (_, _) => throw new InvalidOperationException("runtime unavailable"),
+                (_, _, _) => throw new InvalidOperationException("runtime unavailable"),
                 (_, _) =>
                 {
                     serverCalls++;
@@ -122,7 +124,7 @@ public sealed class PrivateHostProcessRunnerTests
         var exception = await Assert.ThrowsAsync<PrivateHostBootstrapException>(() =>
             PrivateHostProcessRunner.RunAsync(
                 bootstrap,
-                (_, _) =>
+                (_, _, _) =>
                 {
                     runtimeCalls++;
                     return new RecordingRuntime();

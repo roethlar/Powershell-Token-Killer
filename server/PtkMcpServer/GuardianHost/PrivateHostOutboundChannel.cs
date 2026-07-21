@@ -3,11 +3,23 @@ using PtkSharedContracts;
 namespace PtkMcpServer.GuardianHost;
 
 /// <summary>
+/// The event-only authority available to host runtime composition. Runtime
+/// code can allocate a sequenced event at the shared serialization point, but
+/// cannot write protocol responses or bypass frame ordering.
+/// </summary>
+internal interface IPrivateHostEventSink
+{
+    ValueTask WriteEventAsync(
+        Func<HostEventSequence, GuardianHostEvent> createEvent,
+        CancellationToken cancellationToken = default);
+}
+
+/// <summary>
 /// Owns the host-to-guardian serialization point. All ordinary host frames
 /// share one gate with event creation, so an event sequence is allocated only
 /// after its exact wire position is owned.
 /// </summary>
-internal sealed class PrivateHostOutboundChannel
+internal sealed class PrivateHostOutboundChannel : IPrivateHostEventSink
 {
     private readonly SemaphoreSlim _serialization = new(1, 1);
     private readonly GuardianHostProtocolWriter _writer;
@@ -97,6 +109,11 @@ internal sealed class PrivateHostOutboundChannel
                 _serialization.Release();
         }
     }
+
+    ValueTask IPrivateHostEventSink.WriteEventAsync(
+        Func<HostEventSequence, GuardianHostEvent> createEvent,
+        CancellationToken cancellationToken) =>
+        WriteEventAsync(createEvent, cancellationToken);
 
     private void ValidateIdentity(GuardianHostMessage message)
     {
