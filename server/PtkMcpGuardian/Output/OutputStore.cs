@@ -231,6 +231,31 @@ internal sealed class OutputCaptureReservation : IDisposable
             : owner.Seal(this, _artifactId, content);
     }
 
+    /// <summary>
+    /// Publishes exact, already-rendered UTF-8 bytes received through a private
+    /// output capability. The nullable provenance is intentional: protocol v1
+    /// does not carry that guardian-owned status fact, and the guardian must not
+    /// invent one while preserving the exact artifact bytes.
+    /// </summary>
+    internal OutputSealResult SealTransferredUtf8(
+        ReadOnlyMemory<byte> exactUtf8Bytes,
+        bool complete,
+        string? incompleteReason,
+        OutputProvenance? provenance = null)
+    {
+        var owner = Volatile.Read(ref _owner);
+        return owner is null ||
+               Interlocked.CompareExchange(ref _state, Sealing, Active) != Active
+            ? new OutputSealResult(false, null, OutputArtifactState.NotFound, 0, "reservation_closed")
+            : owner.SealTransferredUtf8(
+                this,
+                _artifactId,
+                exactUtf8Bytes,
+                complete,
+                incompleteReason,
+                provenance);
+    }
+
     internal OutputSealResult SealIncomplete(OutputArtifactContent prefix, string reason)
     {
         ArgumentNullException.ThrowIfNull(prefix);
@@ -1051,6 +1076,54 @@ public sealed class OutputStore :
     {
         ArgumentNullException.ThrowIfNull(reservation);
         ArgumentNullException.ThrowIfNull(content);
+        return SealCore(
+            reservation,
+            artifactId,
+            (stream, maximumBytes) => OutputArtifactRenderer.Render(
+                stream,
+                content,
+                maximumBytes),
+            content.Provenance,
+            content.Complete,
+            content.IncompleteReason);
+    }
+
+    internal OutputSealResult SealTransferredUtf8(
+        OutputCaptureReservation reservation,
+        Guid artifactId,
+        ReadOnlyMemory<byte> exactUtf8Bytes,
+        bool complete,
+        string? incompleteReason,
+        OutputProvenance? provenance)
+    {
+        ArgumentNullException.ThrowIfNull(reservation);
+        if (exactUtf8Bytes.Length > _options.MaximumArtifactBytes)
+            throw new ArgumentOutOfRangeException(nameof(exactUtf8Bytes));
+        _ = StrictUtf8.GetCharCount(exactUtf8Bytes.Span);
+        return SealCore(
+            reservation,
+            artifactId,
+            (stream, _) =>
+            {
+                stream.Write(exactUtf8Bytes.Span);
+                return new OutputArtifactRenderResult(
+                    exactUtf8Bytes.Length,
+                    Truncated: false,
+                    Segments: []);
+            },
+            provenance,
+            complete,
+            incompleteReason);
+    }
+
+    private OutputSealResult SealCore(
+        OutputCaptureReservation reservation,
+        Guid artifactId,
+        Func<Stream, long, OutputArtifactRenderResult> render,
+        OutputProvenance? provenance,
+        bool contentComplete,
+        string? incompleteReason)
+    {
         ArtifactEntry entry;
         lock (_gate)
         {
@@ -1095,10 +1168,7 @@ public sealed class OutputStore :
                     _options.ArtifactUnlinkIdentityVerifiedForTests?.Invoke(path));
             pathLinked = false;
             _options.ArtifactWriteStartingForTests?.Invoke(path);
-            rendered = OutputArtifactRenderer.Render(
-                stream,
-                content,
-                _options.MaximumArtifactBytes);
+            rendered = render(stream, _options.MaximumArtifactBytes);
             stream.Flush(flushToDisk: true);
         }
         catch
@@ -1131,13 +1201,13 @@ public sealed class OutputStore :
         {
             sealedUtc = UtcNow();
             expiresUtc = sealedUtc.Add(_options.TimeToLive);
-            complete = content.Complete && !rendered.Truncated;
+            complete = contentComplete && !rendered.Truncated;
             state = complete
                 ? OutputArtifactState.Available
                 : OutputArtifactState.Incomplete;
             detailCode = rendered.Truncated
                 ? "artifact_cap_exceeded"
-                : content.Complete ? null : NormalizeDetail(content.IncompleteReason);
+                : contentComplete ? null : NormalizeDetail(incompleteReason);
         }
         catch
         {
@@ -1229,7 +1299,7 @@ public sealed class OutputStore :
                 entry.Path = pathLinked ? path : null;
                 entry.Stream = stream;
                 entry.Bytes = rendered.Bytes;
-                entry.Provenance = content.Provenance;
+                entry.Provenance = provenance;
                 entry.Complete = complete;
                 entry.State = state;
                 entry.DetailCode = detailCode;
