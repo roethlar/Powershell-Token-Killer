@@ -830,3 +830,30 @@ R3 therefore has direct same-source apphost behavior evidence on macOS,
 Windows, and Linux. Hosted CI remains unrun because this authorized local
 implementation sequence does not itself authorize a push; the owner-held
 fixed-head Fable review also remains separate from continued R4 work.
+
+## MCP resilience R4 audit-transfer verification (ASHBIAMWEB1, 2026-07-21)
+
+_Exact clean committed feature head `a21b7a1`; detached proof worktree at the
+same SHA on Windows host `ASHBIAMWEB1`._
+
+- Focused `AuditCallMetadataTests` passed 15/15 after metadata capture moved
+  byte-for-byte into the guardian assembly. Guardian passed 366/366 and the
+  exact guardian architecture set passed 70/70. Exact predecessor `118111c`
+  passed the complete solution with Guardian 366/366, architecture 70/70, and
+  server 1862/1862.
+- Three exact `dotnet test server/PtkMcpServer.slnx` runs at `a21b7a1` each
+  passed Guardian 366/366 and architecture 70/70, but each failed a different
+  server wall-clock assertion at 1861/1862:
+  `StateToolTests.Path_drift_reports_an_entry_level_diff`,
+  `SessionOperationAuthorityTests.Job_output_shaping_inherits_the_exact_wire_deadline`,
+  then
+  `SessionOperationAuthorityTests.Wire_deadline_bounds_cold_planning_even_when_timeout_is_huge`.
+  The first two passed immediately when rerun alone; the third was not rerun
+  after the repo's three-cycle stall threshold fired. These runs continued to
+  report only the known NU1903 advisories for
+  `System.Security.Cryptography.Xml` 10.0.6 outside the timing failures.
+- No product or test guard was changed in response. The feature and detached
+  proof worktrees were clean at `a21b7a1`, with no lingering `dotnet` process.
+  This checkpoint needs one exact full pass after external machine load/state
+  changes, or a stable reproduction and separately scoped diagnosis, before a
+  complete-battery claim.

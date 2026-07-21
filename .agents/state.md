@@ -125,7 +125,7 @@ short and update it when important repo facts change.
   apphost coverage, and direct macOS/Windows/Linux behavior validation are
   complete at code/test head `1eb69d6` with the test-only scheduler closure at
   `d238a80`; R4 private real-host and control-plane transfer is active at clean
-  committed code/test head `d8b6efd` on `feature/mcp-resilience-r1`. The
+  committed code/test head `a21b7a1` on `feature/mcp-resilience-r1`. The
   migration-ready sequence verifies matched runtime packages at `65efb36`,
   serializes private-host outbound frames at `99014e4`, and transfers output
   capture by execution capability at `6790416`. Windows checkout prerequisites
@@ -135,18 +135,21 @@ short and update it when important repo facts change.
   the guardian-owned apphost command, handles, and bootstrap environment at
   `bf8afc1`, gives the host runner single ownership of captured bootstrap and
   process streams at `724d068`, and accepts a pre-captured worker bootstrap
-  without environment recapture at `d8b6efd`. The new boundaries each have
-  direct red-to-green mutation proof. `Program.cs` remains unwired; a concrete
-  production `IPrivateHostRuntime`, real guardian host attempt launcher and
-  containment, output-wire ingestion, and remaining audit/control-plane
-  transfer are still required. Registration cutover remains R7. At exact
-  detached Windows head `d8b6efd`, all 1830 server tests passed. The attempted
-  complete solution run with `--no-restore` was not a complete proof because
-  the detached checkout lacked
-  `PtkGuardianArchitecture.Tests/obj/project.assets.json`; its server suite
-  still passed, and the run continued to report the existing NU1903 advisories
-  for `System.Security.Cryptography.Xml` 10.0.6. Restore and rerun the complete
-  battery plus the protocol handshake before the next code change. Future
+  without environment recapture at `d8b6efd`. Later committed R4 slices now
+  provide the production private runtime, default-session operation and output
+  path, guardian output/job ownership and supervision, guardian audit gate and
+  v3 host snapshots, lifecycle snapshot publication, generation-bound audit
+  dispatch authorization and delivery truth, and guardian-owned MCP metadata
+  capture. The new boundaries each have direct red-to-green mutation proof.
+  `Program.cs` remains unwired; guardian MCP audit admission, mandatory
+  supervisor audit-capability integration, remaining public control-plane
+  transfer, and final private `--host` role wiring are still required.
+  Registration cutover remains R7. Exact detached Windows head `118111c`
+  passed Guardian 366, architecture 70, and server 1862 tests. At exact head
+  `a21b7a1`, the focused metadata suite passed 15, Guardian passed 366, and
+  architecture passed 70; the exact complete solution entry point then hit
+  the three-cycle timing stall recorded under `## Blockers` and in
+  `.agents/machines.md`. Future
   handoffs must only edit `## Now` / `## Next` surgically; never replace this
   file wholesale.** The
   target keeps one public stdio guardian alive while it
@@ -302,13 +305,15 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Resume `feature/mcp-resilience-r1` from clean committed head `d8b6efd`.
-   Restore the exact checkout, rerun the complete verification entry point plus
-   `server/test-handshake.ps1`, then continue R4 with a concrete in-process
-   private-host runtime and its event/output boundaries. Wire the exact
-   `Program.cs` role classification only once that production path is
-   functional; follow with the real guardian attempt launcher, containment,
-   and remaining control-plane transfer in coherent committed slices, then
+1. Resume `feature/mcp-resilience-r1` from clean committed head `a21b7a1`.
+   First clear the exact-solution timing blocker recorded below without
+   weakening any deadline guard. Then continue R4 by admitting every public
+   guardian call through `AuditRuntimeGate`, passing the resulting mandatory
+   `GuardianAuditCall` capability into supervisor dispatch, and recording its
+   existing pre-write/decoded/ambiguous delivery classifications. Keep
+   `Program.cs` unwired until the complete production path is functional;
+   follow with remaining control-plane transfer and private `--host` role
+   wiring in coherent committed slices, then
    R5-R7. Ordinary reviews may use Opus or Grok;
    hold Fable openreviews until capacity returns, then rerun the R1 fixed range
    `1f314a2..60eb20f` and later fixed ranges. Do not merge incomplete R4,
@@ -361,6 +366,17 @@ short and update it when important repo facts change.
   slice.
 
 ## Blockers
+
+- **Exact full verification at R4 head `a21b7a1` is stalled on this Windows
+  host by nonreproducing wall-clock tests.** Three exact detached runs of
+  `dotnet test server/PtkMcpServer.slnx` each passed Guardian 366 and
+  architecture 70 but failed one different server timing assertion at
+  1861/1862. The first two failed tests passed immediately in isolation; the
+  third run reached the repo's three-cycle stop threshold. No guard was
+  weakened and both worktrees are clean. Obtain one exact full pass after the
+  external load/state changes, or reproduce and diagnose a stable failure,
+  before claiming this checkpoint fully verified; exact evidence is in
+  `.agents/machines.md`.
 
 - **Direct ARM64 Linux clean-build validation is blocked by a host-specific
   `Grpc.Tools` launch failure.** On the Ubuntu 26.04 ARM64 VM, the bundled
