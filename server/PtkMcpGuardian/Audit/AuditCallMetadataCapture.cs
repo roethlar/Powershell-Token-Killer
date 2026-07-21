@@ -17,14 +17,21 @@ internal static class AuditCallMetadataCapture
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     private static readonly HashSet<string> InvokeFields =
-        new(["script", "raw", "route", "background", "timeoutSeconds"], StringComparer.Ordinal);
+        new(["script", "raw", "route", "background", "timeoutSeconds", "session"], StringComparer.Ordinal);
     private static readonly HashSet<string> JobFields =
-        new(["action", "id", "offset"], StringComparer.Ordinal);
+        new(["action", "id", "offset", "session"], StringComparer.Ordinal);
     private static readonly HashSet<string> OutputFields =
         new(["handle", "action", "offset", "maxBytes", "pattern"], StringComparer.Ordinal);
     private static readonly HashSet<string> StateFields =
-        new(["listAvailable"], StringComparer.Ordinal);
-    private static readonly HashSet<string> NoFields = new(StringComparer.Ordinal);
+        new(["listAvailable", "session"], StringComparer.Ordinal);
+    private static readonly HashSet<string> ResetFields =
+        new(["session", "expectedGeneration", "force", "timeoutSeconds"], StringComparer.Ordinal);
+    private static readonly HashSet<string> SessionListFields =
+        new(["action"], StringComparer.Ordinal);
+    private static readonly HashSet<string> SessionOpenFields =
+        new(["action", "name", "template", "allowColdBackground", "timeoutSeconds"], StringComparer.Ordinal);
+    private static readonly HashSet<string> SessionLifecycleFields =
+        new(["action", "name", "expectedGeneration", "force", "timeoutSeconds"], StringComparer.Ordinal);
 
     internal static bool TryCapture(
         CallToolRequestParams call,
@@ -96,13 +103,26 @@ internal static class AuditCallMetadataCapture
                 return TryCaptureState(arguments, providedFields, actor, out metadata, out sanitizedFailure);
 
             case "ptk_reset":
-                if (!TryRejectUnknownFields(arguments, NoFields, "ptk_reset", out sanitizedFailure))
-                    return false;
-                metadata = new AuditCallMetadata(
+                return TryCaptureReset(
+                    arguments,
+                    providedFields,
+                    defaultTimeout,
+                    maximumTimeout,
+                    utcNow,
                     actor,
-                    BaseRequest("ptk_reset", "reset", providedFields),
-                    new AuditOperationProfile(4, 0, RequiresScriptEvidence: false, MayHaveSideEffects: true));
-                return true;
+                    out metadata,
+                    out sanitizedFailure);
+
+            case "ptk_session":
+                return TryCaptureSession(
+                    arguments,
+                    providedFields,
+                    defaultTimeout,
+                    maximumTimeout,
+                    utcNow,
+                    actor,
+                    out metadata,
+                    out sanitizedFailure);
 
             default:
                 return Fail("audit_boundary_invalid: unknown tool", out sanitizedFailure);
@@ -132,7 +152,15 @@ internal static class AuditCallMetadataCapture
             return Fail("audit_boundary_invalid: ptk_invoke.arguments.script is not representable", out failure);
         if (!TryOptionalBoolean(arguments, "raw", defaultValue: false, out var raw, out failure) ||
             !TryOptionalBoolean(arguments, "background", defaultValue: false, out var background, out failure) ||
-            !TryOptionalInt32(arguments, "timeoutSeconds", defaultValue: 0, out var timeoutSeconds, out failure))
+            !TryOptionalSessionName(arguments, "ptk_invoke", "session", out var session, out failure) ||
+            !TryEffectiveTimeout(
+                arguments,
+                defaultTimeout,
+                maximumTimeout,
+                utcNow,
+                out var timeoutMilliseconds,
+                out var deadlineUtc,
+                out failure))
         {
             return false;
         }
@@ -149,17 +177,9 @@ internal static class AuditCallMetadataCapture
             route = "auto";
         }
 
-        var budget = timeoutSeconds > 0
-            ? Min(TimeSpan.FromSeconds(timeoutSeconds), maximumTimeout)
-            : defaultTimeout;
-        if (!TryMilliseconds(budget, out var timeoutMilliseconds) ||
-            !TryAdd(utcNow, budget, out var deadlineUtc))
-        {
-            return Fail("audit_boundary_invalid: ptk_invoke timeout is not representable", out failure);
-        }
-
         var request = BaseRequest("ptk_invoke", "invoke", providedFields) with
         {
+            SessionRequested = session,
             TimeoutMs = timeoutMilliseconds,
             DeadlineUtc = deadlineUtc,
             Route = route,
@@ -188,6 +208,15 @@ internal static class AuditCallMetadataCapture
         failure = null;
         if (!TryRejectUnknownFields(arguments, JobFields, "ptk_job", out failure))
             return false;
+        if (!TryOptionalSessionName(
+                arguments,
+                "ptk_job",
+                "session",
+                out var session,
+                out failure))
+        {
+            return false;
+        }
         string? action = null;
         if (arguments.TryGetValue("action", out var actionElement))
         {
@@ -239,6 +268,7 @@ internal static class AuditCallMetadataCapture
 
         var request = BaseRequest("ptk_job", action, providedFields) with
         {
+            SessionRequested = session,
             JobId = action is "status" or "output" or "kill" ? jobId : null,
             Offset = action == "output" ? offset : null,
         };
@@ -269,15 +299,212 @@ internal static class AuditCallMetadataCapture
         metadata = null;
         failure = null;
         if (!TryRejectUnknownFields(arguments, StateFields, "ptk_state", out failure) ||
-            !TryOptionalBoolean(arguments, "listAvailable", false, out var listAvailable, out failure))
+            !TryOptionalBoolean(arguments, "listAvailable", false, out var listAvailable, out failure) ||
+            !TryOptionalSessionName(
+                arguments,
+                "ptk_state",
+                "session",
+                out var session,
+                out failure))
         {
             return false;
         }
 
         metadata = new AuditCallMetadata(
             actor,
-            BaseRequest("ptk_state", "state", providedFields) with { ListAvailable = listAvailable },
+            BaseRequest("ptk_state", "state", providedFields) with
+            {
+                SessionRequested = session,
+                ListAvailable = listAvailable,
+            },
             new AuditOperationProfile(5, 0, RequiresScriptEvidence: false, MayHaveSideEffects: true));
+        return true;
+    }
+
+    private static bool TryCaptureReset(
+        IDictionary<string, JsonElement> arguments,
+        string[] providedFields,
+        TimeSpan defaultTimeout,
+        TimeSpan maximumTimeout,
+        DateTimeOffset utcNow,
+        AuditActor actor,
+        out AuditCallMetadata? metadata,
+        out string? failure)
+    {
+        metadata = null;
+        failure = null;
+        if (!TryRejectUnknownFields(arguments, ResetFields, "ptk_reset", out failure) ||
+            !TryOptionalSessionName(
+                arguments,
+                "ptk_reset",
+                "session",
+                out var session,
+                out failure) ||
+            !TryOptionalNonNegativeInt64(
+                arguments,
+                "expectedGeneration",
+                defaultValue: 0,
+                out var expectedGeneration,
+                out failure) ||
+            !TryOptionalBoolean(arguments, "force", false, out var force, out failure) ||
+            !TryEffectiveTimeout(
+                arguments,
+                defaultTimeout,
+                maximumTimeout,
+                utcNow,
+                out var timeoutMilliseconds,
+                out var deadlineUtc,
+                out failure))
+        {
+            return false;
+        }
+
+        metadata = new AuditCallMetadata(
+            actor,
+            BaseRequest("ptk_reset", "reset", providedFields) with
+            {
+                SessionRequested = session,
+                ExpectedGeneration = expectedGeneration,
+                Force = force,
+                TimeoutMs = timeoutMilliseconds,
+                DeadlineUtc = deadlineUtc,
+            },
+            new AuditOperationProfile(
+                MaximumCallRecordSlots: 4,
+                PersistentJobTerminalSlots: 0,
+                RequiresScriptEvidence: false,
+                MayHaveSideEffects: true));
+        return true;
+    }
+
+    private static bool TryCaptureSession(
+        IDictionary<string, JsonElement> arguments,
+        string[] providedFields,
+        TimeSpan defaultTimeout,
+        TimeSpan maximumTimeout,
+        DateTimeOffset utcNow,
+        AuditActor actor,
+        out AuditCallMetadata? metadata,
+        out string? failure)
+    {
+        metadata = null;
+        failure = null;
+        if (!TryRequiredString(arguments, "action", out var requestedAction, out failure))
+            return false;
+
+        var action = requestedAction.ToLowerInvariant();
+        if (action == "list")
+        {
+            if (!TryRejectUnknownFields(arguments, SessionListFields, "ptk_session", out failure))
+                return false;
+            metadata = new AuditCallMetadata(
+                actor,
+                BaseRequest("ptk_session", action, providedFields) with
+                {
+                    SessionRequested = null,
+                },
+                new AuditOperationProfile(
+                    MaximumCallRecordSlots: 3,
+                    PersistentJobTerminalSlots: 0,
+                    RequiresScriptEvidence: false,
+                    MayHaveSideEffects: false));
+            return true;
+        }
+
+        if (action == "open")
+        {
+            if (!TryRejectUnknownFields(arguments, SessionOpenFields, "ptk_session", out failure) ||
+                !TryRequiredSessionName(
+                    arguments,
+                    "ptk_session",
+                    "name",
+                    out var session,
+                    out failure) ||
+                !TryOptionalNamedValue(
+                    arguments,
+                    "ptk_session",
+                    "template",
+                    out var template,
+                    out failure) ||
+                !TryOptionalBoolean(
+                    arguments,
+                    "allowColdBackground",
+                    out var allowColdBackground,
+                    out failure) ||
+                !TryEffectiveTimeout(
+                    arguments,
+                    defaultTimeout,
+                    maximumTimeout,
+                    utcNow,
+                    out var timeoutMilliseconds,
+                    out var deadlineUtc,
+                    out failure))
+            {
+                return false;
+            }
+
+            metadata = new AuditCallMetadata(
+                actor,
+                BaseRequest("ptk_session", action, providedFields) with
+                {
+                    SessionRequested = session,
+                    Template = template,
+                    AllowColdBackground = allowColdBackground,
+                    TimeoutMs = timeoutMilliseconds,
+                    DeadlineUtc = deadlineUtc,
+                },
+                new AuditOperationProfile(
+                    MaximumCallRecordSlots: 4,
+                    PersistentJobTerminalSlots: 0,
+                    RequiresScriptEvidence: false,
+                    MayHaveSideEffects: true));
+            return true;
+        }
+
+        if (action is not ("close" or "restart"))
+            return Fail("audit_boundary_invalid: ptk_session has an unsupported action", out failure);
+
+        if (!TryRejectUnknownFields(arguments, SessionLifecycleFields, "ptk_session", out failure) ||
+            !TryRequiredSessionName(
+                arguments,
+                "ptk_session",
+                "name",
+                out var lifecycleSession,
+                out failure) ||
+            !TryOptionalNonNegativeInt64(
+                arguments,
+                "expectedGeneration",
+                defaultValue: 0,
+                out var expectedGeneration,
+                out failure) ||
+            !TryOptionalBoolean(arguments, "force", false, out var force, out failure) ||
+            !TryEffectiveTimeout(
+                arguments,
+                defaultTimeout,
+                maximumTimeout,
+                utcNow,
+                out var lifecycleTimeoutMilliseconds,
+                out var lifecycleDeadlineUtc,
+                out failure))
+        {
+            return false;
+        }
+
+        metadata = new AuditCallMetadata(
+            actor,
+            BaseRequest("ptk_session", action, providedFields) with
+            {
+                SessionRequested = lifecycleSession,
+                ExpectedGeneration = expectedGeneration,
+                Force = force,
+                TimeoutMs = lifecycleTimeoutMilliseconds,
+                DeadlineUtc = lifecycleDeadlineUtc,
+            },
+            new AuditOperationProfile(
+                MaximumCallRecordSlots: 4,
+                PersistentJobTerminalSlots: 0,
+                RequiresScriptEvidence: false,
+                MayHaveSideEffects: true));
         return true;
     }
 
@@ -497,6 +724,28 @@ internal static class AuditCallMetadataCapture
         return true;
     }
 
+    private static bool TryOptionalBoolean(
+        IDictionary<string, JsonElement> arguments,
+        string name,
+        out bool? value,
+        out string? failure)
+    {
+        if (!arguments.TryGetValue(name, out var element))
+        {
+            value = null;
+            failure = null;
+            return true;
+        }
+        if (element.ValueKind is not (JsonValueKind.True or JsonValueKind.False))
+        {
+            value = null;
+            return Fail($"audit_boundary_invalid: argument {name} has the wrong JSON kind", out failure);
+        }
+        value = element.GetBoolean();
+        failure = null;
+        return true;
+    }
+
     private static bool TryOptionalInt32(
         IDictionary<string, JsonElement> arguments,
         string name,
@@ -513,6 +762,123 @@ internal static class AuditCallMetadataCapture
         value = default;
         if (element.ValueKind != JsonValueKind.Number || !element.TryGetInt32(out value))
             return Fail($"audit_boundary_invalid: argument {name} must be an int32", out failure);
+        failure = null;
+        return true;
+    }
+
+    private static bool TryOptionalNonNegativeInt64(
+        IDictionary<string, JsonElement> arguments,
+        string name,
+        long defaultValue,
+        out long value,
+        out string? failure)
+    {
+        if (!arguments.TryGetValue(name, out var element))
+        {
+            value = defaultValue;
+            failure = null;
+            return true;
+        }
+        if (element.ValueKind != JsonValueKind.Number ||
+            !element.TryGetInt64(out value) ||
+            value < 0)
+        {
+            value = default;
+            return Fail(
+                $"audit_boundary_invalid: argument {name} must be a nonnegative int64",
+                out failure);
+        }
+        failure = null;
+        return true;
+    }
+
+    private static bool TryOptionalSessionName(
+        IDictionary<string, JsonElement> arguments,
+        string tool,
+        string name,
+        out string value,
+        out string? failure)
+    {
+        if (!arguments.ContainsKey(name))
+        {
+            value = "default";
+            failure = null;
+            return true;
+        }
+        return TryRequiredSessionName(arguments, tool, name, out value, out failure);
+    }
+
+    private static bool TryRequiredSessionName(
+        IDictionary<string, JsonElement> arguments,
+        string tool,
+        string name,
+        out string value,
+        out string? failure)
+    {
+        if (!TryRequiredString(arguments, name, out value, out failure))
+            return false;
+        if (!IsMachineName(value))
+        {
+            value = string.Empty;
+            return Fail(
+                $"audit_boundary_invalid: {tool}.arguments.{name} is not representable",
+                out failure);
+        }
+        return true;
+    }
+
+    private static bool TryOptionalNamedValue(
+        IDictionary<string, JsonElement> arguments,
+        string tool,
+        string name,
+        out string? value,
+        out string? failure)
+    {
+        if (!arguments.ContainsKey(name))
+        {
+            value = null;
+            failure = null;
+            return true;
+        }
+        if (!TryRequiredSessionName(arguments, tool, name, out var required, out failure))
+        {
+            value = null;
+            return false;
+        }
+        value = required;
+        return true;
+    }
+
+    private static bool TryEffectiveTimeout(
+        IDictionary<string, JsonElement> arguments,
+        TimeSpan defaultTimeout,
+        TimeSpan maximumTimeout,
+        DateTimeOffset utcNow,
+        out long timeoutMilliseconds,
+        out DateTimeOffset deadlineUtc,
+        out string? failure)
+    {
+        timeoutMilliseconds = 0;
+        deadlineUtc = default;
+        if (!TryOptionalInt32(
+                arguments,
+                "timeoutSeconds",
+                defaultValue: 0,
+                out var timeoutSeconds,
+                out failure))
+        {
+            return false;
+        }
+
+        var budget = timeoutSeconds > 0
+            ? Min(TimeSpan.FromSeconds(timeoutSeconds), maximumTimeout)
+            : defaultTimeout;
+        if (!TryMilliseconds(budget, out timeoutMilliseconds) ||
+            !TryAdd(utcNow, budget, out deadlineUtc))
+        {
+            return Fail("audit_boundary_invalid: timeout is not representable", out failure);
+        }
+
         failure = null;
         return true;
     }

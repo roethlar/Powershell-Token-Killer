@@ -20,7 +20,8 @@ public sealed class AuditCallMetadataTests
             "ptk_invoke",
             ("raw", false),
             ("script", "Get-Process"),
-            ("background", false));
+            ("background", false),
+            ("session", "build"));
         var client = new AuditClientContext("Claude Code", "2.1.207", "stdio-7");
 
         Assert.True(Capture(call, client, out var metadata, out var script, out var failure));
@@ -34,8 +35,8 @@ public sealed class AuditCallMetadataTests
         Assert.Equal("client_asserted", metadata.Actor.AttributionStrength);
         Assert.Equal("ptk_invoke", metadata.Request.Tool);
         Assert.Equal("invoke", metadata.Request.Action);
-        Assert.Equal(["background", "raw", "script"], metadata.Request.ProvidedFields);
-        Assert.Equal("default", metadata.Request.SessionRequested);
+        Assert.Equal(["background", "raw", "script", "session"], metadata.Request.ProvidedFields);
+        Assert.Equal("build", metadata.Request.SessionRequested);
         Assert.Equal("auto", metadata.Request.Route);
         Assert.False(metadata.Request.Background);
         Assert.False(metadata.Request.Raw);
@@ -88,15 +89,20 @@ public sealed class AuditCallMetadataTests
     public void Job_capture_uses_normalized_action_positive_int64_id_and_effective_output_offset()
     {
         const long jobId = 5_000_000_000;
-        var call = Call("ptk_job", ("id", jobId), ("action", "OUTPUT"));
+        var call = Call(
+            "ptk_job",
+            ("id", jobId),
+            ("action", "OUTPUT"),
+            ("session", "build"));
 
         Assert.True(Capture(call, new(), out var metadata, out var script, out _));
 
         Assert.Null(script);
         Assert.Equal("output", metadata!.Request.Action);
+        Assert.Equal("build", metadata.Request.SessionRequested);
         Assert.Equal(jobId, metadata.Request.JobId);
         Assert.Equal(0, metadata.Request.Offset);
-        Assert.Equal(["action", "id"], metadata.Request.ProvidedFields);
+        Assert.Equal(["action", "id", "session"], metadata.Request.ProvidedFields);
         Assert.True(metadata.OperationProfile.MayHaveSideEffects);
         Assert.Equal(6, metadata.OperationProfile.MaximumCallRecordSlots);
 
@@ -127,20 +133,101 @@ public sealed class AuditCallMetadataTests
     }
 
     [Fact]
-    public void State_and_reset_capture_effective_current_defaults()
+    public void State_and_reset_capture_the_frozen_guardian_fields()
     {
-        Assert.True(Capture(Call("ptk_state"), new(), out var state, out _, out _));
+        Assert.True(Capture(
+            Call("ptk_state", ("session", "build")),
+            new(),
+            out var state,
+            out _,
+            out _));
         Assert.Equal("state", state!.Request.Action);
         Assert.False(state.Request.ListAvailable);
-        Assert.Empty(state.Request.ProvidedFields);
+        Assert.Equal("build", state.Request.SessionRequested);
+        Assert.Equal(["session"], state.Request.ProvidedFields);
         Assert.Equal("transport_only", state.Actor.AttributionStrength);
         Assert.True(state.OperationProfile.MayHaveSideEffects);
         Assert.Equal(5, state.OperationProfile.MaximumCallRecordSlots);
 
-        Assert.True(Capture(Call("ptk_reset"), new(), out var reset, out _, out _));
+        Assert.True(Capture(
+            Call(
+                "ptk_reset",
+                ("session", "build"),
+                ("expectedGeneration", 17L),
+                ("force", true),
+                ("timeoutSeconds", 120)),
+            new(),
+            out var reset,
+            out _,
+            out _));
         Assert.Equal("reset", reset!.Request.Action);
+        Assert.Equal("build", reset.Request.SessionRequested);
+        Assert.Equal(17, reset.Request.ExpectedGeneration);
+        Assert.True(reset.Request.Force);
+        Assert.Equal(120_000, reset.Request.TimeoutMs);
+        Assert.Equal(Now.AddMinutes(2), reset.Request.DeadlineUtc);
+        Assert.Equal(
+            ["expectedGeneration", "force", "session", "timeoutSeconds"],
+            reset.Request.ProvidedFields);
         Assert.True(reset.OperationProfile.MayHaveSideEffects);
         Assert.Equal(4, reset.OperationProfile.MaximumCallRecordSlots);
+    }
+
+    [Fact]
+    public void Session_capture_covers_the_frozen_list_open_close_and_restart_shapes()
+    {
+        Assert.True(Capture(
+            Call("ptk_session", ("action", "list")),
+            new(),
+            out var list,
+            out _,
+            out _));
+        Assert.Equal("list", list!.Request.Action);
+        Assert.Null(list.Request.SessionRequested);
+        Assert.False(list.OperationProfile.MayHaveSideEffects);
+        Assert.Equal(3, list.OperationProfile.MaximumCallRecordSlots);
+
+        Assert.True(Capture(
+            Call(
+                "ptk_session",
+                ("action", "open"),
+                ("name", "build"),
+                ("template", "ci"),
+                ("allowColdBackground", true),
+                ("timeoutSeconds", 90)),
+            new(),
+            out var open,
+            out _,
+            out _));
+        Assert.Equal("open", open!.Request.Action);
+        Assert.Equal("build", open.Request.SessionRequested);
+        Assert.Equal("ci", open.Request.Template);
+        Assert.True(open.Request.AllowColdBackground);
+        Assert.Equal(90_000, open.Request.TimeoutMs);
+        Assert.Equal(Now.AddSeconds(90), open.Request.DeadlineUtc);
+        Assert.True(open.OperationProfile.MayHaveSideEffects);
+        Assert.Equal(4, open.OperationProfile.MaximumCallRecordSlots);
+
+        foreach (var action in new[] { "close", "restart" })
+        {
+            Assert.True(Capture(
+                Call(
+                    "ptk_session",
+                    ("action", action),
+                    ("name", "build"),
+                    ("expectedGeneration", 23L),
+                    ("force", true)),
+                new(),
+                out var lifecycle,
+                out _,
+                out _));
+            Assert.Equal(action, lifecycle!.Request.Action);
+            Assert.Equal("build", lifecycle.Request.SessionRequested);
+            Assert.Equal(23, lifecycle.Request.ExpectedGeneration);
+            Assert.True(lifecycle.Request.Force);
+            Assert.Equal(300_000, lifecycle.Request.TimeoutMs);
+            Assert.Equal(Now.AddMinutes(5), lifecycle.Request.DeadlineUtc);
+        }
     }
 
     [Fact]
@@ -252,7 +339,8 @@ public sealed class AuditCallMetadataTests
     {
         AssertRejected(Call("ptk_future"), "unknown tool");
         AssertRejected(Call("ptk_state", ("futureField", "secret-value")), "unknown argument field", "secret-value");
-        AssertRejected(Call("ptk_reset", ("force", true)), "unknown argument field");
+        AssertRejected(Call("ptk_reset", ("futureField", true)), "unknown argument field");
+        AssertRejected(Call("ptk_session", ("action", "future")), "unsupported action");
 
         Assert.True(Capture(
             Call("ptk_job", ("action", "future-action")),
@@ -274,6 +362,13 @@ public sealed class AuditCallMetadataTests
         AssertRejected(Call("ptk_job", ("action", "status"), ("id", 0)), "positive int64");
         AssertRejected(Call("ptk_job", ("action", "output"), ("offset", -1)), "nonnegative int64");
         AssertRejected(Call("ptk_state", ("listAvailable", 1)), "wrong JSON kind");
+        AssertRejected(Call("ptk_state", ("session", "Build")), "session is not representable");
+        AssertRejected(
+            Call("ptk_reset", ("expectedGeneration", -1L)),
+            "nonnegative int64");
+        AssertRejected(
+            Call("ptk_session", ("action", "open"), ("name", "build"), ("force", true)),
+            "unknown argument field");
 
         Assert.True(Capture(
             Call("ptk_invoke", ("script", "'ok'"), ("route", null)),
