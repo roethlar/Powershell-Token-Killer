@@ -4,25 +4,54 @@ using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 using PtkMcpServer.GuardianHost;
 using PtkMcpServer.Worker;
+using PtkSharedContracts;
 
 namespace PtkMcpServer.Tests;
 
 public sealed class PrivateHostBootstrapTests
 {
     private const string Secret = "/private/bootstrap/secret-9b1e";
+    private const string GuardianBoot = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
+    private const string HostBoot = "bbbbbbbb-bbbb-4bbb-9bbb-bbbbbbbbbbbb";
+    private const string HostGeneration = "17";
+    private static readonly string HostExecutableDigest = new('a', 64);
+    private static readonly string HostBuildDigest = new('b', 64);
+    private static readonly string PublicContractDigest = new('c', 64);
+    private static readonly string ConfigurationDigest = new('d', 64);
+    private static readonly string PackageManifestDigest = new('e', 64);
+
+    private static readonly string[] ExpectedHostVariables =
+    [
+        "PTK_HOST_REQUEST_READ_HANDLE",
+        "PTK_HOST_EVENT_WRITE_HANDLE",
+        "PTK_HOST_GUARDIAN_BOOT_ID",
+        "PTK_HOST_BOOT_ID",
+        "PTK_HOST_GENERATION",
+        "PTK_HOST_EXECUTABLE_SHA256",
+        "PTK_HOST_BUILD_SHA256",
+        "PTK_HOST_PUBLIC_CONTRACT_SHA256",
+        "PTK_HOST_CONFIGURATION_SHA256",
+        "PTK_HOST_PACKAGE_MANIFEST_SHA256",
+    ];
 
     [Fact]
-    public void Host_environment_contract_reserves_exactly_two_names()
+    public void Host_environment_contract_reserves_the_exact_launch_field_set()
     {
         Assert.Equal("PTK_HOST_REQUEST_READ_HANDLE", PrivateHostBootstrapEnvironment.RequestReadHandle);
         Assert.Equal("PTK_HOST_EVENT_WRITE_HANDLE", PrivateHostBootstrapEnvironment.EventWriteHandle);
-        Assert.Equal(
-            new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-            {
-                PrivateHostBootstrapEnvironment.RequestReadHandle,
-                PrivateHostBootstrapEnvironment.EventWriteHandle,
-            },
-            PrivateHostBootstrapEnvironment.ReservedHandleVariables);
+        Assert.Equal("PTK_HOST_GUARDIAN_BOOT_ID", PrivateHostBootstrapEnvironment.GuardianBootId);
+        Assert.Equal("PTK_HOST_BOOT_ID", PrivateHostBootstrapEnvironment.HostBootId);
+        Assert.Equal("PTK_HOST_GENERATION", PrivateHostBootstrapEnvironment.HostGeneration);
+        Assert.Equal("PTK_HOST_EXECUTABLE_SHA256", PrivateHostBootstrapEnvironment.HostExecutableDigest);
+        Assert.Equal("PTK_HOST_BUILD_SHA256", PrivateHostBootstrapEnvironment.HostBuildDigest);
+        Assert.Equal("PTK_HOST_PUBLIC_CONTRACT_SHA256", PrivateHostBootstrapEnvironment.PublicContractDigest);
+        Assert.Equal("PTK_HOST_CONFIGURATION_SHA256", PrivateHostBootstrapEnvironment.ConfigurationDigest);
+        Assert.Equal("PTK_HOST_PACKAGE_MANIFEST_SHA256", PrivateHostBootstrapEnvironment.PackageManifestDigest);
+        Assert.Equal(ExpectedHostVariables, PrivateHostBootstrapEnvironment.VariablesInCaptureOrder);
+        Assert.True(new HashSet<string>(
+            ExpectedHostVariables,
+            StringComparer.OrdinalIgnoreCase).SetEquals(
+                PrivateHostBootstrapEnvironment.ReservedVariables));
     }
 
     [Fact]
@@ -39,10 +68,7 @@ public sealed class PrivateHostBootstrapTests
 
         Assert.Equal(
             [
-                "get:PTK_HOST_REQUEST_READ_HANDLE",
-                "get:PTK_HOST_EVENT_WRITE_HANDLE",
-                "remove:PTK_HOST_REQUEST_READ_HANDLE",
-                "remove:PTK_HOST_EVENT_WRITE_HANDLE",
+                .. ExpectedHostCaptureTimeline(),
                 "own:101",
                 "own:202",
             ],
@@ -51,6 +77,27 @@ public sealed class PrivateHostBootstrapTests
             PrivateHostBootstrapEnvironment.RequestReadHandle));
         Assert.False(environment.Values.ContainsKey(
             PrivateHostBootstrapEnvironment.EventWriteHandle));
+    }
+
+    [Fact]
+    public void Capture_materializes_exact_server_identity_and_package_pins()
+    {
+        using var values = PrivateHostBootstrapCapture.CaptureAndRemove(
+            HostEnvironment("101", "202"),
+            new RecordingNative(),
+            pointerSize: 8);
+
+        var identity = values.CreateServerIdentity(hostPid: 4242);
+
+        Assert.Equal(new GuardianBootId(Guid.Parse(GuardianBoot)), identity.GuardianBootId);
+        Assert.Equal(new HostBootId(Guid.Parse(HostBoot)), identity.HostBootId);
+        Assert.Equal(new HostGeneration(long.Parse(HostGeneration)), identity.HostGeneration);
+        Assert.Equal(4242, identity.HostPid);
+        Assert.Equal(new Sha256Digest(HostExecutableDigest), values.ServerPins.HostExecutableDigest);
+        Assert.Equal(new Sha256Digest(HostBuildDigest), values.ServerPins.HostBuildDigest);
+        Assert.Equal(new Sha256Digest(PublicContractDigest), values.ServerPins.PublicContractDigest);
+        Assert.Equal(new Sha256Digest(ConfigurationDigest), values.ServerPins.ConfigurationDigest);
+        Assert.Equal(new Sha256Digest(PackageManifestDigest), values.ServerPins.PackageManifestDigest);
     }
 
     [Theory]
@@ -70,12 +117,7 @@ public sealed class PrivateHostBootstrapTests
 
         Assert.Contains(exception.DetailCode, new[] { "handle_missing", "handle_invalid" });
         Assert.Equal(
-            [
-                "get:PTK_HOST_REQUEST_READ_HANDLE",
-                "get:PTK_HOST_EVENT_WRITE_HANDLE",
-                "remove:PTK_HOST_REQUEST_READ_HANDLE",
-                "remove:PTK_HOST_EVENT_WRITE_HANDLE",
-            ],
+            ExpectedHostCaptureTimeline(),
             timeline);
         Assert.Empty(native.Handles);
         Assert.Empty(environment.Values);
@@ -99,6 +141,94 @@ public sealed class PrivateHostBootstrapTests
         "١",
         "18446744073709551615",
         "18446744073709551616",
+    };
+
+    [Theory]
+    [MemberData(nameof(InvalidMetadataValues))]
+    public void Invalid_identity_or_pin_is_rejected_after_every_field_is_removed(
+        string variable,
+        string? invalidValue,
+        string expectedDetailCode)
+    {
+        var environment = HostEnvironment("101", "202");
+        environment.Values[variable] = invalidValue;
+        var native = new RecordingNative();
+
+        var exception = Assert.Throws<PrivateHostBootstrapException>(() =>
+            PrivateHostBootstrapCapture.CaptureAndRemove(
+                environment,
+                native,
+                pointerSize: 8));
+
+        Assert.Equal(expectedDetailCode, exception.DetailCode);
+        Assert.Equal(ExpectedHostCaptureTimeline(), environment.Timeline);
+        Assert.Empty(environment.Values);
+        Assert.Empty(native.Handles);
+        AssertNormalized(exception);
+    }
+
+    public static TheoryData<string, string?, string> InvalidMetadataValues => new()
+    {
+        {
+            PrivateHostBootstrapEnvironment.GuardianBootId,
+            "AAAAAAAA-AAAA-4AAA-8AAA-AAAAAAAAAAAA",
+            "guardian_boot_id_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.GuardianBootId,
+            "aaaaaaaa-aaaa-3aaa-8aaa-aaaaaaaaaaaa",
+            "guardian_boot_id_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.HostBootId,
+            null,
+            "host_boot_id_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.HostBootId,
+            "{bbbbbbbb-bbbb-4bbb-9bbb-bbbbbbbbbbbb}",
+            "host_boot_id_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.HostGeneration,
+            "0",
+            "host_generation_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.HostGeneration,
+            "01",
+            "host_generation_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.HostGeneration,
+            "9223372036854775808",
+            "host_generation_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.HostExecutableDigest,
+            new string('A', 64),
+            "host_executable_digest_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.HostBuildDigest,
+            new string('b', 63),
+            "host_build_digest_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.PublicContractDigest,
+            new string('g', 64),
+            "public_contract_digest_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.ConfigurationDigest,
+            null,
+            "configuration_digest_invalid"
+        },
+        {
+            PrivateHostBootstrapEnvironment.PackageManifestDigest,
+            string.Empty,
+            "package_manifest_digest_invalid"
+        },
     };
 
     [Fact]
@@ -131,7 +261,7 @@ public sealed class PrivateHostBootstrapTests
 
         Assert.Equal("handle_alias", exception.DetailCode);
         Assert.Empty(native.Handles);
-        Assert.Equal(4, timeline.Count);
+        Assert.Equal(ExpectedHostCaptureTimeline().Length, timeline.Count);
         Assert.Empty(environment.Values);
     }
 
@@ -149,12 +279,7 @@ public sealed class PrivateHostBootstrapTests
 
         Assert.Equal("environment_capture_failed", exception.DetailCode);
         Assert.Equal(
-            [
-                "get:PTK_HOST_REQUEST_READ_HANDLE",
-                "get:PTK_HOST_EVENT_WRITE_HANDLE",
-                "remove:PTK_HOST_REQUEST_READ_HANDLE",
-                "remove:PTK_HOST_EVENT_WRITE_HANDLE",
-            ],
+            ExpectedHostCaptureTimeline(),
             environment.Timeline);
         Assert.Empty(environment.Values);
         AssertNormalized(exception);
@@ -174,12 +299,7 @@ public sealed class PrivateHostBootstrapTests
 
         Assert.Equal("environment_removal_failed", exception.DetailCode);
         Assert.Equal(
-            [
-                "get:PTK_HOST_REQUEST_READ_HANDLE",
-                "get:PTK_HOST_EVENT_WRITE_HANDLE",
-                "remove:PTK_HOST_REQUEST_READ_HANDLE",
-                "remove:PTK_HOST_EVENT_WRITE_HANDLE",
-            ],
+            ExpectedHostCaptureTimeline(),
             environment.Timeline);
         Assert.Empty(environment.Values);
         AssertNormalized(exception);
@@ -295,8 +415,7 @@ public sealed class PrivateHostBootstrapTests
 
         Assert.Equal(
             [
-                "remove:PTK_HOST_REQUEST_READ_HANDLE",
-                "remove:PTK_HOST_EVENT_WRITE_HANDLE",
+                .. ExpectedHostRemoveTimeline(),
                 "remove:PTK_WORKER_REQUEST_HANDLE",
                 "remove:PTK_WORKER_EVENT_HANDLE",
             ],
@@ -317,7 +436,7 @@ public sealed class PrivateHostBootstrapTests
             boundary.PoisonAndRemove);
 
         Assert.Equal("environment_removal_failed", exception.DetailCode);
-        Assert.Equal(4, environment.Timeline.Count);
+        Assert.Equal(ExpectedHostVariables.Length + 2, environment.Timeline.Count);
         Assert.All(environment.Timeline, item => Assert.StartsWith("remove:", item));
         Assert.Empty(environment.Values);
         AssertNormalized(exception);
@@ -344,6 +463,9 @@ public sealed class PrivateHostBootstrapTests
             PrivateHostBootstrapEnvironment.RequestReadHandle));
         Assert.True(environment.Values.ContainsKey(
             PrivateHostBootstrapEnvironment.EventWriteHandle));
+        Assert.All(
+            ExpectedHostVariables,
+            variable => Assert.True(environment.Values.ContainsKey(variable)));
     }
 
     [Fact]
@@ -521,17 +643,33 @@ public sealed class PrivateHostBootstrapTests
             {
                 [PrivateHostBootstrapEnvironment.RequestReadHandle] = request,
                 [PrivateHostBootstrapEnvironment.EventWriteHandle] = events,
+                [PrivateHostBootstrapEnvironment.GuardianBootId] = GuardianBoot,
+                [PrivateHostBootstrapEnvironment.HostBootId] = HostBoot,
+                [PrivateHostBootstrapEnvironment.HostGeneration] = HostGeneration,
+                [PrivateHostBootstrapEnvironment.HostExecutableDigest] = HostExecutableDigest,
+                [PrivateHostBootstrapEnvironment.HostBuildDigest] = HostBuildDigest,
+                [PrivateHostBootstrapEnvironment.PublicContractDigest] = PublicContractDigest,
+                [PrivateHostBootstrapEnvironment.ConfigurationDigest] = ConfigurationDigest,
+                [PrivateHostBootstrapEnvironment.PackageManifestDigest] = PackageManifestDigest,
             },
             timeline);
 
-    private static RecordingEnvironment AllPrivateEnvironment() =>
-        new(new Dictionary<string, string?>
-        {
-            [PrivateHostBootstrapEnvironment.RequestReadHandle] = "101",
-            [PrivateHostBootstrapEnvironment.EventWriteHandle] = "202",
-            [WorkerBootstrapEnvironment.RequestHandle] = "303",
-            [WorkerBootstrapEnvironment.EventHandle] = "404",
-        });
+    private static RecordingEnvironment AllPrivateEnvironment()
+    {
+        var environment = HostEnvironment("101", "202");
+        environment.Values[WorkerBootstrapEnvironment.RequestHandle] = "303";
+        environment.Values[WorkerBootstrapEnvironment.EventHandle] = "404";
+        return environment;
+    }
+
+    private static string[] ExpectedHostCaptureTimeline() =>
+    [
+        .. ExpectedHostVariables.Select(variable => $"get:{variable}"),
+        .. ExpectedHostRemoveTimeline(),
+    ];
+
+    private static string[] ExpectedHostRemoveTimeline() =>
+        [.. ExpectedHostVariables.Select(variable => $"remove:{variable}")];
 
     private const int TestFGetFd = 1;
     private const int TestFdCloseOnExec = 1;

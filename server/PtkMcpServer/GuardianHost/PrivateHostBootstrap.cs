@@ -2,6 +2,7 @@ using System.Globalization;
 using System.Runtime.InteropServices;
 using Microsoft.Win32.SafeHandles;
 using PtkMcpServer.Worker;
+using PtkSharedContracts;
 
 namespace PtkMcpServer.GuardianHost;
 
@@ -9,13 +10,32 @@ internal static class PrivateHostBootstrapEnvironment
 {
     internal const string RequestReadHandle = "PTK_HOST_REQUEST_READ_HANDLE";
     internal const string EventWriteHandle = "PTK_HOST_EVENT_WRITE_HANDLE";
+    internal const string GuardianBootId = "PTK_HOST_GUARDIAN_BOOT_ID";
+    internal const string HostBootId = "PTK_HOST_BOOT_ID";
+    internal const string HostGeneration = "PTK_HOST_GENERATION";
+    internal const string HostExecutableDigest = "PTK_HOST_EXECUTABLE_SHA256";
+    internal const string HostBuildDigest = "PTK_HOST_BUILD_SHA256";
+    internal const string PublicContractDigest = "PTK_HOST_PUBLIC_CONTRACT_SHA256";
+    internal const string ConfigurationDigest = "PTK_HOST_CONFIGURATION_SHA256";
+    internal const string PackageManifestDigest = "PTK_HOST_PACKAGE_MANIFEST_SHA256";
 
-    internal static readonly IReadOnlySet<string> ReservedHandleVariables =
-        new HashSet<string>(StringComparer.OrdinalIgnoreCase)
-        {
+    internal static readonly IReadOnlyList<string> VariablesInCaptureOrder =
+        Array.AsReadOnly(
+        [
             RequestReadHandle,
             EventWriteHandle,
-        };
+            GuardianBootId,
+            HostBootId,
+            HostGeneration,
+            HostExecutableDigest,
+            HostBuildDigest,
+            PublicContractDigest,
+            ConfigurationDigest,
+            PackageManifestDigest,
+        ]);
+
+    internal static readonly IReadOnlySet<string> ReservedVariables =
+        new HashSet<string>(VariablesInCaptureOrder, StringComparer.OrdinalIgnoreCase);
 }
 
 internal sealed class PrivateHostBootstrapException : Exception
@@ -55,8 +75,9 @@ internal interface IPrivateHostBootstrapStreams : IDisposable
 }
 
 /// <summary>
-/// Bounded, one-use ownership of the private host's two inherited protocol
-/// handles. The raw values are never exposed after capture.
+/// Bounded, one-use ownership of the private host's inherited protocol
+/// handles and immutable launch identity. Raw bootstrap values are never
+/// exposed after capture.
 /// </summary>
 internal sealed class PrivateHostBootstrapValues : IDisposable
 {
@@ -66,13 +87,35 @@ internal sealed class PrivateHostBootstrapValues : IDisposable
 
     internal PrivateHostBootstrapValues(
         IPrivateHostBootstrapHandle requestReadHandle,
-        IPrivateHostBootstrapHandle eventWriteHandle)
+        IPrivateHostBootstrapHandle eventWriteHandle,
+        GuardianBootId guardianBootId,
+        HostBootId hostBootId,
+        HostGeneration hostGeneration,
+        PrivateHostServerPins serverPins)
     {
         _requestReadHandle = requestReadHandle ?? throw new ArgumentNullException(
             nameof(requestReadHandle));
         _eventWriteHandle = eventWriteHandle ?? throw new ArgumentNullException(
             nameof(eventWriteHandle));
+        GuardianBootId = guardianBootId ?? throw new ArgumentNullException(
+            nameof(guardianBootId));
+        HostBootId = hostBootId ?? throw new ArgumentNullException(
+            nameof(hostBootId));
+        HostGeneration = hostGeneration ?? throw new ArgumentNullException(
+            nameof(hostGeneration));
+        ServerPins = serverPins ?? throw new ArgumentNullException(nameof(serverPins));
     }
+
+    internal GuardianBootId GuardianBootId { get; }
+
+    internal HostBootId HostBootId { get; }
+
+    internal HostGeneration HostGeneration { get; }
+
+    internal PrivateHostServerPins ServerPins { get; }
+
+    internal PrivateHostServerIdentity CreateServerIdentity(int hostPid) =>
+        new(GuardianBootId, HostBootId, HostGeneration, hostPid);
 
     internal IPrivateHostBootstrapStreams OpenStreams()
     {
@@ -204,25 +247,23 @@ internal static class PrivateHostBootstrapCapture
     {
         source ??= ProcessEnvironmentSource.Instance;
         native ??= PrivateHostBootstrapNative.Instance;
-        string? requestValue = null;
-        string? eventValue = null;
+        var captured = new string?[PrivateHostBootstrapEnvironment.VariablesInCaptureOrder.Count];
         Exception? captureFailure = null;
         Exception? removalFailure = null;
 
-        Capture(
-            () => source.Get(PrivateHostBootstrapEnvironment.RequestReadHandle),
-            value => requestValue = value,
-            ref captureFailure);
-        Capture(
-            () => source.Get(PrivateHostBootstrapEnvironment.EventWriteHandle),
-            value => eventValue = value,
-            ref captureFailure);
-        Attempt(
-            () => source.Remove(PrivateHostBootstrapEnvironment.RequestReadHandle),
-            ref removalFailure);
-        Attempt(
-            () => source.Remove(PrivateHostBootstrapEnvironment.EventWriteHandle),
-            ref removalFailure);
+        for (var index = 0;
+             index < PrivateHostBootstrapEnvironment.VariablesInCaptureOrder.Count;
+             index++)
+        {
+            var captureIndex = index;
+            var variable = PrivateHostBootstrapEnvironment.VariablesInCaptureOrder[index];
+            Capture(
+                () => source.Get(variable),
+                value => captured[captureIndex] = value,
+                ref captureFailure);
+        }
+        foreach (var variable in PrivateHostBootstrapEnvironment.VariablesInCaptureOrder)
+            Attempt(() => source.Remove(variable), ref removalFailure);
 
         if (removalFailure is not null)
             throw new PrivateHostBootstrapException("environment_removal_failed");
@@ -230,10 +271,19 @@ internal static class PrivateHostBootstrapCapture
             throw new PrivateHostBootstrapException("environment_capture_failed");
 
         var size = pointerSize ?? IntPtr.Size;
-        var requestHandle = ParseHandle(requestValue, size);
-        var eventHandle = ParseHandle(eventValue, size);
+        var requestHandle = ParseHandle(captured[0], size);
+        var eventHandle = ParseHandle(captured[1], size);
         if (requestHandle == eventHandle)
             throw new PrivateHostBootstrapException("handle_alias");
+        var guardianBootId = ParseGuardianBootId(captured[2]);
+        var hostBootId = ParseHostBootId(captured[3]);
+        var hostGeneration = ParseHostGeneration(captured[4]);
+        var serverPins = new PrivateHostServerPins(
+            ParseDigest(captured[5], "host_executable_digest_invalid"),
+            ParseDigest(captured[6], "host_build_digest_invalid"),
+            ParseDigest(captured[7], "public_contract_digest_invalid"),
+            ParseDigest(captured[8], "configuration_digest_invalid"),
+            ParseDigest(captured[9], "package_manifest_digest_invalid"));
 
         IPrivateHostBootstrapHandle? ownedRequest = null;
         IPrivateHostBootstrapHandle? ownedEvent = null;
@@ -241,7 +291,13 @@ internal static class PrivateHostBootstrapCapture
         {
             ownedRequest = Own(native, requestHandle);
             ownedEvent = Own(native, eventHandle);
-            var values = new PrivateHostBootstrapValues(ownedRequest, ownedEvent);
+            var values = new PrivateHostBootstrapValues(
+                ownedRequest,
+                ownedEvent,
+                guardianBootId,
+                hostBootId,
+                hostGeneration,
+                serverPins);
             ownedRequest = null;
             ownedEvent = null;
             return values;
@@ -283,6 +339,66 @@ internal static class PrivateHostBootstrapCapture
             throw new PrivateHostBootstrapException("handle_invalid");
 
         return checked((nuint)parsed);
+    }
+
+    private static GuardianBootId ParseGuardianBootId(string? value)
+    {
+        if (!TryParseCanonicalUuidV4(value, out var parsed))
+            throw new PrivateHostBootstrapException("guardian_boot_id_invalid");
+        return new GuardianBootId(parsed);
+    }
+
+    private static HostBootId ParseHostBootId(string? value)
+    {
+        if (!TryParseCanonicalUuidV4(value, out var parsed))
+            throw new PrivateHostBootstrapException("host_boot_id_invalid");
+        return new HostBootId(parsed);
+    }
+
+    private static bool TryParseCanonicalUuidV4(string? value, out Guid parsed)
+    {
+        parsed = default;
+        return value is not null &&
+            Guid.TryParseExact(value, "D", out parsed) &&
+            string.Equals(value, parsed.ToString("D"), StringComparison.Ordinal) &&
+            value[14] == '4' &&
+            value[19] is '8' or '9' or 'a' or 'b';
+    }
+
+    private static HostGeneration ParseHostGeneration(string? value)
+    {
+        if (value is null || value.Length == 0 || value[0] == '0')
+            throw new PrivateHostBootstrapException("host_generation_invalid");
+        foreach (var character in value)
+        {
+            if (character is < '0' or > '9')
+                throw new PrivateHostBootstrapException("host_generation_invalid");
+        }
+        if (!long.TryParse(
+                value,
+                NumberStyles.None,
+                CultureInfo.InvariantCulture,
+                out var parsed) ||
+            parsed <= 0)
+        {
+            throw new PrivateHostBootstrapException("host_generation_invalid");
+        }
+        return new HostGeneration(parsed);
+    }
+
+    private static Sha256Digest ParseDigest(string? value, string detailCode)
+    {
+        if (value is null || value.Length != 64)
+            throw new PrivateHostBootstrapException(detailCode);
+        foreach (var character in value)
+        {
+            if (character is not (>= '0' and <= '9') and
+                not (>= 'a' and <= 'f'))
+            {
+                throw new PrivateHostBootstrapException(detailCode);
+            }
+        }
+        return new Sha256Digest(value);
     }
 
     private static IPrivateHostBootstrapHandle Own(
@@ -392,8 +508,8 @@ internal sealed class PrivateProcessBootstrapBoundary :
     public void PoisonAndRemove()
     {
         Exception? removalFailure = null;
-        Remove(PrivateHostBootstrapEnvironment.RequestReadHandle, ref removalFailure);
-        Remove(PrivateHostBootstrapEnvironment.EventWriteHandle, ref removalFailure);
+        foreach (var variable in PrivateHostBootstrapEnvironment.VariablesInCaptureOrder)
+            Remove(variable, ref removalFailure);
         Remove(WorkerBootstrapEnvironment.RequestHandle, ref removalFailure);
         Remove(WorkerBootstrapEnvironment.EventHandle, ref removalFailure);
         if (removalFailure is not null)
