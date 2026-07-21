@@ -3,6 +3,7 @@ using System.Text.Json;
 using System.Threading.Channels;
 using PtkMcpGuardian.Standalone;
 using PtkMcpGuardian.Standalone.Fake;
+using PtkMcpServer.Audit;
 using PtkSharedContracts;
 
 namespace PtkMcpGuardian.Tests;
@@ -10,6 +11,20 @@ namespace PtkMcpGuardian.Tests;
 public sealed class GuardianMcpApplicationTests
 {
     private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(10);
+
+    [Fact]
+    public void Dispatcher_contract_requires_one_admitted_guardian_audit_capability()
+    {
+        var method = Assert.Single(typeof(IGuardianToolDispatcher).GetMethods());
+        Assert.Equal(
+            [
+                typeof(string),
+                typeof(IReadOnlyDictionary<string, JsonElement>),
+                typeof(GuardianAuditCall),
+                typeof(CancellationToken),
+            ],
+            method.GetParameters().Select(parameter => parameter.ParameterType));
+    }
 
     [Fact]
     public async Task Real_stream_transport_uses_only_the_frozen_contract_and_dispatcher()
@@ -64,6 +79,13 @@ public sealed class GuardianMcpApplicationTests
         Assert.Equal("ptk_state", invocation.ToolName);
         Assert.True(invocation.Arguments["listAvailable"].GetBoolean());
         Assert.Equal("default", invocation.Arguments["session"].GetString());
+        Assert.True(invocation.AuditCall.Accepted);
+        Assert.True(invocation.AuditCall.TerminalWritten);
+        Assert.Equal("ptk_state", invocation.AuditCall.Metadata.Request.Tool);
+        Assert.Equal("default", invocation.AuditCall.Metadata.Request.SessionRequested);
+        Assert.Equal(
+            "guardian-apphost-test",
+            invocation.AuditCall.Metadata.Actor.ClientName);
 
         var unknown = await harness.RequestAsync("tools/call", new
         {
@@ -75,6 +97,10 @@ public sealed class GuardianMcpApplicationTests
             GuardianMcpApplication.UnknownToolText,
             expectedError: true);
         Assert.Single(dispatcher.Invocations);
+        Assert.Equal(
+            ["call.accepted", "call.completed"],
+            harness.AuditLines.Select(line =>
+                ParseAudit(line).GetProperty("event_type").GetString()));
 
         await harness.ShutdownAsync();
         Assert.Equal(4, harness.PublicLines.Count);
@@ -84,6 +110,49 @@ public sealed class GuardianMcpApplicationTests
             Assert.Equal(JsonValueKind.Object, document.RootElement.ValueKind);
             Assert.Equal("2.0", document.RootElement.GetProperty("jsonrpc").GetString());
         });
+    }
+
+    [Fact]
+    public async Task Failed_audit_admission_never_reaches_the_dispatcher()
+    {
+        var dispatcher = new RecordingDispatcher(
+            new GuardianToolResult("must-not-run", isError: false));
+        await using var harness = await McpHarness.StartAsync(
+            dispatcher,
+            new RejectingAdmissionOwner());
+
+        _ = await harness.RequestAsync("initialize", new
+        {
+            protocolVersion = "2025-06-18",
+            capabilities = new { },
+            clientInfo = new { name = "guardian-admission-test", version = "1.0.0" },
+        });
+        await harness.NotifyAsync("notifications/initialized", new { });
+
+        var call = await harness.RequestAsync("tools/call", new
+        {
+            name = "ptk_job",
+            arguments = new { action = "list", session = "default" },
+        });
+        var result = call.GetProperty("result");
+        Assert.True(result.GetProperty("isError").GetBoolean());
+        Assert.Contains(
+            AuditCallLifecycle.NotStartedMessage,
+            result.GetProperty("content")[0].GetProperty("text").GetString(),
+            StringComparison.Ordinal);
+
+        var state = await harness.RequestAsync("tools/call", new
+        {
+            name = "ptk_state",
+            arguments = new { listAvailable = false, session = "default" },
+        });
+        var stateResult = state.GetProperty("result");
+        Assert.False(stateResult.GetProperty("isError").GetBoolean());
+        Assert.Contains(
+            "unrecorded=true",
+            stateResult.GetProperty("content")[0].GetProperty("text").GetString(),
+            StringComparison.Ordinal);
+        Assert.Empty(dispatcher.Invocations);
     }
 
     [Fact]
@@ -142,8 +211,15 @@ public sealed class GuardianMcpApplicationTests
     [Fact]
     public async Task One_application_instance_owns_exactly_one_public_transport()
     {
-        var application = new GuardianMcpApplication(new RecordingDispatcher(
-            new GuardianToolResult("{}", isError: false)));
+        using var audit = R3FakeGuardianAuditRuntime.Create(
+            new GuardianBootId(Guid.NewGuid()),
+            new GuardianAuditHostSnapshotSource());
+        var application = new GuardianMcpApplication(
+            new RecordingDispatcher(new GuardianToolResult("{}", isError: false)),
+            audit.Runtime,
+            R3FakeGuardianComposition.DefaultCallTimeout,
+            R3FakeGuardianComposition.MaximumCallTimeout,
+            audit.OutputProtector);
         using var firstInput = new ChannelStream();
         using var firstOutput = new ChannelStream();
         firstInput.CompleteWriting();
@@ -169,9 +245,16 @@ public sealed class GuardianMcpApplicationTests
         Assert.False(result.TryGetProperty("structuredContent", out _));
     }
 
+    private static JsonElement ParseAudit(byte[] line)
+    {
+        using var document = JsonDocument.Parse(line.AsMemory(0, line.Length - 1));
+        return document.RootElement.Clone();
+    }
+
     private sealed record DispatcherInvocation(
         string ToolName,
-        IReadOnlyDictionary<string, JsonElement> Arguments);
+        IReadOnlyDictionary<string, JsonElement> Arguments,
+        GuardianAuditCall AuditCall);
 
     private sealed class RecordingDispatcher(GuardianToolResult result) : IGuardianToolDispatcher
     {
@@ -183,13 +266,48 @@ public sealed class GuardianMcpApplicationTests
         public ValueTask<GuardianToolResult> DispatchAsync(
             string toolName,
             IReadOnlyDictionary<string, JsonElement> arguments,
+            GuardianAuditCall auditCall,
             CancellationToken cancellationToken)
         {
             cancellationToken.ThrowIfCancellationRequested();
             _invocations.Add(new DispatcherInvocation(
                 toolName,
-                new Dictionary<string, JsonElement>(arguments, StringComparer.Ordinal)));
+                new Dictionary<string, JsonElement>(arguments, StringComparer.Ordinal),
+                auditCall));
             return ValueTask.FromResult(_result);
+        }
+    }
+
+    private sealed class RejectingAdmissionOwner : IAuditAdmissionOwner
+    {
+        internal RejectingAdmissionOwner()
+        {
+            var options = AuditOptions.Create(Path.Combine(
+                Path.GetTempPath(),
+                "ptk-rejecting-guardian-audit-" + Guid.NewGuid().ToString("N")));
+            Health = new AuditHealth(options);
+            Health.MarkUnavailable("journal.unavailable");
+        }
+
+        public AuditHealth Health { get; }
+
+        public void Touch()
+        {
+        }
+
+        public bool TryBeginCall(
+            AuditCallMetadata metadata,
+            string? exactSubmittedScript,
+            out IAuditBoundaryCall? call,
+            out IDisposable? callLease,
+            out string? failureClass)
+        {
+            ArgumentNullException.ThrowIfNull(metadata);
+            _ = exactSubmittedScript;
+            call = null;
+            callLease = null;
+            failureClass = "journal.unavailable";
+            return false;
         }
     }
 
@@ -199,13 +317,19 @@ public sealed class GuardianMcpApplicationTests
         private readonly ChannelStream _output = new();
         private readonly StreamWriter _writer;
         private readonly StreamReader _reader;
+        private readonly R3FakeGuardianAuditRuntime _audit;
         private readonly Task _application;
         private readonly List<string> _publicLines = [];
         private int _nextRequestId;
         private bool _shutdown;
 
-        private McpHarness(IGuardianToolDispatcher dispatcher)
+        private McpHarness(
+            IGuardianToolDispatcher dispatcher,
+            IAuditAdmissionOwner? auditOwner)
         {
+            _audit = R3FakeGuardianAuditRuntime.Create(
+                new GuardianBootId(Guid.NewGuid()),
+                new GuardianAuditHostSnapshotSource());
             _writer = new StreamWriter(
                 _input,
                 new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
@@ -221,13 +345,23 @@ public sealed class GuardianMcpApplicationTests
                 detectEncodingFromByteOrderMarks: false,
                 bufferSize: 1024,
                 leaveOpen: true);
-            _application = new GuardianMcpApplication(dispatcher).RunAsync(_input, _output);
+            _application = new GuardianMcpApplication(
+                    dispatcher,
+                    auditOwner ?? _audit.Runtime,
+                    R3FakeGuardianComposition.DefaultCallTimeout,
+                    R3FakeGuardianComposition.MaximumCallTimeout,
+                    _audit.OutputProtector)
+                .RunAsync(_input, _output);
         }
 
         internal IReadOnlyList<string> PublicLines => _publicLines;
 
-        internal static Task<McpHarness> StartAsync(IGuardianToolDispatcher dispatcher) =>
-            Task.FromResult(new McpHarness(dispatcher));
+        internal IReadOnlyList<byte[]> AuditLines => _audit.Sink.Lines;
+
+        internal static Task<McpHarness> StartAsync(
+            IGuardianToolDispatcher dispatcher,
+            IAuditAdmissionOwner? auditOwner = null) =>
+            Task.FromResult(new McpHarness(dispatcher, auditOwner));
 
         internal async Task<JsonElement> RequestAsync(string method, object parameters)
         {
@@ -291,6 +425,7 @@ public sealed class GuardianMcpApplicationTests
                 _reader.Dispose();
                 _input.Dispose();
                 _output.Dispose();
+                _audit.Dispose();
             }
         }
     }

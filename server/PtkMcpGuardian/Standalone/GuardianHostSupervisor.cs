@@ -6,6 +6,7 @@ using PtkMcpGuardian.Host;
 using PtkMcpGuardian.Lifecycle;
 using PtkMcpGuardian.Ownership;
 using PtkMcpGuardian.Output;
+using PtkMcpServer.Audit;
 using PtkSharedContracts;
 
 namespace PtkMcpGuardian.Standalone;
@@ -171,10 +172,12 @@ internal sealed class GuardianHostSupervisor :
     public ValueTask<GuardianToolResult> DispatchAsync(
         string toolName,
         IReadOnlyDictionary<string, JsonElement> arguments,
+        GuardianAuditCall auditCall,
         CancellationToken cancellationToken)
     {
         ArgumentNullException.ThrowIfNull(toolName);
         ArgumentNullException.ThrowIfNull(arguments);
+        ArgumentNullException.ThrowIfNull(auditCall);
 
         if (StringComparer.Ordinal.Equals(toolName, "ptk_state"))
         {
@@ -194,7 +197,7 @@ internal sealed class GuardianHostSupervisor :
                 isError: true));
         }
 
-        return DispatchJobListAsync(cancellationToken);
+        return DispatchJobListAsync(auditCall, cancellationToken);
     }
 
     internal PublicStateSnapshot SnapshotState()
@@ -224,9 +227,10 @@ internal sealed class GuardianHostSupervisor :
     }
 
     private ValueTask<GuardianToolResult> DispatchJobListAsync(
+        GuardianAuditCall auditCall,
         CancellationToken cancellationToken)
     {
-        var callId = new CallId(Guid.CreateVersion7());
+        var callId = auditCall.PublicCallId;
         var expires = FutureUnixTimeMilliseconds(DispatchCapabilityLifetime);
         return DispatchSessionOperationAsync(
             new JobListOperation(

@@ -1,5 +1,6 @@
 using System.Diagnostics.CodeAnalysis;
 using PtkMcpGuardian.Lifecycle;
+using PtkMcpServer.Audit;
 using PtkSharedContracts;
 
 namespace PtkMcpGuardian.Standalone.Fake;
@@ -12,8 +13,11 @@ namespace PtkMcpGuardian.Standalone.Fake;
 internal sealed class R3FakeGuardianComposition : IAsyncDisposable
 {
     internal static readonly TimeSpan HostStartupTimeout = TimeSpan.FromSeconds(30);
+    internal static readonly TimeSpan DefaultCallTimeout = TimeSpan.FromMinutes(5);
+    internal static readonly TimeSpan MaximumCallTimeout = TimeSpan.FromHours(1);
 
     private readonly GuardianHostSupervisor _supervisor;
+    private readonly R3FakeGuardianAuditRuntime _audit;
     private int _runClaimed;
     private int _disposeClaimed;
 
@@ -22,13 +26,15 @@ internal sealed class R3FakeGuardianComposition : IAsyncDisposable
         GuardianHostSupervisorPins pins,
         R3FakeHostControl control,
         R3FakeHostAttemptFactory factory,
-        GuardianHostSupervisor supervisor)
+        GuardianHostSupervisor supervisor,
+        R3FakeGuardianAuditRuntime audit)
     {
         GuardianBootId = guardianBootId;
         Pins = pins;
         Control = control;
         Factory = factory;
         _supervisor = supervisor;
+        _audit = audit;
     }
 
     internal GuardianBootId GuardianBootId { get; }
@@ -54,38 +60,50 @@ internal sealed class R3FakeGuardianComposition : IAsyncDisposable
             new R3SystemGuardianHostSupervisorScheduler(selectedTimeProvider);
         var guardianBootId = new GuardianBootId(Guid.NewGuid());
         var pins = CreatePins();
-        var factory = new R3FakeHostAttemptFactory(
-            pins,
-            selectedControl,
-            profile: selectedProfile);
-        var lifecycle = new GuardianHostLifecycleController(
-            guardianBootId,
-            new MonotonicHostGenerationAllocator(),
-            new R3RandomHostBootIdSource(),
-            new R3GuardianHostStartupDeadlineSource(
+        var hostSnapshots = new GuardianAuditHostSnapshotSource();
+        var audit = R3FakeGuardianAuditRuntime.Create(guardianBootId, hostSnapshots);
+        try
+        {
+            var factory = new R3FakeHostAttemptFactory(
+                pins,
+                selectedControl,
+                profile: selectedProfile);
+            var lifecycle = new GuardianHostLifecycleController(
+                guardianBootId,
+                new MonotonicHostGenerationAllocator(),
+                new R3RandomHostBootIdSource(),
+                new R3GuardianHostStartupDeadlineSource(
+                    selectedTimeProvider,
+                    HostStartupTimeout),
+                factory,
                 selectedTimeProvider,
-                HostStartupTimeout),
-            factory,
-            selectedTimeProvider);
-        var supervisor = new GuardianHostSupervisor(
-            guardianBootId,
-            lifecycle,
-            new R3FakeRecoveryManifestSource(
+                hostSnapshots);
+            var supervisor = new GuardianHostSupervisor(
+                guardianBootId,
+                lifecycle,
+                new R3FakeRecoveryManifestSource(
+                    guardianBootId,
+                    pins,
+                    selectedProfile),
+                new MonotonicPrivateRequestIdAllocator(),
+                selectedTimeProvider,
+                selectedScheduler,
+                new R3FakeSessionSource(selectedProfile),
+                R3NoOpDispatchObserver.Instance,
+                pins);
+            return new R3FakeGuardianComposition(
                 guardianBootId,
                 pins,
-                selectedProfile),
-            new MonotonicPrivateRequestIdAllocator(),
-            selectedTimeProvider,
-            selectedScheduler,
-            new R3FakeSessionSource(selectedProfile),
-            R3NoOpDispatchObserver.Instance,
-            pins);
-        return new R3FakeGuardianComposition(
-            guardianBootId,
-            pins,
-            selectedControl,
-            factory,
-            supervisor);
+                selectedControl,
+                factory,
+                supervisor,
+                audit);
+        }
+        catch
+        {
+            audit.Dispose();
+            throw;
+        }
     }
 
     internal async Task RunAsync(
@@ -101,7 +119,12 @@ internal sealed class R3FakeGuardianComposition : IAsyncDisposable
         try
         {
             await _supervisor.StartAsync(cancellationToken).ConfigureAwait(false);
-            await new GuardianMcpApplication(_supervisor)
+            await new GuardianMcpApplication(
+                    _supervisor,
+                    _audit.Runtime,
+                    DefaultCallTimeout,
+                    MaximumCallTimeout,
+                    _audit.OutputProtector)
                 .RunAsync(publicInput, publicOutput, cancellationToken)
                 .ConfigureAwait(false);
         }
@@ -115,7 +138,14 @@ internal sealed class R3FakeGuardianComposition : IAsyncDisposable
     {
         if (Interlocked.Exchange(ref _disposeClaimed, 1) != 0)
             return;
-        await _supervisor.DisposeAsync().ConfigureAwait(false);
+        try
+        {
+            await _supervisor.DisposeAsync().ConfigureAwait(false);
+        }
+        finally
+        {
+            _audit.Dispose();
+        }
     }
 
     private static GuardianHostSupervisorPins CreatePins() => new(
@@ -125,6 +155,120 @@ internal sealed class R3FakeGuardianComposition : IAsyncDisposable
         Sha256Digest.Compute("ptk.r3.fake-host/configuration"u8),
         Sha256Digest.Compute("ptk.r3.fake-host/catalog"u8),
         Sha256Digest.Compute("ptk.r3.fake-host/package"u8));
+}
+
+/// <summary>
+/// In-memory journal composition for the explicitly nonproduction R3 fake
+/// apphost. It exercises the real guardian admission gate without writing a
+/// fake host's audit stream into the operator's production spool.
+/// </summary>
+internal sealed class R3FakeGuardianAuditRuntime : IDisposable
+{
+    private const string RootPrefix = "ptk-r3-fake-guardian-audit-";
+
+    private readonly string _root;
+    private readonly AuditJournal _journal;
+    private int _disposed;
+
+    private R3FakeGuardianAuditRuntime(
+        string root,
+        AuditRuntimeGate runtime,
+        AuditJournal journal,
+        InMemoryAuditJournalSink sink,
+        AuditOutputRequestProtector outputProtector)
+    {
+        _root = root;
+        Runtime = runtime;
+        _journal = journal;
+        Sink = sink;
+        OutputProtector = outputProtector;
+    }
+
+    internal AuditRuntimeGate Runtime { get; }
+
+    internal AuditOutputRequestProtector OutputProtector { get; }
+
+    internal InMemoryAuditJournalSink Sink { get; }
+
+    internal static R3FakeGuardianAuditRuntime Create(
+        GuardianBootId guardianBootId,
+        IAuditHostSnapshotSource hostSnapshots)
+    {
+        ArgumentNullException.ThrowIfNull(guardianBootId);
+        ArgumentNullException.ThrowIfNull(hostSnapshots);
+
+        var root = Path.Combine(Path.GetTempPath(), RootPrefix + Guid.NewGuid().ToString("N"));
+        AuditJournal? journal = null;
+        AuditOutputRequestProtector? outputProtector = null;
+        try
+        {
+            var options = AuditOptions.Create(root);
+            var health = new AuditHealth(options);
+            var sink = new InMemoryAuditJournalSink(
+                options.SegmentBytes,
+                options.AggregateBytes,
+                options.ProtectionMode,
+                options.RetentionAge);
+            journal = new AuditJournal(
+                options,
+                health,
+                sink,
+                "ptk-r3-fake-guardian",
+                binaryDigest: null,
+                hostId: Guid.NewGuid(),
+                supervisorBootId: guardianBootId.Value,
+                hostSnapshots: hostSnapshots);
+            var runtime = AuditRuntimeGate.CreateOperationalForTests(
+                options,
+                health,
+                journal,
+                new ScriptEvidenceStore(options),
+                GuardianAuditCallFactory.Instance);
+            outputProtector = new AuditOutputRequestProtector();
+            return new R3FakeGuardianAuditRuntime(
+                root,
+                runtime,
+                journal,
+                sink,
+                outputProtector);
+        }
+        catch
+        {
+            outputProtector?.Dispose();
+            journal?.Dispose();
+            DeleteRoot(root);
+            throw;
+        }
+    }
+
+    public void Dispose()
+    {
+        if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            return;
+        try
+        {
+            Runtime.Dispose();
+        }
+        finally
+        {
+            OutputProtector.Dispose();
+            _journal.Dispose();
+            DeleteRoot(_root);
+        }
+    }
+
+    private static void DeleteRoot(string root)
+    {
+        var fullRoot = Path.GetFullPath(root);
+        var tempRoot = Path.GetFullPath(Path.GetTempPath());
+        if (!fullRoot.StartsWith(tempRoot, StringComparison.OrdinalIgnoreCase) ||
+            !Path.GetFileName(fullRoot).StartsWith(RootPrefix, StringComparison.Ordinal))
+        {
+            throw new InvalidOperationException("The fake audit root escaped the temporary directory.");
+        }
+        if (Directory.Exists(fullRoot))
+            Directory.Delete(fullRoot, recursive: true);
+    }
 }
 
 internal sealed class R3RandomHostBootIdSource : IGuardianHostBootIdSource

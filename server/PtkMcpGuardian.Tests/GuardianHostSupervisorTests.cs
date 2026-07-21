@@ -8,7 +8,9 @@ using PtkMcpGuardian.Lifecycle;
 using PtkMcpGuardian.Ownership;
 using PtkMcpGuardian.Output;
 using PtkMcpGuardian.Standalone;
+using PtkMcpGuardian.Standalone.Fake;
 using PtkMcpServer;
+using PtkMcpServer.Audit;
 using PtkSharedContracts;
 
 namespace PtkMcpGuardian.Tests;
@@ -734,16 +736,10 @@ public sealed class GuardianHostSupervisorTests
         await rig.StartAsync();
         var scheduleCount = rig.Scheduler.ScheduleCount;
         var attemptCount = rig.Factory.Resources.Count;
-        var empty = EmptyArguments();
 
         for (var index = 0; index < 100; index++)
         {
-            var result = await rig.Supervisor.DispatchAsync(
-                "ptk_state",
-                empty,
-                CancellationToken.None);
-            Assert.False(result.IsError);
-            var snapshot = PublicStateCodec.Decode(Encoding.UTF8.GetBytes(result.Text));
+            var snapshot = await rig.ReadStateAsync();
             Assert.Equal(PublicHostState.Ready, snapshot.Host.State);
             Assert.True(snapshot.Host.ReadyForEffects);
         }
@@ -1226,6 +1222,7 @@ public sealed class GuardianHostSupervisorTests
     private sealed class TestRig : IAsyncDisposable
     {
         private readonly string? _outputRoot;
+        private readonly R3FakeGuardianAuditRuntime _audit;
 
         internal static readonly GuardianBootId Guardian = new(
             Guid.Parse("11111111-1111-4111-8111-111111111111"));
@@ -1297,13 +1294,16 @@ public sealed class GuardianHostSupervisorTests
                     new MonotonicPublicJobIdAllocator(),
                     maximumTrackedJobs);
             }
+            var hostSnapshots = new GuardianAuditHostSnapshotSource();
+            _audit = R3FakeGuardianAuditRuntime.Create(Guardian, hostSnapshots);
             var lifecycle = new GuardianHostLifecycleController(
                 Guardian,
                 new MonotonicHostGenerationAllocator(),
                 new RandomBootIdSource(),
                 new FixedDeadlineSource(Clock),
                 Factory,
-                Clock);
+                Clock,
+                hostSnapshots);
             Supervisor = new GuardianHostSupervisor(
                 Guardian,
                 lifecycle,
@@ -1332,11 +1332,7 @@ public sealed class GuardianHostSupervisorTests
         internal Task StartAsync() => Supervisor.StartAsync();
 
         internal Task<GuardianToolResult> DispatchJobListAsync() =>
-            Supervisor.DispatchAsync(
-                    "ptk_job",
-                    JobListArguments(),
-                    CancellationToken.None)
-                .AsTask();
+            DispatchPublicAsync("ptk_job", "list", JobListArguments());
 
         internal Task<GuardianToolResult> DispatchSessionOperationAsync(
             GuardianHostOperation operation,
@@ -1425,12 +1421,68 @@ public sealed class GuardianHostSupervisorTests
 
         internal async Task<PublicStateSnapshot> ReadStateAsync()
         {
-            var result = await Supervisor.DispatchAsync(
+            var result = await DispatchPublicAsync(
                 "ptk_state",
-                EmptyArguments(),
-                CancellationToken.None);
+                "state",
+                EmptyArguments());
             Assert.False(result.IsError);
             return PublicStateCodec.Decode(Encoding.UTF8.GetBytes(result.Text));
+        }
+
+        private async Task<GuardianToolResult> DispatchPublicAsync(
+            string tool,
+            string action,
+            IReadOnlyDictionary<string, JsonElement> arguments)
+        {
+            var metadata = new AuditCallMetadata(
+                new AuditActor
+                {
+                    Transport = "mcp_stdio",
+                    AttributionStrength = "transport_only",
+                },
+                new AuditRequest
+                {
+                    Tool = tool,
+                    Action = action,
+                    ProvidedFields = arguments.Keys.Order(StringComparer.Ordinal).ToArray(),
+                    SessionRequested = "default",
+                },
+                new AuditOperationProfile(
+                    MaximumCallRecordSlots: tool == "ptk_state" ? 5 : 3,
+                    PersistentJobTerminalSlots: 0,
+                    RequiresScriptEvidence: false,
+                    MayHaveSideEffects: true));
+            Assert.True(_audit.Runtime.TryBeginCall(
+                metadata,
+                exactSubmittedScript: null,
+                out var admitted,
+                out var lease,
+                out var failure), failure);
+            var auditCall = Assert.IsType<GuardianAuditCall>(admitted);
+            using (lease!)
+            {
+                try
+                {
+                    var result = await Supervisor.DispatchAsync(
+                        tool,
+                        arguments,
+                        auditCall,
+                        CancellationToken.None);
+                    if (!auditCall.TerminalWritten)
+                    {
+                        auditCall.CompleteFromFilter(
+                            result.IsError ? "failed" : "completed",
+                            Encoding.UTF8.GetByteCount(result.Text));
+                    }
+                    return result;
+                }
+                catch
+                {
+                    if (!auditCall.TerminalWritten)
+                        auditCall.CompleteFromFilter("failed", 0);
+                    throw;
+                }
+            }
         }
 
         public async ValueTask DisposeAsync()
@@ -1458,6 +1510,7 @@ public sealed class GuardianHostSupervisorTests
             }
             finally
             {
+                _audit.Dispose();
                 JobCapabilities?.Dispose();
                 OutputCoordinator?.Dispose();
                 OutputStore?.Dispose();
