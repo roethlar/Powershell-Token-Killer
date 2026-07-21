@@ -34,6 +34,7 @@ public sealed class GuardianArchitectureBoundaryTests
         "AuditBootExportSource.cs",
         "AuditCallLifecycle.cs",
         "AuditCallMetadata.cs",
+        "AuditCallMetadataCapture.cs",
         "AuditClosedSpoolChainReader.cs",
         "AuditClosedSpoolExportPump.cs",
         "AuditCompletedChainRetirement.cs",
@@ -80,7 +81,6 @@ public sealed class GuardianArchitectureBoundaryTests
     [
         "AuditCallContext.cs",
         "AuditCallFilter.cs",
-        "AuditCallMetadataCapture.cs",
     ];
 
     private static readonly string[] RequiredGuardianOwnershipCompileInputs =
