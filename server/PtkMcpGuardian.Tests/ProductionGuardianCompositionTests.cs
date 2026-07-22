@@ -1,3 +1,4 @@
+using System.Diagnostics;
 using System.Text;
 using System.Text.Json;
 using PtkMcpGuardian.Host;
@@ -216,6 +217,236 @@ public sealed class ProductionGuardianCompositionTests
         Assert.False(Directory.Exists(outputRoot));
     }
 
+    [Fact]
+    public async Task Windows_composition_recovers_a_real_host_on_the_same_public_connection()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var auditRoot = TemporaryRoot("recovery-audit");
+        var outputRoot = TemporaryRoot("recovery-output");
+        var launcher = new GatedContainmentLauncher();
+        var composition = ProductionGuardianComposition.Create(
+            Package(FindServerAppHost()),
+            LocalAudit(auditRoot),
+            launcher,
+            OutputOptions(outputRoot),
+            guardianBootId: Guardian,
+            defaultWorkerBootId: Worker);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var input = new R3BoundedOneWayStream();
+        using var output = new R3BoundedOneWayStream();
+        using var writer = new StreamWriter(
+            input,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true)
+        {
+            AutoFlush = true,
+            NewLine = "\n",
+        };
+        using var reader = new StreamReader(
+            output,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            detectEncodingFromByteOrderMarks: false,
+            bufferSize: 1024,
+            leaveOpen: true);
+        using var standardError = new StringWriter();
+        var run = Program.RunAsync(
+            [],
+            input,
+            output,
+            standardError,
+            productionComposition: composition,
+            cancellationToken: timeout.Token);
+        try
+        {
+            var initialized = await RequestAsync(
+                writer,
+                reader,
+                requestId: 1,
+                "initialize",
+                new
+                {
+                    protocolVersion = "2025-06-18",
+                    capabilities = new { },
+                    clientInfo = new
+                    {
+                        name = "production-host-recovery-test",
+                        version = "1.0.0",
+                    },
+                },
+                timeout.Token);
+            Assert.True(initialized.TryGetProperty("result", out _), initialized.GetRawText());
+            await WriteAsync(
+                writer,
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "notifications/initialized",
+                    @params = new { },
+                },
+                timeout.Token);
+
+            var initialResponse = await RequestAsync(
+                writer,
+                reader,
+                requestId: 2,
+                "tools/call",
+                new
+                {
+                    name = "ptk_state",
+                    arguments = new { },
+                },
+                timeout.Token);
+            var initial = PublicStateCodec.Decode(
+                Encoding.UTF8.GetBytes(ToolText(initialResponse, expectedError: false)));
+            Assert.Equal(PublicHostState.Ready, initial.Host.State);
+            Assert.Equal(1, initial.Host.Generation?.Value);
+            Assert.False(Assert.Single(initial.Sessions).WarmStateLost);
+            var firstHostProcessId = await launcher.FirstHostProcessId.WaitAsync(timeout.Token);
+
+            using (var firstHost = Process.GetProcessById(firstHostProcessId))
+            {
+                firstHost.Kill();
+                await firstHost.WaitForExitAsync(timeout.Token);
+                Assert.True(firstHost.HasExited);
+            }
+            await launcher.FirstContainmentConfirmed.WaitAsync(timeout.Token);
+            Assert.Equal(1, launcher.LaunchCount);
+
+            var recoveryStateResponse = await RequestAsync(
+                writer,
+                reader,
+                requestId: 3,
+                "tools/call",
+                new
+                {
+                    name = "ptk_state",
+                    arguments = new { },
+                },
+                timeout.Token);
+            var recovering = PublicStateCodec.Decode(
+                Encoding.UTF8.GetBytes(ToolText(recoveryStateResponse, expectedError: false)));
+            Assert.Equal(PublicHostState.Recovering, recovering.Host.State);
+            Assert.Equal(RecoveryPhase.Containment, recovering.Host.RecoveryPhase);
+            Assert.Equal(1, recovering.Host.RecoveryAttempt);
+            Assert.Equal(1, recovering.Host.Generation?.Value);
+            Assert.False(recovering.Host.ReadyForEffects);
+            var recoveringSession = Assert.Single(recovering.Sessions);
+            Assert.Equal(PublicSessionState.Recovering, recoveringSession.State);
+            Assert.True(recoveringSession.WarmStateLost);
+            Assert.False(recoveringSession.ReadyForEffects);
+
+            var refusedResponse = await RequestAsync(
+                writer,
+                reader,
+                requestId: 4,
+                "tools/call",
+                new
+                {
+                    name = "ptk_job",
+                    arguments = new { action = "list" },
+                },
+                timeout.Token);
+            var refusal = PublicRecoveryCodec.Decode(
+                Encoding.UTF8.GetBytes(ToolText(refusedResponse, expectedError: true)));
+            Assert.Equal(PublicRecoveryDetailCode.HostRecovering, refusal.DetailCode);
+            Assert.True(refusal.Retryable);
+            Assert.Equal(RecoveryPhase.Containment, refusal.RecoveryPhase);
+            Assert.Equal(1, refusal.RecoveryAttempt);
+            var retryGate = Assert.IsType<SessionReadyGate>(refusal.RetryGate);
+            Assert.Equal("default", retryGate.Alias.Value);
+            Assert.Equal(1, launcher.LaunchCount);
+
+            launcher.ReleaseFirstContainmentConfirmation();
+            var replacementHostProcessId = await launcher.ReplacementHostProcessId
+                .WaitAsync(timeout.Token);
+            Assert.NotEqual(firstHostProcessId, replacementHostProcessId);
+
+            PublicStateSnapshot? recovered = null;
+            var requestId = 5;
+            for (var attempt = 0; attempt < 200; attempt++)
+            {
+                var stateResponse = await RequestAsync(
+                    writer,
+                    reader,
+                    requestId++,
+                    "tools/call",
+                    new
+                    {
+                        name = "ptk_state",
+                        arguments = new { },
+                    },
+                    timeout.Token);
+                var candidate = PublicStateCodec.Decode(
+                    Encoding.UTF8.GetBytes(ToolText(stateResponse, expectedError: false)));
+                if (candidate.Host.ReadyForEffects)
+                {
+                    recovered = candidate;
+                    break;
+                }
+                await Task.Delay(25, timeout.Token);
+            }
+
+            Assert.NotNull(recovered);
+            Assert.Equal(PublicHostState.Ready, recovered.Host.State);
+            Assert.Equal(2, recovered.Host.Generation?.Value);
+            var recoveredSession = Assert.Single(recovered.Sessions);
+            Assert.Equal(PublicSessionState.Ready, recoveredSession.State);
+            Assert.True(recoveredSession.ReadyForEffects);
+            Assert.True(recoveredSession.WarmStateLost);
+            Assert.Equal(BootstrapState.Restored, recoveredSession.BootstrapState);
+
+            var invocation = await RequestAsync(
+                writer,
+                reader,
+                requestId,
+                "tools/call",
+                new
+                {
+                    name = "ptk_invoke",
+                    arguments = new
+                    {
+                        script = "Write-Output 'recovered-private-host'",
+                        raw = true,
+                        route = "pwsh",
+                        background = false,
+                        timeoutSeconds = 10,
+                        session = "default",
+                    },
+                },
+                timeout.Token);
+            Assert.Contains(
+                "recovered-private-host",
+                ToolText(invocation, expectedError: false),
+                StringComparison.Ordinal);
+
+            input.CompleteWriting();
+            Assert.Equal(0, await run.WaitAsync(timeout.Token));
+            Assert.Equal(string.Empty, standardError.ToString());
+            Assert.Equal(0, composition.Supervisor.OutstandingCallCount);
+            Assert.Equal(0, composition.Supervisor.BackgroundTaskCount);
+            Assert.Equal(0, composition.Supervisor.OwnedClientCount);
+            Assert.Equal(0, composition.Supervisor.OwnedAttemptWatcherSetCount);
+        }
+        finally
+        {
+            launcher.ReleaseFirstContainmentConfirmation();
+            input.CompleteWriting();
+            try
+            {
+                await run.WaitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+            }
+            await composition.DisposeAsync();
+            DeleteRoot(auditRoot);
+        }
+
+        Assert.False(Directory.Exists(outputRoot));
+    }
+
     private static async Task<JsonElement> RequestAsync(
         StreamWriter writer,
         StreamReader reader,
@@ -337,5 +568,93 @@ public sealed class ProductionGuardianCompositionTests
     {
         public PrivateHostProcessLaunchResult Launch(PrivateHostLaunchCommand command) =>
             throw new InvalidOperationException("The construction test must not launch a host.");
+    }
+
+    private sealed class GatedContainmentLauncher : IPrivateHostProcessLauncher
+    {
+        private readonly WindowsPrivateHostProcessLauncher _inner = new();
+        private readonly TaskCompletionSource<int> _firstHostProcessId = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _firstContainmentConfirmed = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource _firstContainmentRelease = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<int> _replacementHostProcessId = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _launchCount;
+
+        internal Task<int> FirstHostProcessId => _firstHostProcessId.Task;
+
+        internal Task FirstContainmentConfirmed => _firstContainmentConfirmed.Task;
+
+        internal Task<int> ReplacementHostProcessId => _replacementHostProcessId.Task;
+
+        internal int LaunchCount => Volatile.Read(ref _launchCount);
+
+        internal void ReleaseFirstContainmentConfirmation() =>
+            _firstContainmentRelease.TrySetResult();
+
+        public PrivateHostProcessLaunchResult Launch(PrivateHostLaunchCommand command)
+        {
+            var launchNumber = Interlocked.Increment(ref _launchCount);
+            var result = _inner.Launch(command);
+            if (result.Outcome != GuardianHostLaunchOutcome.Started)
+                return result;
+
+            var process = result.LaunchedHost!;
+            if (launchNumber == 1)
+            {
+                _firstHostProcessId.TrySetResult(process.ProcessId);
+                return new PrivateHostProcessLaunchResult(
+                    GuardianHostLaunchOutcome.Started,
+                    new GatedContainmentProcess(
+                        process,
+                        _firstContainmentConfirmed,
+                        _firstContainmentRelease.Task));
+            }
+
+            if (launchNumber == 2)
+                _replacementHostProcessId.TrySetResult(process.ProcessId);
+            return result;
+        }
+
+        private sealed class GatedContainmentProcess : IPrivateHostLaunchedProcess
+        {
+            private readonly IPrivateHostLaunchedProcess _inner;
+            private readonly Task _containmentConfirmed;
+
+            internal GatedContainmentProcess(
+                IPrivateHostLaunchedProcess inner,
+                TaskCompletionSource firstContainmentConfirmed,
+                Task containmentRelease)
+            {
+                _inner = inner;
+                _containmentConfirmed = ConfirmContainmentAsync(
+                    inner.ContainmentConfirmed,
+                    firstContainmentConfirmed,
+                    containmentRelease);
+            }
+
+            public int ProcessId => _inner.ProcessId;
+
+            public Task Exited => _inner.Exited;
+
+            public Task ContainmentConfirmed => _containmentConfirmed;
+
+            public void BeginContainment(GuardianHostContainmentDeadline deadline) =>
+                _inner.BeginContainment(deadline);
+
+            public void Dispose() => _inner.Dispose();
+
+            private static async Task ConfirmContainmentAsync(
+                Task innerConfirmation,
+                TaskCompletionSource firstContainmentConfirmed,
+                Task containmentRelease)
+            {
+                await innerConfirmation.ConfigureAwait(false);
+                firstContainmentConfirmed.TrySetResult();
+                await containmentRelease.ConfigureAwait(false);
+            }
+        }
     }
 }
