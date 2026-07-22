@@ -874,3 +874,50 @@ same SHA on Windows host `ASHBIAMWEB1`._
 - The owner confirmed that the local Gitea mirror is unreachable from this
   machine and will be synchronized later from another environment; do not
   treat its absence from this clone's configured remotes as a work blocker.
+
+## MCP resilience R5 Windows verification (ASHBIAMWEB1, 2026-07-22)
+
+_Exact clean code/test head
+`195e7e6d9fc1fafabb203213a7c13dc7aa87c16a` on
+`feature/mcp-resilience-r1`; Windows Server 10.0.20348 x64, .NET SDK 10.0.302,
+PowerShell 7.6.3, and Pester 5.7.1._
+
+- Direct production-apphost tests preserve one public MCP connection while a
+  real Windows-contained private host dies and recovers. They cover initial
+  startup, replacement death during startup, pre-write loss, possible-write
+  loss, terminal-decoded loss, effect self-termination, warm-state loss,
+  ordinary native descendant cleanup, started-job terminal ownership, sealed
+  output, lost-job tombstones, and an open-pipe idle interval longer than the
+  injected one-second transitional watchdog. The final guardian suite passed
+  431/431.
+- An ambiguous real `ptk_reset` now returns nonretryable `outcome_unknown`,
+  leaves the recovered default alias in `recovery_unknown`, refuses ordinary
+  work, and becomes ready only after a fresh explicit reset returns an
+  authoritative terminal. Three independent mutations made the direct state,
+  fake-supervisor, and real-process guards fail before exact restoration.
+- The first complete solution run exposed stale exact architecture inventories
+  from earlier R5 commits: `GuardianHostLifecycleAudit.cs` and the
+  `OpenProcess`/`WaitForSingleObject` containment-observation imports were not
+  listed. Updating those exact inventories uncovered a load-bearing ban on
+  the `System.Diagnostics.Process` assembly: framework `SafeProcessHandle`
+  introduced that reference. The guardian retained the ban and replaced it
+  with its own native safe process handle. The exact architecture suite then
+  passed 72/72 and the Windows launcher suite passed 4/4.
+- That first combined run also timed out one fake-host mutation case and saw a
+  lifecycle-audit assertion before its record appeared while projects ran in
+  parallel. The four affected cases passed immediately in isolation. The
+  clean-head complete rerun then passed Guardian 431/431, architecture 72/72,
+  and server 1,868/1,868. Pester passed 142 with zero failures and one expected
+  platform skip. The complete stdio handshake passed every invoke, output,
+  background recovery, audit, graceful cleanup, outage, and hard-kill check.
+- Restore/build emitted five current NU1903 advisories for
+  `System.Security.Cryptography.Xml` 10.0.6; no package change was made in the
+  R5 scope. The exact advisory IDs were `GHSA-23rf-6693-g89p`,
+  `GHSA-8q5v-6pqq-x66h`, `GHSA-cvvh-rhrc-wg4q`, `GHSA-g8r8-53c2-pm3f`, and
+  `GHSA-mmjf-rqrv-855v`.
+- Unix production containment remains unvalidated and unimplemented here.
+  `wsl.exe --status` exits 1 with
+  `WSL_E_WSL_OPTIONAL_COMPONENT_REQUIRED`; `gcc`, `clang`, and `docker` are
+  absent from the command path. The production composition deliberately
+  throws until the approved native `PtkGuardianBroker` launcher exists, so
+  this machine cannot support a Unix R5-completion claim.
