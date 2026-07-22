@@ -374,12 +374,25 @@ public sealed class ProductionGuardianCompositionTests
                 },
                 timeout.Token);
             _ = ToolText(backgroundResponse, expectedError: false);
-            for (var attempt = 0; attempt < 200 && !File.Exists(backgroundMarker); attempt++)
+            var backgroundProcessId = 0;
+            for (var attempt = 0; attempt < 200; attempt++)
+            {
+                if (File.Exists(backgroundMarker) &&
+                    int.TryParse(
+                        await File.ReadAllTextAsync(backgroundMarker, timeout.Token),
+                        CultureInfo.InvariantCulture,
+                        out var publishedProcessId) &&
+                    publishedProcessId > 0)
+                {
+                    backgroundProcessId = publishedProcessId;
+                    break;
+                }
+
                 await Task.Delay(25, timeout.Token);
-            Assert.True(File.Exists(backgroundMarker), "The cold background job did not publish its PID.");
-            var backgroundProcessId = int.Parse(
-                await File.ReadAllTextAsync(backgroundMarker, timeout.Token),
-                CultureInfo.InvariantCulture);
+            }
+            Assert.True(
+                backgroundProcessId > 0,
+                "The cold background job did not publish a valid PID.");
             backgroundProcess = Process.GetProcessById(backgroundProcessId);
             Assert.False(backgroundProcess.HasExited);
 

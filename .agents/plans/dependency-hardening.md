@@ -185,10 +185,12 @@ v3 APIs, especially async lifetime and assertion signatures; do not rewrite
 test organization or timing policy.
 
 Run discovery before and after migration and compare fully qualified test
-names, not only totals. The expected baseline is architecture 73, guardian
-436, server 1,868, SIEM 91, and producer conformance 2. Platform skips may
-differ only according to their existing OS predicates. Every missing, renamed,
-or newly skipped test is a blocker until explained by an intentional existing
+names, not only totals. The frozen listed-identity baseline is architecture 73,
+guardian 429, server 1,861, SIEM 91, and producer conformance 6. Runtime data
+enumeration produces full-suite totals of architecture 73, guardian 436,
+server 1,868, SIEM 91, and producer conformance 6. Platform skips may differ
+only according to their existing OS predicates. Every missing, renamed, or
+newly skipped test is a blocker until explained by an intentional existing
 source identity.
 
 ### 6. Update Microsoft.NET.Test.Sdk
@@ -197,6 +199,26 @@ Update the test SDK in all five test projects. Run each project explicitly and
 through both solution entry points. Confirm that VSTest/Microsoft Testing
 Platform selection does not change discovery, filtering, exit codes, console
 failure reporting, or CI invocation semantics.
+
+**Implemented atomically with Slice 5.** With `xunit.v3` 3.2.2 and
+`xunit.runner.visualstudio` 3.1.5 installed, Test SDK 17.14.1 built all five
+projects but `dotnet test` rejected the resulting assemblies before discovery.
+A green xUnit-only commit therefore did not exist; Test SDK 18.8.1 is part of
+the same compatibility commit. Exact sorted listed identities match the
+pre-migration `cab73df` snapshot at all five counts above, and explicit plus
+solution-entry-point macOS runs retain every runtime-enumerated row.
+
+The v3 analyzers expose 1,302 distinct `xUnit1051` cancellation-token
+locations. They remain visible: this migration neither suppresses them nor
+blindly replaces the tests' deliberate timeout and cancellation tokens. The
+concurrent solution run also proved that the cold-background PID marker can
+exist before `WriteAllText` publishes its contents. The compatibility edit
+keeps the existing five-second retry budget but waits for a valid positive PID;
+the failing concurrent run and the subsequent green run prove that exact
+synchronization boundary. At this slice, all three package graphs report zero
+deprecated and zero vulnerable packages, and the outdated query reports no
+test-stack package; only the separately owned Coverlet and SQLite targets
+remain.
 
 ### 7. Update Coverlet collector
 
