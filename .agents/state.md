@@ -5,6 +5,17 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **Owner handoff contract (2026-07-22): Git workspace mechanics are entirely
+  agent-owned.** The owner will not fetch, switch, push, select, or recover an
+  intermediate workspace. An agent starting from `master` must inspect the
+  repository's refs/worktrees and resume the exact active work itself, without
+  asking the owner to operate Git. For the active resilience sequence, resume
+  `feature/mcp-resilience-r1` at clean handoff tip `54848af` (verified code/test
+  head `195e7e6`); if it is not present locally, fetch it from `origin` and
+  create or select an internal worktree. R2-R7 are already owner-authorized and
+  should continue autonomously. Work is "delivered" only after its verified
+  content is integrated into `master` and published; until then report it only
+  as in progress.
 - **mini-SIEM S1-S3 are complete and incorporated on local `master`; the S3 durable
   store head is `eb51f2e` and its producer-conformance compatibility head is
   `9f53831`.** S1 supplies the solution skeleton and strict startup config; S2
@@ -108,30 +119,19 @@ short and update it when important repo facts change.
   content arrival was verified by direct branch diff, and the feature branch
   was removed. Canonical evidence is in the audited-harness plan and
   `.agents/review/index.md`.
-- **The two-layer MCP resilience planning boundary is owner-approved; its
-  complete reconciled draft passed final independent fixed-SHA review at
-  `b4a2c0c` and is landed on local `master` at review-record head `6ed0167`;
-  R0 code, tests, independent contract audit, and platform evidence are
-  complete and landed on local `master` at `c1d809f`, and its required
-  fixed-SHA Fable implementation review is accepted at review-record head
-  `4f99fd5`; R1 implementation and exact-head macOS, Windows, and Linux
-  behavior validation are complete at `60eb20f` on
-  `feature/mcp-resilience-r1`; its required fixed-SHA Fable openreview is held
-  at the owner's 2026-07-17 direction until Fable capacity returns; the owner
-  explicitly authorized every remaining slice R2-R7 on 2026-07-17 and directed
-  implementation to continue without stopping for reviews; R2's deterministic
-  unwired per-alias recovery core is complete at `eaef85f`; R3's standalone
-  guardian, crashable fake-host recovery, race/soak closure, real OS-process
-  apphost coverage, and direct macOS/Windows/Linux behavior validation are
-  complete at code/test head `1eb69d6` with the test-only scheduler closure at
-  `d238a80`; R4 private real-host and control-plane transfer is active on
-  `feature/mcp-resilience-r1` at committed tip `9d897e5` in worktree
-  `.claude/worktrees/mcp-resilience-r1`, with uncommitted R4 WIP (private host
-  outbound channel, package loader, OutputStore/JobManager/SessionRuntime
-  edits) — do not discard that dirty worktree. A prior bad handoff replaced this
-  file and was restored from HEAD; future handoffs must only edit `## Now` /
-  `## Next` surgically.** The
-  target keeps one public stdio guardian alive while it
+- **The owner-approved two-layer MCP resilience sequence is implemented
+  through every locally actionable R5 Windows barrier; the exact verified
+  code/test head is `195e7e6`. R0-R4 are complete.** R5 now owns real Windows
+  private-host launch, containment, monitoring, exact-generation restart,
+  lifecycle audit, delivery truth, declared-state restoration, job/output
+  tombstones, and recovery-aware state. Real apphost tests cover startup and
+  replacement crashes, request/effect/response barriers, native descendant
+  cleanup, idle persistence, lost jobs, and ambiguous reset requiring explicit
+  repair. The complete repository battery and stdio handshake pass at that
+  head; exact machine evidence is in `.agents/machines.md`. R5 is not
+  cross-platform complete: production Unix still deliberately refuses startup
+  until the approved native outer broker exists. The target keeps one public
+  stdio guardian alive while it
   restarts an exact-version private host, and makes a healthy host replace an
   unexpectedly lost session worker. It never replays ambiguous work, changes
   generation on every replacement, recreates only frozen declared bootstrap
@@ -344,41 +344,36 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. rbc-15 is closed and merged locally (`f0d17f6`); its residual
+1. Resume the exact active resilience workspace identified under `## Now`
+   without asking the owner to perform or choose any Git operation. Implement
+   R5's approved native Unix outer broker and production launcher, including
+   creation-time group ownership, liveness teardown, direct-host reap,
+   descendant confirmation, and Linux/macOS package tests. This is local OS
+   process-containment work and requires no AD, Exchange, EXO, Graph, corporate
+   network, or enterprise credentials. Use a direct Linux/macOS native
+   toolchain; after exact cross-platform R5 evidence, continue directly into
+   the already-authorized R6 and R7 sequence. Ordinary reviews may use Opus or
+   Grok; held Fable reviews do not block implementation.
+2. rbc-15 is closed and merged locally (`f0d17f6`); its residual
    recycled-PID incarnation hardening is a tracked follow-up dev task (no
    further paid review rounds). Do not continue or commit the saved rbc-5
    post-start attach WIP.
-2. Close out the rbc batch remainders: rbc-8's targeted drain-replay guard
+3. Close out the rbc batch remainders: rbc-8's targeted drain-replay guard
    test lands in the worker-subsystem pass; rbc-11 stays gated on the owner's
    S3H land/park decision; rbc-5 closes via resilience R7. Reassess
    per-finding whether work is safeguard-sensitive and route out if so.
-3. [done 2026-07-20] Owner asked `/git push all`; `master` (S3H merge plus
-   rbc-1..4, the rbc-6 refutation, hf-1, rbc-7, rbc-9/rbc-10/rbc-12, rbc-14,
-   and rbc-15) was pushed fast-forward `19732e8..8e90552` to all three
-   remotes: `origin`, `github`, and `gitea`. No force, no divergence; all
-   remotes now match local `master`. Follow-up push 2026-07-20 (owner-approved):
-   `85416b7..51ce880` fast-forward to all three remotes — interim Defender-FP
-   mitigation (issue #7: quarantine detection in dev-install.ps1 + README +
-   runbook submission status). Remotes match local `master`.
 4. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures. Do not begin
    S4–S6 or modify PTK runtime for SIEM work.
-5. Continue resilience R4 only in `.claude/worktrees/mcp-resilience-r1` on
-   `feature/mcp-resilience-r1` from tip `9d897e5` plus the existing uncommitted
-   WIP; then R5-R7 sequentially. Ordinary reviews may use Opus or Grok; hold
-   Fable openreviews until capacity returns, then rerun the R1 fixed range
-   `1f314a2..60eb20f` and later fixed ranges. Do not push, merge, rewrite
-   history, or publish a release without separate authorization. Do not replace
-   `.agents/state.md` wholesale on handoff.
-6. Release-distribution slice 3 is ordered after resilience R7 and consumes
+5. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
    slice 4.
-7. When the owner releases the decisions hold, reconcile the rejected
+6. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
-8. On Microsoft's #7 verdict, execute the on-verdict steps in
+7. On Microsoft's #7 verdict, execute the on-verdict steps in
    `.agents/plans/defender-fp-submission.md`. Meanwhile the unblocked CI
    remainders are the Windows kill-path test diagnosis (2/1587 failures) and
    the pre-existing `tls_protection` SIEM conformance-host TLS-material
@@ -418,13 +413,6 @@ short and update it when important repo facts change.
 
 ## Blockers
 
-- **rbc-5 implementation is blocked on an informed owner choice.** A correct
-  standalone fix for the current Windows runtime is a moderate low-level
-  launcher/JobManager change; the smaller preserved post-start attach has a
-  real escape race. The proposed lower-duplication resolution is to prove and
-  close the finding with resilience R7's already-planned creation-time worker
-  containment, but the owner has not yet approved that change in disposition.
-
 - **Direct ARM64 Linux clean-build validation is blocked by a host-specific
   `Grpc.Tools` launch failure.** On the Ubuntu 26.04 ARM64 VM, the bundled
   `Grpc.Tools` 2.82.0 `protoc` succeeds when invoked directly with the exact
@@ -434,12 +422,12 @@ short and update it when important repo facts change.
   ARM64 build must not be claimed until the launch failure is resolved or
   independently disproved; see `.agents/machines.md`.
 
-- **Windows wiring requires a hard supervisor/worker role cutover.**
-  `Program.cs`, `BashProcessRunner`, `RtkProcessRunner`, and `JobManager` still
-  permit supervisor-side runtime or generic process creation. Those paths
-  cannot race the Windows launcher's temporarily inheritable selected handles.
-  The wired supervisor must not retain an in-process user-runtime or generic-
-  spawn fallback.
+- **R5 Unix production containment cannot be implemented or directly validated
+  on the current Windows host.** Production composition deliberately fails
+  closed on non-Windows until the approved native outer broker exists. Resume
+  on direct Linux and macOS hosts with native toolchains; no enterprise network
+  access or identity-system credentials are required. Exact host evidence is
+  in the active workspace's `.agents/machines.md`.
 - **Decision-log conflict, correction blocked by the owner hold:**
   `.agents/decisions.md` still describes the policy-file gate as the open
   response after its criterion fires, while the later explicit owner call in
