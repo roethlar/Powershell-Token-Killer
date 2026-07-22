@@ -87,7 +87,8 @@ internal sealed class ProductionGuardianComposition : IAsyncDisposable
         IGuardianHostSupervisorScheduler? scheduler = null,
         GuardianBootId? guardianBootId = null,
         WorkerBootId? defaultWorkerBootId = null,
-        IEnumerable<KeyValuePair<string, string>>? parentEnvironment = null)
+        IEnumerable<KeyValuePair<string, string>>? parentEnvironment = null,
+        IGuardianHostSupervisorDispatchObserver? dispatchObserver = null)
     {
         ArgumentNullException.ThrowIfNull(package);
         ArgumentNullException.ThrowIfNull(auditStartup);
@@ -155,7 +156,7 @@ internal sealed class ProductionGuardianComposition : IAsyncDisposable
                 selectedTimeProvider,
                 selectedScheduler,
                 sessionState,
-                NoOpGuardianHostSupervisorDispatchObserver.Instance,
+                dispatchObserver ?? NoOpGuardianHostSupervisorDispatchObserver.Instance,
                 pins,
                 outputCoordinator: outputCoordinator,
                 jobCapabilities: jobCapabilities,

@@ -388,6 +388,233 @@ public sealed class ProductionGuardianCompositionTests
     }
 
     [Fact]
+    public Task Windows_composition_classifies_real_prewrite_loss() =>
+        RunRealDispatchBarrierAsync(RealDispatchBarrier.BeforeWriteAuthorization);
+
+    [Fact]
+    public Task Windows_composition_classifies_real_possibly_written_loss() =>
+        RunRealDispatchBarrierAsync(RealDispatchBarrier.WriteStarting);
+
+    [Fact]
+    public Task Windows_composition_retains_real_decoded_terminal_on_loss() =>
+        RunRealDispatchBarrierAsync(RealDispatchBarrier.TerminalDecoded);
+
+    private async Task RunRealDispatchBarrierAsync(
+        RealDispatchBarrier barrier)
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var auditRoot = TemporaryRoot($"barrier-{barrier}-audit");
+        var outputRoot = TemporaryRoot($"barrier-{barrier}-output");
+        var effectRoot = TemporaryRoot($"barrier-{barrier}-effect");
+        Directory.CreateDirectory(effectRoot);
+        var effectPath = Path.Combine(effectRoot, "effect.txt");
+        var launcher = new GatedContainmentLauncher();
+        launcher.ReleaseFirstContainmentConfirmation();
+        var observer = new RealHostKillingDispatchObserver(barrier, launcher);
+        var composition = ProductionGuardianComposition.Create(
+            Package(FindServerAppHost()),
+            LocalAudit(auditRoot),
+            launcher,
+            OutputOptions(outputRoot),
+            guardianBootId: Guardian,
+            defaultWorkerBootId: Worker,
+            dispatchObserver: observer);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var input = new R3BoundedOneWayStream();
+        using var output = new R3BoundedOneWayStream();
+        using var writer = new StreamWriter(
+            input,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true)
+        {
+            AutoFlush = true,
+            NewLine = "\n",
+        };
+        using var reader = new StreamReader(
+            output,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            detectEncodingFromByteOrderMarks: false,
+            bufferSize: 1024,
+            leaveOpen: true);
+        using var standardError = new StringWriter();
+        var run = Program.RunAsync(
+            [],
+            input,
+            output,
+            standardError,
+            productionComposition: composition,
+            cancellationToken: timeout.Token);
+        try
+        {
+            var initialized = await RequestAsync(
+                writer,
+                reader,
+                requestId: 1,
+                "initialize",
+                new
+                {
+                    protocolVersion = "2025-06-18",
+                    capabilities = new { },
+                    clientInfo = new
+                    {
+                        name = "production-host-dispatch-barrier-test",
+                        version = "1.0.0",
+                    },
+                },
+                timeout.Token);
+            Assert.True(initialized.TryGetProperty("result", out _), initialized.GetRawText());
+            await WriteAsync(
+                writer,
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "notifications/initialized",
+                    @params = new { },
+                },
+                timeout.Token);
+
+            var escapedEffectPath = effectPath.Replace("'", "''", StringComparison.Ordinal);
+            var response = await RequestAsync(
+                writer,
+                reader,
+                requestId: 2,
+                "tools/call",
+                new
+                {
+                    name = "ptk_invoke",
+                    arguments = new
+                    {
+                        script = $"[IO.File]::AppendAllText('{escapedEffectPath}', 'effect' + [Environment]::NewLine); 'barrier-effect'",
+                        raw = true,
+                        route = "pwsh",
+                        background = false,
+                        timeoutSeconds = 10,
+                        session = "default",
+                    },
+                },
+                timeout.Token);
+            await observer.Triggered
+                .WaitAsync(TimeSpan.FromSeconds(5), timeout.Token);
+
+            if (barrier == RealDispatchBarrier.TerminalDecoded)
+            {
+                Assert.Contains(
+                    "barrier-effect",
+                    ToolText(response, expectedError: false),
+                    StringComparison.Ordinal);
+            }
+            else
+            {
+                var recovery = PublicRecoveryCodec.Decode(
+                    Encoding.UTF8.GetBytes(ToolText(response, expectedError: true)));
+                if (barrier == RealDispatchBarrier.BeforeWriteAuthorization)
+                {
+                    Assert.Equal(
+                        PublicRecoveryDetailCode.BackendLostBeforeDispatch,
+                        recovery.DetailCode);
+                    Assert.True(recovery.Retryable);
+                    Assert.IsType<SessionReadyGate>(recovery.RetryGate);
+                }
+                else
+                {
+                    Assert.Equal(PublicRecoveryDetailCode.OutcomeUnknown, recovery.DetailCode);
+                    Assert.False(recovery.Retryable);
+                    Assert.Null(recovery.RetryAfterMilliseconds);
+                    Assert.Null(recovery.RetryGate);
+                }
+            }
+
+            _ = await launcher.ReplacementHostProcessId.WaitAsync(timeout.Token);
+            PublicStateSnapshot? recovered = null;
+            var requestId = 3;
+            for (var attempt = 0; attempt < 200; attempt++)
+            {
+                var stateResponse = await RequestAsync(
+                    writer,
+                    reader,
+                    requestId++,
+                    "tools/call",
+                    new
+                    {
+                        name = "ptk_state",
+                        arguments = new { },
+                    },
+                    timeout.Token);
+                var candidate = PublicStateCodec.Decode(
+                    Encoding.UTF8.GetBytes(ToolText(stateResponse, expectedError: false)));
+                if (candidate.Host.ReadyForEffects)
+                {
+                    recovered = candidate;
+                    break;
+                }
+                await Task.Delay(25, timeout.Token);
+            }
+            Assert.NotNull(recovered);
+            Assert.Equal(2, recovered.Host.Generation?.Value);
+            Assert.True(Assert.Single(recovered.Sessions).WarmStateLost);
+            Assert.Equal(2, launcher.LaunchCount);
+
+            var effectCount = File.Exists(effectPath)
+                ? File.ReadLines(effectPath).Count(line =>
+                    StringComparer.Ordinal.Equals(line, "effect"))
+                : 0;
+            if (barrier == RealDispatchBarrier.BeforeWriteAuthorization)
+                Assert.Equal(0, effectCount);
+            else if (barrier == RealDispatchBarrier.TerminalDecoded)
+                Assert.Equal(1, effectCount);
+            else
+                Assert.InRange(effectCount, 0, 1);
+
+            var postRecovery = await RequestAsync(
+                writer,
+                reader,
+                requestId,
+                "tools/call",
+                new
+                {
+                    name = "ptk_invoke",
+                    arguments = new
+                    {
+                        script = "'post-barrier-recovery'",
+                        raw = true,
+                        route = "pwsh",
+                        background = false,
+                        timeoutSeconds = 10,
+                        session = "default",
+                    },
+                },
+                timeout.Token);
+            Assert.Contains(
+                "post-barrier-recovery",
+                ToolText(postRecovery, expectedError: false),
+                StringComparison.Ordinal);
+            Assert.Equal(2, launcher.LaunchCount);
+
+            input.CompleteWriting();
+            Assert.Equal(0, await run.WaitAsync(timeout.Token));
+            Assert.Equal(string.Empty, standardError.ToString());
+        }
+        finally
+        {
+            input.CompleteWriting();
+            try
+            {
+                await run.WaitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+            }
+            await composition.DisposeAsync();
+            DeleteRoot(auditRoot);
+            DeleteRoot(effectRoot);
+        }
+
+        Assert.False(Directory.Exists(outputRoot));
+    }
+
+    [Fact]
     public async Task Windows_composition_recovers_a_real_host_on_the_same_public_connection()
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -1414,6 +1641,77 @@ public sealed class ProductionGuardianCompositionTests
                 firstContainmentConfirmed.TrySetResult();
                 await containmentRelease.ConfigureAwait(false);
             }
+        }
+    }
+
+    private enum RealDispatchBarrier
+    {
+        BeforeWriteAuthorization,
+        WriteStarting,
+        TerminalDecoded,
+    }
+
+    private sealed class RealHostKillingDispatchObserver(
+        RealDispatchBarrier barrier,
+        GatedContainmentLauncher launcher) : IGuardianHostSupervisorDispatchObserver
+    {
+        private readonly TaskCompletionSource _triggered = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _claimed;
+
+        internal Task Triggered => _triggered.Task;
+
+        public async ValueTask BeforeWriteAuthorizationAsync(
+            GuardianHostDispatchObservation observation,
+            CancellationToken cancellationToken)
+        {
+            _ = observation;
+            if (!TryClaim(RealDispatchBarrier.BeforeWriteAuthorization))
+                return;
+
+            await KillFirstHostAsync(cancellationToken).ConfigureAwait(false);
+            await launcher.FirstContainmentConfirmed
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+        }
+
+        public void OnWriteStarting(GuardianHostDispatchObservation observation)
+        {
+            _ = observation;
+            if (TryClaim(RealDispatchBarrier.WriteStarting))
+                KillFirstHost();
+        }
+
+        public void OnTerminalDecoded(GuardianHostDispatchObservation observation)
+        {
+            _ = observation;
+            if (TryClaim(RealDispatchBarrier.TerminalDecoded))
+                KillFirstHost();
+        }
+
+        private bool TryClaim(RealDispatchBarrier candidate)
+        {
+            if (barrier != candidate || Interlocked.Exchange(ref _claimed, 1) != 0)
+                return false;
+            _triggered.TrySetResult();
+            return true;
+        }
+
+        private async Task KillFirstHostAsync(CancellationToken cancellationToken)
+        {
+            var processId = await launcher.FirstHostProcessId
+                .WaitAsync(cancellationToken)
+                .ConfigureAwait(false);
+            using var process = Process.GetProcessById(processId);
+            process.Kill();
+            await process.WaitForExitAsync(cancellationToken).ConfigureAwait(false);
+        }
+
+        private void KillFirstHost()
+        {
+            var processId = launcher.FirstHostProcessId.GetAwaiter().GetResult();
+            using var process = Process.GetProcessById(processId);
+            process.Kill();
         }
     }
 }
