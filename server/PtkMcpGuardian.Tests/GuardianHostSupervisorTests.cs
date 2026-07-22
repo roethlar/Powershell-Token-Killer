@@ -325,6 +325,47 @@ public sealed class GuardianHostSupervisorTests
     }
 
     [Fact]
+    public async Task Confirmed_terminal_shutdown_is_durably_audited()
+    {
+        await using var rig = new TestRig(new AttemptPlan(HostBehavior.Respond));
+        await rig.StartAsync();
+        var resource = Assert.Single(rig.Factory.Resources);
+        var readyLine = Assert.Single(rig.HostAuditLines("host.ready"));
+
+        await rig.Supervisor.ShutdownAsync().WaitAsync(TestTimeout);
+
+        var stoppedLine = Assert.Single(rig.HostAuditLines("host.stopped"));
+        using var readyDocument = JsonDocument.Parse(readyLine);
+        using var stoppedDocument = JsonDocument.Parse(stoppedLine);
+        var root = stoppedDocument.RootElement;
+        Assert.True(
+            readyDocument.RootElement.GetProperty("sequence").GetInt64() <
+            root.GetProperty("sequence").GetInt64());
+        var host = root.GetProperty("host");
+        Assert.Equal(JsonValueKind.Null, host.GetProperty("boot_id").ValueKind);
+        Assert.Equal(JsonValueKind.Null, host.GetProperty("generation").ValueKind);
+        Assert.Equal("stopped", host.GetProperty("state").GetString());
+        Assert.Equal(0, host.GetProperty("recovery_attempt").GetInt64());
+
+        var outcome = root.GetProperty("outcome");
+        Assert.Equal("stopped", outcome.GetProperty("state").GetString());
+        Assert.Equal("host_stopped", outcome.GetProperty("detail_code").GetString());
+        Assert.True(outcome.GetProperty("warm_state_lost").GetBoolean());
+        Assert.Equal(
+            "confirmed",
+            outcome.GetProperty("termination_certainty").GetString());
+        var coverage = root.GetProperty("coverage");
+        Assert.Equal(
+            "complete",
+            coverage.GetProperty("root_process_observed").GetString());
+        Assert.Equal(
+            "complete",
+            coverage.GetProperty("descendants_observed").GetString());
+        Assert.True(resource.ContainmentBegun);
+        Assert.Empty(rig.HostAuditLines("host.containment_unconfirmed"));
+    }
+
+    [Fact]
     public async Task Host_loss_begins_containment_before_its_durable_audit_append()
     {
         await using var rig = new TestRig(
@@ -1956,6 +1997,7 @@ public sealed class GuardianHostSupervisorTests
         Assert.Equal(
             PublicHostState.ContainmentUnconfirmed,
             rig.Supervisor.SnapshotState().Host.State);
+        Assert.Empty(rig.HostAuditLines("host.stopped"));
         Assert.Equal(0, rig.Supervisor.OwnedAttemptWatcherSetCount);
         Assert.Equal(0, rig.Supervisor.OwnedClientCount);
         Assert.Equal(0, rig.Supervisor.BackgroundTaskCount);
@@ -3296,6 +3338,9 @@ public sealed class GuardianHostSupervisorTests
 
         public void RecordCircuitHalfOpen() =>
             _inner.RecordCircuitHalfOpen();
+
+        public void RecordStopped(bool? warmStateLost, bool containedAttempt) =>
+            _inner.RecordStopped(warmStateLost, containedAttempt);
     }
 
     private sealed class BlockingDispatchObserver :

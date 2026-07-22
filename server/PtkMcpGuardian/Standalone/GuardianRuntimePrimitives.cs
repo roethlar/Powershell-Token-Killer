@@ -89,4 +89,6 @@ internal sealed class NoOpGuardianHostLifecycleAudit : IGuardianHostLifecycleAud
     public void RecordCircuitOpen() { }
 
     public void RecordCircuitHalfOpen() { }
+
+    public void RecordStopped(bool? warmStateLost, bool containedAttempt) { }
 }

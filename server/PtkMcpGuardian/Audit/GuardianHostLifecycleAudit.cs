@@ -88,6 +88,18 @@ internal sealed class GuardianHostLifecycleAudit(AuditRuntimeGate runtime) :
             detailCode: "host_circuit_half_open",
             warmStateLost: true);
 
+    public void RecordStopped(bool? warmStateLost, bool containedAttempt) =>
+        Record(
+            "host.stopped",
+            outcomeState: "stopped",
+            detailCode: "host_stopped",
+            warmStateLost,
+            terminationCertainty: containedAttempt
+                ? "confirmed"
+                : "not_applicable",
+            rootProcessObserved: containedAttempt ? "complete" : "not_applicable",
+            descendantsObserved: containedAttempt ? "complete" : "not_applicable");
+
     private void Record(
         string eventType,
         string outcomeState,

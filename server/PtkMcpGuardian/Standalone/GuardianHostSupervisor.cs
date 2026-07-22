@@ -2689,6 +2689,8 @@ internal sealed class GuardianHostSupervisor :
     {
         Task lifecycleShutdown;
         Task callsDrained;
+        bool? warmStateLost = null;
+        var containedAttempt = false;
         lock (_stateSync)
         {
             _stopping = true;
@@ -2700,7 +2702,11 @@ internal sealed class GuardianHostSupervisor :
         {
             lifecycleShutdown = _lifecycle.ShutdownAsync();
             if (_active is { } active)
+            {
+                warmStateLost = active.Lease.EverReady;
+                containedAttempt = true;
                 BeginContainmentLocked(active);
+            }
         }
         finally
         {
@@ -2708,6 +2714,17 @@ internal sealed class GuardianHostSupervisor :
         }
 
         await lifecycleShutdown.ConfigureAwait(false);
+        await _authority.WaitAsync(CancellationToken.None).ConfigureAwait(false);
+        try
+        {
+            if (_lifecycle.Snapshot().Host.State == PublicHostState.Stopped)
+                _lifecycleAudit.RecordStopped(warmStateLost, containedAttempt);
+        }
+        finally
+        {
+            _authority.Release();
+        }
+
         await callsDrained.ConfigureAwait(false);
         await _lifetime.CancelAsync().ConfigureAwait(false);
 

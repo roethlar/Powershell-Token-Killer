@@ -64,6 +64,8 @@ internal interface IGuardianHostLifecycleAudit
     void RecordCircuitOpen();
 
     void RecordCircuitHalfOpen();
+
+    void RecordStopped(bool? warmStateLost, bool containedAttempt);
 }
 
 internal sealed record GuardianHostJobListTarget
