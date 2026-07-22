@@ -409,7 +409,7 @@ public sealed class GuardianArchitectureBoundaryTests
                     "2.82.0",
                     "all",
                     "runtime; build; native; contentfiles; analyzers; buildtransitive"),
-                new("Microsoft.Extensions.Hosting", "10.0.9", null, null),
+                new("Microsoft.Extensions.Hosting", "10.0.10", null, null),
                 new("ModelContextProtocol", "1.4.0", null, null),
             ]);
         AssertPackages(shared, []);
