@@ -86,7 +86,8 @@ internal sealed class ProductionGuardianComposition : IAsyncDisposable
         TimeProvider? timeProvider = null,
         IGuardianHostSupervisorScheduler? scheduler = null,
         GuardianBootId? guardianBootId = null,
-        WorkerBootId? defaultWorkerBootId = null)
+        WorkerBootId? defaultWorkerBootId = null,
+        IEnumerable<KeyValuePair<string, string>>? parentEnvironment = null)
     {
         ArgumentNullException.ThrowIfNull(package);
         ArgumentNullException.ThrowIfNull(auditStartup);
@@ -134,7 +135,8 @@ internal sealed class ProductionGuardianComposition : IAsyncDisposable
             var attemptFactory = new PrivateHostAttemptFactory(
                 package,
                 pins,
-                launcher);
+                launcher,
+                parentEnvironment);
             var lifecycle = new GuardianHostLifecycleController(
                 selectedGuardianBootId,
                 new MonotonicHostGenerationAllocator(),

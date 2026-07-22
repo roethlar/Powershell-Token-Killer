@@ -1,3 +1,4 @@
+using System.Collections;
 using System.Diagnostics;
 using System.Globalization;
 using System.Text;
@@ -200,6 +201,174 @@ public sealed class ProductionGuardianCompositionTests
             Assert.Equal(0, composition.Supervisor.BackgroundTaskCount);
             Assert.Equal(0, composition.Supervisor.OwnedClientCount);
             Assert.Equal(0, composition.Supervisor.OwnedAttemptWatcherSetCount);
+        }
+        finally
+        {
+            input.CompleteWriting();
+            try
+            {
+                await run.WaitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+            }
+            await composition.DisposeAsync();
+            DeleteRoot(auditRoot);
+        }
+
+        Assert.False(Directory.Exists(outputRoot));
+    }
+
+    [Fact]
+    public async Task Windows_private_host_ignores_the_transitional_idle_watchdog()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var auditRoot = TemporaryRoot("idle-audit");
+        var outputRoot = TemporaryRoot("idle-output");
+        var launcher = new GatedContainmentLauncher();
+        launcher.ReleaseFirstContainmentConfirmation();
+        var composition = ProductionGuardianComposition.Create(
+            Package(FindServerAppHost()),
+            LocalAudit(auditRoot),
+            launcher,
+            OutputOptions(outputRoot),
+            guardianBootId: Guardian,
+            defaultWorkerBootId: Worker,
+            parentEnvironment: ParentEnvironmentWith(
+                "PTK_IDLE_EXIT_SECONDS",
+                "1"));
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(45));
+        using var input = new R3BoundedOneWayStream();
+        using var output = new R3BoundedOneWayStream();
+        using var writer = new StreamWriter(
+            input,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true)
+        {
+            AutoFlush = true,
+            NewLine = "\n",
+        };
+        using var reader = new StreamReader(
+            output,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            detectEncodingFromByteOrderMarks: false,
+            bufferSize: 1024,
+            leaveOpen: true);
+        using var standardError = new StringWriter();
+        var run = Program.RunAsync(
+            [],
+            input,
+            output,
+            standardError,
+            productionComposition: composition,
+            cancellationToken: timeout.Token);
+        try
+        {
+            var initialized = await RequestAsync(
+                writer,
+                reader,
+                requestId: 1,
+                "initialize",
+                new
+                {
+                    protocolVersion = "2025-06-18",
+                    capabilities = new { },
+                    clientInfo = new
+                    {
+                        name = "production-private-host-idle-test",
+                        version = "1.0.0",
+                    },
+                },
+                timeout.Token);
+            Assert.True(initialized.TryGetProperty("result", out _), initialized.GetRawText());
+            await WriteAsync(
+                writer,
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "notifications/initialized",
+                    @params = new { },
+                },
+                timeout.Token);
+            var firstHostProcessId = await launcher.FirstHostProcessId.WaitAsync(timeout.Token);
+
+            var mutation = await RequestAsync(
+                writer,
+                reader,
+                requestId: 2,
+                "tools/call",
+                new
+                {
+                    name = "ptk_invoke",
+                    arguments = new
+                    {
+                        script = "$global:PtkR5IdleSentinel = 'survived'; 'sentinel-set'",
+                        raw = true,
+                        route = "pwsh",
+                        background = false,
+                        timeoutSeconds = 10,
+                        session = "default",
+                    },
+                },
+                timeout.Token);
+            Assert.Contains(
+                "sentinel-set",
+                ToolText(mutation, expectedError: false),
+                StringComparison.Ordinal);
+
+            await Task.Delay(TimeSpan.FromSeconds(2), timeout.Token);
+            using (var firstHost = Process.GetProcessById(firstHostProcessId))
+                Assert.False(firstHost.HasExited);
+
+            var stateResponse = await RequestAsync(
+                writer,
+                reader,
+                requestId: 3,
+                "tools/call",
+                new
+                {
+                    name = "ptk_state",
+                    arguments = new { },
+                },
+                timeout.Token);
+            var state = PublicStateCodec.Decode(
+                Encoding.UTF8.GetBytes(ToolText(stateResponse, expectedError: false)));
+            Assert.Equal(PublicHostState.Ready, state.Host.State);
+            Assert.Equal(1, state.Host.Generation?.Value);
+            var session = Assert.Single(state.Sessions);
+            Assert.Equal(Worker, session.WorkerBootId);
+            Assert.False(session.WarmStateLost);
+
+            var proof = await RequestAsync(
+                writer,
+                reader,
+                requestId: 4,
+                "tools/call",
+                new
+                {
+                    name = "ptk_invoke",
+                    arguments = new
+                    {
+                        script = "if ($global:PtkR5IdleSentinel -eq 'survived') { 'sentinel-present' } else { 'sentinel-absent' }",
+                        raw = true,
+                        route = "pwsh",
+                        background = false,
+                        timeoutSeconds = 10,
+                        session = "default",
+                    },
+                },
+                timeout.Token);
+            Assert.Contains(
+                "sentinel-present",
+                ToolText(proof, expectedError: false),
+                StringComparison.Ordinal);
+            Assert.Equal(1, launcher.LaunchCount);
+
+            input.CompleteWriting();
+            Assert.Equal(0, await run.WaitAsync(timeout.Token));
+            Assert.Equal(string.Empty, standardError.ToString());
         }
         finally
         {
@@ -1087,6 +1256,22 @@ public sealed class ProductionGuardianCompositionTests
         MaximumArtifactBytes: 1024 * 1024,
         MaximumSessionBytes: 4 * 1024 * 1024,
         MaximumAggregateBytes: 8 * 1024 * 1024);
+
+    private static KeyValuePair<string, string>[] ParentEnvironmentWith(
+        string name,
+        string value)
+    {
+        var environment = new Dictionary<string, string>(
+            StringComparer.OrdinalIgnoreCase);
+        foreach (DictionaryEntry entry in Environment.GetEnvironmentVariables())
+        {
+            environment.Add(
+                Assert.IsType<string>(entry.Key),
+                Assert.IsType<string>(entry.Value));
+        }
+        environment[name] = value;
+        return [.. environment];
+    }
 
     private static MatchedPackageFacts Package(string hostAppHost) => new(
         hostAppHost,
