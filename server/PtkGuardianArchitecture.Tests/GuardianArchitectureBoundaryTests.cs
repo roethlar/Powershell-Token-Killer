@@ -21,6 +21,7 @@ public sealed class GuardianArchitectureBoundaryTests
     private static readonly string[] RequiredGuardianAppHostCompileInputs =
     [
         "Program.cs",
+        "Package/CurrentMatchedPackage.cs",
         "Standalone/GuardianMcpApplication.cs",
         "Standalone/ProductionGuardianComposition.cs",
         "Standalone/Fake/R3FakeGuardianComposition.cs",
