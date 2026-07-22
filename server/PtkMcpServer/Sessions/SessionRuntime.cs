@@ -101,11 +101,13 @@ public sealed class SessionRuntime :
         SessionOperationAuthority operationAuthority,
         InvokeBackgroundOperation operation,
         CancellationToken cancellationToken,
+        Func<JobSnapshot, Task> onTerminal,
         IExecutionOutputCaptureOwner outputCaptureOwner) =>
         InvokeAsync(
             operationAuthority,
             operation,
             cancellationToken,
+            onTerminal,
             outputCaptureOwner: outputCaptureOwner);
 
     Task<string> IPrivateSessionOperations.JobAsync(
@@ -188,7 +190,8 @@ public sealed class SessionRuntime :
             timeoutSeconds,
             audit,
             operationAuthority: null,
-            outputCapture);
+            onJobTerminal: null,
+            outputCaptureOwner: outputCapture);
     }
 
     /// <summary>
@@ -214,7 +217,8 @@ public sealed class SessionRuntime :
             timeoutSeconds,
             audit: null,
             operationAuthority,
-            outputCaptureOwner);
+            onJobTerminal: null,
+            outputCaptureOwner: outputCaptureOwner);
     }
 
     /// <summary>
@@ -226,6 +230,7 @@ public sealed class SessionRuntime :
         SessionOperationAuthority operationAuthority,
         InvokeBackgroundOperation operation,
         CancellationToken cancellationToken,
+        Func<JobSnapshot, Task>? onTerminal = null,
         int timeoutSeconds = 0,
         IExecutionOutputCaptureOwner? outputCaptureOwner = null)
     {
@@ -244,7 +249,8 @@ public sealed class SessionRuntime :
             timeoutSeconds,
             audit: null,
             operationAuthority,
-            outputCaptureOwner);
+            onJobTerminal: onTerminal,
+            outputCaptureOwner: outputCaptureOwner);
     }
 
     private async Task<string> InvokeCoreAsync(
@@ -256,6 +262,7 @@ public sealed class SessionRuntime :
         int timeoutSeconds,
         AuditCallContext? audit,
         SessionOperationAuthority? operationAuthority,
+        Func<JobSnapshot, Task>? onJobTerminal,
         IExecutionOutputCaptureOwner? outputCaptureOwner)
     {
         using var outputCapture = outputCaptureOwner;
@@ -469,7 +476,7 @@ public sealed class SessionRuntime :
 
                 JobSnapshot job;
                 Func<JobSnapshot, Task>? onTerminal = terminalLease is null
-                    ? null
+                    ? onJobTerminal
                     : terminalLease.CompleteAsync;
                 try
                 {

@@ -21,6 +21,7 @@ internal interface IPrivateSessionOperations : IOrderedOwnedLifetime
         SessionOperationAuthority operationAuthority,
         InvokeBackgroundOperation operation,
         CancellationToken cancellationToken,
+        Func<JobSnapshot, Task> onTerminal,
         IExecutionOutputCaptureOwner outputCaptureOwner);
 
     Task<string> JobAsync(

@@ -285,6 +285,7 @@ public sealed class DefaultPrivateHostCompositionTests
             SessionOperationAuthority operationAuthority,
             InvokeBackgroundOperation operation,
             CancellationToken cancellationToken,
+            Func<JobSnapshot, Task> onTerminal,
             IExecutionOutputCaptureOwner outputCaptureOwner) =>
             throw new NotSupportedException();
 

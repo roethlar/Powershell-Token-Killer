@@ -409,6 +409,10 @@ internal sealed class DefaultPrivateHostRuntime : IPrivateHostRuntime
                     authority,
                     operation,
                     cancellationToken,
+                    snapshot => WriteJobLifecycleAsync(
+                        request,
+                        worker,
+                        snapshot),
                     RequireCapture(capture)).ConfigureAwait(false);
                 return PrivateHostOperationOutcome.Completed(
                     new InvokeBackgroundResult(
@@ -493,6 +497,60 @@ internal sealed class DefaultPrivateHostRuntime : IPrivateHostRuntime
                 state,
                 workerRequestId),
             cancellationToken);
+
+    private Task WriteJobLifecycleAsync(
+        OperationRequest request,
+        GuardianHostWorkerIdentity worker,
+        JobSnapshot snapshot)
+    {
+        ArgumentNullException.ThrowIfNull(snapshot);
+        var operation = request.Operation as InvokeBackgroundOperation ??
+            throw new InvalidOperationException(
+                "A background job terminal is not bound to a background invocation.");
+        if (snapshot.Id != operation.PublicJobId.Value || snapshot.Running)
+        {
+            throw new InvalidOperationException(
+                "A background job terminal does not match its private invocation.");
+        }
+
+        var recovery = snapshot.OutputRecovery;
+        var outputState = recovery?.State switch
+        {
+            OutputArtifactState.Available => GuardianHostOutputState.Sealed,
+            OutputArtifactState.Incomplete => GuardianHostOutputState.SealedIncomplete,
+            _ => GuardianHostOutputState.Unavailable,
+        };
+        var outputBytes = checked((int)(recovery?.Bytes ?? 0));
+        var state = !snapshot.RootTerminationConfirmed
+            ? GuardianHostJobState.Lost
+            : snapshot.ExecutionOutcomeUnknown
+                ? GuardianHostJobState.OutcomeUnknown
+                : snapshot.KillRequested
+                    ? GuardianHostJobState.Canceled
+                    : snapshot.ExitCode == 0
+                        ? GuardianHostJobState.Completed
+                        : GuardianHostJobState.Failed;
+
+        return _eventSink.WriteEventAsync(
+            sequence => new JobLifecycleEvent(
+                _identity.GuardianBootId,
+                _identity.HostBootId,
+                _identity.HostGeneration,
+                sequence,
+                requestId: null,
+                request.SessionAlias!,
+                request.SessionTransitionVersion!,
+                worker,
+                request.OperationIdentity ?? throw new InvalidOperationException(
+                    "A background job terminal has no operation identity."),
+                operation.PublicJobId,
+                state,
+                snapshot.ExitCode,
+                outputState,
+                outputBytes,
+                outputDigest: null),
+            CancellationToken.None).AsTask();
+    }
 
     private static IExecutionOutputCaptureOwner RequireCapture(
         IExecutionOutputCaptureOwner? capture) =>

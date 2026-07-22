@@ -323,6 +323,64 @@ public sealed class DefaultPrivateHostRuntimeTests
     }
 
     [Fact]
+    public async Task Background_terminal_is_emitted_with_exact_private_identity()
+    {
+        var session = new RecordingSession();
+        var events = new RecordingEventSink();
+        var runtime = Runtime(
+            new RecordingSessionFactory(session),
+            events,
+            new RecordingOutputTransfer());
+        await runtime.InitializeAsync(Initialization(), CancellationToken.None);
+        var request = Request(43, new InvokeBackgroundOperation(
+            Call,
+            Dispatch(),
+            Output(),
+            "1",
+            false,
+            GuardianHostInvokeRoute.Pwsh,
+            new PublicJobId(72)));
+
+        var outcome = await runtime.ExecuteOperationAsync(
+            request,
+            CancellationToken.None);
+        Assert.NotNull(outcome.Result);
+        Assert.NotNull(session.BackgroundTerminal);
+        await session.BackgroundTerminal!(new JobSnapshot(
+            Id: 72,
+            Pid: 7002,
+            Running: false,
+            ExitCode: 0,
+            StartedUtc: DateTimeOffset.UnixEpoch,
+            Script: "1",
+            OutputPath: "private")
+        {
+            RootTerminationConfirmed = true,
+            OutputCaptureComplete = false,
+            OutputRecoveryFinalized = true,
+            OutputRecovery = new OutputRecoverySummary(
+                Handle: null,
+                OutputArtifactState.Incomplete,
+                Bytes: 17,
+                DetailCode: "capture_incomplete",
+                Advertise: false),
+        });
+
+        var terminal = Assert.IsType<JobLifecycleEvent>(events.Events[^1]);
+        Assert.Null(terminal.RequestId);
+        Assert.Equal(DefaultAlias, terminal.SessionAlias);
+        Assert.Equal(Transition, terminal.SessionTransitionVersion);
+        Assert.Same(Worker, terminal.WorkerIdentity);
+        Assert.Equal(OperationIdentity, terminal.OperationIdentity);
+        Assert.Equal(new PublicJobId(72), terminal.PublicJobId);
+        Assert.Equal(GuardianHostJobState.Completed, terminal.State);
+        Assert.Equal(0, terminal.ExitCode);
+        Assert.Equal(GuardianHostOutputState.SealedIncomplete, terminal.OutputState);
+        Assert.Equal(17, terminal.OutputBytes);
+        Assert.Null(terminal.OutputDigest);
+    }
+
+    [Fact]
     public async Task Invalid_or_oversized_text_is_rejected_after_a_terminal_delivery()
     {
         var session = new RecordingSession();
@@ -663,6 +721,7 @@ public sealed class DefaultPrivateHostRuntimeTests
         internal List<string> LifetimeCalls { get; } = [];
         internal Action? OnEffect { get; init; }
         internal Exception? EffectFailure { get; init; }
+        internal Func<JobSnapshot, Task>? BackgroundTerminal { get; private set; }
         internal int ShutdownCalls { get; private set; }
         internal int DisposeCalls { get; private set; }
 
@@ -678,10 +737,12 @@ public sealed class DefaultPrivateHostRuntimeTests
             SessionOperationAuthority operationAuthority,
             InvokeBackgroundOperation operation,
             CancellationToken cancellationToken,
+            Func<JobSnapshot, Task> onTerminal,
             IExecutionOutputCaptureOwner outputCaptureOwner)
         {
             Assert.Equal(operation.PublicJobId, operationAuthority.BackgroundJob?.PublicJobId);
             Assert.Equal(BackgroundCapability, operationAuthority.BackgroundJob?.JobCapability);
+            BackgroundTerminal = onTerminal;
             return Complete("invoke_background", "background", operationAuthority, operation,
                 cancellationToken, outputCaptureOwner);
         }
