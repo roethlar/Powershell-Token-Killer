@@ -1109,3 +1109,16 @@ the shared test-file SHA-256 was
   exact 6.0.1 provisioner, one PSResourceGet version pin, one PowerShellGet
   required-version fallback, one exact-version import, and no stale 5.0.0
   minimum-version check. No hosted workflow result is claimed before push.
+
+## Dependency hardening setup-dotnet v6 local verification (2026-07-22)
+
+_Candidate workflow based on committed Pester head `64859bf`; hosted action
+execution remains unauthorized and unclaimed._
+
+- Both CI jobs resolve `actions/setup-dotnet@v6`; neither retains v5. Both
+  keep `actions/checkout@v7` and the rolling `dotnet-version: 10.0.x`
+  channel.
+- Ruby Psych parsed the complete workflow. Structural checks counted two v6
+  setup references, zero v5 references, two checkout v7 references, and two
+  rolling .NET 10 declarations. A separately authorized push and one exact
+  six-job hosted run remain mandatory for runtime acceptance.

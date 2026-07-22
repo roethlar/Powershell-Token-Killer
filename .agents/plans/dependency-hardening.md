@@ -293,6 +293,13 @@ Validate workflow syntax locally. This slice remains provisionally verified
 until a separately authorized push runs all six hosted jobs; do not claim the
 action upgrade complete from local test execution alone.
 
+**Implemented locally; hosted proof pending.** Both jobs now use
+`actions/setup-dotnet@v6`; both retain `actions/checkout@v7` and the rolling
+`10.0.x` SDK channel. Ruby Psych parses the workflow, structural checks find
+exactly two v6 references and no stale v5 reference, and no other workflow
+surface changed in this family. The action-runtime claim remains provisional
+until a separately authorized push produces six green hosted jobs.
+
 ## Verification
 
 After every slice, rerun the affected package inventory, focused tests, and a
