@@ -227,6 +227,15 @@ private/non-product asset behavior. Run both projects with ordinary `dotnet
 test` and one scoped collection smoke per project. The ordinary suite must not
 start producing coverage artifacts in tracked paths or change test discovery.
 
+**Implemented.** Coverlet 10.0.1 preserves the existing test-only package
+shape. Ordinary macOS runs pass server 1,868 and SIEM 91. Scoped `OutputStore`
+and `SqliteIngestStore` collections pass 3 and 11 tests and each emit exactly
+one non-empty Cobertura file to an external temporary results root (10,230,859
+and 554,893 bytes); the root is removed after validation and the repository
+contains no coverage artifact. Both solution graphs remain free of deprecated
+and vulnerable packages. The server outdated query is empty; the SIEM query
+contains only the separately owned SQLite target.
+
 ### 8. Update the SQLite native bundle
 
 Update the SIEM receiver's explicit `SQLitePCLRaw.bundle_e_sqlite3` override to
