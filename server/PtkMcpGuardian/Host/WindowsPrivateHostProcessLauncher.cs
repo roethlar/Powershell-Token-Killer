@@ -653,13 +653,13 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
             if (processIds is null)
                 return null;
 
-            var processes = new List<SafeProcessHandle>(processIds.Length + 1);
+            var processes = new List<NativeHostHandle>(processIds.Length + 1);
             var currentProcess = NativeMethods.GetCurrentProcess();
             if (!NativeMethods.DuplicateHandle(
                     currentProcess,
                     hostHandle,
                     currentProcess,
-                    out SafeProcessHandle hostIdentity,
+                    out NativeHostHandle hostIdentity,
                     desiredAccess: 0,
                     inheritHandle: false,
                     options: DuplicateSameAccess))
@@ -754,12 +754,12 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
 
     private sealed class NativeJobContainmentLease : IWindowsJobContainmentLease
     {
-        private readonly SafeProcessHandle[] _processes;
+        private readonly NativeHostHandle[] _processes;
         private readonly CancellationTokenSource _stop = new();
         private readonly TaskCompletionSource _confirmation = new(
             TaskCreationOptions.RunContinuationsAsynchronously);
 
-        internal NativeJobContainmentLease(SafeProcessHandle[] processes)
+        internal NativeJobContainmentLease(NativeHostHandle[] processes)
         {
             _processes = processes ?? throw new ArgumentNullException(nameof(processes));
             _ = ObserveAsync();
@@ -829,6 +829,8 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
 
     private sealed class NativeHostHandle : SafeHandleZeroOrMinusOneIsInvalid
     {
+        private NativeHostHandle() : base(ownsHandle: true) { }
+
         internal NativeHostHandle(IntPtr handle, bool ownsHandle) : base(ownsHandle) =>
             SetHandle(handle);
 
@@ -1163,14 +1165,14 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
             out uint returnLength);
 
         [DllImport("kernel32.dll", SetLastError = true)]
-        internal static extern SafeProcessHandle OpenProcess(
+        internal static extern NativeHostHandle OpenProcess(
             uint desiredAccess,
             [MarshalAs(UnmanagedType.Bool)] bool inheritHandle,
             uint processId);
 
         [DllImport("kernel32.dll", SetLastError = true)]
         internal static extern uint WaitForSingleObject(
-            SafeProcessHandle handle,
+            NativeHostHandle handle,
             uint milliseconds);
 
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
@@ -1252,7 +1254,7 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
             IntPtr sourceProcessHandle,
             IntPtr sourceHandle,
             IntPtr targetProcessHandle,
-            out SafeProcessHandle targetHandle,
+            out NativeHostHandle targetHandle,
             uint desiredAccess,
             [MarshalAs(UnmanagedType.Bool)] bool inheritHandle,
             uint options);
