@@ -164,7 +164,7 @@ internal sealed class GuardianHostSupervisor :
             }
 
             if (transition.Disposition == GuardianHostStartDisposition.Started)
-                _lifecycleAudit.RecordStarting();
+                RecordAttemptStartingLocked(transition.Attempt);
 
             var active = AttachAttemptLocked(transition.Attempt);
             ready = active.Ready.Task;
@@ -2039,7 +2039,10 @@ internal sealed class GuardianHostSupervisor :
             oldClient = active.Client;
             _active = null;
             if (transition.StartedAttempt is { } replacement)
+            {
+                RecordAttemptStartingLocked(replacement);
                 AttachAttemptLocked(replacement);
+            }
             else
                 ScheduleRecoveryLocked();
         }
@@ -2090,6 +2093,7 @@ internal sealed class GuardianHostSupervisor :
                     var transition = _lifecycle.TryStartDueRecovery();
                     if (transition.Attempt is { } attempt)
                     {
+                        RecordAttemptStartingLocked(attempt);
                         AttachAttemptLocked(attempt);
                         return;
                     }
@@ -2119,6 +2123,12 @@ internal sealed class GuardianHostSupervisor :
                 _authority.Release();
             }
         }
+    }
+
+    private void RecordAttemptStartingLocked(GuardianHostAttemptLease attempt)
+    {
+        if (attempt.Stage == GuardianHostAttemptStage.Launching)
+            _lifecycleAudit.RecordStarting();
     }
 
     private IDisposable? AcquireWriteAuthority(ActiveAttempt active)

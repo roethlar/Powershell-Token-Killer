@@ -144,6 +144,47 @@ public sealed class GuardianHostSupervisorTests
     }
 
     [Fact]
+    public async Task Replacement_allocation_is_audited_before_recovery_completes()
+    {
+        await using var rig = new TestRig(
+            new AttemptPlan(HostBehavior.Respond),
+            new AttemptPlan(HostBehavior.Respond));
+        await rig.StartAsync();
+
+        rig.Factory.Resources[0].SignalHostExit();
+        await WaitUntilAsync(() =>
+            rig.Supervisor.SnapshotState().Host is
+            {
+                State: PublicHostState.Ready,
+                Generation.Value: 2,
+            });
+
+        var startingLines = rig.HostAuditLines("host.starting");
+        Assert.Equal(2, startingLines.Length);
+        using var startingDocument = JsonDocument.Parse(startingLines[1]);
+        var startingRoot = startingDocument.RootElement;
+        var identity = rig.Factory.Resources[1].Identity;
+        var host = startingRoot.GetProperty("host");
+        Assert.Equal(
+            identity.HostBootId.Value.ToString("D"),
+            host.GetProperty("boot_id").GetString());
+        Assert.Equal(
+            identity.HostGeneration.Value,
+            host.GetProperty("generation").GetInt64());
+        Assert.Equal("recovering", host.GetProperty("state").GetString());
+        Assert.Equal(1, host.GetProperty("recovery_attempt").GetInt64());
+        Assert.Equal(
+            "starting",
+            startingRoot.GetProperty("outcome").GetProperty("state").GetString());
+
+        var recoveredLine = Assert.Single(rig.HostAuditLines("host.recovered"));
+        using var recoveredDocument = JsonDocument.Parse(recoveredLine);
+        Assert.True(
+            startingRoot.GetProperty("sequence").GetInt64() <
+            recoveredDocument.RootElement.GetProperty("sequence").GetInt64());
+    }
+
+    [Fact]
     public async Task Host_loss_begins_containment_before_its_durable_audit_append()
     {
         await using var rig = new TestRig(
