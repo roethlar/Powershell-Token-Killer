@@ -48,6 +48,7 @@ internal sealed class GuardianHostSupervisor :
     private readonly IGuardianHostSupervisorScheduler _scheduler;
     private readonly IGuardianHostSupervisorSessionSource _sessionSource;
     private readonly IGuardianHostSupervisorDispatchObserver _dispatchObserver;
+    private readonly IGuardianHostLifecycleAudit _lifecycleAudit;
     private readonly GuardianHostSupervisorPins _pins;
     private readonly GuardianOutputCoordinator? _outputCoordinator;
     private readonly GuardianJobCapabilityRegistry? _jobCapabilities;
@@ -83,7 +84,8 @@ internal sealed class GuardianHostSupervisor :
             beforeClientFatalObservation = null,
         GuardianOutputCoordinator? outputCoordinator = null,
         GuardianJobCapabilityRegistry? jobCapabilities = null,
-        AuditOutputRequestProtector? outputProtector = null)
+        AuditOutputRequestProtector? outputProtector = null,
+        IGuardianHostLifecycleAudit? lifecycleAudit = null)
     {
         _guardianBootId = guardianBootId ??
             throw new ArgumentNullException(nameof(guardianBootId));
@@ -97,6 +99,7 @@ internal sealed class GuardianHostSupervisor :
             throw new ArgumentNullException(nameof(sessionSource));
         _dispatchObserver = dispatchObserver ??
             throw new ArgumentNullException(nameof(dispatchObserver));
+        _lifecycleAudit = lifecycleAudit ?? NoOpGuardianHostLifecycleAudit.Instance;
         _pins = pins ?? throw new ArgumentNullException(nameof(pins));
         _outputCoordinator = outputCoordinator;
         _jobCapabilities = jobCapabilities;
@@ -159,6 +162,9 @@ internal sealed class GuardianHostSupervisor :
                 throw new InvalidOperationException(
                     "The initial private host could not be created.");
             }
+
+            if (transition.Disposition == GuardianHostStartDisposition.Started)
+                _lifecycleAudit.RecordStarting();
 
             var active = AttachAttemptLocked(transition.Attempt);
             ready = active.Ready.Task;

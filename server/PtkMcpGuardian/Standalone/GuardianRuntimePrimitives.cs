@@ -67,3 +67,12 @@ internal sealed class NoOpGuardianHostSupervisorDispatchObserver :
     public void OnTerminalDecoded(GuardianHostDispatchObservation observation) =>
         ArgumentNullException.ThrowIfNull(observation);
 }
+
+internal sealed class NoOpGuardianHostLifecycleAudit : IGuardianHostLifecycleAudit
+{
+    internal static NoOpGuardianHostLifecycleAudit Instance { get; } = new();
+
+    private NoOpGuardianHostLifecycleAudit() { }
+
+    public void RecordStarting() { }
+}

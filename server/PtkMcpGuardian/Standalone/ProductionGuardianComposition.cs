@@ -157,7 +157,8 @@ internal sealed class ProductionGuardianComposition : IAsyncDisposable
                 pins,
                 outputCoordinator: outputCoordinator,
                 jobCapabilities: jobCapabilities,
-                outputProtector: audit.OutputProtector);
+                outputProtector: audit.OutputProtector,
+                lifecycleAudit: new GuardianHostLifecycleAudit(audit.Runtime));
             var application = new GuardianMcpApplication(
                 supervisor,
                 audit.Runtime,

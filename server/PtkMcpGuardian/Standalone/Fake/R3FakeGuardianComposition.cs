@@ -90,7 +90,8 @@ internal sealed class R3FakeGuardianComposition : IAsyncDisposable
                 selectedScheduler,
                 new R3FakeSessionSource(guardianBootId, selectedProfile),
                 NoOpGuardianHostSupervisorDispatchObserver.Instance,
-                pins);
+                pins,
+                lifecycleAudit: new GuardianHostLifecycleAudit(audit.Runtime));
             return new R3FakeGuardianComposition(
                 guardianBootId,
                 pins,

@@ -47,6 +47,46 @@ public sealed class GuardianHostSupervisorTests
     }
 
     [Fact]
+    public async Task Initial_host_start_is_durably_audited_with_its_exact_v3_identity()
+    {
+        await using var rig = new TestRig(new AttemptPlan(HostBehavior.Respond));
+
+        await rig.StartAsync();
+
+        var line = Assert.Single(rig.HostAuditLines());
+        using var document = JsonDocument.Parse(line);
+        var root = document.RootElement;
+        Assert.Equal("ptk.audit/3", root.GetProperty("schema_version").GetString());
+        Assert.Equal("host.starting", root.GetProperty("event_type").GetString());
+
+        var identity = Assert.Single(rig.Factory.Resources).Identity;
+        var host = root.GetProperty("host");
+        Assert.Equal(
+            identity.HostBootId.Value.ToString("D"),
+            host.GetProperty("boot_id").GetString());
+        Assert.Equal(
+            identity.HostGeneration.Value,
+            host.GetProperty("generation").GetInt64());
+        Assert.Equal("starting", host.GetProperty("state").GetString());
+        Assert.Equal(0, host.GetProperty("recovery_attempt").GetInt64());
+
+        var outcome = root.GetProperty("outcome");
+        Assert.Equal("starting", outcome.GetProperty("state").GetString());
+        Assert.Equal("host_starting", outcome.GetProperty("detail_code").GetString());
+        Assert.Equal(
+            "not_applicable",
+            outcome.GetProperty("termination_certainty").GetString());
+        var coverage = root.GetProperty("coverage");
+        Assert.False(coverage.GetProperty("ptk_request").GetBoolean());
+        Assert.Equal(
+            "not_applicable",
+            coverage.GetProperty("root_process_observed").GetString());
+        Assert.Equal(
+            "not_applicable",
+            coverage.GetProperty("descendants_observed").GetString());
+    }
+
+    [Fact]
     public async Task Loss_before_write_authorization_is_safe_and_never_dispatched()
     {
         await using var rig = new TestRig(
@@ -2068,7 +2108,8 @@ public sealed class GuardianHostSupervisorTests
                 Observer.BeforeClientFatalObservationAsync,
                 OutputCoordinator,
                 JobCapabilities,
-                _audit.OutputProtector);
+                _audit.OutputProtector,
+                new GuardianHostLifecycleAudit(_audit.Runtime));
         }
 
         internal ManualTimeProvider Clock { get; }
@@ -2088,6 +2129,19 @@ public sealed class GuardianHostSupervisorTests
                 return document.RootElement
                     .GetProperty("event_type")
                     .GetString()!;
+            })
+            .Where(static eventType =>
+                !eventType.StartsWith("host.", StringComparison.Ordinal))
+            .ToArray();
+
+        internal byte[][] HostAuditLines() => _audit.Sink.Lines
+            .Where(static line =>
+            {
+                using var document = JsonDocument.Parse(line);
+                return document.RootElement
+                    .GetProperty("event_type")
+                    .GetString()!
+                    .StartsWith("host.", StringComparison.Ordinal);
             })
             .ToArray();
 

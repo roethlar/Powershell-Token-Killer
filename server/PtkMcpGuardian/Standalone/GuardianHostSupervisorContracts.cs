@@ -42,6 +42,16 @@ internal interface IGuardianHostSupervisorScheduler
     ValueTask DelayAsync(TimeSpan delay, CancellationToken cancellationToken);
 }
 
+/// <summary>
+/// Durable audit edge for supervisor-owned host lifecycle transitions. Methods
+/// are invoked only after the lifecycle controller has published the matching
+/// immutable host snapshot.
+/// </summary>
+internal interface IGuardianHostLifecycleAudit
+{
+    void RecordStarting();
+}
+
 internal sealed record GuardianHostJobListTarget
 {
     internal GuardianHostJobListTarget(
