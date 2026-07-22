@@ -279,10 +279,14 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Resume `feature/mcp-resilience-r1` after the cross-platform R5 code head
-   `225b5fc` and its completion record. Begin the approved R6 automatic worker
-   recovery slice without reopening R5 or folding the separate ARM64 MSBuild
-   `protoc` investigation into resilience work.
+1. Await explicit owner go on
+   `.agents/plans/dependency-hardening.md`, then update one dependency family
+   per commit before R6. The owner approved current
+   stable major migrations and rejected build/install blocking for unpatched
+   advisories; do not add warning-as-error, suppression, or runtime gating.
+   After the dependency slice, resume `feature/mcp-resilience-r1` from the
+   cross-platform R5 code head `225b5fc` and begin approved R6 without folding
+   the separate ARM64 MSBuild `protoc` investigation into resilience work.
    Ordinary reviews may use Opus or Grok; hold Fable openreviews until capacity
    returns. Do not merge, rewrite history, push, or publish a release without
    the separately required authorization.
@@ -332,10 +336,11 @@ short and update it when important repo facts change.
   contract; consider an stdin-EOF guardian watch in a later scoped test-hygiene
   slice.
 - `System.Security.Cryptography.Xml` 10.0.6 currently emits high-severity
-  NU1903 advisories during restore/build. No dependency upgrade was folded into
-  the R5 resilience scope; assess it as a separate approved package/security
-  slice before release. Exact as-of-head advisory evidence is in
-  `.agents/machines.md`.
+  NU1903 advisories during restore/build. The separate dependency-hardening
+  plan inventories its `Microsoft.PowerShell.SDK` route and every other
+  repository-managed dependency; implementation awaits explicit owner go.
+  Advisories remain visible and non-blocking by owner decision. Exact
+  as-of-head evidence is in `.agents/machines.md`.
 
 ## Blockers
 
