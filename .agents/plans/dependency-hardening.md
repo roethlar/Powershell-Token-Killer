@@ -249,6 +249,17 @@ and `SQLITE_FULL` tests must remain green. Confirm the native SQLite library
 loads from the packaged graph on every OS and that no second bundle/provider is
 present in the assets file or publish output.
 
+**Partial verification; do not commit yet.** The 3.0.4 candidate passes all 91
+SIEM tests on macOS and x64 Linux `magneto`. The restored graph resolves the
+bundle, config, core, and provider uniformly to 3.0.4 and has zero outdated,
+deprecated, or vulnerable packages. The transferred Linux manifest matches
+local SHA-256
+`a87644c4a259f6ea0809c06964c60a739977e83a4dae457dd6508f959c6edb2b`;
+its disposable checkout was removed. Windows remains mandatory, but the
+recorded `ASHBIAMWEB1` and `NETWATCH-01` names were both unresolvable on
+2026-07-22 and no matching reachable local neighbor was available. Keep the
+manifest change uncommitted until a Windows host completes the 91-test suite.
+
 ### 9. Move the PowerShell test workflow to stable Pester 6
 
 Change CI's Pester provisioner from an ambient minimum-major check to the

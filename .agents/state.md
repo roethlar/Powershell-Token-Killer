@@ -20,9 +20,12 @@ short and update it when important repo facts change.
   unsuppressed because blindly replacing deliberate test cancellation tokens
   is outside this migration. Coverlet ordinary runs pass server 1,868 and SIEM
   91; scoped collection produces one non-empty external Cobertura artifact per
-  project and leaves no repository artifact. SQLite, Pester, setup-dotnet,
-  final audits, and direct macOS/Linux/Windows acceptance remain. No push,
-  merge, release, or installed-payload change is authorized.
+  project and leaves no repository artifact. The uncommitted SQLitePCLRaw 3.0.4
+  candidate passes SIEM 91/91 on macOS and x64 Linux with one uniform clean
+  package graph, but its mandatory Windows run is blocked by the unavailable
+  recorded hosts. Pester, setup-dotnet, final audits, and remaining direct
+  Windows acceptance remain. No push, merge, release, or installed-payload
+  change is authorized.
 - **mini-SIEM S1-S3 are complete and incorporated on local `master`; the S3 durable
   store head is `eb51f2e` and its producer-conformance compatibility head is
   `9f53831`.** S1 supplies the solution skeleton and strict startup config; S2
@@ -352,6 +355,13 @@ short and update it when important repo facts change.
   contract; consider an stdin-EOF guardian watch in a later scoped test-hygiene
   slice.
 ## Blockers
+
+- **Windows is unavailable for the mandatory SQLite 3.0.4 native validation.**
+  On 2026-07-22, both recorded SSH names `ASHBIAMWEB1` and `NETWATCH-01` failed
+  DNS and mDNS resolution; the bounded local-neighbor check found no reachable
+  matching Windows host. The candidate is green on macOS and x64 Linux but
+  remains uncommitted, and later dependency families remain paused behind its
+  one-family-per-commit gate. A reachable Windows hostname or IP is required.
 
 - **Direct ARM64 Linux clean-build validation is blocked by a host-specific
   `Grpc.Tools` launch failure.** On the Ubuntu 26.04 ARM64 VM, the bundled

@@ -1050,3 +1050,23 @@ PowerShell 7.6.3, and Pester 5.7.1._
   absent from the command path. The production composition deliberately
   throws until the approved native `PtkGuardianBroker` launcher exists, so
   this machine cannot support a Unix R5-completion claim.
+
+## Dependency hardening SQLite 3.0.4 verification (macOS/Linux, 2026-07-22)
+
+_Uncommitted SQLite slice candidate based on committed head `5b4eea5`; Windows
+remains mandatory before the family can commit._
+
+- On macOS with .NET SDK 10.0.302, `SQLitePCLRaw.bundle_e_sqlite3` 3.0.4
+  restored and built, and the complete SIEM solution passed 91/91. The bundle,
+  config, core, and provider all resolve to 3.0.4 in both receiver and test
+  graphs. SIEM currency, deprecation, and vulnerability queries are empty.
+- The exact candidate manifest has SHA-256
+  `a87644c4a259f6ea0809c06964c60a739977e83a4dae457dd6508f959c6edb2b`.
+  It matched byte-for-byte after transfer to `magneto` (Arch Linux x86_64,
+  .NET SDK 10.0.110). A clean disposable restore/build succeeded and the full
+  native SIEM suite passed 91/91. Both local and remote temporary artifacts
+  were removed; neither installed payload nor an existing checkout changed.
+- `ASHBIAMWEB1`, `NETWATCH-01`, and their `.local` forms were unresolvable from
+  the macOS host. A bounded check of existing LAN neighbors identified only
+  Linux/macOS SSH systems and no matching reachable Windows machine. No
+  Windows result is claimed; the candidate manifest remains uncommitted.
