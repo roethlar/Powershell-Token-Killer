@@ -918,6 +918,98 @@ public sealed class ProductionGuardianCompositionTests
     }
 
     [Fact]
+    public async Task Windows_composition_recovers_after_replacement_dies_during_startup()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var auditRoot = TemporaryRoot("startup-crash-audit");
+        var outputRoot = TemporaryRoot("startup-crash-output");
+        var launcher = new CrashSecondLaunchLauncher();
+        var composition = ProductionGuardianComposition.Create(
+            Package(FindServerAppHost()),
+            LocalAudit(auditRoot),
+            launcher,
+            OutputOptions(outputRoot),
+            guardianBootId: Guardian,
+            defaultWorkerBootId: Worker);
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(60));
+        using var input = new R3BoundedOneWayStream();
+        using var output = new R3BoundedOneWayStream();
+        var run = composition.RunAsync(input, output, timeout.Token);
+        try
+        {
+            var firstHostProcessId = await launcher.FirstHostProcessId
+                .WaitAsync(timeout.Token);
+            PublicStateSnapshot? initial = null;
+            for (var attempt = 0; attempt < 200; attempt++)
+            {
+                var candidate = composition.Supervisor.SnapshotState();
+                if (candidate.Host.ReadyForEffects)
+                {
+                    initial = candidate;
+                    break;
+                }
+                await Task.Delay(25, timeout.Token);
+            }
+            Assert.NotNull(initial);
+            Assert.Equal(1, initial.Host.Generation?.Value);
+            var firstHostBootId = initial.Host.BootId;
+
+            using (var firstHost = Process.GetProcessById(firstHostProcessId))
+            {
+                firstHost.Kill();
+                await firstHost.WaitForExitAsync(timeout.Token);
+            }
+
+            var failedReplacementProcessId = await launcher.FailedReplacementProcessId
+                .WaitAsync(TimeSpan.FromSeconds(10), timeout.Token);
+            var recoveredHostProcessId = await launcher.RecoveredHostProcessId
+                .WaitAsync(TimeSpan.FromSeconds(10), timeout.Token);
+            Assert.NotEqual(firstHostProcessId, failedReplacementProcessId);
+            Assert.NotEqual(failedReplacementProcessId, recoveredHostProcessId);
+
+            PublicStateSnapshot? recovered = null;
+            for (var attempt = 0; attempt < 400; attempt++)
+            {
+                var candidate = composition.Supervisor.SnapshotState();
+                if (candidate.Host.ReadyForEffects)
+                {
+                    recovered = candidate;
+                    break;
+                }
+                await Task.Delay(25, timeout.Token);
+            }
+            Assert.NotNull(recovered);
+            Assert.Equal(PublicHostState.Ready, recovered.Host.State);
+            Assert.Equal(3, recovered.Host.Generation?.Value);
+            Assert.NotEqual(firstHostBootId, recovered.Host.BootId);
+            var session = Assert.Single(recovered.Sessions);
+            Assert.True(session.ReadyForEffects);
+            Assert.True(session.WarmStateLost);
+            Assert.Equal(BootstrapState.Restored, session.BootstrapState);
+            Assert.Equal(3, launcher.LaunchCount);
+
+            input.CompleteWriting();
+            await run.WaitAsync(timeout.Token);
+        }
+        finally
+        {
+            input.CompleteWriting();
+            try
+            {
+                await run.WaitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+            }
+            await composition.DisposeAsync();
+            DeleteRoot(auditRoot);
+        }
+
+        Assert.False(Directory.Exists(outputRoot));
+    }
+
+    [Fact]
     public async Task Windows_composition_keeps_a_real_job_tombstone_and_sealed_output()
     {
         if (!OperatingSystem.IsWindows()) return;
@@ -1641,6 +1733,52 @@ public sealed class ProductionGuardianCompositionTests
                 firstContainmentConfirmed.TrySetResult();
                 await containmentRelease.ConfigureAwait(false);
             }
+        }
+    }
+
+    private sealed class CrashSecondLaunchLauncher : IPrivateHostProcessLauncher
+    {
+        private readonly WindowsPrivateHostProcessLauncher _inner = new();
+        private readonly TaskCompletionSource<int> _firstHostProcessId = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<int> _failedReplacementProcessId = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private readonly TaskCompletionSource<int> _recoveredHostProcessId = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _launchCount;
+
+        internal Task<int> FirstHostProcessId => _firstHostProcessId.Task;
+
+        internal Task<int> FailedReplacementProcessId =>
+            _failedReplacementProcessId.Task;
+
+        internal Task<int> RecoveredHostProcessId => _recoveredHostProcessId.Task;
+
+        internal int LaunchCount => Volatile.Read(ref _launchCount);
+
+        public PrivateHostProcessLaunchResult Launch(PrivateHostLaunchCommand command)
+        {
+            var launchNumber = Interlocked.Increment(ref _launchCount);
+            var result = _inner.Launch(command);
+            if (result.Outcome != GuardianHostLaunchOutcome.Started)
+                return result;
+
+            var processId = result.LaunchedHost!.ProcessId;
+            if (launchNumber == 1)
+            {
+                _firstHostProcessId.TrySetResult(processId);
+            }
+            else if (launchNumber == 2)
+            {
+                _failedReplacementProcessId.TrySetResult(processId);
+                using var process = Process.GetProcessById(processId);
+                process.Kill();
+            }
+            else if (launchNumber == 3)
+            {
+                _recoveredHostProcessId.TrySetResult(processId);
+            }
+            return result;
         }
     }
 
