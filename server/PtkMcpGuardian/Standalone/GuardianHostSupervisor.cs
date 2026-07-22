@@ -1,3 +1,4 @@
+using System.Globalization;
 using System.Security.Cryptography;
 using System.Runtime.CompilerServices;
 using System.Text;
@@ -197,6 +198,9 @@ internal sealed class GuardianHostSupervisor :
 
         if (StringComparer.Ordinal.Equals(toolName, "ptk_output"))
             return DispatchOutput(arguments, auditCall, cancellationToken);
+
+        if (StringComparer.Ordinal.Equals(toolName, "ptk_reset"))
+            return DispatchResetAsync(arguments, auditCall, cancellationToken);
 
         if (StringComparer.Ordinal.Equals(toolName, "ptk_session"))
         {
@@ -475,6 +479,95 @@ internal sealed class GuardianHostSupervisor :
                 cancellationToken);
     }
 
+    private ValueTask<GuardianToolResult> DispatchResetAsync(
+        IReadOnlyDictionary<string, JsonElement> arguments,
+        GuardianAuditCall auditCall,
+        CancellationToken cancellationToken)
+    {
+        var admitted = auditCall.AcceptedGenerationOperationFacts;
+        if (!TryReadResetArguments(
+                arguments,
+                auditCall.RequestedSessionAlias,
+                admitted))
+        {
+            return ValueTask.FromResult(new GuardianToolResult(
+                UnsupportedToolText,
+                isError: true));
+        }
+
+        var callId = auditCall.PublicCallId;
+        return DispatchHostOperationAsync(
+            new ResetOperation(
+                callId,
+                new DispatchCapability(
+                    NewCapabilityToken(),
+                    callId,
+                    admitted.DeadlineUnixTimeMilliseconds),
+                admitted.ExpectedGeneration,
+                admitted.Force),
+            auditCall,
+            cancellationToken);
+    }
+
+    private static bool TryReadResetArguments(
+        IReadOnlyDictionary<string, JsonElement> arguments,
+        CanonicalAlias admittedSessionAlias,
+        GuardianAuditGenerationOperationFacts admitted)
+    {
+        if (arguments.Keys.Any(static key => key is not (
+                "session" or "expectedGeneration" or "force" or
+                "timeoutSeconds")))
+        {
+            return false;
+        }
+
+        var sessionAlias = new CanonicalAlias("default");
+        if (arguments.TryGetValue("session", out var sessionElement))
+        {
+            if (sessionElement.ValueKind != JsonValueKind.String)
+                return false;
+            try
+            {
+                sessionAlias = new CanonicalAlias(sessionElement.GetString()!);
+            }
+            catch (ArgumentException)
+            {
+                return false;
+            }
+        }
+        if (sessionAlias != admittedSessionAlias)
+            return false;
+
+        long expectedGeneration = 0;
+        if (arguments.TryGetValue("expectedGeneration", out var generationElement) &&
+            (generationElement.ValueKind != JsonValueKind.Number ||
+             !generationElement.TryGetInt64(out expectedGeneration) ||
+             expectedGeneration < 0))
+        {
+            return false;
+        }
+        if (expectedGeneration != admitted.ExpectedGeneration)
+            return false;
+
+        var force = false;
+        if (arguments.TryGetValue("force", out var forceElement))
+        {
+            if (forceElement.ValueKind is not (
+                    JsonValueKind.True or JsonValueKind.False))
+            {
+                return false;
+            }
+            force = forceElement.GetBoolean();
+        }
+        if (force != admitted.Force)
+            return false;
+
+        return !arguments.TryGetValue("timeoutSeconds", out var timeoutElement) ||
+            timeoutElement.ValueKind == JsonValueKind.Number &&
+            timeoutElement.TryGetInt32(out var timeoutSeconds) &&
+            timeoutSeconds >= 0;
+    }
+
     private static bool TryReadInvokeArguments(
         IReadOnlyDictionary<string, JsonElement> arguments,
         CanonicalAlias admittedSessionAlias,
@@ -712,9 +805,40 @@ internal sealed class GuardianHostSupervisor :
                 backgroundInvoke: null,
                 jobControl: null,
                 operationIdentity,
+                GuardianDispatchGate.Session,
                 auditCall,
                 cancellationToken)
             .ConfigureAwait(false);
+    }
+
+    /// <summary>
+    /// Shared private dispatch entry for operations whose prerequisite is the
+    /// host itself. It deliberately does not require the selected worker's
+    /// ready-for-effects gate, because reset and lifecycle repair may target a
+    /// nonready session.
+    /// </summary>
+    internal ValueTask<GuardianToolResult> DispatchHostOperationAsync(
+        GuardianHostOperation operation,
+        GuardianAuditCall auditCall,
+        CancellationToken cancellationToken)
+    {
+        ArgumentNullException.ThrowIfNull(operation);
+        ArgumentNullException.ThrowIfNull(auditCall);
+        if (operation.Kind != GuardianHostOperationKind.Reset)
+        {
+            throw new ArgumentException(
+                "The operation does not use the implemented host dispatch gate.",
+                nameof(operation));
+        }
+
+        return DispatchSessionOperationCoreAsync(
+            operation,
+            backgroundInvoke: null,
+            jobControl: null,
+            operationIdentity: null,
+            GuardianDispatchGate.Host,
+            auditCall,
+            cancellationToken);
     }
 
     /// <summary>
@@ -760,6 +884,7 @@ internal sealed class GuardianHostSupervisor :
             backgroundInvoke,
             jobControl: null,
             operationIdentity,
+            GuardianDispatchGate.Session,
             auditCall,
             cancellationToken);
     }
@@ -844,6 +969,7 @@ internal sealed class GuardianHostSupervisor :
             backgroundInvoke: null,
             jobControl,
             operationIdentity: null,
+            GuardianDispatchGate.Session,
             auditCall,
             cancellationToken);
     }
@@ -853,6 +979,7 @@ internal sealed class GuardianHostSupervisor :
         BackgroundInvokeDispatch? backgroundInvoke,
         JobControlDispatch? jobControl,
         GuardianHostOperationIdentity? operationIdentity,
+        GuardianDispatchGate dispatchGate,
         GuardianAuditCall auditCall,
         CancellationToken cancellationToken)
     {
@@ -878,6 +1005,7 @@ internal sealed class GuardianHostSupervisor :
 
         var admission = await CaptureDispatchAsync(
                 auditCall.RequestedSessionAlias,
+                dispatchGate,
                 cancellationToken)
             .ConfigureAwait(false);
         if (admission.Terminal is { } refused)
@@ -916,7 +1044,11 @@ internal sealed class GuardianHostSupervisor :
                     cancellationToken)
                 .ConfigureAwait(false);
 
-            var revalidated = await RevalidateDispatchAsync(active, target, cancellationToken)
+            var revalidated = await RevalidateDispatchAsync(
+                    active,
+                    target,
+                    dispatchGate,
+                    cancellationToken)
                 .ConfigureAwait(false);
             if (revalidated is { } changed)
             {
@@ -1009,6 +1141,7 @@ internal sealed class GuardianHostSupervisor :
                                     target,
                                     tracker,
                                     auditCall,
+                                    dispatchGate,
                                     outputRegistration,
                                     jobRegistration);
                                 AddCallUnderAuthority(call);
@@ -1037,12 +1170,20 @@ internal sealed class GuardianHostSupervisor :
                                             background: true),
                                     _ => null,
                                 };
+                                var generationFacts = dispatchedOperation is
+                                    GuardianHostGenerationOperation generationOperation
+                                        ? new GuardianAuditGenerationOperationFacts(
+                                            generationOperation.ExpectedGeneration,
+                                            generationOperation.Force,
+                                            request.DeadlineUnixTimeMilliseconds!.Value)
+                                        : null;
                                 if (!auditCall.TryAuthorizeDispatch(
                                         new GuardianAuditDispatchAuthorization(
                                             dispatchedOperation.Kind,
                                             target.AuditSession,
                                             publicJobId,
-                                            invokeDispatch)))
+                                            invokeDispatch,
+                                            generationFacts)))
                                 {
                                     throw new AuditAuthorizationException();
                                 }
@@ -1074,7 +1215,8 @@ internal sealed class GuardianHostSupervisor :
                         },
                         onWriteStarting: () => BeginCallWriteUnderAuthority(
                             call!,
-                            target),
+                            target,
+                            dispatchGate),
                         cancellationToken)
                     .ConfigureAwait(false);
             }
@@ -1125,6 +1267,7 @@ internal sealed class GuardianHostSupervisor :
                             active,
                             backendLostBeforeDispatch: true,
                             target.Alias,
+                            dispatchGate,
                             cancellationToken)
                         .ConfigureAwait(false);
                     return RecordNoDispatch(
@@ -1134,7 +1277,7 @@ internal sealed class GuardianHostSupervisor :
                         "guardian_dispatch_not_started");
                 }
 
-                await ClassifyFailedSendAsync(call, target, exception)
+                await ClassifyFailedSendAsync(call, target, dispatchGate, exception)
                     .ConfigureAwait(false);
             }
 
@@ -1148,6 +1291,7 @@ internal sealed class GuardianHostSupervisor :
 
     private async Task<DispatchAdmission> CaptureDispatchAsync(
         CanonicalAlias requestedAlias,
+        GuardianDispatchGate dispatchGate,
         CancellationToken cancellationToken)
     {
         await _authority.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -1156,7 +1300,10 @@ internal sealed class GuardianHostSupervisor :
             if (_active is { } currentActive)
                 SynchronizeFaultedClientLossLocked(currentActive);
 
-            if (!_sessionSource.TryGetJobListTarget(requestedAlias, out var target))
+            var hasTarget = _sessionSource.TryGetJobListTarget(
+                requestedAlias,
+                out var target);
+            if (!hasTarget && dispatchGate == GuardianDispatchGate.Session)
             {
                 return new DispatchAdmission(
                     null,
@@ -1172,10 +1319,20 @@ internal sealed class GuardianHostSupervisor :
                     target,
                     CreateHostRefusalLocked(
                         backendLostBeforeDispatch: false,
-                        target.Alias));
+                        requestedAlias,
+                        dispatchGate));
             }
 
-            if (!target.ReadyForEffects)
+            if (!hasTarget)
+            {
+                return new DispatchAdmission(
+                    active,
+                    null,
+                    SessionNotFound());
+            }
+
+            if (dispatchGate == GuardianDispatchGate.Session &&
+                !target!.ReadyForEffects)
             {
                 return new DispatchAdmission(
                     null,
@@ -1183,7 +1340,7 @@ internal sealed class GuardianHostSupervisor :
                     CreateSessionRefusal(target?.Alias));
             }
 
-            return new DispatchAdmission(active, target, null);
+            return new DispatchAdmission(active, target!, null);
         }
         finally
         {
@@ -1194,6 +1351,7 @@ internal sealed class GuardianHostSupervisor :
     private async Task<GuardianHostSupervisorTerminal?> RevalidateDispatchAsync(
         ActiveAttempt expectedActive,
         GuardianHostJobListTarget expectedTarget,
+        GuardianDispatchGate dispatchGate,
         CancellationToken cancellationToken)
     {
         await _authority.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -1207,8 +1365,12 @@ internal sealed class GuardianHostSupervisor :
                 return CreateHostRefusalLocked(
                     expectedActive,
                     backendLostBeforeDispatch: true,
-                    expectedTarget.Alias);
+                    expectedTarget.Alias,
+                    dispatchGate);
             }
+
+            if (dispatchGate == GuardianDispatchGate.Host)
+                return null;
 
             if (!_sessionSource.TryGetJobListTarget(expectedTarget.Alias, out var current) ||
                 !current.ReadyForEffects)
@@ -1228,12 +1390,17 @@ internal sealed class GuardianHostSupervisor :
 
     private void BeginCallWriteUnderAuthority(
         ActiveCall call,
-        GuardianHostJobListTarget expectedTarget)
+        GuardianHostJobListTarget expectedTarget,
+        GuardianDispatchGate dispatchGate)
     {
-        if (!ReferenceEquals(_active, call.Attempt) || _stopping ||
-            !_sessionSource.TryGetJobListTarget(expectedTarget.Alias, out var current) ||
-            !current.ReadyForEffects ||
-            !expectedTarget.SameDispatchIdentity(current))
+        var hostInvalid = !ReferenceEquals(_active, call.Attempt) || _stopping ||
+            call.Attempt.Client?.State != GuardianHostClientState.Ready ||
+            call.Attempt.Lease.Stage != GuardianHostAttemptStage.Ready;
+        var sessionInvalid = dispatchGate == GuardianDispatchGate.Session &&
+            (!_sessionSource.TryGetJobListTarget(expectedTarget.Alias, out var current) ||
+             !current.ReadyForEffects ||
+             !expectedTarget.SameDispatchIdentity(current));
+        if (hostInvalid || sessionInvalid)
         {
             throw new DispatchRefusedException();
         }
@@ -1254,6 +1421,7 @@ internal sealed class GuardianHostSupervisor :
     private async Task ClassifyFailedSendAsync(
         ActiveCall call,
         GuardianHostJobListTarget target,
+        GuardianDispatchGate dispatchGate,
         Exception exception)
     {
         _ = exception;
@@ -1266,11 +1434,12 @@ internal sealed class GuardianHostSupervisor :
             {
                 var hostLost = !ReferenceEquals(_active, call.Attempt) ||
                     call.Attempt.Lease.Stage != GuardianHostAttemptStage.Ready;
-                terminal = hostLost
+                terminal = hostLost || dispatchGate == GuardianDispatchGate.Host
                     ? CreateHostRefusalLocked(
                         call.Attempt,
                         backendLostBeforeDispatch: true,
-                        target.Alias)
+                        target.Alias,
+                        dispatchGate)
                     : CreatePrewriteSessionRefusal(target);
                 SignalLocalTerminal(call, terminal);
             }
@@ -1611,7 +1780,8 @@ internal sealed class GuardianHostSupervisor :
                             : CreateHostRefusal(
                                 host,
                                 backendLostBeforeDispatch: true,
-                                call.Target.Alias));
+                                call.Target.Alias,
+                                call.DispatchGate));
                     break;
                 case GuardianHostLossDisposition.OutcomeUnknown:
                     SignalClassifiedLossTerminal(call, OutcomeUnknown());
@@ -1923,6 +2093,7 @@ internal sealed class GuardianHostSupervisor :
         ActiveAttempt expectedActive,
         bool backendLostBeforeDispatch,
         CanonicalAlias alias,
+        GuardianDispatchGate dispatchGate,
         CancellationToken cancellationToken)
     {
         await _authority.WaitAsync(cancellationToken).ConfigureAwait(false);
@@ -1931,7 +2102,8 @@ internal sealed class GuardianHostSupervisor :
             return CreateHostRefusalLocked(
                 expectedActive,
                 backendLostBeforeDispatch,
-                alias);
+                alias,
+                dispatchGate);
         }
         finally
         {
@@ -1941,16 +2113,19 @@ internal sealed class GuardianHostSupervisor :
 
     private GuardianHostSupervisorTerminal CreateHostRefusalLocked(
         bool backendLostBeforeDispatch,
-        CanonicalAlias alias) =>
+        CanonicalAlias alias,
+        GuardianDispatchGate dispatchGate) =>
         CreateHostRefusal(
             _lifecycle.Snapshot().Host,
             backendLostBeforeDispatch && !_stopping,
-            alias);
+            alias,
+            dispatchGate);
 
     private GuardianHostSupervisorTerminal CreateHostRefusalLocked(
         ActiveAttempt expectedActive,
         bool backendLostBeforeDispatch,
-        CanonicalAlias alias)
+        CanonicalAlias alias,
+        GuardianDispatchGate dispatchGate)
     {
         if (_stopping)
             return HostStartFailed();
@@ -1958,13 +2133,15 @@ internal sealed class GuardianHostSupervisor :
         return CreateHostRefusal(
             expectedActive.PrewriteLossHost ?? _lifecycle.Snapshot().Host,
             backendLostBeforeDispatch,
-            alias);
+            alias,
+            dispatchGate);
     }
 
     private static GuardianHostSupervisorTerminal CreateHostRefusal(
         PublicHostStateSnapshot host,
         bool backendLostBeforeDispatch,
-        CanonicalAlias alias)
+        CanonicalAlias alias,
+        GuardianDispatchGate dispatchGate)
     {
         if (host.LastFailureCode == PublicRecoveryDetailCode.HostContractMismatch)
         {
@@ -1988,7 +2165,7 @@ internal sealed class GuardianHostSupervisor :
                 lostDelay,
                 lostPhase,
                 host.RecoveryAttempt,
-                new SessionReadyGate(alias)));
+                RetryGateFor(dispatchGate, alias)));
         }
 
         if (host.State is PublicHostState.Recovering or PublicHostState.Backoff or
@@ -2005,7 +2182,7 @@ internal sealed class GuardianHostSupervisor :
                 retryAfter,
                 phase,
                 host.RecoveryAttempt,
-                new SessionReadyGate(alias)));
+                RetryGateFor(dispatchGate, alias)));
         }
 
         var permanent = host.State == PublicHostState.ContainmentUnconfirmed
@@ -2019,6 +2196,15 @@ internal sealed class GuardianHostSupervisor :
             recoveryAttempt: null,
             retryGate: null));
     }
+
+    private static RetryGate RetryGateFor(
+        GuardianDispatchGate dispatchGate,
+        CanonicalAlias alias) => dispatchGate switch
+        {
+            GuardianDispatchGate.Host => new HostReadyGate(),
+            GuardianDispatchGate.Session => new SessionReadyGate(alias),
+            _ => throw new ArgumentOutOfRangeException(nameof(dispatchGate)),
+        };
 
     private GuardianHostSupervisorTerminal CreateSessionRefusal(CanonicalAlias? alias)
     {
@@ -2112,6 +2298,11 @@ internal sealed class GuardianHostSupervisor :
             recoveryAttempt: null,
             retryGate: null));
 
+    private static GuardianHostSupervisorTerminal SessionNotFound() => new(
+        "private_host_error:SessionNotFound",
+        isError: true,
+        auditDetailCode: "session_not_found");
+
     private static GuardianHostSupervisorTerminal TerminalFrom(
         GuardianHostResponse response) => response switch
     {
@@ -2125,6 +2316,12 @@ internal sealed class GuardianHostSupervisor :
         } => new GuardianHostSupervisorTerminal(
             $"[job {result.PublicJobId.Value} started]",
             isError: false),
+        GuardianHostSuccessResponse
+        {
+            Payload: OperationCompleted { Result: GuardianHostSessionOperationResult result }
+        } => new GuardianHostSupervisorTerminal(
+            FormatSessionOperationResult(result),
+            isError: false),
         GuardianHostErrorResponse
         {
             Error.DetailCode: GuardianHostPrivateDetailCode.OutcomeUnknown
@@ -2135,6 +2332,44 @@ internal sealed class GuardianHostSupervisor :
             auditDetailCode: "private_host_error"),
         _ => throw new GuardianHostClientException(
             GuardianHostClientFailureKind.ResponseCorrelationMismatch),
+    };
+
+    private static string FormatSessionOperationResult(
+        GuardianHostSessionOperationResult result) =>
+        $"session={result.Alias.Value} state={SessionState(result.State)} " +
+        $"generation={result.WorkerIdentity?.Generation.Value.ToString(CultureInfo.InvariantCulture) ?? "none"} " +
+        $"transition_version={result.TransitionVersion.Value.ToString(CultureInfo.InvariantCulture)} " +
+        $"ready_for_effects={result.ReadyForEffects.ToString().ToLowerInvariant()} " +
+        $"warm_state_lost={result.WarmStateLost.ToString().ToLowerInvariant()} " +
+        $"bootstrap_state={BootstrapStateText(result.BootstrapState)}";
+
+    private static string SessionState(PublicSessionState state) => state switch
+    {
+        PublicSessionState.Cold => "cold",
+        PublicSessionState.Starting => "starting",
+        PublicSessionState.Ready => "ready",
+        PublicSessionState.Resetting => "resetting",
+        PublicSessionState.Closing => "closing",
+        PublicSessionState.Faulted => "faulted",
+        PublicSessionState.Lost => "lost",
+        PublicSessionState.Quarantined => "quarantined",
+        PublicSessionState.Recovering => "recovering",
+        PublicSessionState.Backoff => "backoff",
+        PublicSessionState.Bootstrapping => "bootstrapping",
+        PublicSessionState.CircuitOpen => "circuit_open",
+        PublicSessionState.HalfOpen => "half_open",
+        PublicSessionState.RecoveryUnknown => "recovery_unknown",
+        _ => throw new ArgumentOutOfRangeException(nameof(state)),
+    };
+
+    private static string BootstrapStateText(BootstrapState state) => state switch
+    {
+        BootstrapState.NotApplicable => "not_applicable",
+        BootstrapState.Pending => "pending",
+        BootstrapState.Restored => "restored",
+        BootstrapState.Failed => "failed",
+        BootstrapState.Unknown => "unknown",
+        _ => throw new ArgumentOutOfRangeException(nameof(state)),
     };
 
     private static GuardianHostSupervisorTerminal RecoveryTerminal(
@@ -2523,6 +2758,7 @@ internal sealed class GuardianHostSupervisor :
         GuardianHostJobListTarget target,
         GuardianCallDeliveryTracker<GuardianHostSupervisorTerminal> tracker,
         GuardianAuditCall auditCall,
+        GuardianDispatchGate dispatchGate,
         GuardianOutputRegistration? outputRegistration,
         GuardianJobRegistration? jobRegistration)
     {
@@ -2531,6 +2767,7 @@ internal sealed class GuardianHostSupervisor :
         internal GuardianCallDeliveryTracker<GuardianHostSupervisorTerminal> Tracker { get; } = tracker;
         internal GuardianAuditCall AuditCall { get; } = auditCall ??
             throw new ArgumentNullException(nameof(auditCall));
+        internal GuardianDispatchGate DispatchGate { get; } = dispatchGate;
         internal GuardianOutputRegistration? OutputRegistration { get; } = outputRegistration;
         internal GuardianJobRegistration? JobRegistration { get; } = jobRegistration;
         internal bool OutputResponseResolved { get; set; }
@@ -2549,6 +2786,12 @@ internal sealed class GuardianHostSupervisor :
     }
 
     private sealed class DispatchRefusedException : InvalidOperationException;
+
+    private enum GuardianDispatchGate
+    {
+        Host,
+        Session,
+    }
 
     private sealed class OutputAdmissionException : InvalidOperationException;
 

@@ -174,6 +174,36 @@ internal sealed record GuardianAuditOutputFacts
 }
 
 /// <summary>
+/// Exact normalized generation-control facts captured at public admission and
+/// repeated by reset, close, or restart before the guardian's first private
+/// write. The absolute deadline is the admitted effective deadline, not a
+/// second computation from the raw timeout argument.
+/// </summary>
+internal sealed record GuardianAuditGenerationOperationFacts
+{
+    internal GuardianAuditGenerationOperationFacts(
+        long expectedGeneration,
+        bool force,
+        long deadlineUnixTimeMilliseconds)
+    {
+        if (expectedGeneration < 0)
+            throw new ArgumentOutOfRangeException(nameof(expectedGeneration));
+        if (deadlineUnixTimeMilliseconds < 1)
+            throw new ArgumentOutOfRangeException(nameof(deadlineUnixTimeMilliseconds));
+
+        ExpectedGeneration = expectedGeneration;
+        Force = force;
+        DeadlineUnixTimeMilliseconds = deadlineUnixTimeMilliseconds;
+    }
+
+    internal long ExpectedGeneration { get; }
+
+    internal bool Force { get; }
+
+    internal long DeadlineUnixTimeMilliseconds { get; }
+}
+
+/// <summary>
 /// Exact immutable facts consumed by the guardian-to-host pre-write audit
 /// barrier. A public job ID is mandatory exactly when the private operation
 /// addresses or creates guardian-owned job state.
@@ -184,7 +214,8 @@ internal sealed record GuardianAuditDispatchAuthorization
         GuardianHostOperationKind operationKind,
         GuardianAuditSession session,
         PublicJobId? publicJobId = null,
-        GuardianAuditInvokeDispatch? invokeDispatch = null)
+        GuardianAuditInvokeDispatch? invokeDispatch = null,
+        GuardianAuditGenerationOperationFacts? generationOperationFacts = null)
     {
         if (!Enum.IsDefined(operationKind))
             throw new ArgumentOutOfRangeException(nameof(operationKind));
@@ -226,10 +257,22 @@ internal sealed record GuardianAuditDispatchAuthorization
                 nameof(invokeDispatch));
         }
 
+        var requiresGenerationFacts = operationKind is
+            GuardianHostOperationKind.Reset or
+            GuardianHostOperationKind.SessionClose or
+            GuardianHostOperationKind.SessionRestart;
+        if (requiresGenerationFacts != (generationOperationFacts is not null))
+        {
+            throw new ArgumentException(
+                "The generation-control facts do not match the private operation kind.",
+                nameof(generationOperationFacts));
+        }
+
         OperationKind = operationKind;
         Session = session;
         PublicJobId = publicJobId;
         InvokeDispatch = invokeDispatch;
+        GenerationOperationFacts = generationOperationFacts;
     }
 
     internal GuardianHostOperationKind OperationKind { get; }
@@ -239,6 +282,8 @@ internal sealed record GuardianAuditDispatchAuthorization
     internal PublicJobId? PublicJobId { get; }
 
     internal GuardianAuditInvokeDispatch? InvokeDispatch { get; }
+
+    internal GuardianAuditGenerationOperationFacts? GenerationOperationFacts { get; }
 }
 
 /// <summary>
@@ -340,6 +385,32 @@ internal sealed class GuardianAuditCall : AuditCallLifecycle
         }
     }
 
+    internal GuardianAuditGenerationOperationFacts AcceptedGenerationOperationFacts
+    {
+        get
+        {
+            EnsureActive();
+            var isGenerationOperation =
+                StringComparer.Ordinal.Equals(_request!.Tool, "ptk_reset") &&
+                StringComparer.Ordinal.Equals(_request.Action, "reset") ||
+                StringComparer.Ordinal.Equals(_request.Tool, "ptk_session") &&
+                _request.Action is "close" or "restart";
+            if (!isGenerationOperation ||
+                _request.ExpectedGeneration is null ||
+                _request.Force is null ||
+                _request.DeadlineUtc is null)
+            {
+                throw new InvalidOperationException(
+                    "The admitted guardian call has no complete generation-control facts.");
+            }
+
+            return new GuardianAuditGenerationOperationFacts(
+                _request.ExpectedGeneration.Value,
+                _request.Force.Value,
+                _request.DeadlineUtc.Value.ToUnixTimeMilliseconds());
+        }
+    }
+
     internal bool AcceptsGuardianLocalSessionList
     {
         get
@@ -415,6 +486,12 @@ internal sealed class GuardianAuditCall : AuditCallLifecycle
         {
             throw new InvalidOperationException(
                 "The guardian invocation does not match the accepted request.");
+        }
+        if (authorization.GenerationOperationFacts is { } generationFacts &&
+            generationFacts != AcceptedGenerationOperationFacts)
+        {
+            throw new InvalidOperationException(
+                "The guardian generation-control operation does not match the accepted request.");
         }
 
         var publicJobId = authorization.PublicJobId?.Value;

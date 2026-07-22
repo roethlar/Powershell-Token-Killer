@@ -224,6 +224,55 @@ public sealed class GuardianAuditCallTests
         }
     }
 
+    [Fact]
+    public void Reset_dispatch_authorization_binds_every_admitted_control_fact()
+    {
+        using var fixture = new Fixture();
+        var call = fixture.CreateCall();
+        Assert.True(call.TryBegin(ResetMetadata(), null, out var failure), failure);
+        var accepted = call.AcceptedGenerationOperationFacts;
+        Assert.Equal(17, accepted.ExpectedGeneration);
+        Assert.True(accepted.Force);
+        Assert.Equal(
+            InvokeDeadline.ToUnixTimeMilliseconds(),
+            accepted.DeadlineUnixTimeMilliseconds);
+
+        AssertRejected(new GuardianAuditGenerationOperationFacts(
+            expectedGeneration: 18,
+            accepted.Force,
+            accepted.DeadlineUnixTimeMilliseconds));
+        AssertRejected(new GuardianAuditGenerationOperationFacts(
+            accepted.ExpectedGeneration,
+            force: false,
+            accepted.DeadlineUnixTimeMilliseconds));
+        AssertRejected(new GuardianAuditGenerationOperationFacts(
+            accepted.ExpectedGeneration,
+            accepted.Force,
+            accepted.DeadlineUnixTimeMilliseconds + 1));
+        Assert.Throws<ArgumentException>(() =>
+            new GuardianAuditDispatchAuthorization(
+                GuardianHostOperationKind.Reset,
+                TemplateSession()));
+
+        Assert.True(call.TryAuthorizeDispatch(
+            new GuardianAuditDispatchAuthorization(
+                GuardianHostOperationKind.Reset,
+                TemplateSession(),
+                generationOperationFacts: accepted)));
+        call.CompleteCall("completed", "ok");
+
+        void AssertRejected(GuardianAuditGenerationOperationFacts facts)
+        {
+            Assert.Throws<InvalidOperationException>(() =>
+                call.TryAuthorizeDispatch(
+                    new GuardianAuditDispatchAuthorization(
+                        GuardianHostOperationKind.Reset,
+                        TemplateSession(),
+                        generationOperationFacts: facts)));
+            Assert.False(call.EffectAuthorized);
+        }
+    }
+
     [Theory]
     [InlineData(false, GuardianAuditCall.DispatchCompletedEvent, "completed", "confirmed")]
     [InlineData(true, GuardianAuditCall.DispatchFailedEvent, "failed", "confirmed")]
@@ -453,6 +502,32 @@ public sealed class GuardianAuditCallTests
             MaximumCallRecordSlots: 11,
             PersistentJobTerminalSlots: 0,
             RequiresScriptEvidence: true,
+            MayHaveSideEffects: true));
+
+    private static AuditCallMetadata ResetMetadata() => new(
+        new AuditActor
+        {
+            Transport = "mcp_stdio",
+            ClientName = "guardian-test",
+            ClientVersion = "1",
+            ClientSessionId = "session",
+            AttributionStrength = "client_asserted",
+        },
+        new AuditRequest
+        {
+            Tool = "ptk_reset",
+            Action = "reset",
+            SessionRequested = "build",
+            ProvidedFields = ["expectedGeneration", "force", "session"],
+            ExpectedGeneration = 17,
+            Force = true,
+            TimeoutMs = 30_000,
+            DeadlineUtc = InvokeDeadline,
+        },
+        new AuditOperationProfile(
+            MaximumCallRecordSlots: 4,
+            PersistentJobTerminalSlots: 0,
+            RequiresScriptEvidence: false,
             MayHaveSideEffects: true));
 
     private static JsonElement Parse(byte[] line)

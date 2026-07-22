@@ -28,6 +28,7 @@ public sealed class GuardianHostSupervisorTests
         string[] dispatchEntries =
         [
             "DispatchSessionOperationAsync",
+            "DispatchHostOperationAsync",
             "DispatchBackgroundInvokeAsync",
             "DispatchJobStatusAsync",
             "DispatchJobOutputAsync",
@@ -691,6 +692,142 @@ public sealed class GuardianHostSupervisorTests
             GuardianHostInvokeRoute.Pwsh,
             session,
             deadline.ToUnixTimeMilliseconds());
+    }
+
+    [Fact]
+    public async Task Public_reset_uses_the_host_gate_and_binds_exact_control_facts()
+    {
+        var session = new CanonicalAlias("build");
+        await using var rig = new TestRig(
+            session,
+            enableOutput: false,
+            new AttemptPlan(HostBehavior.Reset));
+        await rig.StartAsync();
+        rig.Sessions.SetReadyForEffects(false);
+        var deadline = rig.Clock.GetUtcNow().AddSeconds(23);
+
+        var result = await rig.DispatchPublicResetAsync(
+                session.Value,
+                expectedGeneration: 1,
+                force: true,
+                timeoutSeconds: 23)
+            .WaitAsync(TestTimeout);
+
+        Assert.False(result.IsError);
+        Assert.Equal(
+            "session=build state=ready generation=1 transition_version=1 " +
+            "ready_for_effects=true warm_state_lost=true bootstrap_state=restored",
+            result.Text);
+        var reset = Assert.Single(rig.Factory.Resources[0].Resets);
+        Assert.Equal(session, reset.SessionAlias);
+        Assert.Equal(TestRig.Transition, reset.TransitionVersion);
+        Assert.Equal(TestRig.Worker.BootId, reset.WorkerIdentity.BootId);
+        Assert.Equal(TestRig.Worker.Generation, reset.WorkerIdentity.Generation);
+        Assert.Equal(1, reset.ExpectedGeneration);
+        Assert.True(reset.Force);
+        Assert.Equal(deadline.ToUnixTimeMilliseconds(), reset.DeadlineUnixTimeMilliseconds);
+        Assert.Equal(deadline.ToUnixTimeMilliseconds(), reset.DispatchCapability.ExpiresUnixTimeMilliseconds);
+        Assert.Equal(
+            [
+                "call.accepted",
+                GuardianAuditCall.DispatchAuthorizedEvent,
+                GuardianAuditCall.DispatchCompletedEvent,
+                "call.completed",
+            ],
+            rig.AuditEventTypes());
+    }
+
+    [Fact]
+    public async Task Host_recovery_refusal_for_public_reset_uses_the_host_gate()
+    {
+        await using var rig = new TestRig(
+            new AttemptPlan(HostBehavior.Reset, AutoConfirmContainment: false),
+            new AttemptPlan(HostBehavior.Reset));
+        await rig.StartAsync();
+        var old = rig.Factory.Resources[0];
+        old.Crash();
+        await WaitUntilAsync(() =>
+            rig.Supervisor.SnapshotState().Host is
+            {
+                State: PublicHostState.Recovering,
+                RecoveryPhase: RecoveryPhase.Containment,
+            });
+
+        var error = DecodeRecovery(await rig.DispatchPublicResetAsync(
+                session: "default",
+                expectedGeneration: 0,
+                force: false,
+                timeoutSeconds: 30)
+            .WaitAsync(TestTimeout));
+
+        Assert.Equal(PublicRecoveryDetailCode.HostRecovering, error.DetailCode);
+        Assert.True(error.Retryable);
+        Assert.IsType<HostReadyGate>(error.RetryGate);
+        Assert.Equal(0, old.OperationCount);
+        old.ConfirmContainment();
+    }
+
+    [Fact]
+    public async Task Reset_host_loss_before_write_is_proved_safe_with_the_host_gate()
+    {
+        await using var rig = new TestRig(
+            new AttemptPlan(HostBehavior.Reset),
+            new AttemptPlan(HostBehavior.Reset));
+        await rig.StartAsync();
+        var old = rig.Factory.Resources[0];
+        var blocked = rig.Observer.BlockNextAuthorization();
+
+        var dispatch = rig.DispatchPublicResetAsync(
+            session: "default",
+            expectedGeneration: 0,
+            force: false,
+            timeoutSeconds: 30);
+        await blocked.WaitAsync(TestTimeout);
+        old.Crash();
+        await WaitUntilAsync(() =>
+            rig.Factory.Resources.Count == 2 &&
+            rig.Supervisor.SnapshotState().Host is
+            {
+                State: PublicHostState.Ready,
+                Generation.Value: 2,
+            });
+        rig.Observer.ReleaseAuthorization();
+
+        var error = DecodeRecovery(await dispatch.WaitAsync(TestTimeout));
+        Assert.Equal(PublicRecoveryDetailCode.BackendLostBeforeDispatch, error.DetailCode);
+        Assert.True(error.Retryable);
+        Assert.IsType<HostReadyGate>(error.RetryGate);
+        Assert.Equal(0, old.OperationCount);
+        Assert.Equal(0, rig.Factory.Resources[1].OperationCount);
+    }
+
+    [Fact]
+    public async Task Public_reset_rejects_raw_control_facts_not_bound_to_admission()
+    {
+        await using var rig = new TestRig(new AttemptPlan(HostBehavior.Reset));
+        await rig.StartAsync();
+
+        var generationMismatch = await rig.DispatchPublicResetAsync(
+                session: "default",
+                expectedGeneration: 1,
+                force: false,
+                timeoutSeconds: 30,
+                admittedExpectedGeneration: 2)
+            .WaitAsync(TestTimeout);
+        var forceMismatch = await rig.DispatchPublicResetAsync(
+                session: "default",
+                expectedGeneration: 1,
+                force: true,
+                timeoutSeconds: 30,
+                admittedForce: false)
+            .WaitAsync(TestTimeout);
+
+        Assert.True(generationMismatch.IsError);
+        Assert.True(forceMismatch.IsError);
+        Assert.Equal(0, rig.Factory.Resources[0].OperationCount);
+        Assert.DoesNotContain(
+            GuardianAuditCall.DispatchAuthorizedEvent,
+            rig.AuditEventTypes());
     }
 
     [Fact]
@@ -1609,6 +1746,25 @@ public sealed class GuardianHostSupervisorTests
             StringComparer.Ordinal);
     }
 
+    private static IReadOnlyDictionary<string, JsonElement> ResetArguments(
+        string session,
+        long expectedGeneration,
+        bool force,
+        int timeoutSeconds)
+    {
+        using var document = JsonDocument.Parse(JsonSerializer.Serialize(new
+        {
+            session,
+            expectedGeneration,
+            force,
+            timeoutSeconds,
+        }));
+        return document.RootElement.EnumerateObject().ToDictionary(
+            property => property.Name,
+            property => property.Value.Clone(),
+            StringComparer.Ordinal);
+    }
+
     private static async Task WaitUntilAsync(Func<bool> predicate)
     {
         using var cancellation = new CancellationTokenSource(TestTimeout);
@@ -1882,6 +2038,39 @@ public sealed class GuardianHostSupervisorTests
                     CancellationToken.None));
         }
 
+        internal Task<GuardianToolResult> DispatchPublicResetAsync(
+            string session,
+            long expectedGeneration,
+            bool force,
+            int timeoutSeconds,
+            long? admittedExpectedGeneration = null,
+            bool? admittedForce = null)
+        {
+            var arguments = ResetArguments(
+                session,
+                expectedGeneration,
+                force,
+                timeoutSeconds);
+            var timeout = TimeSpan.FromSeconds(timeoutSeconds);
+            return DispatchAuditedAsync(
+                Metadata(
+                    "ptk_reset",
+                    "reset",
+                    maximumCallRecordSlots: 4,
+                    session: session,
+                    timeoutMilliseconds: checked((long)timeout.TotalMilliseconds),
+                    deadlineUtc: Clock.GetUtcNow().Add(timeout),
+                    providedFields: arguments.Keys.Order(StringComparer.Ordinal).ToArray(),
+                    expectedGeneration: admittedExpectedGeneration ?? expectedGeneration,
+                    force: admittedForce ?? force),
+                exactSubmittedScript: null,
+                auditCall => Supervisor.DispatchAsync(
+                    "ptk_reset",
+                    arguments,
+                    auditCall,
+                    CancellationToken.None));
+        }
+
         internal Task<GuardianToolResult> DispatchSessionOperationAsync(
             GuardianHostOperation operation,
             GuardianHostOperationIdentity? operationIdentity)
@@ -2074,7 +2263,9 @@ public sealed class GuardianHostSupervisorTests
             string? route = null,
             long? timeoutMilliseconds = null,
             DateTimeOffset? deadlineUtc = null,
-            IReadOnlyList<string>? providedFields = null) => new(
+            IReadOnlyList<string>? providedFields = null,
+            long? expectedGeneration = null,
+            bool? force = null) => new(
                 new AuditActor
                 {
                     Transport = "mcp_stdio",
@@ -2092,6 +2283,8 @@ public sealed class GuardianHostSupervisorTests
                     Route = route,
                     TimeoutMs = timeoutMilliseconds,
                     DeadlineUtc = deadlineUtc,
+                    ExpectedGeneration = expectedGeneration,
+                    Force = force,
                 },
                 new AuditOperationProfile(
                     maximumCallRecordSlots,
@@ -2271,6 +2464,8 @@ public sealed class GuardianHostSupervisorTests
 
         internal interface ITestSessionControl : IGuardianHostSupervisorSessionSource
         {
+            void SetReadyForEffects(bool readyForEffects);
+
             void ReplaceReadyWorker(
                 long workerGeneration,
                 long transitionVersion,
@@ -2284,6 +2479,7 @@ public sealed class GuardianHostSupervisorTests
             private long _workerGeneration = 1;
             private long _transitionVersion = 1;
             private long _recoveryAttempt;
+            private bool _readyForEffects = true;
             private GuardianHostJobListTargetInvalidation? _invalidation;
 
             internal StaticSessionSource(CanonicalAlias alias)
@@ -2300,14 +2496,16 @@ public sealed class GuardianHostSupervisorTests
                         new PublicSessionStateSnapshot(
                             _alias,
                             DesiredSessionState.Ready,
-                            PublicSessionState.Ready,
+                            _readyForEffects
+                                ? PublicSessionState.Ready
+                                : PublicSessionState.Resetting,
                             Worker.BootId,
                             new WorkerGeneration(_workerGeneration),
                             new SessionTransitionVersion(_transitionVersion),
                             recoveryPhase: null,
                             _recoveryAttempt,
                             retryAfterMilliseconds: null,
-                            readyForEffects: true,
+                            readyForEffects: _readyForEffects,
                             lastFailureCode: null,
                             warmStateLost: false,
                             BootstrapState.Restored),
@@ -2341,6 +2539,11 @@ public sealed class GuardianHostSupervisorTests
                     invalidation = null;
                     return false;
                 }
+            }
+
+            public void SetReadyForEffects(bool readyForEffects)
+            {
+                lock (_sync) _readyForEffects = readyForEffects;
             }
 
             public void ReplaceReadyWorker(
@@ -2387,7 +2590,7 @@ public sealed class GuardianHostSupervisorTests
                     transition,
                     worker,
                     new GuardianAuditSession(binding, worker.Generation),
-                    readyForEffects: true);
+                    readyForEffects: _readyForEffects);
             }
         }
     }
@@ -2639,6 +2842,7 @@ public sealed class GuardianHostSupervisorTests
         Hold,
         ProvedNoChild,
         RejectOperation,
+        Reset,
     }
 
     private sealed record AttemptPlan(
@@ -2662,6 +2866,15 @@ public sealed class GuardianHostSupervisorTests
         DispatchCapability DispatchCapability,
         OutputCapability OutputCapability,
         GuardianHostOperationIdentity OperationIdentity);
+
+    private sealed record ObservedReset(
+        CanonicalAlias SessionAlias,
+        SessionTransitionVersion TransitionVersion,
+        GuardianHostWorkerIdentity WorkerIdentity,
+        long ExpectedGeneration,
+        bool Force,
+        long DeadlineUnixTimeMilliseconds,
+        DispatchCapability DispatchCapability);
 
     private sealed class FakeAttemptFactory : IGuardianHostAttemptFactory
     {
@@ -2751,6 +2964,7 @@ public sealed class GuardianHostSupervisorTests
         internal IReadOnlyList<long> RequestIds => _peer.RequestIds;
         internal IReadOnlyList<ObservedJobControl> JobControls => _peer.JobControls;
         internal IReadOnlyList<ObservedInvoke> Invokes => _peer.Invokes;
+        internal IReadOnlyList<ObservedReset> Resets => _peer.Resets;
         internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
         internal Task OutputFinished => _outputFinished.Task;
 
@@ -2840,6 +3054,7 @@ public sealed class GuardianHostSupervisorTests
         private readonly List<long> _requestIds = [];
         private readonly List<ObservedJobControl> _jobControls = [];
         private readonly List<ObservedInvoke> _invokes = [];
+        private readonly List<ObservedReset> _resets = [];
         private int _operationCount;
         private long _eventSequence;
 
@@ -2867,6 +3082,10 @@ public sealed class GuardianHostSupervisorTests
         internal IReadOnlyList<ObservedInvoke> Invokes
         {
             get { lock (_sync) return _invokes.ToArray(); }
+        }
+        internal IReadOnlyList<ObservedReset> Resets
+        {
+            get { lock (_sync) return _resets.ToArray(); }
         }
 
         internal void Start(HostBehavior behavior) =>
@@ -3016,6 +3235,19 @@ public sealed class GuardianHostSupervisorTests
                                 operation.RequestId,
                                 new OperationCompleted(new JobKillResult(
                                     $"kill job {kill.PublicJobId.Value}"))));
+                            continue;
+                        case ResetOperation reset when behavior == HostBehavior.Reset:
+                            RecordReset(operation, reset);
+                            await _writer.WriteAsync(Success(
+                                operation.RequestId,
+                                new OperationCompleted(new ResetResult(
+                                    operation.SessionAlias!,
+                                    PublicSessionState.Ready,
+                                    operation.WorkerIdentity,
+                                    operation.SessionTransitionVersion!,
+                                    readyForEffects: true,
+                                    warmStateLost: true,
+                                    BootstrapState.Restored))));
                             continue;
                     }
 
@@ -3175,6 +3407,21 @@ public sealed class GuardianHostSupervisorTests
             };
             if (invoke is null) return;
             lock (_sync) _invokes.Add(invoke);
+        }
+
+        private void RecordReset(OperationRequest request, ResetOperation reset)
+        {
+            lock (_sync)
+            {
+                _resets.Add(new ObservedReset(
+                    request.SessionAlias!,
+                    request.SessionTransitionVersion!,
+                    request.WorkerIdentity!,
+                    reset.ExpectedGeneration,
+                    reset.Force,
+                    request.DeadlineUnixTimeMilliseconds!.Value,
+                    reset.DispatchCapability));
+            }
         }
     }
 
