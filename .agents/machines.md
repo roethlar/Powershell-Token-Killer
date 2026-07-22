@@ -142,6 +142,47 @@ not an installed-payload update._
   was still in flight. Its isolated guard passed 10/10 and the clean full rerun
   above passed; this is not counted as a passing run or as R0 behavior evidence.
 
+### MCP resilience R5 macOS containment validation
+
+_Verified 2026-07-22 at exact code head `300cbf6`; this was checkout
+validation, not an installed-payload update._
+
+- The host reported macOS 26.5.2 on ARM64, Apple clang 21.0.0, .NET SDK
+  10.0.302, and PowerShell 7.6.3. The production C17 outer broker compiled
+  with the package's strict warning set and the matched `osx-arm64` layout
+  loaded both exact native helper roles with the required Unix modes. The
+  R6-owned containment-helper role remains an intentional fail-closed exit-78
+  placeholder with empty stdout/stderr.
+- Direct native tests proved the gated host had `PGID == PID` before release,
+  the broker reaped only its direct host, TERM/KILL covered the ordinary child
+  and grandchild, and containment confirmation followed group disappearance.
+  Closing only the guardian-owned liveness writer, without a stop command,
+  contained the same tree. The restored direct containment case passed 20/20
+  repeated runs after a buffered-event shutdown race was fixed.
+- A real production guardian kept one public connection open across a hard-
+  killed private host, killed an ordinary `tail` descendant and a live cold
+  background PowerShell job, confirmed containment, advanced host generation
+  from 1 to 2, reported warm-state loss, and successfully invoked through the
+  replacement. Public EOF also left no guardian output contamination or native
+  fixture processes.
+- Removing process-group signaling made both the direct descendant guard and
+  the real cold-background recovery guard fail; restoring it returned both to
+  green. Separately ignoring guardian-liveness EOF made the liveness-only guard
+  time out; restoration returned it to green. These were intentional local
+  mutations and were not committed.
+- The final exact tree passed 73/73 guardian architecture tests, 436/436
+  guardian tests, and 1,868/1,868 server tests. The PowerShell module suite
+  passed 141 tests with two platform skips, and the complete stdio handshake
+  passed. The .NET runs used the physical
+  `/private/var/folders/...` temp root: the unmodified macOS `TMPDIR` begins
+  with the `/var` symlink, which the protected-storage guard correctly rejects.
+  An initial uncached Unix layout publish exceeded the new fixture's original
+  three-minute deadline; its Unix-only cold-publish allowance is now ten
+  minutes and subsequent matched-layout runs passed.
+- Restore/build still emits the separately parked NU1903 high-severity
+  advisories for `System.Security.Cryptography.Xml` 10.0.6. No dependency
+  change was folded into R5.
+
 ## `NETWATCH-01` — Michael's Windows machine
 
 _Verified 2026-07-11 for audited-session slice 0 at repo base `2a83723`._
