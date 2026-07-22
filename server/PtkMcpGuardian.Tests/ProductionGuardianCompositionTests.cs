@@ -1,0 +1,333 @@
+using System.Text;
+using System.Text.Json;
+using PtkMcpGuardian.Host;
+using PtkMcpGuardian.Lifecycle;
+using PtkMcpGuardian.Package;
+using PtkMcpGuardian.Standalone;
+using PtkMcpGuardian.Standalone.Fake;
+using PtkMcpServer;
+using PtkMcpServer.Audit;
+using PtkSharedContracts;
+
+namespace PtkMcpGuardian.Tests;
+
+public sealed class ProductionGuardianCompositionTests
+{
+    private static readonly TimeSpan TestTimeout = TimeSpan.FromSeconds(30);
+    private static readonly GuardianBootId Guardian = new(
+        Guid.Parse("11111111-1111-4111-8111-111111111111"));
+    private static readonly WorkerBootId Worker = new(
+        Guid.Parse("22222222-2222-4222-8222-222222222222"));
+
+    [Fact]
+    public async Task Composition_freezes_package_session_and_guardian_owned_state()
+    {
+        var auditRoot = TemporaryRoot("audit");
+        var outputRoot = TemporaryRoot("output");
+        var package = Package(Path.Combine(Path.GetTempPath(), "never-launched-host"));
+        var composition = ProductionGuardianComposition.Create(
+            package,
+            LocalAudit(auditRoot),
+            new NeverLauncher(),
+            OutputOptions(outputRoot),
+            guardianBootId: Guardian,
+            defaultWorkerBootId: Worker);
+        try
+        {
+            Assert.Equal(Guardian, composition.GuardianBootId);
+            Assert.Equal(package.HostExecutableDigest, composition.Pins.HostExecutableDigest);
+            Assert.Equal(package.HostBuildDigest, composition.Pins.HostBuildDigest);
+            Assert.Equal(package.PublicContractDigest, composition.Pins.PublicContractDigest);
+            Assert.Equal(package.PackageManifestDigest, composition.Pins.PackageManifestDigest);
+            Assert.Equal(
+                composition.SessionState.ConfigurationDigest,
+                composition.Pins.ConfigurationDigest);
+            Assert.Equal(
+                composition.SessionState.CatalogDigest,
+                composition.Pins.CatalogDigest);
+
+            var state = composition.Supervisor.SnapshotState();
+            Assert.Equal(Guardian, state.GuardianBootId);
+            Assert.Equal(PublicHostState.Absent, state.Host.State);
+            Assert.False(state.Host.ReadyForEffects);
+            var session = Assert.Single(state.Sessions);
+            Assert.Equal("default", session.Alias.Value);
+            Assert.Equal(PublicSessionState.Lost, session.State);
+            Assert.False(session.ReadyForEffects);
+            Assert.True(session.WarmStateLost);
+            Assert.Equal(BootstrapState.Unknown, session.BootstrapState);
+        }
+        finally
+        {
+            await composition.DisposeAsync();
+            DeleteRoot(auditRoot);
+        }
+
+        Assert.False(Directory.Exists(outputRoot));
+    }
+
+    [Fact]
+    public async Task Windows_composition_serves_the_real_private_host_before_public_initialize()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var auditRoot = TemporaryRoot("real-audit");
+        var outputRoot = TemporaryRoot("real-output");
+        var composition = ProductionGuardianComposition.Create(
+            Package(FindServerAppHost()),
+            LocalAudit(auditRoot),
+            new WindowsPrivateHostProcessLauncher(),
+            OutputOptions(outputRoot),
+            guardianBootId: Guardian,
+            defaultWorkerBootId: Worker);
+        using var timeout = new CancellationTokenSource(TestTimeout);
+        using var input = new R3BoundedOneWayStream();
+        using var output = new R3BoundedOneWayStream();
+        using var writer = new StreamWriter(
+            input,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            bufferSize: 1024,
+            leaveOpen: true)
+        {
+            AutoFlush = true,
+            NewLine = "\n",
+        };
+        using var reader = new StreamReader(
+            output,
+            new UTF8Encoding(encoderShouldEmitUTF8Identifier: false),
+            detectEncodingFromByteOrderMarks: false,
+            bufferSize: 1024,
+            leaveOpen: true);
+        var run = composition.RunAsync(input, output, timeout.Token);
+        try
+        {
+            var initialized = await RequestAsync(
+                writer,
+                reader,
+                requestId: 1,
+                "initialize",
+                new
+                {
+                    protocolVersion = "2025-06-18",
+                    capabilities = new { },
+                    clientInfo = new
+                    {
+                        name = "production-guardian-composition-test",
+                        version = "1.0.0",
+                    },
+                },
+                timeout.Token);
+            Assert.True(initialized.TryGetProperty("result", out _), initialized.GetRawText());
+            await WriteAsync(
+                writer,
+                new
+                {
+                    jsonrpc = "2.0",
+                    method = "notifications/initialized",
+                    @params = new { },
+                },
+                timeout.Token);
+
+            var stateResponse = await RequestAsync(
+                writer,
+                reader,
+                requestId: 2,
+                "tools/call",
+                new
+                {
+                    name = "ptk_state",
+                    arguments = new { },
+                },
+                timeout.Token);
+            var state = PublicStateCodec.Decode(
+                Encoding.UTF8.GetBytes(ToolText(stateResponse, expectedError: false)));
+            Assert.Equal(PublicHostState.Ready, state.Host.State);
+            Assert.True(state.Host.ReadyForEffects);
+            var session = Assert.Single(state.Sessions);
+            Assert.Equal(Worker, session.WorkerBootId);
+            Assert.True(session.ReadyForEffects);
+
+            var jobs = await RequestAsync(
+                writer,
+                reader,
+                requestId: 3,
+                "tools/call",
+                new
+                {
+                    name = "ptk_job",
+                    arguments = new { action = "list" },
+                },
+                timeout.Token);
+            Assert.Equal("(no jobs)", ToolText(jobs, expectedError: false));
+
+            var invocation = await RequestAsync(
+                writer,
+                reader,
+                requestId: 4,
+                "tools/call",
+                new
+                {
+                    name = "ptk_invoke",
+                    arguments = new
+                    {
+                        script = "Write-Output 'production-private-host'",
+                        raw = true,
+                        route = "pwsh",
+                        background = false,
+                        timeoutSeconds = 10,
+                        session = "default",
+                    },
+                },
+                timeout.Token);
+            Assert.Contains(
+                "production-private-host",
+                ToolText(invocation, expectedError: false),
+                StringComparison.Ordinal);
+
+            input.CompleteWriting();
+            await run.WaitAsync(timeout.Token);
+            Assert.Equal(0, composition.Supervisor.OutstandingCallCount);
+            Assert.Equal(0, composition.Supervisor.BackgroundTaskCount);
+            Assert.Equal(0, composition.Supervisor.OwnedClientCount);
+            Assert.Equal(0, composition.Supervisor.OwnedAttemptWatcherSetCount);
+        }
+        finally
+        {
+            input.CompleteWriting();
+            try
+            {
+                await run.WaitAsync(timeout.Token);
+            }
+            catch (OperationCanceledException) when (timeout.IsCancellationRequested)
+            {
+            }
+            await composition.DisposeAsync();
+            DeleteRoot(auditRoot);
+        }
+
+        Assert.False(Directory.Exists(outputRoot));
+    }
+
+    private static async Task<JsonElement> RequestAsync(
+        StreamWriter writer,
+        StreamReader reader,
+        int requestId,
+        string method,
+        object parameters,
+        CancellationToken cancellationToken)
+    {
+        await WriteAsync(
+            writer,
+            new Dictionary<string, object?>
+            {
+                ["jsonrpc"] = "2.0",
+                ["id"] = requestId,
+                ["method"] = method,
+                ["params"] = parameters,
+            },
+            cancellationToken);
+        while (true)
+        {
+            var line = await reader.ReadLineAsync(cancellationToken);
+            Assert.NotNull(line);
+            using var document = JsonDocument.Parse(line);
+            var message = document.RootElement;
+            if (message.TryGetProperty("id", out var responseId) &&
+                responseId.ValueKind == JsonValueKind.Number &&
+                responseId.GetInt32() == requestId)
+            {
+                return message.Clone();
+            }
+        }
+    }
+
+    private static async Task WriteAsync(
+        StreamWriter writer,
+        object message,
+        CancellationToken cancellationToken)
+    {
+        var line = JsonSerializer.Serialize(message);
+        await writer.WriteLineAsync(line.AsMemory(), cancellationToken);
+        await writer.FlushAsync(cancellationToken);
+    }
+
+    private static string ToolText(JsonElement response, bool expectedError)
+    {
+        var result = response.GetProperty("result");
+        Assert.Equal(expectedError, result.GetProperty("isError").GetBoolean());
+        var content = Assert.Single(result.GetProperty("content").EnumerateArray());
+        Assert.Equal("text", content.GetProperty("type").GetString());
+        return Assert.IsType<string>(content.GetProperty("text").GetString());
+    }
+
+    private static AuditStartupConfiguration LocalAudit(string root) =>
+        AuditStartupConfiguration.Load(
+            root,
+            configuredExportPath: null,
+            static (_, _) => throw new InvalidOperationException(
+                "Local-only test audit must not load export configuration."));
+
+    private static OutputStoreOptions OutputOptions(string root) => new(
+        root,
+        TimeSpan.FromMinutes(5),
+        TimeSpan.FromHours(1),
+        MaximumArtifactBytes: 1024 * 1024,
+        MaximumSessionBytes: 4 * 1024 * 1024,
+        MaximumAggregateBytes: 8 * 1024 * 1024);
+
+    private static MatchedPackageFacts Package(string hostAppHost) => new(
+        hostAppHost,
+        Digest('1'),
+        Digest('2'),
+        PublicToolContractResource.ComputeDigest(),
+        Digest('6'),
+        []);
+
+    private static string FindServerAppHost()
+    {
+        var configurationDirectory = Directory.GetParent(
+            Path.TrimEndingDirectorySeparator(AppContext.BaseDirectory)) ??
+            throw new InvalidOperationException("The test configuration directory is unavailable.");
+        var repositoryRoot = FindRepositoryRoot();
+        var path = Path.Combine(
+            repositoryRoot,
+            "server",
+            "PtkMcpServer",
+            "bin",
+            configurationDirectory.Name,
+            "net10.0",
+            "PtkMcpServer.exe");
+        Assert.True(File.Exists(path), $"The private host apphost is absent: {path}");
+        return path;
+    }
+
+    private static string FindRepositoryRoot()
+    {
+        var current = new DirectoryInfo(AppContext.BaseDirectory);
+        while (current is not null)
+        {
+            if (File.Exists(Path.Combine(current.FullName, "AGENTS.md")))
+                return current.FullName;
+            current = current.Parent;
+        }
+        throw new InvalidOperationException("Repository root not found.");
+    }
+
+    private static string TemporaryRoot(string kind) => Path.Combine(
+        Path.GetTempPath(),
+        $"ptk-production-guardian-{kind}-{Guid.NewGuid():N}");
+
+    private static void DeleteRoot(string root)
+    {
+        if (Directory.Exists(root))
+            Directory.Delete(root, recursive: true);
+    }
+
+    private static Sha256Digest Digest(char value) => new(new string(value, 64));
+
+    private sealed class NeverLauncher : IPrivateHostProcessLauncher
+    {
+        public PrivateHostProcessLaunchResult Launch(PrivateHostLaunchCommand command) =>
+            throw new InvalidOperationException("The construction test must not launch a host.");
+    }
+}

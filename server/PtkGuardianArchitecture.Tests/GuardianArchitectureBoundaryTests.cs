@@ -22,6 +22,7 @@ public sealed class GuardianArchitectureBoundaryTests
     [
         "Program.cs",
         "Standalone/GuardianMcpApplication.cs",
+        "Standalone/ProductionGuardianComposition.cs",
         "Standalone/Fake/R3FakeGuardianComposition.cs",
     ];
 
