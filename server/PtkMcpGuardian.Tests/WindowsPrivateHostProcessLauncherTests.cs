@@ -83,6 +83,40 @@ public sealed class WindowsPrivateHostProcessLauncherTests
         }
     }
 
+    [Fact]
+    public async Task Containment_confirmation_waits_for_every_captured_job_identity()
+    {
+        if (!OperatingSystem.IsWindows()) return;
+
+        var tracker = new GatedContainmentTracker();
+        var identity = Identity();
+        var resources = Assert.IsAssignableFrom<IGuardianHostConnectedAttemptResources>(
+            new PrivateHostAttemptFactory(
+                    Package(FindServerAppHost()),
+                    Pins(),
+                    new WindowsPrivateHostProcessLauncher(tracker))
+                .Prepare(identity, new GuardianHostStartupDeadline(long.MaxValue)));
+        using (resources)
+        using (var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(20)))
+        {
+            Assert.Equal(GuardianHostLaunchOutcome.Started, resources.Launch());
+            var reader = new GuardianHostProtocolReader(
+                resources.EventStream,
+                GuardianHostPeer.Host);
+            _ = Assert.IsType<GuardianHostHello>(
+                await reader.ReadAsync(timeout.Token));
+
+            resources.BeginContainment(
+                new GuardianHostContainmentDeadline(0, long.MaxValue));
+            await resources.HostExited.WaitAsync(timeout.Token);
+
+            Assert.Equal(1, tracker.CaptureCount);
+            Assert.False(resources.ContainmentConfirmed.IsCompleted);
+            tracker.Confirm();
+            await resources.ContainmentConfirmed.WaitAsync(timeout.Token);
+        }
+    }
+
     private static int Occurrences(string text, string value)
     {
         var count = 0;
@@ -160,4 +194,33 @@ public sealed class WindowsPrivateHostProcessLauncherTests
         []);
 
     private static Sha256Digest Digest(char value) => new(new string(value, 64));
+
+    private sealed class GatedContainmentTracker : IWindowsJobContainmentTracker
+    {
+        private readonly TaskCompletionSource _confirmation = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+        private int _captureCount;
+
+        internal int CaptureCount => Volatile.Read(ref _captureCount);
+
+        internal void Confirm() => _confirmation.TrySetResult();
+
+        public IWindowsJobContainmentLease Capture(nint jobHandle, nint hostHandle)
+        {
+            Assert.NotEqual(IntPtr.Zero, jobHandle);
+            Assert.NotEqual(new IntPtr(-1), jobHandle);
+            Assert.NotEqual(IntPtr.Zero, hostHandle);
+            Assert.NotEqual(new IntPtr(-1), hostHandle);
+            Interlocked.Increment(ref _captureCount);
+            return new Lease(_confirmation.Task);
+        }
+
+        private sealed class Lease(Task confirmation) :
+            IWindowsJobContainmentLease
+        {
+            public Task Confirmation { get; } = confirmation;
+
+            public void Dispose() { }
+        }
+    }
 }

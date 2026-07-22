@@ -7,6 +7,25 @@ using PtkMcpGuardian.Lifecycle;
 namespace PtkMcpGuardian.Host;
 
 /// <summary>
+/// Captures identity-fenced process leases while the outer Job handle is
+/// still open.
+/// </summary>
+internal interface IWindowsJobContainmentTracker
+{
+    /// <summary>
+    /// The implementation must not retain <paramref name="jobHandle"/> or
+    /// <paramref name="hostHandle"/>; the launcher closes the kill-on-close
+    /// lease immediately after this method returns.
+    /// </summary>
+    IWindowsJobContainmentLease? Capture(nint jobHandle, nint hostHandle);
+}
+
+internal interface IWindowsJobContainmentLease : IDisposable
+{
+    Task Confirmation { get; }
+}
+
+/// <summary>
 /// Windows private-host launcher. The child is created suspended in the outer
 /// kill-on-close Job and receives only the two private bootstrap handles plus
 /// launcher-owned NUL standard handles through an explicit handle list.
@@ -16,6 +35,9 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
     internal const uint KillOnJobClose = 0x00002000;
 
     private const int ErrorInsufficientBuffer = 122;
+    private const int ErrorInvalidParameter = 87;
+    private const int ErrorMoreData = 234;
+    private const uint JobObjectBasicProcessIdListClass = 3;
     private const uint JobObjectExtendedLimitInformationClass = 9;
     private const uint HandleFlagInherit = 0x00000001;
     private const uint StartfUseStdHandles = 0x00000100;
@@ -33,6 +55,18 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
     private const uint OpenExisting = 3;
     private const uint FileAttributeNormal = 0x00000080;
     private const uint DuplicateSameAccess = 0x00000002;
+    private const uint Synchronize = 0x00100000;
+    private const uint WaitObject0 = 0x00000000;
+    private const uint WaitTimeout = 0x00000102;
+    private const int MaximumTrackedJobProcesses = 65536;
+    private static readonly TimeSpan ContainmentPollInterval =
+        TimeSpan.FromMilliseconds(25);
+
+    private readonly IWindowsJobContainmentTracker _containmentTracker;
+
+    internal WindowsPrivateHostProcessLauncher(
+        IWindowsJobContainmentTracker? containmentTracker = null) =>
+        _containmentTracker = containmentTracker ?? new NativeJobContainmentTracker();
 
     public PrivateHostProcessLaunchResult Launch(PrivateHostLaunchCommand command)
     {
@@ -124,7 +158,8 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
                     outerJob,
                     hostHandle,
                     primaryThread,
-                    checked((int)creation.HostId));
+                    checked((int)creation.HostId),
+                    _containmentTracker);
                 outerJob = null;
                 hostHandle = null;
                 primaryThread = null;
@@ -380,6 +415,8 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
         private NativeThreadHandle? _primaryThread;
         private OwnedHostWaitHandle? _waitHandle;
         private RegisteredWaitHandle? _waitRegistration;
+        private readonly IWindowsJobContainmentTracker _containmentTracker;
+        private IWindowsJobContainmentLease? _containmentLease;
         private int _containmentStarted;
         private bool _disposed;
 
@@ -387,11 +424,14 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
             NativeJobHandle outerJob,
             NativeHostHandle hostHandle,
             NativeThreadHandle primaryThread,
-            int hostId)
+            int hostId,
+            IWindowsJobContainmentTracker containmentTracker)
         {
             _outerJob = outerJob ?? throw new ArgumentNullException(nameof(outerJob));
             _hostHandle = hostHandle ?? throw new ArgumentNullException(nameof(hostHandle));
             _primaryThread = primaryThread ?? throw new ArgumentNullException(nameof(primaryThread));
+            _containmentTracker = containmentTracker ??
+                throw new ArgumentNullException(nameof(containmentTracker));
             if (hostId <= 0)
                 throw new ArgumentOutOfRangeException(nameof(hostId));
             ProcessId = hostId;
@@ -460,16 +500,12 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
             return false;
         }
 
-        internal void AbortBeforeRelease() => CloseOuterJob();
+        internal void AbortBeforeRelease() => StartContainment();
 
         public void BeginContainment(GuardianHostContainmentDeadline deadline)
         {
             ArgumentNullException.ThrowIfNull(deadline);
-            if (Interlocked.Exchange(ref _containmentStarted, 1) != 0)
-                return;
-            CloseOuterJob();
-            if (_exited.Task.IsCompletedSuccessfully)
-                _containment.TrySetResult();
+            StartContainment();
         }
 
         public void Dispose()
@@ -479,6 +515,7 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
             RegisteredWaitHandle? registration;
             OwnedHostWaitHandle? waitHandle;
             NativeHostHandle? hostHandle;
+            IWindowsJobContainmentLease? containmentLease;
             lock (_sync)
             {
                 if (_disposed) return;
@@ -488,11 +525,13 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
                 registration = _waitRegistration;
                 waitHandle = _waitHandle;
                 hostHandle = _hostHandle;
+                containmentLease = _containmentLease;
                 _outerJob = null;
                 _primaryThread = null;
                 _waitRegistration = null;
                 _waitHandle = null;
                 _hostHandle = null;
+                _containmentLease = null;
             }
 
             outerJob?.Dispose();
@@ -500,6 +539,7 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
             registration?.Unregister(null);
             waitHandle?.Dispose();
             hostHandle?.Dispose();
+            containmentLease?.Dispose();
         }
 
         private void CloseOuterJob()
@@ -516,9 +556,260 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
         private void CompleteExit()
         {
             _exited.TrySetResult();
-            if (Volatile.Read(ref _containmentStarted) != 0)
-                _containment.TrySetResult();
         }
+
+        private void StartContainment()
+        {
+            if (Interlocked.Exchange(ref _containmentStarted, 1) != 0)
+                return;
+
+            IWindowsJobContainmentLease? containmentLease = null;
+            NativeJobHandle? outerJob;
+            NativeHostHandle? hostHandle;
+            lock (_sync)
+            {
+                outerJob = _outerJob;
+                hostHandle = _hostHandle;
+            }
+            if (outerJob is not null && hostHandle is not null)
+            {
+                var addedJobReference = false;
+                var addedHostReference = false;
+                try
+                {
+                    outerJob.DangerousAddRef(ref addedJobReference);
+                    hostHandle.DangerousAddRef(ref addedHostReference);
+                    containmentLease = _containmentTracker.Capture(
+                        outerJob.DangerousGetHandle(),
+                        hostHandle.DangerousGetHandle());
+                }
+                catch (Exception exception) when (!IsFatal(exception))
+                {
+                    containmentLease?.Dispose();
+                    containmentLease = null;
+                }
+                finally
+                {
+                    try
+                    {
+                        if (addedHostReference)
+                            hostHandle.DangerousRelease();
+                        if (addedJobReference)
+                            outerJob.DangerousRelease();
+                    }
+                    finally
+                    {
+                        CloseOuterJob();
+                    }
+                }
+            }
+            else
+            {
+                CloseOuterJob();
+            }
+            if (containmentLease is null)
+                return;
+
+            lock (_sync)
+            {
+                if (_disposed)
+                {
+                    containmentLease.Dispose();
+                    return;
+                }
+                _containmentLease = containmentLease;
+            }
+            _ = ObserveContainmentAsync(containmentLease);
+        }
+
+        private async Task ObserveContainmentAsync(
+            IWindowsJobContainmentLease containmentLease)
+        {
+            try
+            {
+                await containmentLease.Confirmation.ConfigureAwait(false);
+                _containment.TrySetResult();
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                // A failed proof remains incomplete; the lifecycle deadline
+                // publishes containment-unconfirmed without a false success.
+            }
+        }
+    }
+
+    private sealed class NativeJobContainmentTracker :
+        IWindowsJobContainmentTracker
+    {
+        public IWindowsJobContainmentLease? Capture(
+            nint jobHandle,
+            nint hostHandle)
+        {
+            if (jobHandle == IntPtr.Zero || jobHandle == new IntPtr(-1) ||
+                hostHandle == IntPtr.Zero || hostHandle == new IntPtr(-1))
+                return null;
+
+            var processIds = SnapshotProcessIds(jobHandle);
+            if (processIds is null)
+                return null;
+
+            var processes = new List<SafeProcessHandle>(processIds.Length + 1);
+            var currentProcess = NativeMethods.GetCurrentProcess();
+            if (!NativeMethods.DuplicateHandle(
+                    currentProcess,
+                    hostHandle,
+                    currentProcess,
+                    out SafeProcessHandle hostIdentity,
+                    desiredAccess: 0,
+                    inheritHandle: false,
+                    options: DuplicateSameAccess))
+            {
+                hostIdentity.Dispose();
+                return null;
+            }
+            processes.Add(hostIdentity);
+            foreach (var processId in processIds)
+            {
+                var process = NativeMethods.OpenProcess(
+                    Synchronize,
+                    inheritHandle: false,
+                    processId);
+                if (!process.IsInvalid)
+                {
+                    processes.Add(process);
+                    continue;
+                }
+
+                var error = Marshal.GetLastWin32Error();
+                process.Dispose();
+                if (error == ErrorInvalidParameter)
+                    continue;
+                foreach (var opened in processes)
+                    opened.Dispose();
+                return null;
+            }
+
+            return new NativeJobContainmentLease(processes.ToArray());
+        }
+
+        private static uint[]? SnapshotProcessIds(nint jobHandle)
+        {
+            var capacity = 64;
+            for (var attempt = 0; attempt < 12; attempt++)
+            {
+                if (capacity > MaximumTrackedJobProcesses)
+                    return null;
+                var bytes = checked(8 + capacity * IntPtr.Size);
+                var buffer = Marshal.AllocHGlobal(bytes);
+                try
+                {
+                    Marshal.WriteInt32(buffer, 0, 0);
+                    Marshal.WriteInt32(buffer, 4, 0);
+                    var succeeded = NativeMethods.QueryInformationJobObject(
+                        jobHandle,
+                        JobObjectBasicProcessIdListClass,
+                        buffer,
+                        checked((uint)bytes),
+                        out _);
+                    var assigned = unchecked((uint)Marshal.ReadInt32(buffer, 0));
+                    var listed = unchecked((uint)Marshal.ReadInt32(buffer, 4));
+                    if (succeeded && assigned == listed && listed <= capacity)
+                    {
+                        var result = new HashSet<uint>();
+                        for (var index = 0; index < listed; index++)
+                        {
+                            var raw = Marshal.ReadIntPtr(
+                                buffer,
+                                checked(8 + index * IntPtr.Size));
+                            var processId = IntPtr.Size == sizeof(long)
+                                ? checked((uint)(ulong)raw.ToInt64())
+                                : unchecked((uint)raw.ToInt32());
+                            if (processId == 0)
+                                return null;
+                            result.Add(processId);
+                        }
+                        return result.Order().ToArray();
+                    }
+
+                    if (succeeded || Marshal.GetLastWin32Error() == ErrorMoreData)
+                    {
+                        var requested = Math.Max(
+                            (long)capacity * 2,
+                            Math.Max(assigned, listed));
+                        if (requested > MaximumTrackedJobProcesses)
+                            return null;
+                        capacity = checked((int)requested);
+                        continue;
+                    }
+                    return null;
+                }
+                finally
+                {
+                    Marshal.FreeHGlobal(buffer);
+                }
+            }
+            return null;
+        }
+    }
+
+    private sealed class NativeJobContainmentLease : IWindowsJobContainmentLease
+    {
+        private readonly SafeProcessHandle[] _processes;
+        private readonly CancellationTokenSource _stop = new();
+        private readonly TaskCompletionSource _confirmation = new(
+            TaskCreationOptions.RunContinuationsAsynchronously);
+
+        internal NativeJobContainmentLease(SafeProcessHandle[] processes)
+        {
+            _processes = processes ?? throw new ArgumentNullException(nameof(processes));
+            _ = ObserveAsync();
+        }
+
+        public Task Confirmation => _confirmation.Task;
+
+        public void Dispose() => _stop.Cancel();
+
+        private async Task ObserveAsync()
+        {
+            try
+            {
+                while (true)
+                {
+                    var complete = true;
+                    foreach (var process in _processes)
+                    {
+                        var wait = NativeMethods.WaitForSingleObject(process, 0);
+                        if (wait == WaitTimeout)
+                        {
+                            complete = false;
+                            continue;
+                        }
+                        if (wait != WaitObject0)
+                            return;
+                    }
+                    if (complete)
+                    {
+                        _confirmation.TrySetResult();
+                        return;
+                    }
+                    await Task.Delay(ContainmentPollInterval, _stop.Token)
+                        .ConfigureAwait(false);
+                }
+            }
+            catch (OperationCanceledException) when (_stop.IsCancellationRequested)
+            {
+            }
+            catch (Exception exception) when (!IsFatal(exception))
+            {
+                // Native observation failure leaves containment unconfirmed.
+            }
+            finally
+            {
+                foreach (var process in _processes)
+                    process.Dispose();
+            }
+        }
+
     }
 
     private sealed class NativeJobHandle : SafeHandleZeroOrMinusOneIsInvalid
@@ -862,6 +1153,26 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
             uint informationLength,
             out uint returnLength);
 
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool QueryInformationJobObject(
+            IntPtr job,
+            uint informationClass,
+            IntPtr information,
+            uint informationLength,
+            out uint returnLength);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        internal static extern SafeProcessHandle OpenProcess(
+            uint desiredAccess,
+            [MarshalAs(UnmanagedType.Bool)] bool inheritHandle,
+            uint processId);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        internal static extern uint WaitForSingleObject(
+            SafeProcessHandle handle,
+            uint milliseconds);
+
         [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
         internal static extern SafeFileHandle CreateFileW(
             string fileName,
@@ -931,6 +1242,17 @@ internal sealed class WindowsPrivateHostProcessLauncher : IPrivateHostProcessLau
             NativeHostHandle sourceHandle,
             IntPtr targetProcessHandle,
             out SafeWaitHandle targetHandle,
+            uint desiredAccess,
+            [MarshalAs(UnmanagedType.Bool)] bool inheritHandle,
+            uint options);
+
+        [DllImport("kernel32.dll", SetLastError = true)]
+        [return: MarshalAs(UnmanagedType.Bool)]
+        internal static extern bool DuplicateHandle(
+            IntPtr sourceProcessHandle,
+            IntPtr sourceHandle,
+            IntPtr targetProcessHandle,
+            out SafeProcessHandle targetHandle,
             uint desiredAccess,
             [MarshalAs(UnmanagedType.Bool)] bool inheritHandle,
             uint options);

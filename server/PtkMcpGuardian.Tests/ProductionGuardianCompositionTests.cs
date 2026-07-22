@@ -1,4 +1,5 @@
 using System.Diagnostics;
+using System.Globalization;
 using System.Text;
 using System.Text.Json;
 using PtkMcpGuardian.Host;
@@ -351,6 +352,30 @@ public sealed class ProductionGuardianCompositionTests
                 "warm-state-present",
                 ToolText(warmProof, expectedError: false),
                 StringComparison.Ordinal);
+            var descendantResponse = await RequestAsync(
+                writer,
+                reader,
+                requestId: 5,
+                "tools/call",
+                new
+                {
+                    name = "ptk_invoke",
+                    arguments = new
+                    {
+                        script = "$child = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32/PING.EXE') -ArgumentList '-t','127.0.0.1' -PassThru; 'PTK_CHILD_PID=' + $child.Id",
+                        raw = true,
+                        route = "pwsh",
+                        background = false,
+                        timeoutSeconds = 10,
+                        session = "default",
+                    },
+                },
+                timeout.Token);
+            var descendantProcessId = MarkerInteger(
+                ToolText(descendantResponse, expectedError: false),
+                "PTK_CHILD_PID=");
+            using var descendantProcess = Process.GetProcessById(descendantProcessId);
+            Assert.False(descendantProcess.HasExited);
 
             using (var firstHost = Process.GetProcessById(firstHostProcessId))
             {
@@ -359,12 +384,14 @@ public sealed class ProductionGuardianCompositionTests
                 Assert.True(firstHost.HasExited);
             }
             await launcher.FirstContainmentConfirmed.WaitAsync(timeout.Token);
+            await descendantProcess.WaitForExitAsync(timeout.Token);
+            Assert.True(descendantProcess.HasExited);
             Assert.Equal(1, launcher.LaunchCount);
 
             var recoveryStateResponse = await RequestAsync(
                 writer,
                 reader,
-                requestId: 5,
+                requestId: 6,
                 "tools/call",
                 new
                 {
@@ -387,7 +414,7 @@ public sealed class ProductionGuardianCompositionTests
             var refusedResponse = await RequestAsync(
                 writer,
                 reader,
-                requestId: 6,
+                requestId: 7,
                 "tools/call",
                 new
                 {
@@ -411,7 +438,7 @@ public sealed class ProductionGuardianCompositionTests
             Assert.NotEqual(firstHostProcessId, replacementHostProcessId);
 
             PublicStateSnapshot? recovered = null;
-            var requestId = 7;
+            var requestId = 8;
             for (var attempt = 0; attempt < 200; attempt++)
             {
                 var stateResponse = await RequestAsync(
@@ -730,6 +757,21 @@ public sealed class ProductionGuardianCompositionTests
         var content = Assert.Single(result.GetProperty("content").EnumerateArray());
         Assert.Equal("text", content.GetProperty("type").GetString());
         return Assert.IsType<string>(content.GetProperty("text").GetString());
+    }
+
+    private static int MarkerInteger(string text, string marker)
+    {
+        var markerOffset = text.IndexOf(marker, StringComparison.Ordinal);
+        Assert.True(markerOffset >= 0, $"Marker '{marker}' was absent from '{text}'.");
+        var start = checked(markerOffset + marker.Length);
+        var end = start;
+        while (end < text.Length && char.IsAsciiDigit(text[end]))
+            end++;
+        Assert.True(end > start, $"Marker '{marker}' had no integer in '{text}'.");
+        return int.Parse(
+            text.AsSpan(start, end - start),
+            NumberStyles.None,
+            CultureInfo.InvariantCulture);
     }
 
     private static AuditStartupConfiguration LocalAudit(string root) =>
