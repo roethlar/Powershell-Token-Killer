@@ -57,6 +57,23 @@ internal sealed class GuardianHostLifecycleAudit(AuditRuntimeGate runtime) :
             rootProcessObserved: "unknown",
             descendantsObserved: "unknown");
 
+    public void RecordRecoveryFailed(bool processStarted) =>
+        Record(
+            "host.recovery_failed",
+            outcomeState: "failed",
+            detailCode: "host_recovery_failed",
+            warmStateLost: true,
+            terminationCertainty: processStarted ? "confirmed" : "not_applicable",
+            rootProcessObserved: processStarted ? "complete" : "none",
+            descendantsObserved: processStarted ? "complete" : "none");
+
+    public void RecordRecoveryScheduled() =>
+        Record(
+            "host.recovery_scheduled",
+            outcomeState: "scheduled",
+            detailCode: "host_recovery_scheduled",
+            warmStateLost: true);
+
     private void Record(
         string eventType,
         string outcomeState,

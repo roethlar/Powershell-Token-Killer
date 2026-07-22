@@ -185,6 +185,67 @@ public sealed class GuardianHostSupervisorTests
     }
 
     [Fact]
+    public async Task Failed_replacement_is_audited_before_backoff_is_scheduled()
+    {
+        await using var rig = new TestRig(
+            new AttemptPlan(HostBehavior.Respond),
+            new AttemptPlan(HostBehavior.ProvedNoChild));
+        await rig.StartAsync();
+
+        rig.Factory.Resources[0].SignalHostExit();
+        await WaitUntilAsync(() =>
+            rig.Supervisor.SnapshotState().Host.State == PublicHostState.Backoff &&
+            rig.HostAuditLines("host.recovery_scheduled").Length == 1);
+
+        var failedLine = Assert.Single(
+            rig.HostAuditLines("host.recovery_failed"));
+        var scheduledLine = Assert.Single(
+            rig.HostAuditLines("host.recovery_scheduled"));
+        using var failedDocument = JsonDocument.Parse(failedLine);
+        using var scheduledDocument = JsonDocument.Parse(scheduledLine);
+        var failedRoot = failedDocument.RootElement;
+        var scheduledRoot = scheduledDocument.RootElement;
+        Assert.True(
+            failedRoot.GetProperty("sequence").GetInt64() <
+            scheduledRoot.GetProperty("sequence").GetInt64());
+
+        foreach (var root in new[] { failedRoot, scheduledRoot })
+        {
+            var host = root.GetProperty("host");
+            Assert.Equal(
+                JsonValueKind.Null,
+                host.GetProperty("boot_id").ValueKind);
+            Assert.Equal(
+                JsonValueKind.Null,
+                host.GetProperty("generation").ValueKind);
+            Assert.Equal("backoff", host.GetProperty("state").GetString());
+            Assert.Equal(2, host.GetProperty("recovery_attempt").GetInt64());
+        }
+
+        var failedOutcome = failedRoot.GetProperty("outcome");
+        Assert.Equal("failed", failedOutcome.GetProperty("state").GetString());
+        Assert.Equal(
+            "host_recovery_failed",
+            failedOutcome.GetProperty("detail_code").GetString());
+        Assert.Equal(
+            "not_applicable",
+            failedOutcome.GetProperty("termination_certainty").GetString());
+        var failedCoverage = failedRoot.GetProperty("coverage");
+        Assert.Equal(
+            "none",
+            failedCoverage.GetProperty("root_process_observed").GetString());
+        Assert.Equal(
+            "none",
+            failedCoverage.GetProperty("descendants_observed").GetString());
+
+        var scheduledOutcome = scheduledRoot.GetProperty("outcome");
+        Assert.Equal("scheduled", scheduledOutcome.GetProperty("state").GetString());
+        Assert.Equal(
+            "host_recovery_scheduled",
+            scheduledOutcome.GetProperty("detail_code").GetString());
+    }
+
+    [Fact]
     public async Task Host_loss_begins_containment_before_its_durable_audit_append()
     {
         await using var rig = new TestRig(
@@ -3144,6 +3205,12 @@ public sealed class GuardianHostSupervisorTests
 
         public void RecordContainmentUnconfirmed(bool warmStateLost) =>
             _inner.RecordContainmentUnconfirmed(warmStateLost);
+
+        public void RecordRecoveryFailed(bool processStarted) =>
+            _inner.RecordRecoveryFailed(processStarted);
+
+        public void RecordRecoveryScheduled() =>
+            _inner.RecordRecoveryScheduled();
     }
 
     private sealed class BlockingDispatchObserver :

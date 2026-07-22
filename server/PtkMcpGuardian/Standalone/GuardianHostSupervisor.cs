@@ -2044,7 +2044,11 @@ internal sealed class GuardianHostSupervisor :
                 AttachAttemptLocked(replacement);
             }
             else
+            {
+                RecordScheduledRecoveryLocked(
+                    failedProcessStarted: active.Lease.RecoveryLease is not null);
                 ScheduleRecoveryLocked();
+            }
         }
         finally
         {
@@ -2097,6 +2101,11 @@ internal sealed class GuardianHostSupervisor :
                         AttachAttemptLocked(attempt);
                         return;
                     }
+                    if (transition.Disposition ==
+                        GuardianHostStartDisposition.ProvedNoChild)
+                    {
+                        RecordScheduledRecoveryLocked(failedProcessStarted: false);
+                    }
                     if (_lifecycle.Snapshot().Host.State is not (
                             PublicHostState.Backoff or PublicHostState.CircuitOpen))
                     {
@@ -2129,6 +2138,15 @@ internal sealed class GuardianHostSupervisor :
     {
         if (attempt.Stage == GuardianHostAttemptStage.Launching)
             _lifecycleAudit.RecordStarting();
+    }
+
+    private void RecordScheduledRecoveryLocked(bool failedProcessStarted)
+    {
+        if (_lifecycle.Snapshot().Host.State != PublicHostState.Backoff)
+            return;
+
+        _lifecycleAudit.RecordRecoveryFailed(failedProcessStarted);
+        _lifecycleAudit.RecordRecoveryScheduled();
     }
 
     private IDisposable? AcquireWriteAuthority(ActiveAttempt active)

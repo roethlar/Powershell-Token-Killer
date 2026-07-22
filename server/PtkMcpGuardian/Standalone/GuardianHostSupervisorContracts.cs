@@ -56,6 +56,10 @@ internal interface IGuardianHostLifecycleAudit
     void RecordLost(GuardianHostLossReason reason, bool warmStateLost);
 
     void RecordContainmentUnconfirmed(bool warmStateLost);
+
+    void RecordRecoveryFailed(bool processStarted);
+
+    void RecordRecoveryScheduled();
 }
 
 internal sealed record GuardianHostJobListTarget
