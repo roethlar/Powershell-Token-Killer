@@ -1681,7 +1681,7 @@ internal sealed class GuardianHostSupervisor :
         if (lease.Stage is GuardianHostAttemptStage.Containing or
             GuardianHostAttemptStage.ContainmentUnconfirmed)
         {
-            BeginContainmentLocked(active);
+            BeginContainmentLocked(active, _lifecycle.Snapshot().LastLossReason);
             return active;
         }
 
@@ -1725,13 +1725,17 @@ internal sealed class GuardianHostSupervisor :
         catch (Exception exception) when (!IsFatalRuntimeException(exception))
         {
             _lifecycle.ReportLoss(lease, GuardianHostLossReason.ContractMismatch);
-            BeginContainmentLocked(active);
+            BeginContainmentLocked(active, GuardianHostLossReason.ContractMismatch);
             return active;
         }
 
         if (!_lifecycle.MarkBootstrapping(lease))
         {
-            BeginContainmentLocked(active);
+            var lossReason = lease.Stage is GuardianHostAttemptStage.Containing or
+                GuardianHostAttemptStage.ContainmentUnconfirmed
+                    ? _lifecycle.Snapshot().LastLossReason
+                    : null;
+            BeginContainmentLocked(active, lossReason);
             return active;
         }
 
@@ -1831,7 +1835,9 @@ internal sealed class GuardianHostSupervisor :
             if (_lifecycle.ObserveStartupDeadline(active.Lease) ==
                 GuardianHostStartupDeadlineDisposition.BeganContainment)
             {
-                BeginContainmentLocked(active);
+                BeginContainmentLocked(
+                    active,
+                    GuardianHostLossReason.InitializationFailure);
             }
         }
         finally
@@ -1873,7 +1879,7 @@ internal sealed class GuardianHostSupervisor :
                 active.Lease.Stage is GuardianHostAttemptStage.Containing or
                     GuardianHostAttemptStage.ContainmentUnconfirmed)
             {
-                BeginContainmentLocked(active);
+                BeginContainmentLocked(active, reason);
             }
         }
         finally
@@ -1891,17 +1897,20 @@ internal sealed class GuardianHostSupervisor :
             return;
         }
 
-        var disposition = _lifecycle.ReportLoss(active.Lease, LossReasonFor(failure));
+        var reason = LossReasonFor(failure);
+        var disposition = _lifecycle.ReportLoss(active.Lease, reason);
         if (disposition is GuardianHostLifecycleLossDisposition.BeganContainment or
             GuardianHostLifecycleLossDisposition.Duplicate &&
             active.Lease.Stage is GuardianHostAttemptStage.Containing or
                 GuardianHostAttemptStage.ContainmentUnconfirmed)
         {
-            BeginContainmentLocked(active);
+            BeginContainmentLocked(active, reason);
         }
     }
 
-    private void BeginContainmentLocked(ActiveAttempt active)
+    private void BeginContainmentLocked(
+        ActiveAttempt active,
+        GuardianHostLossReason? auditedLossReason = null)
     {
         if (Interlocked.Exchange(ref active.ContainmentStarted, 1) != 0)
             return;
@@ -1952,6 +1961,11 @@ internal sealed class GuardianHostSupervisor :
 
         TrackBackground(WatchContainmentDeadlineAsync(active));
         TrackBackground(WatchContainmentConfirmationAsync(active));
+        if (auditedLossReason is { } reason &&
+            reason != GuardianHostLossReason.TerminalShutdown)
+        {
+            _lifecycleAudit.RecordLost(reason, warmStateLost: active.Lease.EverReady);
+        }
     }
 
     private async Task WatchContainmentDeadlineAsync(ActiveAttempt active)

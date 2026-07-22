@@ -144,6 +144,70 @@ public sealed class GuardianHostSupervisorTests
     }
 
     [Fact]
+    public async Task Host_loss_begins_containment_before_its_durable_audit_append()
+    {
+        await using var rig = new TestRig(
+            new AttemptPlan(HostBehavior.Respond, AutoConfirmContainment: false));
+        await rig.StartAsync();
+        var old = rig.Factory.Resources[0];
+        var auditEntered = rig.LifecycleAudit.BlockNextLost();
+
+        try
+        {
+            old.SignalHostExit();
+            await auditEntered.WaitAsync(TestTimeout);
+
+            Assert.True(old.ContainmentBegun);
+            Assert.Empty(rig.HostAuditLines("host.lost"));
+            Assert.Equal(
+                new PublicHostStateSnapshot(
+                    old.Identity.HostBootId,
+                    old.Identity.HostGeneration,
+                    PublicHostState.Recovering,
+                    RecoveryPhase.Containment,
+                    recoveryAttempt: 1,
+                    retryAfterMilliseconds:
+                        ContractLimits.MinimumRetryAfterMilliseconds,
+                    readyForEffects: false,
+                    lastFailureCode: null),
+                rig.Supervisor.SnapshotState().Host);
+        }
+        finally
+        {
+            rig.LifecycleAudit.ReleaseLost();
+        }
+
+        await WaitUntilAsync(() => rig.HostAuditLines("host.lost").Length == 1);
+        var line = Assert.Single(rig.HostAuditLines("host.lost"));
+        using var document = JsonDocument.Parse(line);
+        var root = document.RootElement;
+        var host = root.GetProperty("host");
+        Assert.Equal(
+            old.Identity.HostBootId.Value.ToString("D"),
+            host.GetProperty("boot_id").GetString());
+        Assert.Equal(
+            old.Identity.HostGeneration.Value,
+            host.GetProperty("generation").GetInt64());
+        Assert.Equal("recovering", host.GetProperty("state").GetString());
+        Assert.Equal(1, host.GetProperty("recovery_attempt").GetInt64());
+
+        var outcome = root.GetProperty("outcome");
+        Assert.Equal("lost", outcome.GetProperty("state").GetString());
+        Assert.Equal("host_exited", outcome.GetProperty("detail_code").GetString());
+        Assert.True(outcome.GetProperty("warm_state_lost").GetBoolean());
+        Assert.Equal(
+            "unconfirmed",
+            outcome.GetProperty("termination_certainty").GetString());
+        var coverage = root.GetProperty("coverage");
+        Assert.Equal(
+            "complete",
+            coverage.GetProperty("root_process_observed").GetString());
+        Assert.Equal(
+            "unknown",
+            coverage.GetProperty("descendants_observed").GetString());
+    }
+
+    [Fact]
     public async Task Loss_before_write_authorization_is_safe_and_never_dispatched()
     {
         await using var rig = new TestRig(
@@ -2144,6 +2208,8 @@ public sealed class GuardianHostSupervisorTests
             }
             var hostSnapshots = new GuardianAuditHostSnapshotSource();
             _audit = R3FakeGuardianAuditRuntime.Create(Guardian, hostSnapshots);
+            LifecycleAudit = new BlockingLifecycleAudit(
+                new GuardianHostLifecycleAudit(_audit.Runtime));
             var lifecycle = new GuardianHostLifecycleController(
                 Guardian,
                 new MonotonicHostGenerationAllocator(),
@@ -2166,7 +2232,7 @@ public sealed class GuardianHostSupervisorTests
                 OutputCoordinator,
                 JobCapabilities,
                 _audit.OutputProtector,
-                new GuardianHostLifecycleAudit(_audit.Runtime));
+                LifecycleAudit);
         }
 
         internal ManualTimeProvider Clock { get; }
@@ -2178,6 +2244,7 @@ public sealed class GuardianHostSupervisorTests
         internal OutputStore? OutputStore { get; }
         internal GuardianOutputCoordinator? OutputCoordinator { get; }
         internal GuardianJobCapabilityRegistry? JobCapabilities { get; }
+        internal BlockingLifecycleAudit LifecycleAudit { get; }
 
         internal string[] AuditEventTypes() => _audit.Sink.Lines
             .Select(static line =>
@@ -2932,6 +2999,56 @@ public sealed class GuardianHostSupervisorTests
             checked(clock.GetTimestamp() + TimeSpan.FromSeconds(30).Ticks));
     }
 
+    private sealed class BlockingLifecycleAudit(IGuardianHostLifecycleAudit inner) :
+        IGuardianHostLifecycleAudit
+    {
+        private readonly object _sync = new();
+        private readonly IGuardianHostLifecycleAudit _inner = inner ??
+            throw new ArgumentNullException(nameof(inner));
+        private TaskCompletionSource<bool>? _lostEntered;
+        private TaskCompletionSource<bool>? _lostRelease;
+
+        internal Task BlockNextLost()
+        {
+            lock (_sync)
+            {
+                _lostEntered = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                _lostRelease = new TaskCompletionSource<bool>(
+                    TaskCreationOptions.RunContinuationsAsynchronously);
+                return _lostEntered.Task;
+            }
+        }
+
+        internal void ReleaseLost()
+        {
+            lock (_sync)
+                _lostRelease?.TrySetResult(true);
+        }
+
+        public void RecordStarting() => _inner.RecordStarting();
+
+        public void RecordReady(bool recovered) => _inner.RecordReady(recovered);
+
+        public void RecordLost(GuardianHostLossReason reason, bool warmStateLost)
+        {
+            Task? release = null;
+            lock (_sync)
+            {
+                if (_lostEntered is not null && _lostRelease is not null)
+                {
+                    _lostEntered.TrySetResult(true);
+                    release = _lostRelease.Task;
+                    _lostEntered = null;
+                }
+            }
+
+            if (release is not null && !release.Wait(TestTimeout))
+                throw new TimeoutException("The blocked host-loss audit was not released.");
+            _inner.RecordLost(reason, warmStateLost);
+        }
+    }
+
     private sealed class BlockingDispatchObserver :
         IGuardianHostSupervisorDispatchObserver
     {
@@ -3279,6 +3396,7 @@ public sealed class GuardianHostSupervisorTests
         private ManualResetEventSlim? _disposeRelease;
         private int _launched;
         private int _closed;
+        private int _containmentBegun;
         private int _disposed;
 
         internal FakeConnectedResources(
@@ -3303,6 +3421,7 @@ public sealed class GuardianHostSupervisorTests
         internal IReadOnlyList<ObservedReset> Resets => _peer.Resets;
         internal IReadOnlyList<ObservedSessionLifecycle> SessionLifecycles =>
             _peer.SessionLifecycles;
+        internal bool ContainmentBegun => Volatile.Read(ref _containmentBegun) != 0;
         internal bool IsDisposed => Volatile.Read(ref _disposed) != 0;
         internal Task OutputFinished => _outputFinished.Task;
 
@@ -3346,6 +3465,7 @@ public sealed class GuardianHostSupervisorTests
         public void BeginContainment(GuardianHostContainmentDeadline deadline)
         {
             _ = deadline;
+            Interlocked.Exchange(ref _containmentBegun, 1);
             _clock.Advance(_plan.AdvanceClockOnContainment);
             if (_plan.AutoConfirmContainment)
                 _containmentConfirmed.TrySetResult(true);
@@ -3356,6 +3476,8 @@ public sealed class GuardianHostSupervisorTests
             _events.CompleteWriting();
             _hostExited.TrySetResult(true);
         }
+
+        internal void SignalHostExit() => _hostExited.TrySetResult(true);
 
         internal void ConfirmContainment() =>
             _containmentConfirmed.TrySetResult(true);

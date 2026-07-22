@@ -1,3 +1,4 @@
+using PtkMcpGuardian.Lifecycle;
 using PtkMcpGuardian.Standalone;
 
 namespace PtkMcpServer.Audit;
@@ -28,24 +29,51 @@ internal sealed class GuardianHostLifecycleAudit(AuditRuntimeGate runtime) :
             detailCode: recovered ? "host_recovered" : "host_ready",
             warmStateLost: recovered);
 
+    public void RecordLost(GuardianHostLossReason reason, bool warmStateLost)
+    {
+        if (!Enum.IsDefined(reason) ||
+            reason == GuardianHostLossReason.TerminalShutdown)
+            throw new ArgumentOutOfRangeException(nameof(reason));
+
+        Record(
+            "host.lost",
+            outcomeState: "lost",
+            detailCode: DetailCodeFor(reason),
+            warmStateLost,
+            terminationCertainty: "unconfirmed",
+            rootProcessObserved: reason == GuardianHostLossReason.Exit
+                ? "complete"
+                : "unknown",
+            descendantsObserved: "unknown");
+    }
+
     private void Record(
         string eventType,
         string outcomeState,
         string detailCode,
-        bool? warmStateLost)
+        bool? warmStateLost,
+        string terminationCertainty = "not_applicable",
+        string rootProcessObserved = "not_applicable",
+        string descendantsObserved = "not_applicable")
     {
         _ = _runtime.TryAppendAutomaticTransition(CreateEvent(
             eventType,
             outcomeState,
             detailCode,
-            warmStateLost));
+            warmStateLost,
+            terminationCertainty,
+            rootProcessObserved,
+            descendantsObserved));
     }
 
     private AuditEventInput CreateEvent(
         string eventType,
         string outcomeState,
         string detailCode,
-        bool? warmStateLost)
+        bool? warmStateLost,
+        string terminationCertainty,
+        string rootProcessObserved,
+        string descendantsObserved)
     {
         var health = _runtime.Health.Snapshot();
         var unhealthy = health.State is
@@ -63,13 +91,13 @@ internal sealed class GuardianHostLifecycleAudit(AuditRuntimeGate runtime) :
                 State = outcomeState,
                 DetailCode = detailCode,
                 WarmStateLost = warmStateLost,
-                TerminationCertainty = "not_applicable",
+                TerminationCertainty = terminationCertainty,
             },
             Coverage = new AuditCoverage
             {
                 PtkRequest = false,
-                RootProcessObserved = "not_applicable",
-                DescendantsObserved = "not_applicable",
+                RootProcessObserved = rootProcessObserved,
+                DescendantsObserved = descendantsObserved,
                 RemoteEffectObserved = "not_applicable",
             },
             Audit = new AuditEventHealth
@@ -84,4 +112,20 @@ internal sealed class GuardianHostLifecycleAudit(AuditRuntimeGate runtime) :
             },
         };
     }
+
+    private static string DetailCodeFor(GuardianHostLossReason reason) => reason switch
+    {
+        GuardianHostLossReason.EndOfStream => "host_end_of_stream",
+        GuardianHostLossReason.Exit => "host_exited",
+        GuardianHostLossReason.ReaderFailure => "host_reader_failure",
+        GuardianHostLossReason.WriterFailure => "host_writer_failure",
+        GuardianHostLossReason.ProtocolFatal => "host_protocol_fatal",
+        GuardianHostLossReason.ContractMismatch => "host_contract_mismatch",
+        GuardianHostLossReason.ContainmentNotification =>
+            "host_containment_notification",
+        GuardianHostLossReason.InitializationFailure =>
+            "host_initialization_failed",
+        GuardianHostLossReason.OperatorRecycle => "host_operator_recycle",
+        _ => throw new ArgumentOutOfRangeException(nameof(reason)),
+    };
 }

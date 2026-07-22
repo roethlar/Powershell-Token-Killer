@@ -52,6 +52,8 @@ internal interface IGuardianHostLifecycleAudit
     void RecordStarting();
 
     void RecordReady(bool recovered);
+
+    void RecordLost(GuardianHostLossReason reason, bool warmStateLost);
 }
 
 internal sealed record GuardianHostJobListTarget
