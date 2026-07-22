@@ -5,6 +5,26 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **Dependency hardening is paused mid-test-platform migration on
+  `feature/mcp-resilience-r1`; committed head `cab73df` completes the frozen
+  inventory, PowerShell security chain, Hosting, MCP, and Roslyn slices.** Five
+  test project files are intentionally uncommitted with `xunit.v3` 3.2.2,
+  `xunit.runner.visualstudio` 3.1.5, and `Microsoft.NET.Test.Sdk` 18.8.1. The
+  xUnit-only state built but `dotnet test` rejected its assemblies under Test
+  SDK 17.14.1, so xUnit and Test SDK must land as one atomic compatibility
+  commit; Coverlet remains separate. Release builds succeed with 1,302 visible
+  `xUnit1051` cancellation-token analyzer locations and no suppression. Exact
+  sorted discovery matches the pre-migration `cab73df` snapshot in all five
+  projects: architecture 73, guardian 429, server 1,861, conformance 6, SIEM
+  91; runtime-enumerated rows account for the higher full-suite totals.
+  Explicit macOS runs passed architecture 73/73 and guardian 436/436. The
+  server run reached 1,868 tests and failed only the already-recorded anchored
+  evidence synchronization flake plus a verification-harness error: PowerShell
+  coerced `SetEnvironmentVariable(..., $null, ...)` to an empty
+  `PTK_SIEM_CONFORMANCE_MODE`; the affected test passes when the variable is
+  correctly removed with `Remove-Item Env:PTK_SIEM_CONFORMANCE_MODE`. Job 77
+  has exited, so no verification process remains active. No push, merge,
+  release, or installed-payload change is authorized.
 - **mini-SIEM S1-S3 are complete and incorporated on local `master`; the S3 durable
   store head is `eb51f2e` and its producer-conformance compatibility head is
   `9f53831`.** S1 supplies the solution skeleton and strict startup config; S2
@@ -279,17 +299,21 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Execute `.agents/plans/dependency-hardening.md` at frozen inventory cutoff
-   `2026-07-22T17:09:14Z`, updating one dependency family per commit before R6.
-   The owner approved current
-   stable major migrations and rejected build/install blocking for unpatched
-   advisories; do not add warning-as-error, suppression, or runtime gating.
-   After the dependency slice, resume `feature/mcp-resilience-r1` from the
-   cross-platform R5 code head `225b5fc` and begin approved R6 without folding
-   the separate ARM64 MSBuild `protoc` investigation into resilience work.
-   Ordinary reviews may use Opus or Grok; hold Fable openreviews until capacity
-   returns. Do not merge, rewrite history, push, or publish a release without
-   the separately required authorization.
+1. Resume the uncommitted xUnit v3/Test SDK migration recorded under `## Now`.
+   Remove `PTK_SIEM_CONFORMANCE_MODE` with `Remove-Item Env:` before tests;
+   rerun the known anchored-runtime test and the complete server suite, then
+   finish explicit SIEM/conformance and both solution-entry-point runs. If
+   discovery, behavior, deprecation, vulnerability, and focused build checks
+   are green, record the forced atomic-slice evidence in
+   `.agents/plans/dependency-hardening.md` and commit the five project files
+   with that plan update. Continue the remaining approved Coverlet, SQLite,
+   Pester, and setup-dotnet families one commit at a time, then run the frozen
+   audits and direct macOS/Linux/Windows acceptance. Advisories stay visible
+   and non-blocking; do not add warning-as-error, suppression, or runtime
+   gating. After dependency hardening, begin approved R6 without folding the
+   separate ARM64 MSBuild `protoc` investigation into resilience work. Do not
+   merge, rewrite history, push, or publish a release without separate
+   authorization.
 2. Implement the owner-approved mini-SIEM S3H amendment in
    `.agents/plans/mini-siem-implementation.md`: startup filesystem hardening
    under `siem/` only. Do not begin S4-S6 or modify PTK runtime code.
@@ -335,14 +359,6 @@ short and update it when important repo facts change.
   killed. This cannot make the guard falsely pass or affect an R0 product
   contract; consider an stdin-EOF guardian watch in a later scoped test-hygiene
   slice.
-- `System.Security.Cryptography.Xml` 10.0.6 currently emits high-severity
-  NU1903 advisories during restore/build. The separate dependency-hardening
-  plan inventories its `Microsoft.PowerShell.SDK` route and every other
-  repository-managed dependency; implementation is active at the frozen
-  `2026-07-22T17:09:14Z` cutoff.
-  Advisories remain visible and non-blocking by owner decision. Exact
-  as-of-head evidence is in `.agents/machines.md`.
-
 ## Blockers
 
 - **Direct ARM64 Linux clean-build validation is blocked by a host-specific
