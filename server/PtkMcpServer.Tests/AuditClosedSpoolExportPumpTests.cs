@@ -1,3 +1,4 @@
+using System.Security.Cryptography.X509Certificates;
 using PtkMcpServer.Audit;
 
 namespace PtkMcpServer.Tests;
@@ -141,6 +142,7 @@ public sealed class AuditClosedSpoolExportPumpTests
             [new AuditExportHeader("Authorization", receiver.AuthorizationValue)],
             [pki.CreateTrustedRoot()],
             clientCertificate: null,
+            X509RevocationMode.NoCheck,
             ConfigurationIdentity);
         using var transport = AuditOtlpHttpExporter.Create(exportOptions, "9.8.7");
         using var reader = new AuditClosedSpoolChainReader(fixture.Options, fixture.Store);

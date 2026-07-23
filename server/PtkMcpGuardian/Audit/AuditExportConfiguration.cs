@@ -45,6 +45,7 @@ internal sealed class AuditExportOptions : IDisposable
         IReadOnlyList<AuditExportHeader> headers,
         IReadOnlyList<X509Certificate2> customCertificateAuthorities,
         X509Certificate2? clientCertificate,
+        X509RevocationMode revocationCheckMode,
         string configurationIdentity)
     {
         EndpointText = endpointText;
@@ -52,6 +53,7 @@ internal sealed class AuditExportOptions : IDisposable
         Headers = Array.AsReadOnly(headers.ToArray());
         CustomCertificateAuthorities = Array.AsReadOnly(customCertificateAuthorities.ToArray());
         ClientCertificate = clientCertificate;
+        RevocationCheckMode = revocationCheckMode;
         ConfigurationIdentity = configurationIdentity;
     }
 
@@ -64,6 +66,8 @@ internal sealed class AuditExportOptions : IDisposable
     internal IReadOnlyList<X509Certificate2> CustomCertificateAuthorities { get; }
 
     internal X509Certificate2? ClientCertificate { get; }
+
+    internal X509RevocationMode RevocationCheckMode { get; }
 
     internal string ConfigurationIdentity { get; }
 
@@ -85,7 +89,7 @@ internal static class AuditExportConfigurationLoader
     internal const int MaximumEndpointBytes = 8 * 1024;
     internal const int MaximumHeaderValueBytes = 64 * 1024;
 
-    private const string SchemaVersion = "ptk.export-config/1";
+    private const string SchemaVersion = "ptk.export-config/2";
     private const string ProtectionMode = "anchored";
     private const string ClientAuthenticationOid = "1.3.6.1.5.5.7.3.2";
     private const string AnyExtendedKeyUsageOid = "2.5.29.37.0";
@@ -100,6 +104,7 @@ internal static class AuditExportConfigurationLoader
         "ca_file",
         "client_certificate_file",
         "client_private_key_file",
+        "revocation_check_mode",
     };
     private static readonly HashSet<string> ForbiddenHeaders = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -175,7 +180,8 @@ internal static class AuditExportConfigurationLoader
                     certificateBytes ?? Array.Empty<byte>(),
                     privateKeyBytes ?? Array.Empty<byte>(),
                     AuditExportOptions.ProtocolName,
-                    checked((ulong)AuditExportOptions.RequestTimeout.TotalMilliseconds)));
+                    checked((ulong)AuditExportOptions.RequestTimeout.TotalMilliseconds),
+                    parsed.RevocationCheckMode.ToString()));
 
             var options = new AuditExportOptions(
                 parsed.Endpoint,
@@ -183,6 +189,7 @@ internal static class AuditExportConfigurationLoader
                 headers,
                 customRoots,
                 clientCertificate,
+                parsed.RevocationCheckMode,
                 identity);
             transferred = true;
             customRoots = [];
@@ -247,7 +254,8 @@ internal static class AuditExportConfigurationLoader
                 ParseHeaders(document.RootElement.GetProperty("headers")),
                 NullableString(document.RootElement, "ca_file"),
                 NullableString(document.RootElement, "client_certificate_file"),
-                NullableString(document.RootElement, "client_private_key_file"));
+                NullableString(document.RootElement, "client_private_key_file"),
+                ParseRevocationMode(document.RootElement));
         }
         catch (AuditExportConfigurationException)
         {
@@ -257,6 +265,20 @@ internal static class AuditExportConfigurationLoader
         {
             throw new AuditExportConfigurationException("config_json");
         }
+    }
+
+    private static X509RevocationMode ParseRevocationMode(JsonElement root)
+    {
+        // Explicit, exact-case; no silent fallback when absent or unrecognized.
+        // Mirrors the SIEM receiver's revocation_check_mode contract.
+        var text = RequiredString(root, "revocation_check_mode");
+        return text switch
+        {
+            "NoCheck" => X509RevocationMode.NoCheck,
+            "Online" => X509RevocationMode.Online,
+            "Offline" => X509RevocationMode.Offline,
+            _ => throw new AuditExportConfigurationException("revocation_check_mode"),
+        };
     }
 
     private static List<AuditExportHeader> ParseHeaders(JsonElement element)
@@ -544,5 +566,6 @@ internal static class AuditExportConfigurationLoader
         List<AuditExportHeader> Headers,
         string? CaFile,
         string? ClientCertificateFile,
-        string? ClientPrivateKeyFile);
+        string? ClientPrivateKeyFile,
+        X509RevocationMode RevocationCheckMode);
 }

@@ -1,3 +1,4 @@
+using System.Security.Cryptography.X509Certificates;
 using PtkMcpServer.Audit;
 
 namespace PtkMcpServer.Tests;
@@ -78,5 +79,6 @@ public sealed class AuditStartupConfigurationTests : IDisposable
             [new AuditExportHeader("Authorization", "Bearer test")],
             [],
             clientCertificate: null,
+            X509RevocationMode.NoCheck,
             identity);
 }

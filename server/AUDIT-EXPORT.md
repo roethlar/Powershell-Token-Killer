@@ -28,22 +28,32 @@ empty: PTK will not serve tools unless the complete configuration validates and
 the anchored audit runtime opens successfully. It never silently falls back to
 local-only after anchored intent has been expressed.
 
-The configuration is strict JSON. It has exactly these seven properties, with
+The configuration is strict JSON. It has exactly these eight properties, with
 no comments, trailing commas, duplicate properties, or unknown properties:
 
 ```json
 {
-  "schema_version": "ptk.export-config/1",
+  "schema_version": "ptk.export-config/2",
   "protection_mode": "anchored",
   "endpoint": "https://audit-gateway.example.net:4318/v1/logs",
   "headers": {
     "Authorization": "Bearer REPLACE_WITH_A_REAL_SECRET"
   },
+  "revocation_check_mode": "Online",
   "ca_file": null,
   "client_certificate_file": null,
   "client_private_key_file": null
 }
 ```
+
+`revocation_check_mode` is required and exact-case, mirroring the SIEM
+receiver's contract: `Online` verifies the gateway certificate chain against
+live CRL/OCSP revocation data, `Offline` uses only cached revocation data, and
+`NoCheck` disables revocation checking entirely. There is no default — an
+absent or unrecognized value is a startup failure. Use `Online` unless the
+export gateway is reachable only from a network where revocation endpoints are
+unavailable; choose `NoCheck` only as a deliberate, recorded decision, since it
+keeps trusting certificates the issuer has revoked.
 
 This is a template, not a usable configuration. Put the real file outside the
 repository. The configuration file, every referenced PEM file, and each file's
@@ -60,10 +70,11 @@ specified custom roots for this endpoint. A certificate-only example is:
 
 ```json
 {
-  "schema_version": "ptk.export-config/1",
+  "schema_version": "ptk.export-config/2",
   "protection_mode": "anchored",
   "endpoint": "https://audit-gateway.example.net:4318/v1/logs",
   "headers": {},
+  "revocation_check_mode": "Online",
   "ca_file": "/secure/ptk-export/gateway-ca.pem",
   "client_certificate_file": "/secure/ptk-export/ptk-client.pem",
   "client_private_key_file": "/secure/ptk-export/ptk-client-key.pem"

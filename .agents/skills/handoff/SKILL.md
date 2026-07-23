@@ -1,6 +1,7 @@
 ---
 name: handoff
 description: Fast save-my-place snapshot of .agents/state.md so the next session resumes without chat context. Use when the owner says handoff or a session is wrapping up.
+# toolkit-owned; edits are drift — see AGENTS.md
 ---
 
 Run the `handoff` operator defined in this repo's `AGENTS.md` (Operator

@@ -15,6 +15,8 @@ using PtkMcpServer.Audit.OtlpWire;
 using SiemCommitResult = siem::PtkSiemReceiver.Ingest.IngestCommitResult;
 using SiemCommitter = siem::PtkSiemReceiver.Ingest.IIngestCommitter;
 using SiemOptions = siem::PtkSiemReceiver.Configuration.SiemReceiverOptions;
+using SiemOptionsLoader = siem::PtkSiemReceiver.Configuration.SiemReceiverConfigurationLoader;
+using SiemProtectedPath = siem::PtkSiemReceiver.Security.SiemProtectedPath;
 using SiemReceiverApplication = siem::PtkSiemReceiver.Ingest.ReceiverApplication;
 using SiemValidatedRecord = siem::PtkSiemReceiver.Ingest.ValidatedOtlpRecord;
 
@@ -200,6 +202,7 @@ public sealed class AuditOtlpSiemConformanceTests
             headers,
             authorities,
             clientCertificate,
+            X509RevocationMode.NoCheck,
             new string('a', 64));
         return handler is null
             ? AuditOtlpHttpExporter.Create(options, "9.8.7")
@@ -295,9 +298,13 @@ internal sealed class SiemOtlpConformanceHost : IAsyncDisposable
     {
         var root = Path.Combine(Path.GetTempPath(), $"ptk-siem-conformance-{Guid.NewGuid():N}");
         Directory.CreateDirectory(root);
+        _ = SiemProtectedPath.ProtectCreatedDirectory(root);
         var certificatePath = Path.Combine(root, "server-cert.pem");
         var keyPath = Path.Combine(root, "server-key.pem");
         var authorityPath = Path.Combine(root, "client-root.pem");
+        _ = SiemProtectedPath.CreateProtectedFile(certificatePath);
+        _ = SiemProtectedPath.CreateProtectedFile(keyPath);
+        _ = SiemProtectedPath.CreateProtectedFile(authorityPath);
         await File.WriteAllTextAsync(certificatePath, pki.ServerCertificate.ExportCertificatePem());
         using (var key = pki.ServerCertificate.GetRSAPrivateKey() ??
                          throw new InvalidOperationException("The conformance server certificate has no RSA key."))
@@ -314,6 +321,7 @@ internal sealed class SiemOtlpConformanceHost : IAsyncDisposable
             [authorityPath],
             X509RevocationMode.NoCheck,
             1024 * 1024,
+            SiemOptionsLoader.DefaultMaxConcurrentRequests,
             IPAddress.Loopback,
             9,
             new string('t', 32),

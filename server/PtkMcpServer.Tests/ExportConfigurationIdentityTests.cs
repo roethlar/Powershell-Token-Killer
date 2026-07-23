@@ -33,7 +33,7 @@ public sealed class ExportConfigurationIdentityTests : IDisposable
 
         var identity = ExportConfigurationIdentity.Compute(key, material);
 
-        Assert.Equal("9c95d0b02bb3d09157388b2bb010480b8cd052d9f990686f8bf8df457ea10009", identity);
+        Assert.Equal("4b9686d742964ff6f1e20b4d2bbe3cdf4764a8bf0258a41c92600d8de15f0cfb", identity);
     }
 
     [Fact]
@@ -54,6 +54,16 @@ public sealed class ExportConfigurationIdentityTests : IDisposable
         Assert.Equal(
             ExportConfigurationIdentity.Compute(key, left),
             ExportConfigurationIdentity.Compute(key, right));
+    }
+
+    [Fact]
+    public void Revocation_check_mode_is_covered_by_the_identity()
+    {
+        var key = Enumerable.Repeat((byte)0x5a, 32).ToArray();
+
+        Assert.NotEqual(
+            ExportConfigurationIdentity.Compute(key, Material(revocationCheckMode: "Online")),
+            ExportConfigurationIdentity.Compute(key, Material(revocationCheckMode: "NoCheck")));
     }
 
     [Fact]
@@ -256,7 +266,8 @@ public sealed class ExportConfigurationIdentityTests : IDisposable
         IReadOnlyList<AuditExportHeaderMaterial>? headers = null,
         byte[]? ca = null,
         byte[]? certificate = null,
-        byte[]? privateKey = null) =>
+        byte[]? privateKey = null,
+        string revocationCheckMode = "Online") =>
         new(
             "https://collector.example:4318/v1/logs",
             headers ?? [new("Authorization", "Bearer alpha")],
@@ -264,5 +275,6 @@ public sealed class ExportConfigurationIdentityTests : IDisposable
             certificate ?? Array.Empty<byte>(),
             privateKey ?? Array.Empty<byte>(),
             "http/protobuf",
-            10_000);
+            10_000,
+            revocationCheckMode);
 }

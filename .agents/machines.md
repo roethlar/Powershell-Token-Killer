@@ -1203,3 +1203,51 @@ _Run `29967333249` at exact pushed SHA
   green six-job hosted acceptance is claimed. The corrective plan amendment is
   proposed but not approved, and a repaired exact-SHA push requires separate
   authorization.
+## Mini-SIEM S3H storage-hardening verification (Mac, Windows, and Linux, 2026-07-16)
+
+_Verified at S3H code head `c726a33` (base `1f314a2` plus the exact source
+snapshots named below). S4-S6 and PTK runtime sources were not changed._
+
+- On `nagatha.local` (Darwin arm64, .NET SDK 10.0.302/runtime 10.0.10), the
+  restored final tree passed 243/243 SIEM tests with zero skips.
+  `dotnet format siem/PtkSiem.slnx --no-restore --verify-no-changes` formatted
+  zero files, and the direct/transitive package vulnerability audit reported
+  no vulnerable package in either SIEM project. The unchanged server suite
+  exited zero, and the documented Pester suite passed 141 with two platform
+  skips.
+- Eight independent guard mutations failed for their intended reason and were
+  restored: masking away POSIX special bits; bypassing the protected config
+  read; reopening TLS paths after verification; disabling the lexical
+  ancestor walk; removing protected-file/storage identity intersection;
+  removing final WAL namespace verification; removing both live-open database
+  identity proofs; and, on Windows, accepting a one-ACE DACL with inheritance
+  flags. The final restored SIEM tree passed again.
+- On `NETWATCH-01` (Windows 10.0.26200.8875, .NET SDK 10.0.302/runtime
+  10.0.10), an exact 355-file archive had SHA-256
+  `CBD0756703DCF3837F153C864B931A1263E89FF6BB73390399657DEA6AA5BEF6`.
+  Under a transient `NT AUTHORITY\\LOCAL SERVICE` scheduled task, the full
+  SIEM suite passed 243/243. Removing only the `AceFlags.None` predicate made
+  the inheritance-flags theory case fail while the wrong-rights case remained
+  green, proving that exact-DACL branch. All disposable tasks, processes,
+  archives, directories, and local transfer files were removed; scoped
+  residue counts were zero, and no existing checkout or installed payload was
+  touched.
+- On the Ubuntu 26.04 ARM64 VM at `192.168.64.5` (kernel 7.0.0-27, .NET SDK
+  10.0.110/runtime 10.0.10), the refreshed source manifest was
+  `ef91ee5d470ea5d8416e6aa26d83ba67f85a4dd03b1d901fbe32690ab632b5de`
+  and archive SHA-256 was
+  `c36bc4d63472dfe1ecb3507af7db28ea45e95a0bd2b306821934398f9a1ab81d`.
+  The ordinary build reproduced the already-recorded MSBuild-only bundled
+  `protoc` exit 139. Direct invocation of that same `libprotoc 35.0` generated
+  the normal intermediates, after which the unmodified suite passed 243/243
+  with zero skips. All scoped directories, archives, and processes were
+  removed; no existing checkout or payload changed.
+- The local stdio handshake was diagnostic-only for this SIEM-only slice and
+  did not pass: two default 30-second runs and one discriminating 120-second
+  run received no initialize response from the unchanged server and required
+  their bounded process-tree kill fallback. `server/`, `src/`, and `tests/`
+  had no diff, no PTK/DOTNET override was present, the server suite exited
+  zero, and the Pester suite was green, so no out-of-scope runtime repair was
+  attempted. Two empty/test-content handshake roots discovered under
+  `/Users/michael/.ptk` predated this run (creation 2026-07-14) and were
+  preserved; the failed runs created no new retained root.

@@ -235,6 +235,15 @@ internal sealed record ColdCommandTargetIdentity
                 executable);
     }
 
+    // Design requirement (rbc-13, refuted-as-defect 2026-07-19): PATH must be
+    // stable between plan prepare and CommitStart. This method deliberately
+    // re-resolves against the *live* process PATH at commit time and fails
+    // closed on any resolution change (RtkTargetResolutionChanged). PATH
+    // hijack is in-threat-model, so a prepare-time snapshot compare would
+    // weaken the integrity gate; non-shadowing PATH appends do not change
+    // resolution and are not penalized. Users who mutate PATH such that the
+    // command resolves differently must re-prepare — that is a proved
+    // no-start by design, not a bug. See .agents/review/findings/rbc-13.md.
     internal bool MatchesCurrentResolution()
     {
         var current = Path.IsPathFullyQualified(CommandName)

@@ -1,3 +1,8 @@
+---
+description: Compare a doc, decision, or guidance claim against repo evidence and fix or report the conflict; also the deliberate state-hygiene pass. Use when the owner says drift.
+# toolkit-owned; edits are drift — see AGENTS.md
+---
+
 Run the `drift` operator defined in this repo's `AGENTS.md` (Operator Requests):
 compare a doc, decision, or guidance claim against repo evidence and fix the
 lower-authority source, or report the unresolved conflict. Guidance files

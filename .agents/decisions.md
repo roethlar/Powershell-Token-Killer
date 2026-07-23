@@ -366,3 +366,29 @@ under `siem/`.
 acceptance questions are answered by the plan's S1-S7 sections and threat-model
 matrix; the standing "discovery first" recommendation was satisfied by
 `.agents/plans/mini-siem-discovery.md` before this authorization.
+
+## 2026-07-19: Triage delegation for the rbc review batch
+
+**Decision:** The owner (non-developer) delegated finding triage to the
+maintaining agent. Protocol: adversarial self-verification against the
+code at a fixed SHA; contested findings go to a codex MCP follow-up
+capped at 3 turns; escalate to the owner only on no-consensus.
+
+**Applied:** rbc-8..rbc-14 at master `ec4d292` — dispositions recorded
+in `.agents/review/index.md` (triage log) and the finding records.
+Contested: rbc-8 (downgrade+defer) and rbc-13 (refute as by-design);
+codex consensus AGREE on both at turn 1 (thread
+`019f7cb9-c587-79c1-994b-a28e8d7b1ba1`).
+
+## 2026-07-19: SIEM receiver deployability gated on S3H (rbc-11)
+
+**Decision:** Master builds of `siem/PtkSiemReceiver` are not
+deployable for unattended ingest: retention options are parsed but not
+enforced, so the SQLite store grows without bound (rbc-11, MAJOR).
+Deployment guidance is gated on the owner's land/park decision for the
+isolated branch `plan/mini-siem-storage-hardening` (S3H).
+
+**Interim:** deployment warning added to `siem/PtkSiemReceiver/README.md`
+(this change). If S3H lands, retention sweeps enforce the limits and
+the warning is removed; if parked, the warning stands and disk usage
+must be bounded operationally. See `.agents/review/findings/rbc-11.md`.

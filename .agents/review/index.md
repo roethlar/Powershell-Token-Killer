@@ -2640,3 +2640,103 @@ The owner permits Opus or Grok for ordinary code reviews during the capacity
 window, but they are not substituted for this held openreview. Re-dispatch the
 same fixed range with Fable when capacity returns. R2-R7 remain unauthorized;
 this record authorizes no merge, push, or history rewriting.
+Loop run 2026-07-17 (read-only baseline codebase review) — reviewer: Hermes
+(this session, glm-5.2:cloud, read-only), scope: the full PTK codebase at head
+`f6a2caa` (PowerShell module, MCP server, audit subsystem, execution/worker
+subsystem, SIEM receiver, scripts, CI). Four parallel review passes: one
+direct pass (PowerShell module + MCP entry/tool surface + scripts + CI) and
+three Hermes subagent passes (audit subsystem, execution/worker/routing
+subsystem, SIEM receiver). Per-finding detail: `.agents/review/findings/rbc-*.md`.
+
+## Findings (read-only baseline codebase review)
+
+| ID    | Severity | Impact (one line)                                                          | Status | Branch |
+|-------|----------|----------------------------------------------------------------------------|--------|--------|
+| rbc-1 | BLOCKER  | Cold PS-direct background jobs lack CreateNoWindow and stdout/stderr redirect; native-command output can leak into the MCP transport | `[x]` merged (`a445038`) | `fix/rbc-1-cold-ps-job-stream-containment` |
+| rbc-2 | MAJOR    | AuditRuntimeGate StopCoreAsync does not guarantee server.stopped on session/exporter failure | `[x]` merged (`a6c4a17`) | `fix/rbc-2-stopcore-server-stopped` |
+| rbc-3 | MAJOR    | AuditRuntimeGate TryCreateCallContext bypasses the lifecycle gate | `[x]` refuted | `fix/rbc-3-callcontext-lifecycle-gate` |
+| rbc-4 | MAJOR    | AuditOtlpHttpExporter TLS revocation disabled by default with no opt-in | `[x]` merged (`685d34c`) | `fix/rbc-4-otlp-revocation-mode` |
+| rbc-5 | MAJOR    | Background jobs lack Job Object containment on Windows (foreground workers have it) | `[ ]` deferred to resilience R7 | n/a (owner disposition 2026-07-19) |
+| rbc-6 | MAJOR    | No SIGKILL escalation for Unix process trees after SIGTERM grace | `[x]` refuted | `fix/rbc-6-refutation` |
+| rbc-7 | MAJOR    | OutputStore Read/Search can wedge the store lock on a slow filesystem | `[x]` merged (`a9b0476`) | `fix/rbc-7-outputstore-read-wedge` |
+| rbc-8 | MINOR    | WorkerServer initialize handshake is a fragile multi-arm Task.WhenAny | `[ ]` deferred — downgraded at triage 2026-07-19; targeted guard queued to worker pass | n/a |
+| rbc-9 | MAJOR    | WorkerOperationScheduler ignores injected TaskScheduler for outer admit dispatch | `[x]` merged (`6452945`) — fix `27511b1`; external turn-1 guard-weakness finding adjudicated VALID, guard hardened `90b97b3` (`QueueCount >= 2`); remedy verification VERDICT: ACCEPT (2026-07-20) | n/a |
+| rbc-10 | MAJOR   | SIEM receiver Kestrel MaxRequestBodySize disabled (defense-in-depth gap) | `[x]` merged (`6452945`) — fix `27511b1`; external turn-1 declared-vs-chunked finding adjudicated TECHNICALLY CORRECT/MARGINAL, chunked-path test added `90b97b3`; remedy verification VERDICT: ACCEPT (2026-07-20) | n/a |
+| rbc-11 | MAJOR   | SIEM receiver has no retention enforcement on master | `[ ]` deferred — gated on S3H land/park decision (triage 2026-07-19); interim deployment warning landed in `siem/PtkSiemReceiver/README.md` + gate recorded in `.agents/decisions.md` (2026-07-19) | n/a |
+| rbc-12 | MAJOR   | SIEM receiver has no rate limiting or backpressure | `[x]` merged (`6452945`) — fix `27511b1`; external turn-1 no-unit-pin finding adjudicated PARTIALLY VALID, unit pin added `90b97b3`; per-client limit deferred; remedy verification VERDICT: ACCEPT (2026-07-20) | n/a |
+| rbc-13 | NOTE    | ColdCommandResolution MatchesCurrentResolution PATH race (safe but racy; downgraded from blocker) | `[x]` refuted as defect — fail-closed by design (triage 2026-07-19); design requirement documented at `MatchesCurrentResolution` (2026-07-19) | n/a |
+| rbc-14 | MAJOR   | OutputStore retention deletes artifact files while holding the store gate | `[x]` merged (`897bdbc`) — fix `5fc84ad` + stale-pulse remedy `f624796`; codex turn-3 ACCEPT, finding closed | `fix/rbc-14-retention-delete-offgate` (intake 2026-07-19, from rbc-7 external review) |
+| rbc-15 | MAJOR   | Process-tree containment gap for background jobs (escaped orphans / recycled-pid kills) | `[x]` review closed at turn 4 (`3634fe7`): diff-scoped findings none; sole MAJOR adjudicated PRE-EXISTING → deferred to follow-up hardening task; full suite 1587/1587 green at `3634fe7`; merged locally, master push owner-gated (#13) | `fix/rbc-15-process-tree-containment` (record: `.agents/review/findings/rbc-15.md`) |
+
+**Loop OPEN 2026-07-18T00:12Z:** 13 findings (1 blocker, 12 major), all at
+intake awaiting owner triage. No fixes have been written. This is a
+read-only review; no files were modified except this index and the 13
+per-finding records under `.agents/review/findings/rbc-*.md`. The subagent
+that flagged rbc-13 rated it blocker; the orchestrating session downgraded
+it to major after verifying the failure mode fails closed.
+
+**rbc-3 closed 2026-07-18T05:24:20Z:** refuted at triage (the lifecycle
+clause exists at `f6a2caa`, since `460c106`); refutation independently
+verified by external fixed-SHA review — Reviewer: codex / gpt-5.6-sol /
+high / standard, head `3a56672`, base `a4cff13`, guard_confirmed true,
+verdict accepted. Docs-only branch awaits owner-gated merge.
+---
+
+Hotfix 2026-07-18 (operator-reported production defect, second-machine
+install) — per-finding detail: `.agents/review/findings/hf-1.md`.
+
+| ID   | Severity | Impact (one line)                                                          | Status | Branch |
+|------|----------|----------------------------------------------------------------------------|--------|--------|
+| hf-1 | MAJOR    | ptk_output offset schema emits string minimum/maximum; strict draft 2020-12 MCP clients reject the entire toolset | `[x]` merged (`b7ac20b`) | `fix/ptk-output-schema-draft2020` |
+
+**hf-1 closed 2026-07-18T07:27:56Z:** numeric Range fix + generated-schema conformance
+guard at code head `03d2803`; digest chain recomputed. External
+fixed-SHA review — Reviewer: codex / high / standard, 4 rounds
+(rejected: tautological guard; rejected: record attribution; rejected:
+record consistency; accepted), final head `edb26d4`, guard_confirmed
+true, verdict accepted. Suite 1575/1575. Merged to master 2026-07-18,
+merge commit `b7ac20b` (owner-approved); post-merge master check
+ToolSchemaConformanceTests + McpResilienceR0ContractTests 53/53.
+
+---
+
+**Owner triage 2026-07-18:** all 11 open findings triaged to FIX, in
+priority order rbc-1; rbc-5, rbc-6; rbc-7; rbc-2, rbc-8, rbc-9; rbc-10,
+rbc-11, rbc-12; rbc-13. Each fix runs the standard external fixed-SHA
+review loop. Owner pre-approved merge to master for any fix whose
+external review is accepted with guard_confirmed true and a green full
+suite; no per-item merge prompt required for this batch.
+
+**rbc-5 disposition 2026-07-19:** owner ruled to close rbc-5 through
+resilience R7's creation-time worker containment plus a Windows
+hard-supervisor-death background-descendant guard; no standalone
+launcher for the current runtime. The saved post-start attach WIP
+remains rejected and preserved on `fix/rbc-6-unix-sigkill-escalation`
+at `2b3ce1a`. The finding stays open until R7 lands with its guard
+proof. Detail: `.agents/review/findings/rbc-5.md`.
+
+**rbc-14 intake 2026-07-19:** external fixed-SHA review of the rbc-7 fix
+(codex, turn 1, head `bb2df34`) surfaced that the inline retention sweep
+still unlinks and disposes artifact files under `_gate`
+(`OutputStore.cs:1178,1233` at `db23ec4`), reproducing the rbc-7 wedge
+on the delete path. Deferred from the rbc-7 diff to keep that fix
+narrow; awaiting owner triage. Detail:
+`.agents/review/findings/rbc-14.md`.
+
+**rbc-7 CLOSED 2026-07-19:** merged to master `a9b0476` (branch head
+`48f87ac`, `--no-ff`). External review via codex MCP converged within
+the owner's 3-turn cap; owner approved the batch merge. Post-merge
+master check green: OutputStoreTests + McpResilienceR0ContractTests,
+32/32 passed. Retention/delete-path residue remains tracked as rbc-14
+(open, awaiting owner triage).
+
+**TRIAGE 2026-07-19 (rbc-8..rbc-14):** owner (non-developer) delegated
+triage; maintaining agent adversarially re-verified all seven findings
+against master `ec4d292`. Confirmed, fix approved: rbc-9, rbc-10,
+rbc-12, rbc-14. Deferred: rbc-8 (downgraded to MINOR; targeted guard to
+worker pass), rbc-11 (gated on S3H land/park; interim docs warning).
+Refuted as defect: rbc-13 (fail-closed by design; docs-only follow-up).
+Contested items (rbc-8, rbc-13) went to codex MCP under the 3-turn cap;
+consensus AGREE on both at turn 1 (thread
+`019f7cb9-c587-79c1-994b-a28e8d7b1ba1`). Fix order: rbc-14 first (own
+branch + external fixed-SHA review), then rbc-9, rbc-10, rbc-12.

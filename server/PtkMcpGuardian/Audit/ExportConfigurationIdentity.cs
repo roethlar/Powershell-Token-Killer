@@ -14,11 +14,12 @@ internal sealed record AuditExportConfigurationMaterial(
     ReadOnlyMemory<byte> ClientCertificateBytes,
     ReadOnlyMemory<byte> ClientPrivateKeyBytes,
     string Protocol,
-    ulong TimeoutMilliseconds);
+    ulong TimeoutMilliseconds,
+    string RevocationCheckMode);
 
 internal static class ExportConfigurationIdentity
 {
-    private static readonly byte[] Domain = Encoding.ASCII.GetBytes("ptk.export-config/1\0");
+    private static readonly byte[] Domain = Encoding.ASCII.GetBytes("ptk.export-config/2\0");
     private static readonly UTF8Encoding StrictUtf8 = new(false, true);
 
     internal static string Compute(
@@ -31,6 +32,7 @@ internal static class ExportConfigurationIdentity
         ArgumentException.ThrowIfNullOrEmpty(material.Endpoint);
         ArgumentNullException.ThrowIfNull(material.Headers);
         ArgumentException.ThrowIfNullOrEmpty(material.Protocol);
+        ArgumentException.ThrowIfNullOrEmpty(material.RevocationCheckMode);
 
         var normalizedHeaders = material.Headers
             .Select(header => new AuditExportHeaderMaterial(
@@ -64,6 +66,7 @@ internal static class ExportConfigurationIdentity
         AppendFramedBytes(hmac, material.ClientPrivateKeyBytes.Span);
         AppendFramedString(hmac, material.Protocol);
         AppendUInt64(hmac, material.TimeoutMilliseconds);
+        AppendFramedString(hmac, material.RevocationCheckMode);
         return Convert.ToHexString(hmac.GetHashAndReset()).ToLowerInvariant();
     }
 

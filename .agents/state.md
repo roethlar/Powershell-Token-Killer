@@ -64,8 +64,14 @@ short and update it when important repo facts change.
   plan amendment preserves product security behavior, consumes the native
   read result, supplies a physical macOS test temp root, and runs the three
   xUnit v3 product assemblies in-process and sequentially. No corrective code
-  change or further push is authorized; merge, release, and installed-payload
-  changes remain unauthorized.
+  change or further push is authorized; merge into `master`, release, and
+  installed-payload changes remain unauthorized.
+- **Owner handoff contract (2026-07-22): Git workspace mechanics are entirely
+  agent-owned.** An agent must inspect and resume the exact active workspace
+  without asking the owner to fetch, switch, push, select, or recover it. The
+  current active line is `feature/mcp-resilience-r1`; work is delivered only
+  after verified content is integrated into `master` and published. Until then
+  report it as in progress.
 - **mini-SIEM S1-S3 are complete and incorporated on local `master`; the S3 durable
   store head is `eb51f2e` and its producer-conformance compatibility head is
   `9f53831`.** S1 supplies the solution skeleton and strict startup config; S2
@@ -337,30 +343,110 @@ short and update it when important repo facts change.
 - **Standing GitHub authority:** the owner granted persistent permission on
   2026-07-10 to comment, close, and triage issues in this repository as
   appropriate without per-action asks.
+- **Mini-SIEM S3H is landed on `master` (no-ff merge, 2026-07-18).** Code head
+  `c726a33` (record head `3bacbc4`) merged from
+  `plan/mini-siem-storage-hardening`; the branch and worktree
+  `.claude/worktrees/siem-storage-hardening` are retained pending owner
+  cleanup direction. The receiver now applies one SIEM-local, fail-closed
+  protected-path boundary before parsing or use: retained identity-stable
+  config/TLS reads, exact numeric-UID POSIX modes plus macOS ACL rejection,
+  exact protected one-ACE Windows DACLs, lexical link/reparse rejection,
+  mutable-storage identity-collision checks, and eager atomic owner-only
+  DB/WAL/SHM startup with live identity revalidation before Kestrel can bind.
+  Existing insecure objects are never repaired. The cross-platform matrix,
+  guard mutations, independent audit, and exact host evidence are recorded in
+  `.agents/machines.md`. This closes current config/TLS/SQLite enforcement;
+  full acceptance row 7 still waits for the later slice that introduces and
+  protects the currently absent custody checkpoint/anchor path.
+- **rbc review-loop batch is in progress on `master` (2026-07-18).** The
+  Hermes baseline review (`.agents/review/findings/rbc-1..13.md`,
+  `.agents/review/index.md`) is committed. Owner triaged all 11 open findings
+  to FIX with **batch merge pre-approval** (commit `3d7f2c1`): any fix whose
+  external fixed-SHA review is accepted with `guard_confirmed=true` and a green
+  full suite may be merged to `master` without a per-item prompt. Merged so
+  far: rbc-1 (`a445038`), rbc-2 (`a6c4a17`), rbc-3 refuted (`41d3257`), rbc-4
+  (`685d34c`), rbc-6 refuted (`315b9db`, merge record `749815b`), out-of-band
+  hotfix hf-1 ptk_output draft-2020-12 schema (`b7ac20b`), rbc-7 (`a9b0476`),
+  rbc-9/rbc-10/rbc-12 (`6452945`; fix `27511b1`, external-review hardening
+  `90b97b3`, remedy verification VERDICT: ACCEPT 2026-07-20), and rbc-14
+  (`897bdbc`; fix `5fc84ad` + stale-pulse remedy `f624796`, codex turn-3
+  ACCEPT). rbc-13 is refuted as a defect (fail-closed by design, documented at
+  `MatchesCurrentResolution`). Dispositions without product change: rbc-5
+  deferred to resilience R7 (owner disposition 2026-07-19), rbc-8 downgraded
+  at triage 2026-07-19 with a targeted drain-replay guard queued to the worker
+  pass, rbc-11 gated on the owner's S3H land/park decision with an interim
+  deployment warning landed. rbc-15 (process-tree containment for background
+  jobs) is closed and merged to local master at `f0d17f6`: remedies
+  `b4432dc` → `c17c1f9` → `08da8f5` → `a216734` → `3634fe7`, codex review
+  closed at turn 4 (diff-scoped findings: none; sole MAJOR labeled
+  PRE-EXISTING by the reviewer, adjudicated deferred to the recycled-PID
+  incarnation-hardening follow-up task), full server suite 1587/1587 green at
+  `3634fe7` and again on master post-merge (2 m 17 s). Per-item ledger:
+  `.agents/review/index.md`;
+  records: `.agents/review/findings/rbc-*.md`. External reviewer was codex
+  (standard = gpt-5.6-sol @ high, owner-confirmed in
+  `.agents/review/harnesses.local.json`; frontier unconfirmed — escalation on
+  codex blocks to owner).
+- **GitHub #7 (Defender FP: `Trojan:MSIL/AsyncRAT.AB!MTB` on `PtkMcpServer.dll`)
+  carries a landed interim mitigation and is gated on Microsoft's verdict.**
+  Interim mitigation `51ce880` on `master`: the install path detects a
+  Defender-quarantined/missing payload after install and fails loudly with
+  remediation guidance instead of leaving a silently broken install; README and
+  the runbook document the FP and submission status. The owner submitted the
+  detected DLL to Microsoft via the WDSI file-submission portal on 2026-07-20.
+  On verdict: update security intelligence, rescan the artifact, remove any
+  incident-specific exclusions, retire the quarantine detection if superseded,
+  and close #7 per `.agents/plans/defender-fp-submission.md`.
+- **rbc-5/rbc-6 containment WIP remains uncommitted and preserved on
+  `fix/rbc-6-unix-sigkill-escalation` at `2b3ce1a`; do not discard it without
+  owner direction.** rbc-6's filed premise was false: .NET 10 Unix
+  `Process.Kill(entireProcessTree: true)` already uses SIGKILL. Its WIP instead
+  addresses a different daemonized/reparented-descendant condition and was not
+  accepted. rbc-5 is valid in the current in-process Windows runtime, but its
+  saved spawn-then-assign Job Object WIP has an admitted escape race and
+  conflicts with the approved creation-time containment contract. No rbc-5
+  product change is accepted or committed. The recommended proportional
+  resolution is to close rbc-5 through the already-planned resilience R7
+  worker cutover, adding a Windows guard that a background descendant dies on
+  hard supervisor termination; the owner approved this deferral on 2026-07-19
+  (recorded in `.agents/review/index.md`).
 
 ## Next
 
-1. Finish `.agents/plans/dependency-hardening.md` with the frozen package
-   audits and direct macOS/Linux/Windows acceptance. Remove
-   `PTK_SIEM_CONFORMANCE_MODE` with `Remove-Item Env:` before ordinary tests.
-   Advisories stay visible and non-blocking; do not add warning-as-error,
-   suppression, or runtime gating. After dependency hardening, begin approved
-   R6 without folding the separate ARM64 MSBuild `protoc` investigation into
-   resilience work. Do not merge, rewrite history, push, or publish a release
-   without separate authorization.
-2. Implement the owner-approved mini-SIEM S3H amendment in
-   `.agents/plans/mini-siem-implementation.md`: startup filesystem hardening
-   under `siem/` only. Do not begin S4-S6 or modify PTK runtime code.
-3. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
+1. Complete the approved `origin/master` into feature reconciliation under
+   `.agents/plans/master-feature-reconciliation.md`, validate the uncommitted
+   merge on macOS, Linux, and Windows, and commit it locally. Do not push or
+   merge the feature into `master` without separate authorization.
+2. Re-evaluate the dependency plan's unapproved hosted-CI correction against
+   the reconciled tree. Present any changed decision to the owner before code;
+   a new exact-SHA hosted run still requires separate push authorization.
+3. After reconciliation and dependency acceptance, continue directly into the
+   already-authorized R6 and R7 sequence. Do not fold the separate ARM64
+   MSBuild-only `protoc` investigation into resilience work.
+4. rbc-15 is closed and merged locally (`f0d17f6`); its residual
+   recycled-PID incarnation hardening is a tracked follow-up dev task (no
+   further paid review rounds). Do not continue or commit the saved rbc-5
+   post-start attach WIP.
+5. Close out the rbc batch remainders: rbc-8's targeted drain-replay guard
+   test lands in the worker-subsystem pass; rbc-11 stays gated on the owner's
+   S3H land/park decision; rbc-5 closes via resilience R7. Reassess
+   per-finding whether work is safeguard-sensitive and route out if so.
+6. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
-   producer corpus; do not substitute receiver-authored fixtures.
-4. Release-distribution slice 3 is ordered after resilience R7 and consumes
+   producer corpus; do not substitute receiver-authored fixtures. Do not begin
+   S4–S6 or modify PTK runtime for SIEM work.
+7. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
    slice 4.
-5. When the owner releases the decisions hold, reconcile the rejected
+8. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
+9. On Microsoft's #7 verdict, execute the on-verdict steps in
+   `.agents/plans/defender-fp-submission.md`. Meanwhile the unblocked CI
+   remainders are the Windows kill-path test diagnosis (2/1587 failures) and
+   the pre-existing `tls_protection` SIEM conformance-host TLS-material
+   hardening.
 
 ## Open / Parked
 
@@ -404,17 +490,6 @@ short and update it when important repo facts change.
   ARM64 build must not be claimed until the launch failure is resolved or
   independently disproved; see `.agents/machines.md`.
 
-- **Mini-SIEM startup filesystem enforcement is approved but not yet
-  implemented.** The S3H amendment in
-  `.agents/plans/mini-siem-implementation.md`, approved by the owner on
-  2026-07-16, corrects the former S1/S3
-  scheduling inconsistency for current config, TLS, database, and sidecar
-  paths while leaving the not-yet-existent custody-checkpoint path with its
-  later owning slice. The current receiver still lacks this enforcement. Do
-  not claim receiver-host storage protection or full product acceptance until
-  S3H's cross-platform negative matrix lands and the later checkpoint path is
-  protected before first use.
-
 - **Decision-log conflict, correction blocked by the owner hold:**
   `.agents/decisions.md` still describes the policy-file gate as the open
   response after its criterion fires, while the later explicit owner call in
@@ -423,6 +498,10 @@ short and update it when important repo facts change.
   later direction removes both from the candidate build. Do not implement
   either stale direction; preserve the decision-log conflict until the hold
   is released.
+- **GitHub #7 closure is gated on Microsoft's WDSI verdict** on the submitted
+  `PtkMcpServer.dll` (owner-submitted 2026-07-20). Interim quarantine-detection
+  mitigation is landed (`51ce880`); no further local action on #7 until the
+  verdict lands.
 - **Plan-record drift, reported but not edited in this narrow state pass:**
   the warm-runspace plan still says slice 7 is paused behind the already
   decided GO, and the shared-runspace idea still assumes the rejected policy

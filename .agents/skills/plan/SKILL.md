@@ -1,6 +1,7 @@
 ---
 name: plan
 description: Draft or update a durable plan before broad implementation work. Use when the owner says plan.
+# toolkit-owned; edits are drift — see AGENTS.md
 ---
 
 Run the `plan` operator defined in this repo's `AGENTS.md` (Operator

@@ -115,7 +115,7 @@ public sealed class AuditExportConfigurationTests : IDisposable
             valid[..^1] + ",}",
             "/*not allowed*/" + valid,
             valid + "{}",
-            valid.Replace("ptk.export-config/1", "ptk.export-config/2", StringComparison.Ordinal),
+            valid.Replace("ptk.export-config/2", "ptk.export-config/1", StringComparison.Ordinal),
             valid.Replace("\"anchored\"", "\"local-only\"", StringComparison.Ordinal),
         };
 
@@ -127,6 +127,35 @@ public sealed class AuditExportConfigurationTests : IDisposable
                 AuditExportConfigurationLoader.Load(configPath, Path.Combine(root, "audit"), Now));
             Assert.StartsWith("audit_export_configuration_invalid: ", error.Message, StringComparison.Ordinal);
             Assert.Null(error.InnerException);
+        }
+    }
+
+    [Fact]
+    public void Revocation_check_mode_is_exact_case_and_reaches_the_loaded_options()
+    {
+        foreach (var (text, expected) in new (string, X509RevocationMode)[]
+        {
+            ("Online", X509RevocationMode.Online),
+            ("Offline", X509RevocationMode.Offline),
+            ("NoCheck", X509RevocationMode.NoCheck),
+        })
+        {
+            var root = NewRoot();
+            var configPath = WriteConfiguration(root, Json(revocationCheckMode: text));
+            using var options = AuditExportConfigurationLoader.Load(
+                configPath,
+                Path.Combine(root, "audit"),
+                Now);
+            Assert.Equal(expected, options.RevocationCheckMode);
+        }
+
+        foreach (var invalid in new[] { "online", "OFFLINE", "nocheck", "None", "Disabled" })
+        {
+            var root = NewRoot();
+            var configPath = WriteConfiguration(root, Json(revocationCheckMode: invalid));
+            var error = Assert.Throws<AuditExportConfigurationException>(() =>
+                AuditExportConfigurationLoader.Load(configPath, Path.Combine(root, "audit"), Now));
+            Assert.Equal("revocation_check_mode", error.FailureCode);
         }
     }
 
@@ -925,11 +954,12 @@ public sealed class AuditExportConfigurationTests : IDisposable
         IReadOnlyDictionary<string, string>? headers = null,
         string? caFile = null,
         string? clientCertificateFile = null,
-        string? clientPrivateKeyFile = null)
+        string? clientPrivateKeyFile = null,
+        string revocationCheckMode = "Online")
     {
         var values = new Dictionary<string, object?>(StringComparer.Ordinal)
         {
-            ["schema_version"] = "ptk.export-config/1",
+            ["schema_version"] = "ptk.export-config/2",
             ["protection_mode"] = "anchored",
             ["endpoint"] = endpoint,
             ["headers"] = headers ?? new Dictionary<string, string>
@@ -939,6 +969,7 @@ public sealed class AuditExportConfigurationTests : IDisposable
             ["ca_file"] = caFile,
             ["client_certificate_file"] = clientCertificateFile,
             ["client_private_key_file"] = clientPrivateKeyFile,
+            ["revocation_check_mode"] = revocationCheckMode,
         };
         return JsonSerializer.Serialize(values);
     }

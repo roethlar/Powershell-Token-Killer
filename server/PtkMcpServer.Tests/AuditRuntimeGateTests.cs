@@ -908,7 +908,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
     }
 
     [Fact]
-    public async Task Failed_runtime_drain_never_emits_a_false_server_stopped()
+    public async Task Failed_runtime_drain_still_records_a_degraded_server_stopped()
     {
         var root = NewRoot();
         var options = CreateOptions(Path.Combine(root, "audit"));
@@ -925,13 +925,10 @@ public sealed class AuditRuntimeGateTests : IDisposable
             new SessionRuntime(host, jobs, new RawUsageCounter()));
         try
         {
-            await Assert.ThrowsAsync<IOException>(() =>
-                runtime.StopAsync(CancellationToken.None));
-            Assert.Throws<IOException>(() => runtime.Dispose());
+            await runtime.StopAsync(CancellationToken.None);
+            runtime.Dispose();
 
-            var eventTypes = ReadEvents(options).Select(EventType).ToArray();
-            Assert.Equal(["server.started"], eventTypes);
-            Assert.DoesNotContain("server.stopped", eventTypes);
+            AssertDegradedServerStopped(options, health);
         }
         finally
         {
@@ -942,7 +939,7 @@ public sealed class AuditRuntimeGateTests : IDisposable
     }
 
     [Fact]
-    public async Task Failed_owned_runspace_cleanup_never_emits_a_false_server_stopped()
+    public async Task Failed_owned_runspace_cleanup_still_records_a_degraded_server_stopped()
     {
         var root = NewRoot();
         var options = CreateOptions(Path.Combine(root, "audit"));
@@ -956,14 +953,30 @@ public sealed class AuditRuntimeGateTests : IDisposable
         host.TrackOwnedBackgroundWorkForTests(
             Task.FromException(new IOException("injected teardown failure")));
 
-        await Assert.ThrowsAsync<IOException>(() =>
-            runtime.StopAsync(CancellationToken.None));
-        Assert.Throws<IOException>(() => runtime.Dispose());
+        await runtime.StopAsync(CancellationToken.None);
+        runtime.Dispose();
 
-        var eventTypes = ReadEvents(options).Select(EventType).ToArray();
-        Assert.Equal(["server.started"], eventTypes);
-        Assert.DoesNotContain("server.stopped", eventTypes);
+        AssertDegradedServerStopped(options, health);
         session.Dispose();
+    }
+
+    private static void AssertDegradedServerStopped(AuditOptions options, AuditHealth health)
+    {
+        // The drain failure must not forfeit the terminal record; it is
+        // downgraded to a health marker that the server.stopped event itself
+        // durably carries, keeping an orderly-but-degraded shutdown
+        // distinguishable from a crash on replay.
+        var snapshot = health.Snapshot();
+        Assert.Equal(AuditHealthState.Degraded, snapshot.State);
+        Assert.Equal("session.shutdown", snapshot.FailureClass);
+
+        var events = ReadEvents(options);
+        Assert.Equal(
+            ["server.started", "server.stopped"],
+            events.Select(EventType));
+        var audit = events[^1].RootElement.GetProperty("audit");
+        Assert.Equal("degraded", audit.GetProperty("health_state").GetString());
+        Assert.Equal("session.shutdown", audit.GetProperty("failure_class").GetString());
     }
 
     [Fact]

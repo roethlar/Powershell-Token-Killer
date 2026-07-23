@@ -922,6 +922,11 @@ public sealed class JobManager : IDisposable
                     ValidateRtkLaunchFacts(plan);
                 ThrowIfStartBudgetExpired(deadline, cancellationToken);
                 StartProcessOrThrow(plan, process);
+                // Confirmed start: contain the tree (Unix sweep tracking;
+                // Windows kill-on-close Job Object). Best-effort by
+                // contract — a containment setup failure must not convert
+                // a started job into a start failure.
+                BackgroundJobContainment.Attach(process);
                 TransferOutputRecoveryToStartedJob(entry, outputCaptureOwner);
             }
             catch (JobStartException exception) when (exception.ProcessStarted is null)
@@ -966,6 +971,8 @@ public sealed class JobManager : IDisposable
                 try { process.StandardInput.Close(); } catch { }
                 if (plan.ExecutionPath == ExecutionPath.Rtk)
                     InitializeRtkOutputCapture(entry);
+                else
+                    InitializeDirectStreamContainment(entry);
                 _ = ObserveTerminalAsync(plan.Id, entry);
                 return SnapshotLocked(plan.Id, entry);
             }
@@ -1183,7 +1190,13 @@ public sealed class JobManager : IDisposable
         {
             FileName = pwshExecutablePath,
             RedirectStandardInput = true,
+            // rbc-1: without these redirections the cold child inherits the
+            // server's stdio handles, so any native stdout/stderr emitted
+            // inside the job writes straight into the MCP transport stream.
+            RedirectStandardOutput = true,
+            RedirectStandardError = true,
             UseShellExecute = false,
+            CreateNoWindow = true,
         };
         if (plan.WorkingDirectory is not null)
             startInfo.WorkingDirectory = plan.WorkingDirectory;
@@ -1315,6 +1328,10 @@ public sealed class JobManager : IDisposable
     {
         try
         {
+            // Before the first child ever starts: force the exclusive
+            // process-group acquisition so the first tracked root inherits
+            // the exclusive group instead of degrading to fallback polling.
+            BackgroundJobContainment.PrepareForLaunch();
             var started = ProcessStartOverrideForTests?.Invoke(process) ?? process.Start();
             if (started) return;
             throw new JobStartException(
@@ -1382,6 +1399,8 @@ public sealed class JobManager : IDisposable
             try { entry.Process.StandardInput.Close(); } catch { }
             if (entry.Execution.ExecutionPath == ExecutionPath.Rtk)
                 InitializeRtkOutputCapture(entry);
+            else
+                InitializeDirectStreamContainment(entry);
             var containmentRequired = !RootAlreadyExited(entry.Process);
             if (containmentRequired)
                 RequireInternalContainment(entry);
@@ -1448,6 +1467,52 @@ public sealed class JobManager : IDisposable
             MarkExecutionOutcomeUnknownIfContainmentRequired(
                 entry,
                 "rtk_output_pump_setup_failed");
+        }
+    }
+
+    private void InitializeDirectStreamContainment(JobEntry entry)
+    {
+        // rbc-1: a cold PS-direct child runs with its host stdout/stderr
+        // redirected away from the server's stdio MCP transport. Job output
+        // comes exclusively from the job's output file, so both pipes are
+        // drained to null; the drain keeps a chatty native child from ever
+        // blocking on a full pipe buffer.
+        try
+        {
+            entry.StandardOutputStream = entry.Process.StandardOutput.BaseStream;
+            entry.StandardErrorStream = entry.Process.StandardError.BaseStream;
+            entry.OutputTask = Task.WhenAll(
+                DrainStreamToNullAsync(entry.StandardOutputStream),
+                DrainStreamToNullAsync(entry.StandardErrorStream));
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            // Containment must not depend on the drain: closing the parent
+            // read ends breaks the child's pipes instead of leaving them
+            // writable-but-undrained, so the child can never block on them.
+            entry.OutputTask = Task.CompletedTask;
+            try { entry.StandardOutputStream?.Dispose(); } catch { }
+            try { entry.StandardErrorStream?.Dispose(); } catch { }
+        }
+    }
+
+    private static async Task DrainStreamToNullAsync(Stream source)
+    {
+        var buffer = ArrayPool<byte>.Shared.Rent(16 * 1024);
+        try
+        {
+            while (await source.ReadAsync(buffer.AsMemory()).ConfigureAwait(false) > 0)
+            {
+            }
+        }
+        catch (Exception exception) when (!IsFatal(exception))
+        {
+            // A failed drain read means the pipe is gone (child exit, kill,
+            // dispose); there is nothing left to contain.
+        }
+        finally
+        {
+            ArrayPool<byte>.Shared.Return(buffer);
         }
     }
 
@@ -1521,6 +1586,16 @@ public sealed class JobManager : IDisposable
         }
         finally
         {
+            // Release before Process.Dispose: on Windows this closes the
+            // kill-on-close job handle, reaping any descendants that
+            // survived root exit; on Unix it runs the final containment
+            // sweep. Awaited so terminal completion — and therefore
+            // shutdown, which waits on TerminalCompleted — cannot finish
+            // before the last sweep has run, and so the Process handle
+            // stays undisposed while the sweep still needs it
+            // (rbc-15 T2-2).
+            await BackgroundJobContainment.ReleaseAsync(entry.Process)
+                .ConfigureAwait(false);
             entry.Process.Dispose();
             entry.TerminalCompleted.TrySetResult(true);
         }
@@ -1541,11 +1616,12 @@ public sealed class JobManager : IDisposable
             if (!wait.IsCompleted &&
                 await Task.WhenAny(
                     wait,
-                    entry.InternalContainmentRequiredSignal.Task).ConfigureAwait(false) != wait &&
-                await Task.WhenAny(
-                    wait,
-                    Task.Delay(_abortedOutputDrainGrace)).ConfigureAwait(false) != wait)
+                    entry.InternalContainmentRequiredSignal.Task).ConfigureAwait(false) != wait)
             {
+                // The first bounded request may itself be wedged. Once the
+                // containment signal wins, the exit observer must make its
+                // independent request immediately so kill escalation cannot
+                // terminate the root just before this fallback is observed.
                 return await TryContainAndConfirmExitAsync(entry).ConfigureAwait(false);
             }
 
@@ -1879,9 +1955,27 @@ public sealed class JobManager : IDisposable
                 request,
                 Task.Delay(_abortedOutputDrainGrace)).ConfigureAwait(false) != request)
         {
+            // The kill request itself is wedged; escalation is idempotent
+            // and never throws, so let it race the wedged kill instead of
+            // extending this method's bound.
+            _ = BackgroundJobContainment.EscalateAsync(process, stopped: false);
             return ContainmentRequestDisposition.Indeterminate;
         }
-        return await request.ConfigureAwait(false);
+
+        var disposition = await request.ConfigureAwait(false);
+        // Reap descendants the snapshot-walk kill missed (reparented or
+        // group-escaped children). Bounded by the same grace as the kill
+        // request; an overrun keeps sweeping in the background.
+        var escalate = BackgroundJobContainment.EscalateAsync(
+            process,
+            stopped: disposition == ContainmentRequestDisposition.AlreadyExited);
+        if (await Task.WhenAny(
+                escalate,
+                Task.Delay(_abortedOutputDrainGrace)).ConfigureAwait(false) == escalate)
+        {
+            await escalate.ConfigureAwait(false);
+        }
+        return disposition;
     }
 
     private static bool RootAlreadyExited(Process process)
@@ -2054,6 +2148,11 @@ public sealed class JobManager : IDisposable
     {
         if (Volatile.Read(ref entry.RootExited) != 0)
         {
+            // The root is already gone, but escaped descendants may not be:
+            // sweep without re-killing the root so kill/reset/shutdown cannot
+            // skip orphan containment when they lose this race.
+            _ = BackgroundJobContainment.EscalateAsync(
+                entry.Process, stopped: true);
             return new JobKillResult(
                 id,
                 Volatile.Read(ref entry.RootTerminationConfirmed) != 0
@@ -2071,11 +2170,19 @@ public sealed class JobManager : IDisposable
         {
             BeforeKillForTests?.Invoke(entry.Process);
             entry.Process.Kill(entireProcessTree: true);
+            // Escalation never throws and must not extend synchronous kill
+            // admission under the manager gate.
+            _ = BackgroundJobContainment.EscalateAsync(
+                entry.Process, stopped: false);
             return new JobKillResult(id, JobKillDisposition.Requested, reason);
         }
         catch
         {
             Interlocked.Exchange(ref entry.TerminationReason, (int)JobTerminationReason.None);
+            // Kill admission normally lost a race with root exit. A
+            // sweep-only escalation still contains escaped descendants.
+            _ = BackgroundJobContainment.EscalateAsync(
+                entry.Process, stopped: true);
             return new JobKillResult(id, JobKillDisposition.Failed, reason);
         }
     }

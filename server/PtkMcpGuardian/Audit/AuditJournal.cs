@@ -32,6 +32,7 @@ internal interface IAuditJournalSink : IDisposable
 /// </summary>
 internal sealed class InMemoryAuditJournalSink : IAuditJournalSink
 {
+    private readonly object _gate = new();
     private readonly Func<AuditSinkFaultPoint, int, bool>? _faultInjector;
     private readonly List<byte[]> _lines = [];
     private long _totalBytes;
@@ -61,55 +62,115 @@ internal sealed class InMemoryAuditJournalSink : IAuditJournalSink
         _faultInjector = faultInjector;
     }
 
-    internal IReadOnlyList<byte[]> Lines => _lines;
+    internal IReadOnlyList<byte[]> Lines
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _lines.ToArray();
+            }
+        }
+    }
 
-    internal int AppendCallCount => _appendCallCount;
+    internal int AppendCallCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _appendCallCount;
+            }
+        }
+    }
 
-    internal int FlushCallCount => _flushCallCount;
+    internal int FlushCallCount
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _flushCallCount;
+            }
+        }
+    }
 
     public long SegmentCapacityBytes { get; }
 
     public long AggregateCapacityBytes { get; }
 
-    public long CurrentSegmentBytes => _totalBytes;
+    public long CurrentSegmentBytes
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _totalBytes;
+            }
+        }
+    }
 
-    public long TotalBytes => _totalBytes;
+    public long TotalBytes
+    {
+        get
+        {
+            lock (_gate)
+            {
+                return _totalBytes;
+            }
+        }
+    }
 
     public bool CanReserve(long reservedBytes)
     {
-        ThrowIfDisposed();
-        var call = checked(++_reserveCallCount);
-        if (_faultInjector?.Invoke(AuditSinkFaultPoint.BeforeReserve, call) == true)
-            throw new IOException("Injected reservation fault.");
-        return reservedBytes >= 0 &&
-               _totalBytes <= SegmentCapacityBytes - reservedBytes &&
-               _totalBytes <= AggregateCapacityBytes - reservedBytes;
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var call = checked(++_reserveCallCount);
+            if (_faultInjector?.Invoke(AuditSinkFaultPoint.BeforeReserve, call) == true)
+                throw new IOException("Injected reservation fault.");
+            return reservedBytes >= 0 &&
+                   _totalBytes <= SegmentCapacityBytes - reservedBytes &&
+                   _totalBytes <= AggregateCapacityBytes - reservedBytes;
+        }
     }
 
     public void Append(ReadOnlyMemory<byte> line)
     {
-        ThrowIfDisposed();
-        var call = checked(++_appendCallCount);
-        if (_faultInjector?.Invoke(AuditSinkFaultPoint.BeforeAppend, call) == true)
-            throw new IOException("Injected append fault.");
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var call = checked(++_appendCallCount);
+            if (_faultInjector?.Invoke(AuditSinkFaultPoint.BeforeAppend, call) == true)
+                throw new IOException("Injected append fault.");
 
-        var copy = line.ToArray();
-        _lines.Add(copy);
-        _totalBytes = checked(_totalBytes + copy.Length);
+            var copy = line.ToArray();
+            _lines.Add(copy);
+            _totalBytes = checked(_totalBytes + copy.Length);
 
-        if (_faultInjector?.Invoke(AuditSinkFaultPoint.AfterAppend, call) == true)
-            throw new IOException("Injected ambiguous append fault.");
+            if (_faultInjector?.Invoke(AuditSinkFaultPoint.AfterAppend, call) == true)
+                throw new IOException("Injected ambiguous append fault.");
+        }
     }
 
     public void FlushToDisk()
     {
-        ThrowIfDisposed();
-        var call = checked(++_flushCallCount);
-        if (_faultInjector?.Invoke(AuditSinkFaultPoint.Flush, call) == true)
-            throw new IOException("Injected flush fault.");
+        lock (_gate)
+        {
+            ThrowIfDisposed();
+            var call = checked(++_flushCallCount);
+            if (_faultInjector?.Invoke(AuditSinkFaultPoint.Flush, call) == true)
+                throw new IOException("Injected flush fault.");
+        }
     }
 
-    public void Dispose() => _disposed = true;
+    public void Dispose()
+    {
+        lock (_gate)
+        {
+            _disposed = true;
+        }
+    }
 
     private void ThrowIfDisposed()
     {

@@ -1,3 +1,4 @@
+using System.Security.Cryptography.X509Certificates;
 using System.Text.Json;
 using PtkMcpServer.Audit;
 
@@ -259,6 +260,7 @@ public sealed class AuditOtlpExportCompositionTests
             [new AuditExportHeader("Authorization", receiver.AuthorizationValue)],
             [pki.CreateTrustedRoot()],
             clientCertificate: null,
+            X509RevocationMode.NoCheck,
             ConfigurationIdentity);
         return AuditOtlpHttpExporter.Create(options, "9.8.7");
     }

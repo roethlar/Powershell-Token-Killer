@@ -393,13 +393,24 @@ internal static class AuditExportHttpHandlerFactory
             AutomaticDecompression = DecompressionMethods.None,
             ClientCertificateOptions = ClientCertificateOption.Manual,
             UseCookies = false,
+            // Revocation posture is an explicit operator decision (rbc-4). On the
+            // system-trust path HttpClientHandler exposes only a boolean online
+            // check, so Offline is elevated to an online check here rather than
+            // silently degraded to no check.
+            CheckCertificateRevocationList =
+                options.RevocationCheckMode != X509RevocationMode.NoCheck,
         };
         if (options.ClientCertificate is not null)
             handler.ClientCertificates.Add(options.ClientCertificate);
         if (options.CustomCertificateAuthorities.Count != 0)
         {
             handler.ServerCertificateCustomValidationCallback = (_, certificate, providedChain, errors) =>
-                ValidateWithCustomTrust(options.CustomCertificateAuthorities, certificate, providedChain, errors);
+                ValidateWithCustomTrust(
+                    options.CustomCertificateAuthorities,
+                    certificate,
+                    providedChain,
+                    errors,
+                    options.RevocationCheckMode);
         }
         return handler;
     }
@@ -408,7 +419,8 @@ internal static class AuditExportHttpHandlerFactory
         IReadOnlyList<X509Certificate2> customRoots,
         X509Certificate2? certificate,
         X509Chain? providedChain,
-        SslPolicyErrors errors)
+        SslPolicyErrors errors,
+        X509RevocationMode revocationMode)
     {
         if (certificate is null ||
             (errors & ~SslPolicyErrors.RemoteCertificateChainErrors) != SslPolicyErrors.None)
@@ -417,19 +429,23 @@ internal static class AuditExportHttpHandlerFactory
         }
 
         using var chain = new X509Chain();
-        ConfigureCustomTrustPolicy(chain.ChainPolicy, customRoots, providedChain);
+        ConfigureCustomTrustPolicy(chain.ChainPolicy, customRoots, providedChain, revocationMode);
         return chain.Build(certificate);
     }
 
     internal static void ConfigureCustomTrustPolicy(
         X509ChainPolicy policy,
         IReadOnlyList<X509Certificate2> customRoots,
-        X509Chain? providedChain)
+        X509Chain? providedChain,
+        X509RevocationMode revocationMode)
     {
         ArgumentNullException.ThrowIfNull(policy);
         ArgumentNullException.ThrowIfNull(customRoots);
         policy.TrustMode = X509ChainTrustMode.CustomRootTrust;
-        policy.RevocationMode = X509RevocationMode.NoCheck;
+        // The mode is an explicit operator decision from revocation_check_mode
+        // (rbc-4). VerificationFlags stays NoFlag, so under Online/Offline an
+        // unknown revocation status fails the chain rather than falling back.
+        policy.RevocationMode = revocationMode;
         policy.VerificationFlags = X509VerificationFlags.NoFlag;
         policy.DisableCertificateDownloads = true;
         policy.ApplicationPolicy.Add(new Oid(ServerAuthenticationOid));

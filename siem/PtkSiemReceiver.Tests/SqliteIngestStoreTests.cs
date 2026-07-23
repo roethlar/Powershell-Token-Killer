@@ -1,7 +1,11 @@
 using System.Globalization;
+using System.Runtime.Versioning;
+using System.Security.AccessControl;
+using System.Security.Principal;
 using Google.Protobuf;
 using Microsoft.Data.Sqlite;
 using PtkSiemReceiver.Ingest;
+using PtkSiemReceiver.Security;
 using PtkSiemReceiver.Storage;
 using PtkMcpServer.Audit.OtlpWire;
 
@@ -40,6 +44,10 @@ public sealed class SqliteIngestStoreTests
         {
             Assert.Equal("wal", store.WriterPolicy.JournalMode);
             Assert.Equal(2, store.WriterPolicy.Synchronous);
+            AssertExactProtection(database.Root, isDirectory: true);
+            AssertExactProtection(database.Path, isDirectory: false);
+            AssertExactProtection(database.Path + "-wal", isDirectory: false);
+            AssertExactProtection(database.Path + "-shm", isDirectory: false);
             Assert.Equal(1L, Scalar<long>(database.Path, "PRAGMA user_version;"));
             Assert.Equal("wal", Scalar<string>(database.Path, "PRAGMA journal_mode;"));
             receiverId = Scalar<string>(
@@ -54,6 +62,255 @@ public sealed class SqliteIngestStoreTests
         Assert.Equal(
             receiverId,
             Scalar<string>(database.Path, "SELECT value FROM meta WHERE key = 'receiver_id';"));
+    }
+
+    [Theory]
+    [InlineData("database")]
+    [InlineData("wal")]
+    [InlineData("shm")]
+    public void Insecure_preexisting_storage_artifact_fails_untouched(string role)
+    {
+        using var database = new TestDatabase();
+        _ = SiemProtectedPath.CreateProtectedFile(database.Path);
+        var path = role switch
+        {
+            "database" => database.Path,
+            "wal" => database.Path + "-wal",
+            "shm" => database.Path + "-shm",
+            _ => throw new ArgumentOutOfRangeException(nameof(role)),
+        };
+        if (role != "database")
+            _ = SiemTestFileSystem.WriteProtectedBytes(database.Root, Path.GetFileName(path), [1, 2, 3]);
+        else
+            File.WriteAllBytes(path, [1, 2, 3]);
+        Broaden(path, isDirectory: false);
+        var beforeBytes = File.ReadAllBytes(path);
+        var beforeProtection = ProtectionSnapshot(path, isDirectory: false);
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open(database.Path));
+
+        Assert.Equal("storage_protection", exception.FailureCode);
+        Assert.Equal(beforeBytes, File.ReadAllBytes(path));
+        Assert.Equal(beforeProtection, ProtectionSnapshot(path, isDirectory: false));
+        _ = SiemProtectedPath.ProtectCreatedFile(path);
+    }
+
+    [Fact]
+    public void Insecure_data_directory_fails_without_creating_database()
+    {
+        using var database = new TestDatabase();
+        Broaden(database.Root, isDirectory: true);
+        var before = ProtectionSnapshot(database.Root, isDirectory: true);
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open(database.Path));
+
+        Assert.Equal("storage_protection", exception.FailureCode);
+        Assert.Equal(before, ProtectionSnapshot(database.Root, isDirectory: true));
+        Assert.False(File.Exists(database.Path));
+        _ = SiemProtectedPath.ProtectCreatedDirectory(database.Root);
+    }
+
+    [Fact]
+    public void Missing_data_directory_fails_without_creating_it()
+    {
+        using var database = new TestDatabase();
+        var missingParent = Path.Combine(database.Root, "missing-parent");
+        var path = Path.Combine(missingParent, "siem.db");
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open(path));
+
+        Assert.Equal("storage_protection", exception.FailureCode);
+        Assert.False(Directory.Exists(missingParent));
+    }
+
+    [Theory]
+    [InlineData("database")]
+    [InlineData("wal")]
+    [InlineData("shm")]
+    public void Wrong_kind_storage_artifact_is_rejected(string role)
+    {
+        using var database = new TestDatabase();
+        if (role != "database")
+            _ = SiemProtectedPath.CreateProtectedFile(database.Path);
+        var path = role switch
+        {
+            "database" => database.Path,
+            "wal" => database.Path + "-wal",
+            "shm" => database.Path + "-shm",
+            _ => throw new ArgumentOutOfRangeException(nameof(role)),
+        };
+        Directory.CreateDirectory(path);
+        _ = SiemProtectedPath.ProtectCreatedDirectory(path);
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open(database.Path));
+
+        Assert.Equal("storage_protection", exception.FailureCode);
+    }
+
+    [Theory]
+    [InlineData("parent")]
+    [InlineData("database")]
+    [InlineData("wal")]
+    [InlineData("shm")]
+    public void Every_storage_role_has_an_independent_wrong_owner_guard(string role)
+    {
+        using var database = new TestDatabase();
+        if (role != "parent")
+            _ = SiemProtectedPath.CreateProtectedFile(database.Path);
+        var target = role switch
+        {
+            "parent" => database.Root,
+            "database" => database.Path,
+            "wal" => SiemTestFileSystem.WriteProtectedBytes(
+                database.Root,
+                Path.GetFileName(database.Path + "-wal"),
+                []),
+            "shm" => SiemTestFileSystem.WriteProtectedBytes(
+                database.Root,
+                Path.GetFileName(database.Path + "-shm"),
+                []),
+            _ => throw new ArgumentOutOfRangeException(nameof(role)),
+        };
+        var hooks = WrongOwnerHooks(target, directory: role == "parent");
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open(
+                database.Path,
+                protectedPathTestHooks: hooks));
+
+        Assert.Equal("storage_protection", exception.FailureCode);
+    }
+
+    [Theory]
+    [InlineData("wal")]
+    [InlineData("shm")]
+    public void Orphan_sidecar_fails_before_database_creation(string role)
+    {
+        using var database = new TestDatabase();
+        var sidecar = database.Path + (role == "wal" ? "-wal" : "-shm");
+        _ = SiemTestFileSystem.WriteProtectedBytes(
+            database.Root,
+            Path.GetFileName(sidecar),
+            [1, 2, 3]);
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open(database.Path));
+
+        Assert.Equal("storage_orphan_sidecar", exception.FailureCode);
+        Assert.False(File.Exists(database.Path));
+        Assert.Equal([1, 2, 3], File.ReadAllBytes(sidecar));
+    }
+
+    [Theory]
+    [InlineData("database")]
+    [InlineData("wal")]
+    [InlineData("shm")]
+    public void Linked_storage_artifact_is_rejected(string role)
+    {
+        using var database = new TestDatabase();
+        if (role != "database")
+            _ = SiemProtectedPath.CreateProtectedFile(database.Path);
+        var path = role switch
+        {
+            "database" => database.Path,
+            "wal" => database.Path + "-wal",
+            "shm" => database.Path + "-shm",
+            _ => throw new ArgumentOutOfRangeException(nameof(role)),
+        };
+        var target = SiemTestFileSystem.WriteProtectedBytes(
+            database.Root,
+            "target-" + role,
+            []);
+        File.CreateSymbolicLink(path, target);
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open(database.Path));
+
+        Assert.Equal("storage_protection", exception.FailureCode);
+        Assert.Empty(File.ReadAllBytes(target));
+    }
+
+    [Fact]
+    public void Ancestor_redirect_is_rejected_without_writing_through_it()
+    {
+        using var target = new TestDatabase();
+        var linkRoot = SiemTestFileSystem.CreateProtectedRoot("ptk-siem-store-link");
+        try
+        {
+            var redirect = Path.Combine(linkRoot, "redirect");
+            Directory.CreateSymbolicLink(redirect, target.Root);
+            var candidate = Path.Combine(redirect, "redirected.db");
+
+            var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+                SqliteIngestStore.Open(candidate));
+
+            Assert.Equal("storage_protection", exception.FailureCode);
+            Assert.False(File.Exists(Path.Combine(target.Root, "redirected.db")));
+        }
+        finally
+        {
+            Directory.Delete(linkRoot, recursive: true);
+        }
+    }
+
+    [Theory]
+    [InlineData("wal")]
+    [InlineData("shm")]
+    public void Post_wal_protection_sabotage_fails_startup(string role)
+    {
+        using var database = new TestDatabase();
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open(
+                database.Path,
+                new StartupProtectionSabotage(role, replaceIdentity: false)));
+
+        Assert.Equal("storage_protection", exception.FailureCode);
+    }
+
+    [Theory]
+    [InlineData("wal")]
+    [InlineData("shm")]
+    public void Posix_post_wal_identity_replacement_fails_startup(string role)
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var database = new TestDatabase();
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open(
+                database.Path,
+                new StartupProtectionSabotage(role, replaceIdentity: true)));
+
+        Assert.Equal("storage_protection", exception.FailureCode);
+    }
+
+    [Fact]
+    public void Posix_database_aba_swap_cannot_hide_the_live_sqlite_identity()
+    {
+        if (OperatingSystem.IsWindows()) return;
+
+        using var database = new TestDatabase();
+
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open(
+                database.Path,
+                new StartupDatabaseAbaSabotage()));
+
+        Assert.Equal("storage_protection", exception.FailureCode);
+    }
+
+    [Fact]
+    public void Relative_database_path_is_rejected()
+    {
+        var exception = Assert.Throws<SiemReceiverStartupException>(() =>
+            SqliteIngestStore.Open("relative.db"));
+
+        Assert.Equal("storage_path", exception.FailureCode);
     }
 
     [Fact]
@@ -358,20 +615,177 @@ public sealed class SqliteIngestStoreTests
         }
     }
 
+    private sealed class StartupProtectionSabotage(
+        string role,
+        bool replaceIdentity) : ISqliteIngestFaultInjector
+    {
+        public void BeforeCommit(SqliteIngestWriteKind writeKind)
+        {
+        }
+
+        public void AfterStartupProtectionForTests(string databasePath)
+        {
+            var path = databasePath + (role == "wal" ? "-wal" : "-shm");
+            if (!replaceIdentity)
+            {
+                Broaden(path, isDirectory: false);
+                return;
+            }
+
+            File.Move(path, path + ".displaced");
+            _ = SiemProtectedPath.CreateProtectedFile(path);
+        }
+    }
+
+    private sealed class StartupDatabaseAbaSabotage : ISqliteIngestFaultInjector
+    {
+        private string? _expectedDatabase;
+        private string? _attackerDatabase;
+
+        public void BeforeCommit(SqliteIngestWriteKind writeKind)
+        {
+        }
+
+        public void BeforeConnectionOpenForTests(string databasePath)
+        {
+            _expectedDatabase = databasePath + ".expected";
+            _attackerDatabase = databasePath + ".attacker";
+            File.Move(databasePath, _expectedDatabase);
+            _ = SiemProtectedPath.CreateProtectedFile(databasePath);
+        }
+
+        public void AfterConnectionOpenForTests(string databasePath)
+        {
+            File.Move(databasePath, _attackerDatabase!);
+            File.Move(_expectedDatabase!, databasePath);
+        }
+    }
+
     private sealed class TestDatabase : IDisposable
     {
-        private readonly string _root = System.IO.Path.Combine(
-            System.IO.Path.GetTempPath(),
-            $"ptk-siem-store-{Guid.NewGuid():N}");
+        private readonly string _root =
+            SiemTestFileSystem.CreateProtectedRoot("ptk-siem-store");
 
         internal TestDatabase()
         {
-            Directory.CreateDirectory(_root);
             Path = System.IO.Path.Combine(_root, "siem.db");
         }
 
         internal string Path { get; }
 
+        internal string Root => _root;
+
         public void Dispose() => Directory.Delete(_root, recursive: true);
+    }
+
+    private static void Broaden(string path, bool isDirectory)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            File.SetUnixFileMode(
+                path,
+                isDirectory
+                    ? SiemProtectedPath.OwnerDirectoryMode |
+                      UnixFileMode.GroupRead |
+                      UnixFileMode.GroupExecute
+                    : SiemProtectedPath.OwnerFileMode | UnixFileMode.GroupRead);
+            return;
+        }
+
+        AddWindowsWorldRead(path, isDirectory);
+    }
+
+    private static ProtectedPathTestHooks WrongOwnerHooks(string target, bool directory)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            var effective = UnixProtectedPathNative.EffectiveUserId;
+            var different = effective == uint.MaxValue ? effective - 1 : effective + 1;
+            return new ProtectedPathTestHooks(
+                ExpectedUnixUserIdForPath: (candidate, candidateIsDirectory) =>
+                    candidateIsDirectory == directory && PathsEqual(candidate, target)
+                        ? different
+                        : null);
+        }
+
+        var foreignSid = SiemTestFileSystem.ForeignWindowsOwnerSid();
+        return new ProtectedPathTestHooks(
+            ExpectedWindowsOwnerSidForPath: (candidate, candidateIsDirectory) =>
+                candidateIsDirectory == directory && PathsEqual(candidate, target)
+                    ? foreignSid
+                    : null);
+    }
+
+    private static bool PathsEqual(string left, string right) =>
+        string.Equals(
+            Path.GetFullPath(left),
+            Path.GetFullPath(right),
+            OperatingSystem.IsWindows()
+                ? StringComparison.OrdinalIgnoreCase
+                : StringComparison.Ordinal);
+
+    private static string ProtectionSnapshot(string path, bool isDirectory)
+    {
+        if (!OperatingSystem.IsWindows())
+            return File.GetUnixFileMode(path).ToString();
+        return SnapshotWindowsAcl(path, isDirectory);
+    }
+
+    private static void AssertExactProtection(string path, bool isDirectory)
+    {
+        if (!OperatingSystem.IsWindows())
+        {
+            Assert.Equal(
+                isDirectory
+                    ? SiemProtectedPath.OwnerDirectoryMode
+                    : SiemProtectedPath.OwnerFileMode,
+                File.GetUnixFileMode(path));
+            Assert.Equal(
+                UnixProtectedPathNative.EffectiveUserId,
+                UnixProtectedPathNative.GetPathMetadata(path).UserId);
+            return;
+        }
+
+        FileSystemSecurity security = isDirectory
+            ? FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path))
+            : FileSystemAclExtensions.GetAccessControl(new FileInfo(path));
+        using var identity = WindowsIdentity.GetCurrent();
+        Assert.Equal(
+            identity.User,
+            Assert.IsType<SecurityIdentifier>(security.GetOwner(typeof(SecurityIdentifier))));
+        Assert.True(security.AreAccessRulesProtected);
+        var rule = Assert.Single(
+            security.GetAccessRules(true, true, typeof(SecurityIdentifier))
+                .Cast<FileSystemAccessRule>());
+        Assert.Equal(identity.User, rule.IdentityReference);
+        Assert.Equal(AccessControlType.Allow, rule.AccessControlType);
+        Assert.False(rule.IsInherited);
+        Assert.Equal(FileSystemRights.FullControl, rule.FileSystemRights);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static void AddWindowsWorldRead(string path, bool isDirectory)
+    {
+        FileSystemSecurity security = isDirectory
+            ? FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path))
+            : FileSystemAclExtensions.GetAccessControl(new FileInfo(path));
+        security.AddAccessRule(new FileSystemAccessRule(
+            new SecurityIdentifier(WellKnownSidType.WorldSid, null),
+            FileSystemRights.Read,
+            AccessControlType.Allow));
+        if (isDirectory)
+            FileSystemAclExtensions.SetAccessControl(new DirectoryInfo(path), (DirectorySecurity)security);
+        else
+            FileSystemAclExtensions.SetAccessControl(new FileInfo(path), (FileSecurity)security);
+    }
+
+    [SupportedOSPlatform("windows")]
+    private static string SnapshotWindowsAcl(string path, bool isDirectory)
+    {
+        FileSystemSecurity security = isDirectory
+            ? FileSystemAclExtensions.GetAccessControl(new DirectoryInfo(path))
+            : FileSystemAclExtensions.GetAccessControl(new FileInfo(path));
+        return security.GetSecurityDescriptorSddlForm(
+            AccessControlSections.Owner | AccessControlSections.Access);
     }
 }

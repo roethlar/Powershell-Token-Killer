@@ -469,7 +469,8 @@ public sealed class AuditOtlpHttpExporterTests
         AuditExportHttpHandlerFactory.ConfigureCustomTrustPolicy(
             policyProbe.ChainPolicy,
             trustedOptions.CustomCertificateAuthorities,
-            providedChain: null);
+            providedChain: null,
+            revocationMode: X509RevocationMode.NoCheck);
         var trustedValidation = Assert.IsType<Func<HttpRequestMessage, X509Certificate2?, X509Chain?, SslPolicyErrors, bool>>(
             trustedHandler.ServerCertificateCustomValidationCallback);
         var wrongValidation = Assert.IsType<Func<HttpRequestMessage, X509Certificate2?, X509Chain?, SslPolicyErrors, bool>>(
@@ -496,6 +497,39 @@ public sealed class AuditOtlpHttpExporterTests
     }
 
     [Fact]
+    public void Configured_revocation_mode_reaches_the_handler_and_the_custom_trust_policy()
+    {
+        foreach (var mode in new[]
+        {
+            X509RevocationMode.Online,
+            X509RevocationMode.Offline,
+            X509RevocationMode.NoCheck,
+        })
+        {
+            using var root = CreateCertificateAuthority("revocation-root");
+            using var options = new AuditExportOptions(
+                "https://collector.example:4318/custom-anchor",
+                new Uri("https://collector.example:4318/custom-anchor"),
+                [new AuditExportHeader("Authorization", "Bearer test-secret")],
+                [new X509Certificate2(root)],
+                null,
+                mode,
+                new string('a', 64));
+            using var handler = AuditExportHttpHandlerFactory.Create(options);
+            using var probe = new X509Chain();
+            AuditExportHttpHandlerFactory.ConfigureCustomTrustPolicy(
+                probe.ChainPolicy,
+                options.CustomCertificateAuthorities,
+                providedChain: null,
+                revocationMode: mode);
+
+            Assert.Equal(mode != X509RevocationMode.NoCheck, handler.CheckCertificateRevocationList);
+            Assert.Equal(mode, probe.ChainPolicy.RevocationMode);
+            Assert.Equal(X509VerificationFlags.NoFlag, probe.ChainPolicy.VerificationFlags);
+        }
+    }
+
+    [Fact]
     public void Production_handler_presents_the_startup_loaded_mtls_certificate_explicitly()
     {
         var clientCertificate = CreateCertificateAuthority("client-certificate");
@@ -505,6 +539,7 @@ public sealed class AuditOtlpHttpExporterTests
             Array.Empty<AuditExportHeader>(),
             Array.Empty<X509Certificate2>(),
             clientCertificate,
+            X509RevocationMode.NoCheck,
             new string('a', 64));
         using var handler = AuditExportHttpHandlerFactory.Create(options);
 
@@ -525,6 +560,7 @@ public sealed class AuditOtlpHttpExporterTests
         [new AuditExportHeader("Authorization", authorizationValue)],
         Array.Empty<System.Security.Cryptography.X509Certificates.X509Certificate2>(),
         null,
+        X509RevocationMode.NoCheck,
         new string('a', 64));
 
     private static AuditExportOptions OptionsWithCustomRoot(X509Certificate2 root) => new(
@@ -533,6 +569,7 @@ public sealed class AuditOtlpHttpExporterTests
         [new AuditExportHeader("Authorization", "Bearer test-secret")],
         [new X509Certificate2(root)],
         null,
+        X509RevocationMode.NoCheck,
         new string('a', 64));
 
     private static X509Certificate2 CreateCertificateAuthority(string commonName)

@@ -4,6 +4,7 @@ using System.Security.Cryptography;
 using System.Text;
 using Microsoft.Data.Sqlite;
 using PtkSiemReceiver.Ingest;
+using PtkSiemReceiver.Security;
 
 namespace PtkSiemReceiver.Storage;
 
@@ -16,6 +17,18 @@ internal enum SqliteIngestWriteKind
 internal interface ISqliteIngestFaultInjector
 {
     void BeforeCommit(SqliteIngestWriteKind writeKind);
+
+    void AfterStartupProtectionForTests(string databasePath)
+    {
+    }
+
+    void AfterConnectionOpenForTests(string databasePath)
+    {
+    }
+
+    void BeforeConnectionOpenForTests(string databasePath)
+    {
+    }
 }
 
 internal sealed record SqliteWriterPolicy(string JournalMode, int Synchronous);
@@ -25,6 +38,7 @@ internal sealed class SqliteIngestStore : IIngestCommitter, IDisposable
     private const int CurrentSchemaVersion = 1;
     private const int BusyTimeoutSeconds = 5;
     private readonly SqliteConnection _writer;
+    private readonly ProtectedDirectoryLease _parentLease;
     private readonly SemaphoreSlim _writerGate = new(1, 1);
     private readonly ISqliteIngestFaultInjector? _faultInjector;
     private int _disposed;
@@ -32,9 +46,11 @@ internal sealed class SqliteIngestStore : IIngestCommitter, IDisposable
     private SqliteIngestStore(
         SqliteConnection writer,
         SqliteWriterPolicy writerPolicy,
-        ISqliteIngestFaultInjector? faultInjector)
+        ISqliteIngestFaultInjector? faultInjector,
+        ProtectedDirectoryLease parentLease)
     {
         _writer = writer;
+        _parentLease = parentLease;
         WriterPolicy = writerPolicy;
         _faultInjector = faultInjector;
     }
@@ -43,40 +59,130 @@ internal sealed class SqliteIngestStore : IIngestCommitter, IDisposable
 
     internal static SqliteIngestStore Open(
         string databasePath,
-        ISqliteIngestFaultInjector? faultInjector = null)
+        ISqliteIngestFaultInjector? faultInjector = null,
+        ProtectedPathTestHooks? protectedPathTestHooks = null,
+        IReadOnlySet<ProtectedPathIdentity>? protectedExternalIdentities = null)
     {
-        ArgumentException.ThrowIfNullOrWhiteSpace(databasePath);
         SqliteConnection? connection = null;
+        ProtectedDirectoryLease? parentLease = null;
         try
         {
-            var fullPath = Path.GetFullPath(databasePath);
+            var fullPath = SiemProtectedPath.NormalizeAbsolute(databasePath);
             var parent = Path.GetDirectoryName(fullPath);
-            if (string.IsNullOrEmpty(parent) || !Directory.Exists(parent))
+            if (string.IsNullOrEmpty(parent))
                 throw new SiemReceiverStartupException("storage_parent");
+            parentLease = SiemProtectedPath.RetainExternalDirectory(
+                parent,
+                protectedPathTestHooks);
+
+            var walPath = fullPath + "-wal";
+            var sharedMemoryPath = fullPath + "-shm";
+            var databaseIdentity = SiemProtectedPath.InspectSqliteFileOrMissing(
+                fullPath,
+                protectedPathTestHooks);
+            var walIdentity = SiemProtectedPath.InspectSqliteFileOrMissing(
+                walPath,
+                protectedPathTestHooks);
+            var sharedMemoryIdentity =
+                SiemProtectedPath.InspectSqliteFileOrMissing(
+                    sharedMemoryPath,
+                    protectedPathTestHooks);
+            if (protectedExternalIdentities is not null &&
+                new[] { databaseIdentity, walIdentity, sharedMemoryIdentity }
+                    .Any(identity => identity is { } existing &&
+                                     protectedExternalIdentities.Contains(existing)))
+            {
+                throw new SiemReceiverStartupException("protected_path_collision");
+            }
+            if (databaseIdentity is null &&
+                (walIdentity is not null || sharedMemoryIdentity is not null))
+            {
+                throw new SiemReceiverStartupException("storage_orphan_sidecar");
+            }
+
+            databaseIdentity ??= SiemProtectedPath.CreateProtectedFile(fullPath);
+            walIdentity ??= SiemProtectedPath.CreateProtectedFile(walPath);
+            sharedMemoryIdentity ??=
+                SiemProtectedPath.CreateProtectedFile(sharedMemoryPath);
 
             connection = new SqliteConnection(new SqliteConnectionStringBuilder
             {
                 DataSource = fullPath,
-                Mode = SqliteOpenMode.ReadWriteCreate,
+                Mode = SqliteOpenMode.ReadWrite,
                 Cache = SqliteCacheMode.Private,
                 Pooling = false,
                 DefaultTimeout = BusyTimeoutSeconds,
             }.ToString());
+            faultInjector?.BeforeConnectionOpenForTests(fullPath);
             connection.Open();
 
+            faultInjector?.AfterConnectionOpenForTests(fullPath);
+            SiemProtectedPath.VerifySqliteFileIsOpen(databaseIdentity.Value);
+            _ = SiemProtectedPath.VerifySqliteFile(
+                fullPath,
+                databaseIdentity.Value,
+                protectedPathTestHooks);
             var policy = ConfigureAndAssertWriterPolicy(connection);
+            MaterializeWalSidecars(connection);
+            _ = SiemProtectedPath.VerifySqliteFile(
+                walPath,
+                walIdentity.Value,
+                protectedPathTestHooks);
+            _ = SiemProtectedPath.VerifySqliteFile(
+                sharedMemoryPath,
+                sharedMemoryIdentity.Value,
+                protectedPathTestHooks);
+            SiemProtectedPath.VerifySqliteFileIsOpen(databaseIdentity.Value);
+            SiemProtectedPath.VerifySqliteFileIsOpen(walIdentity.Value);
+            SiemProtectedPath.VerifySqliteFileIsOpen(sharedMemoryIdentity.Value);
             ApplyMigrations(connection);
-            return new SqliteIngestStore(connection, policy, faultInjector);
+            faultInjector?.AfterStartupProtectionForTests(fullPath);
+
+            SiemProtectedPath.VerifyRetainedDirectory(parentLease, protectedPathTestHooks);
+            _ = SiemProtectedPath.VerifySqliteFile(
+                fullPath,
+                databaseIdentity.Value,
+                protectedPathTestHooks);
+            _ = SiemProtectedPath.VerifySqliteFile(
+                walPath,
+                walIdentity.Value,
+                protectedPathTestHooks);
+            _ = SiemProtectedPath.VerifySqliteFile(
+                sharedMemoryPath,
+                sharedMemoryIdentity.Value,
+                protectedPathTestHooks);
+            SiemProtectedPath.VerifySqliteFileIsOpen(walIdentity.Value);
+            SiemProtectedPath.VerifySqliteFileIsOpen(sharedMemoryIdentity.Value);
+            var store = new SqliteIngestStore(
+                connection,
+                policy,
+                faultInjector,
+                parentLease);
+            connection = null;
+            parentLease = null;
+            return store;
         }
         catch (SiemReceiverStartupException)
         {
             connection?.Dispose();
+            parentLease?.Dispose();
             throw;
+        }
+        catch (ProtectedPathException exception)
+        {
+            connection?.Dispose();
+            parentLease?.Dispose();
+            throw new SiemReceiverStartupException(
+                exception.FailureKind == ProtectedPathFailureKind.InvalidPath
+                    ? "storage_path"
+                    : "storage_protection",
+                exception);
         }
         catch (Exception exception) when (!IsFatal(exception))
         {
             connection?.Dispose();
-            throw new SiemReceiverStartupException("storage", exception);
+            parentLease?.Dispose();
+            throw new SiemReceiverStartupException("storage");
         }
     }
 
@@ -187,6 +293,7 @@ internal sealed class SqliteIngestStore : IIngestCommitter, IDisposable
     {
         if (Interlocked.Exchange(ref _disposed, 1) != 0) return;
         _writer.Dispose();
+        _parentLease.Dispose();
         _writerGate.Dispose();
     }
 
@@ -216,6 +323,16 @@ internal sealed class SqliteIngestStore : IIngestCommitter, IDisposable
         }
 
         return new SqliteWriterPolicy(journalMode!, synchronous);
+    }
+
+    private static void MaterializeWalSidecars(SqliteConnection connection)
+    {
+        using var transaction = connection.BeginTransaction(deferred: false);
+        using var command = connection.CreateCommand();
+        command.Transaction = transaction;
+        command.CommandText = "SELECT name FROM sqlite_schema LIMIT 1;";
+        _ = command.ExecuteScalar();
+        transaction.Rollback();
     }
 
     private static void ApplyMigrations(SqliteConnection connection)

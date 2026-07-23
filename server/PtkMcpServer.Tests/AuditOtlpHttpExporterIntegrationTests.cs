@@ -1,4 +1,5 @@
 using System.Security.Cryptography;
+using System.Security.Cryptography.X509Certificates;
 using Google.Protobuf;
 using PtkMcpServer.Audit;
 
@@ -169,6 +170,7 @@ public sealed class AuditOtlpHttpExporterIntegrationTests
             [new AuditExportHeader("Authorization", authorizationValue ?? receiver.AuthorizationValue)],
             [trustedPki.CreateTrustedRoot()],
             null,
+            X509RevocationMode.NoCheck,
             new string('a', 64));
         return AuditOtlpHttpExporter.Create(options, "9.8.7");
     }

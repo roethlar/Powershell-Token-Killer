@@ -52,7 +52,7 @@ public sealed class AuditProgramStartupTests : IDisposable
         var configRoot = NewRoot("anchored-config");
         var configPath = Path.Combine(configRoot, "export.json");
         var configuration = """
-            {"schema_version":"ptk.export-config/1","protection_mode":"anchored","endpoint":"https://127.0.0.1:1/v1/logs","headers":{"Authorization":"Bearer integration-test"},"ca_file":null,"client_certificate_file":null,"client_private_key_file":null}
+            {"schema_version":"ptk.export-config/2","protection_mode":"anchored","endpoint":"https://127.0.0.1:1/v1/logs","headers":{"Authorization":"Bearer integration-test"},"ca_file":null,"client_certificate_file":null,"client_private_key_file":null,"revocation_check_mode":"Online"}
             """;
         using (var stream = SecureAuditStorage.CreateExclusiveFile(configPath))
         {

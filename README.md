@@ -339,6 +339,23 @@ then removes direct public server mode without a migration layer.
 The committed `.mcp.json` is intentionally empty; a checkout does not install
 itself into project scope.
 
+### Windows Defender false positive (issue #7)
+
+Microsoft Defender Antivirus has falsely detected `PtkMcpServer.dll` as
+`Trojan:MSIL/AsyncRAT.AB!MTB` on Windows and quarantined it out of the build
+output and the installed `~/.ptk/bin` payload. The symptom is an install or
+build that appears to succeed while the DLL silently disappears;
+`scripts/dev-install.ps1` now detects the missing file and fails with
+guidance instead. The file has been submitted to Microsoft for a
+false-positive determination (status tracked in
+[issue #7](https://github.com/AlsoBeltrix/PowerShell-Token-Killer/issues/7);
+submission runbook: `.agents/plans/defender-fp-submission.md`).
+
+If you hit this: check Defender's protection history to confirm the
+quarantine, restore the file only if you built it yourself from a checkout
+you trust, and prefer a narrow, temporary exclusion for `~/.ptk/bin` over any
+broad one — remove it once Microsoft ships corrected security intelligence.
+
 ## RTK Integration
 
 [RTK](https://github.com/rtk-ai/rtk), the Rust Token Killer, owns native-command

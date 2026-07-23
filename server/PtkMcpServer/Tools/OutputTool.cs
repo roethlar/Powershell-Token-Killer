@@ -27,7 +27,12 @@ public static class OutputTool
         string action = "read",
         [Description(
             "UTF-8 byte offset for read/search. Start at 0 and reuse next_offset from the prior result.")]
-        [Range(typeof(long), "0", "9223372036854775807")]
+        // Numeric Range operands only: the (Type, string, string) constructor makes the
+        // generated JSON schema emit "minimum"/"maximum" as strings, which violates
+        // JSON Schema draft 2020-12 and is rejected by strict MCP clients. The maximum
+        // is 2^53-1 (largest exactly-representable integral double); real offsets are
+        // bounded far below it by OutputStore size caps.
+        [Range(0d, 9007199254740991d)]
         long offset = 0,
         [Description(
             "Bound for one read/search request, from 1 through 65536 UTF-8 bytes.")]

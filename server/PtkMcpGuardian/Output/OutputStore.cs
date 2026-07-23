@@ -60,7 +60,9 @@ internal sealed record OutputStoreOptions(
     Action? ReservationStartingForTests = null,
     Action<string>? ArtifactWriteStartingForTests = null,
     Action<string>? ArtifactUnlinkIdentityVerifiedForTests = null,
-    Action? ArtifactPublishingClaimedForTests = null)
+    Action? ArtifactPublishingClaimedForTests = null,
+    Action? RetainedReadStartingForTests = null,
+    Action? ReservationSettlingForTests = null)
 {
     internal static OutputStoreOptions Production()
     {
@@ -746,6 +748,18 @@ public sealed class OutputStore :
     private int _cancelReaperActive;
     private int _retentionRunning;
     private bool _disposed;
+    private List<PendingArtifactDelete> _pendingDeletes = [];
+    private int _deletesInFlight;
+    // Bumped under _gate whenever a claimed delete finalizes with its bytes
+    // actually released. Reservers snapshot it when deferring to settling
+    // claims so a finalize that lands before their Monitor.Wait begins is
+    // not mistaken for "nothing settled" (lost-pulse; codex rbc-14 turn 2).
+    private long _settleGeneration;
+
+    // How long a reserver waits for another caller's off-gate unlink to
+    // finalize before reporting capacity truthfully (rbc-14).
+    private static readonly TimeSpan PendingDeleteSettleTimeout =
+        TimeSpan.FromSeconds(2);
 
     internal OutputStore(OutputStoreOptions options)
     {
@@ -844,6 +858,23 @@ public sealed class OutputStore :
         out OutputCaptureReservation? reservation,
         out string? failure)
     {
+        try
+        {
+            return TryReserveCore(sessionAlias, out reservation, out failure);
+        }
+        finally
+        {
+            // Unlink I/O for tombstones claimed by this call runs after the
+            // store lock is released (rbc-14).
+            DrainPendingArtifactDeletes();
+        }
+    }
+
+    private bool TryReserveCore(
+        string sessionAlias,
+        out OutputCaptureReservation? reservation,
+        out string? failure)
+    {
         reservation = null;
         failure = null;
         if (!IsSessionAlias(sessionAlias))
@@ -854,62 +885,174 @@ public sealed class OutputStore :
 
         _options.ReservationStartingForTests?.Invoke();
 
-        lock (_gate)
+        long claimedGeneration = 0;
+        while (true)
         {
-            ThrowIfDisposed();
-            var now = UtcNow();
-            RetainLocked(now);
-            if (!MakeArtifactCapacityLocked(now) ||
-                !MakeCapacityLocked(sessionAlias, _options.MaximumArtifactBytes, now))
+            lock (_gate)
             {
-                failure = "capacity";
-                return false;
+                ThrowIfDisposed();
+                var now = UtcNow();
+                RetainLocked(now);
+                CapacityStep step;
+                if ((_pendingDeletes.Count > 0 || _deletesInFlight > 0) &&
+                    NeedsCapacityLocked(sessionAlias, _options.MaximumArtifactBytes))
+                {
+                    // Claims still settling off-gate hold bytes and artifact
+                    // slots that the drain/wait below may reclaim. Deciding
+                    // eviction now would tombstone a live artifact that the
+                    // settled deletes could have spared (e.g. the retention
+                    // pass just above claimed an expired artifact whose
+                    // bytes cover this reservation). Defer eviction until
+                    // no claims are settling and capacity is still short.
+                    step = CapacityStep.Claimed;
+                }
+                else
+                {
+                    step = MakeArtifactCapacityStepLocked(now);
+                    if (step == CapacityStep.Ready)
+                    {
+                        step = MakeCapacityStepLocked(
+                            sessionAlias, _options.MaximumArtifactBytes, now);
+                    }
+                }
+
+                if (step == CapacityStep.Unavailable)
+                {
+                    if (_pendingDeletes.Count == 0)
+                    {
+                        // Another caller (e.g. the retention timer) may hold
+                        // claims whose off-gate unlinks have not finalized
+                        // yet; wait for a finalize pulse before failing
+                        // truthfully.
+                        if (_deletesInFlight > 0 &&
+                            Monitor.Wait(_gate, PendingDeleteSettleTimeout))
+                        {
+                            continue;
+                        }
+
+                        failure = "capacity";
+                        return false;
+                    }
+
+                    // Queued claims exist: drain them below and re-check.
+                }
+
+                if (step == CapacityStep.Ready)
+                {
+                    var id = Guid.NewGuid();
+                    string handle;
+                    do { handle = CreateHandle(); }
+                    while (_handles.ContainsKey(handle));
+                    var entry = new ArtifactEntry(
+                        id,
+                        handle,
+                        sessionAlias,
+                        now,
+                        checked(++_nextSequence),
+                        OutputArtifactState.Incomplete)
+                    {
+                        Capturing = true,
+                        ReservedBytes = _options.MaximumArtifactBytes,
+                        DetailCode = "capture_pending",
+                    };
+                    _entries.Add(id, entry);
+                    _handles.Add(handle, id);
+                    _sessionBytes.TryAdd(sessionAlias, 0);
+                    _reservedBytes = checked(_reservedBytes + entry.ReservedBytes);
+                    reservation = new OutputCaptureReservation(this, id);
+                    return true;
+                }
+
+                // step == CapacityStep.Claimed: either an eviction candidate
+                // was tombstoned, or claims are still settling off-gate. In
+                // both cases the unlinks must run outside _gate before the
+                // freed bytes become visible to the capacity checks. Record
+                // the settle generation inside this same lock hold so a
+                // finalize landing after we release _gate is detectable.
+                claimedGeneration = _settleGeneration;
             }
 
-            var id = Guid.NewGuid();
-            string handle;
-            do { handle = CreateHandle(); }
-            while (_handles.ContainsKey(handle));
-            var entry = new ArtifactEntry(
-                id,
-                handle,
-                sessionAlias,
-                now,
-                checked(++_nextSequence),
-                OutputArtifactState.Incomplete)
+            _options.ReservationSettlingForTests?.Invoke();
+
+            // No successful unlink, nothing left in flight, and no finalize
+            // since the claim was deferred means capacity truly cannot be
+            // made right now (e.g. a wedged filesystem): fail truthfully
+            // instead of tombstoning every remaining artifact (rbc-14).
+            if (DrainPendingArtifactDeletes() == 0)
             {
-                Capturing = true,
-                ReservedBytes = _options.MaximumArtifactBytes,
-                DetailCode = "capture_pending",
-            };
-            _entries.Add(id, entry);
-            _handles.Add(handle, id);
-            _sessionBytes.TryAdd(sessionAlias, 0);
-            _reservedBytes = checked(_reservedBytes + entry.ReservedBytes);
-            reservation = new OutputCaptureReservation(this, id);
-            return true;
+                lock (_gate)
+                {
+                    if (_settleGeneration != claimedGeneration)
+                    {
+                        // A concurrent drainer finalized (reclaiming bytes
+                        // or a retained slot) between the defer decision
+                        // above and this re-lock; its pulse fired before we
+                        // waited. Re-check capacity instead of spuriously
+                        // failing (codex rbc-14 turn 2).
+                        continue;
+                    }
+
+                    if (_deletesInFlight > 0 &&
+                        Monitor.Wait(_gate, PendingDeleteSettleTimeout))
+                    {
+                        continue;
+                    }
+
+                    // Monitor.Wait releases _gate: a finalize may land after
+                    // the timeout expires but before the lock is reacquired.
+                    if (_settleGeneration == claimedGeneration)
+                    {
+                        failure = "capacity";
+                        return false;
+                    }
+                }
+            }
         }
     }
 
     internal OutputArtifactStatus Status(string handle)
     {
+        OutputArtifactStatus result;
         lock (_gate)
         {
             ThrowIfDisposed();
             var now = UtcNow();
             RetainLocked(now);
             var entry = FindReadableLocked(handle);
-            return entry is null
+            result = entry is null
                 ? MissingStatus()
                 : StatusOf(entry);
         }
+
+        // Unlink I/O for tombstones claimed by this call's retention pass
+        // runs after the store lock is released (rbc-14).
+        DrainPendingArtifactDeletes();
+        return result;
     }
 
     internal OutputReadResult Read(string handle, long offset, int maximumBytes)
     {
+        try
+        {
+            return ReadCore(handle, offset, maximumBytes);
+        }
+        finally
+        {
+            // Unlink I/O for tombstones claimed by this call's retention
+            // pass runs after the store lock is released (rbc-14).
+            DrainPendingArtifactDeletes();
+        }
+    }
+
+    private OutputReadResult ReadCore(string handle, long offset, int maximumBytes)
+    {
         if (offset < 0) throw new ArgumentOutOfRangeException(nameof(offset));
         ValidateReadBound(maximumBytes);
 
+        SafeFileHandle file;
+        long totalBytes;
+        bool complete;
+        OutputProvenance? provenance;
         lock (_gate)
         {
             ThrowIfDisposed();
@@ -918,50 +1061,117 @@ public sealed class OutputStore :
             var entry = FindReadableLocked(handle);
             if (entry is null) return MissingRead(offset);
             if (!IsReadableArtifact(entry)) return StateRead(entry, offset);
-            if (offset > entry.Bytes || !IsUtf8Boundary(entry.Stream!.SafeFileHandle, offset, entry.Bytes))
+            file = entry.Stream!.SafeFileHandle;
+            totalBytes = entry.Bytes;
+            complete = entry.Complete;
+            provenance = entry.Provenance;
+        }
+
+        // Sealed artifacts are immutable, so the file reads run outside _gate:
+        // a wedged filesystem must not stall Status/TryReserve/Seal callers
+        // queued behind this read (rbc-7). The test hook rides ReadExact —
+        // the io primitive — so the guard test wedges the real read path. A
+        // concurrent retention pass may dispose the stream mid-read; that
+        // surfaces as ObjectDisposedException, and every return path
+        // (success, invalid offset, insufficient bound) re-validates the
+        // entry under _gate so the reported artifact state reflects
+        // completion time, never a pre-read snapshot. Retention's
+        // unlink/dispose I/O likewise runs outside _gate via
+        // DrainPendingArtifactDeletes (rbc-14).
+        try
+        {
+            if (offset > totalBytes || !IsUtf8Boundary(file, offset, totalBytes))
             {
-                return new OutputReadResult(
-                    OutputArtifactState.InvalidOffset,
-                    string.Empty,
-                    offset,
-                    offset,
-                    entry.Bytes,
-                    0,
-                    entry.Complete,
-                    entry.Provenance,
-                    "offset_not_utf8_boundary");
+                lock (_gate)
+                {
+                    ThrowIfDisposed();
+                    var entry = FindReadableLocked(handle);
+                    if (entry is null) return MissingRead(offset);
+                    if (!IsReadableArtifact(entry)) return StateRead(entry, offset);
+                    return new OutputReadResult(
+                        OutputArtifactState.InvalidOffset,
+                        string.Empty,
+                        offset,
+                        offset,
+                        totalBytes,
+                        0,
+                        complete,
+                        provenance,
+                        "offset_not_utf8_boundary");
+                }
             }
 
-            var bytes = ReadUtf8Chunk(entry.Stream!.SafeFileHandle, offset, maximumBytes, entry.Bytes);
-            if (bytes.Length == 0 && offset < entry.Bytes)
+            var bytes = ReadUtf8Chunk(file, offset, maximumBytes, totalBytes);
+            if (bytes.Length == 0 && offset < totalBytes)
             {
-                return new OutputReadResult(
-                    OutputArtifactState.InsufficientBound,
-                    string.Empty,
-                    offset,
-                    offset,
-                    entry.Bytes,
-                    0,
-                    entry.Complete,
-                    entry.Provenance,
-                    "max_bytes_too_small_for_next_utf8_scalar");
+                lock (_gate)
+                {
+                    ThrowIfDisposed();
+                    var entry = FindReadableLocked(handle);
+                    if (entry is null) return MissingRead(offset);
+                    if (!IsReadableArtifact(entry)) return StateRead(entry, offset);
+                    return new OutputReadResult(
+                        OutputArtifactState.InsufficientBound,
+                        string.Empty,
+                        offset,
+                        offset,
+                        totalBytes,
+                        0,
+                        complete,
+                        provenance,
+                        "max_bytes_too_small_for_next_utf8_scalar");
+                }
             }
             var text = StrictUtf8.GetString(bytes);
             var nextOffset = checked(offset + bytes.Length);
-            return new OutputReadResult(
-                entry.State,
-                text,
-                offset,
-                nextOffset,
-                entry.Bytes,
-                bytes.Length,
-                entry.Complete,
-                entry.Provenance,
-                entry.DetailCode);
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                var entry = FindReadableLocked(handle);
+                if (entry is null) return MissingRead(offset);
+                if (!IsReadableArtifact(entry)) return StateRead(entry, offset);
+                return new OutputReadResult(
+                    entry.State,
+                    text,
+                    offset,
+                    nextOffset,
+                    totalBytes,
+                    bytes.Length,
+                    entry.Complete,
+                    entry.Provenance,
+                    entry.DetailCode);
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                var entry = FindReadableLocked(handle);
+                return entry is null ? MissingRead(offset) : StateRead(entry, offset);
+            }
         }
     }
 
     internal OutputSearchResult Search(
+        string handle,
+        string pattern,
+        long offset,
+        int maximumBytes)
+    {
+        try
+        {
+            return SearchCore(handle, pattern, offset, maximumBytes);
+        }
+        finally
+        {
+            // Unlink I/O for tombstones claimed by this call's retention
+            // pass runs after the store lock is released (rbc-14).
+            DrainPendingArtifactDeletes();
+        }
+    }
+
+    private OutputSearchResult SearchCore(
         string handle,
         string pattern,
         long offset,
@@ -976,6 +1186,10 @@ public sealed class OutputStore :
         if (maximumBytes < patternBytes.Length)
             throw new ArgumentOutOfRangeException(nameof(maximumBytes));
 
+        SafeFileHandle file;
+        long totalBytes;
+        bool complete;
+        OutputProvenance? provenance;
         lock (_gate)
         {
             ThrowIfDisposed();
@@ -984,33 +1198,59 @@ public sealed class OutputStore :
             var entry = FindReadableLocked(handle);
             if (entry is null) return MissingSearch(offset);
             if (!IsReadableArtifact(entry)) return StateSearch(entry, offset);
-            if (offset > entry.Bytes || !IsUtf8Boundary(entry.Stream!.SafeFileHandle, offset, entry.Bytes))
+            file = entry.Stream!.SafeFileHandle;
+            totalBytes = entry.Bytes;
+            complete = entry.Complete;
+            provenance = entry.Provenance;
+        }
+
+        // See Read: file io runs outside _gate (rbc-7); the test hook rides
+        // ReadExact, dispose races map to ObjectDisposedException, and every
+        // return path (success, invalid offset, insufficient bound)
+        // re-validates the entry state under _gate at completion.
+        try
+        {
+            if (offset > totalBytes || !IsUtf8Boundary(file, offset, totalBytes))
             {
-                return new OutputSearchResult(
-                    OutputArtifactState.InvalidOffset,
-                    [],
-                    offset,
-                    offset,
-                    entry.Bytes,
-                    0,
-                    entry.Complete,
-                    entry.Provenance,
-                    offset > entry.Bytes ? "offset_past_end" : "offset_not_utf8_boundary");
+                lock (_gate)
+                {
+                    ThrowIfDisposed();
+                    var entry = FindReadableLocked(handle);
+                    if (entry is null) return MissingSearch(offset);
+                    if (!IsReadableArtifact(entry)) return StateSearch(entry, offset);
+                    return new OutputSearchResult(
+                        OutputArtifactState.InvalidOffset,
+                        [],
+                        offset,
+                        offset,
+                        totalBytes,
+                        0,
+                        complete,
+                        provenance,
+                        offset > totalBytes ? "offset_past_end" : "offset_not_utf8_boundary");
+                }
             }
 
-            var scan = ReadUtf8Chunk(entry.Stream!.SafeFileHandle, offset, maximumBytes, entry.Bytes);
-            if (scan.Length == 0 && offset < entry.Bytes)
+            var scan = ReadUtf8Chunk(file, offset, maximumBytes, totalBytes);
+            if (scan.Length == 0 && offset < totalBytes)
             {
-                return new OutputSearchResult(
-                    OutputArtifactState.InsufficientBound,
-                    [],
-                    offset,
-                    offset,
-                    entry.Bytes,
-                    0,
-                    entry.Complete,
-                    entry.Provenance,
-                    "max_bytes_too_small_for_next_utf8_scalar");
+                lock (_gate)
+                {
+                    ThrowIfDisposed();
+                    var entry = FindReadableLocked(handle);
+                    if (entry is null) return MissingSearch(offset);
+                    if (!IsReadableArtifact(entry)) return StateSearch(entry, offset);
+                    return new OutputSearchResult(
+                        OutputArtifactState.InsufficientBound,
+                        [],
+                        offset,
+                        offset,
+                        totalBytes,
+                        0,
+                        complete,
+                        provenance,
+                        "max_bytes_too_small_for_next_utf8_scalar");
+                }
             }
             var matches = new List<OutputSearchMatch>();
             var cursor = 0;
@@ -1031,32 +1271,48 @@ public sealed class OutputStore :
             {
                 nextOffset = checked(matches[^1].Offset + patternBytes.Length);
             }
-            else if (offset + scan.Length >= entry.Bytes)
+            else if (offset + scan.Length >= totalBytes)
             {
-                nextOffset = entry.Bytes;
+                nextOffset = totalBytes;
             }
             else
             {
                 var overlap = Math.Min(patternBytes.Length - 1, Math.Max(0, scan.Length - 1));
                 nextOffset = checked(offset + scan.Length - overlap);
                 while (nextOffset < offset + scan.Length &&
-                       !IsUtf8Boundary(entry.Stream!.SafeFileHandle, nextOffset, entry.Bytes))
+                       !IsUtf8Boundary(file, nextOffset, totalBytes))
                 {
                     nextOffset++;
                 }
                 if (nextOffset <= offset) nextOffset = checked(offset + scan.Length);
             }
 
-            return new OutputSearchResult(
-                entry.State,
-                [.. matches],
-                offset,
-                nextOffset,
-                entry.Bytes,
-                scan.Length,
-                entry.Complete,
-                entry.Provenance,
-                entry.DetailCode);
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                var entry = FindReadableLocked(handle);
+                if (entry is null) return MissingSearch(offset);
+                if (!IsReadableArtifact(entry)) return StateSearch(entry, offset);
+                return new OutputSearchResult(
+                    entry.State,
+                    [.. matches],
+                    offset,
+                    nextOffset,
+                    totalBytes,
+                    scan.Length,
+                    entry.Complete,
+                    entry.Provenance,
+                    entry.DetailCode);
+            }
+        }
+        catch (ObjectDisposedException)
+        {
+            lock (_gate)
+            {
+                ThrowIfDisposed();
+                var entry = FindReadableLocked(handle);
+                return entry is null ? MissingSearch(offset) : StateSearch(entry, offset);
+            }
         }
     }
 
@@ -1067,6 +1323,8 @@ public sealed class OutputStore :
             ThrowIfDisposed();
             RetainLocked(UtcNow());
         }
+
+        DrainPendingArtifactDeletes();
     }
 
     internal OutputSealResult Seal(
@@ -1428,6 +1686,8 @@ public sealed class OutputStore :
             {
                 if (!_disposed) RetainLocked(UtcNow());
             }
+
+            DrainPendingArtifactDeletes();
         }
         catch
         {
@@ -1440,40 +1700,63 @@ public sealed class OutputStore :
         }
     }
 
-    private bool MakeCapacityLocked(string sessionAlias, long needed, DateTimeOffset now)
+    // Pure capacity predicates: shared by the step-makers below and by the
+    // settle-before-evict guard in TryReserveCore so the two can never
+    // disagree about what "insufficient" means. Tombstoned entries keep
+    // their bytes (and their retained stream, which holds an artifact
+    // slot) until DrainPendingArtifactDeletes finalizes them, so these
+    // deliberately overcount while claims are settling.
+    private bool NeedsSessionCapacityLocked(string sessionAlias, long needed) =>
+        SessionBytesLocked(sessionAlias) + ReservedSessionBytesLocked(sessionAlias) + needed >
+        _options.MaximumSessionBytes;
+
+    private bool NeedsAggregateCapacityLocked(long needed) =>
+        _aggregateBytes + _reservedBytes + needed > _options.MaximumAggregateBytes;
+
+    private bool NeedsArtifactSlotLocked() =>
+        _entries.Values.Count(entry => entry.Capturing || entry.Stream is not null) >=
+        _options.MaximumRetainedArtifacts;
+
+    private bool NeedsCapacityLocked(string sessionAlias, long needed) =>
+        NeedsArtifactSlotLocked() ||
+        NeedsSessionCapacityLocked(sessionAlias, needed) ||
+        NeedsAggregateCapacityLocked(needed);
+
+    private CapacityStep MakeCapacityStepLocked(string sessionAlias, long needed, DateTimeOffset now)
     {
-        while (SessionBytesLocked(sessionAlias) + ReservedSessionBytesLocked(sessionAlias) + needed >
-               _options.MaximumSessionBytes)
+        if (NeedsSessionCapacityLocked(sessionAlias, needed))
         {
             var candidate = OldestAvailableLocked(sessionAlias);
-            if (candidate is null) return false;
+            if (candidate is null) return CapacityStep.Unavailable;
             TombstoneLocked(candidate, OutputArtifactState.Evicted, "session_capacity", now);
+            return CapacityStep.Claimed;
         }
 
-        while (_aggregateBytes + _reservedBytes + needed > _options.MaximumAggregateBytes)
+        if (NeedsAggregateCapacityLocked(needed))
         {
             var candidate = OldestAvailableLocked(sessionAlias: null);
-            if (candidate is null) return false;
+            if (candidate is null) return CapacityStep.Unavailable;
             TombstoneLocked(candidate, OutputArtifactState.Evicted, "aggregate_capacity", now);
+            return CapacityStep.Claimed;
         }
 
-        return true;
+        return CapacityStep.Ready;
     }
 
-    private bool MakeArtifactCapacityLocked(DateTimeOffset now)
+    private CapacityStep MakeArtifactCapacityStepLocked(DateTimeOffset now)
     {
-        while (_entries.Values.Count(entry => entry.Capturing || entry.Stream is not null) >=
-               _options.MaximumRetainedArtifacts)
+        if (NeedsArtifactSlotLocked())
         {
             var candidate = OldestAvailableLocked(sessionAlias: null);
-            if (candidate is null) return false;
+            if (candidate is null) return CapacityStep.Unavailable;
             TombstoneLocked(
                 candidate,
                 OutputArtifactState.Evicted,
                 "artifact_count_capacity",
                 now);
+            return CapacityStep.Claimed;
         }
-        return true;
+        return CapacityStep.Ready;
     }
 
     private void RetainLocked(DateTimeOffset now)
@@ -1489,7 +1772,7 @@ public sealed class OutputStore :
                      .Where(entry => IsTombstoned(entry) && entry.Stream is not null)
                      .ToArray())
         {
-            TryDeleteStoredArtifactLocked(entry);
+            ClaimStoredArtifactDeleteLocked(entry);
         }
 
         var removable = _entries.Values
@@ -1528,35 +1811,94 @@ public sealed class OutputStore :
         entry.TombstonedUtc = now;
         entry.ExpiresUtc = null;
         entry.Segments = [];
-        TryDeleteStoredArtifactLocked(entry);
+        ClaimStoredArtifactDeleteLocked(entry);
     }
 
-    private bool TryDeleteStoredArtifactLocked(ArtifactEntry entry)
+    private void ClaimStoredArtifactDeleteLocked(ArtifactEntry entry)
     {
-        if (entry.Stream is not { } stream) return false;
-        if (entry.Path is { } path)
+        if (entry.DeleteClaimed || entry.Stream is not { } stream) return;
+        entry.DeleteClaimed = true;
+        _deletesInFlight++;
+        _pendingDeletes.Add(new PendingArtifactDelete(entry, stream, entry.Path));
+    }
+
+    // Runs the unlink/dispose I/O for claimed tombstones OUTSIDE _gate so a
+    // wedged filesystem delete cannot stall Status/Read/Search/TryReserve
+    // callers queued on the store lock (rbc-14). Accounting is decremented
+    // only after the unlink succeeds, under _gate, so the byte caps are
+    // never under-counted; a failed unlink clears the claim and the entry
+    // stays visible to the next retention pass for retry. Returns the number
+    // of artifacts whose stored bytes were actually released.
+    private int DrainPendingArtifactDeletes()
+    {
+        List<PendingArtifactDelete> pending;
+        lock (_gate)
         {
+            if (_pendingDeletes.Count == 0) return 0;
+            pending = _pendingDeletes;
+            _pendingDeletes = [];
+        }
+
+        var unlinked = 0;
+        foreach (var item in pending)
+        {
+            var deleted = true;
             try
             {
-                _options.ArtifactDeleteStartingForTests?.Invoke(path);
-                SecureAuditStorage.DeleteRetainedProtectedFile(
-                    _root,
-                    path,
-                    stream.SafeFileHandle);
+                // Sealed artifacts already lost their directory entry at seal
+                // time (Path is null); their delete io is the retained-handle
+                // dispose below. Fire the test seam for both shapes so wedge
+                // guards cover the common sealed path (rbc-14).
+                _options.ArtifactDeleteStartingForTests?.Invoke(
+                    item.Path ?? string.Empty);
+                if (item.Path is { } path)
+                {
+                    SecureAuditStorage.DeleteRetainedProtectedFile(
+                        _root,
+                        path,
+                        item.Stream.SafeFileHandle);
+                }
             }
             catch
             {
-                return false;
+                deleted = false;
+            }
+
+            if (deleted)
+            {
+                unlinked++;
+                try
+                {
+                    item.Stream.Dispose();
+                }
+                catch
+                {
+                    // The file is already unlinked; the accounting below
+                    // must still run or the byte caps leak permanently.
+                }
+            }
+
+            lock (_gate)
+            {
+                item.Entry.DeleteClaimed = false;
+                _deletesInFlight--;
+                // Wake reservers waiting for an in-flight unlink to settle.
+                Monitor.PulseAll(_gate);
+                if (!deleted) continue;
+                // Capacity genuinely improved (bytes and/or a retained slot
+                // are about to be released); reservers that deferred before
+                // this finalize must re-check instead of failing (rbc-14).
+                _settleGeneration++;
+                item.Entry.Stream = null;
+                item.Entry.Path = null;
+                if (_disposed) continue;
+                _aggregateBytes = checked(_aggregateBytes - item.Entry.Bytes);
+                _sessionBytes[item.Entry.SessionAlias] = checked(
+                    SessionBytesLocked(item.Entry.SessionAlias) - item.Entry.Bytes);
             }
         }
 
-        _aggregateBytes = checked(_aggregateBytes - entry.Bytes);
-        _sessionBytes[entry.SessionAlias] = checked(
-            SessionBytesLocked(entry.SessionAlias) - entry.Bytes);
-        stream.Dispose();
-        entry.Stream = null;
-        entry.Path = null;
-        return true;
+        return unlinked;
     }
 
     private void RemoveReservationLocked(ArtifactEntry entry, bool removeHandle)
@@ -1735,7 +2077,7 @@ public sealed class OutputStore :
         return normalized.Length == 0 ? "capture_incomplete" : normalized;
     }
 
-    private static byte[] ReadUtf8Chunk(
+    private byte[] ReadUtf8Chunk(
         SafeFileHandle handle,
         long offset,
         int maximumBytes,
@@ -1749,7 +2091,7 @@ public sealed class OutputStore :
         return probe[..end];
     }
 
-    private static bool IsUtf8Boundary(SafeFileHandle handle, long offset, long totalBytes)
+    private bool IsUtf8Boundary(SafeFileHandle handle, long offset, long totalBytes)
     {
         if (offset == 0 || offset == totalBytes) return true;
         var current = ReadExact(handle, offset, 1)[0];
@@ -1760,9 +2102,13 @@ public sealed class OutputStore :
         offset == 0 || offset == bytes.Length ||
         (bytes[offset] & 0b1100_0000) != 0b1000_0000;
 
-    private static byte[] ReadExact(SafeFileHandle handle, long offset, int count)
+    private byte[] ReadExact(SafeFileHandle handle, long offset, int count)
     {
         if (count == 0) return [];
+        // The wedge hook rides the io primitive itself: a regression that
+        // moves any retained-read file io back under _gate makes the guard
+        // test wedge _gate here, and its concurrent Status probe times out.
+        _options.RetainedReadStartingForTests?.Invoke();
         var buffer = new byte[count];
         var read = 0;
         while (read < count)
@@ -1804,6 +2150,17 @@ public sealed class OutputStore :
             .Replace("\n", " ⏎ ", StringComparison.Ordinal);
     }
 
+    private enum CapacityStep
+    {
+        Ready,
+        Claimed,
+        Unavailable,
+    }
+
+    private readonly record struct PendingArtifactDelete(
+        ArtifactEntry Entry,
+        FileStream Stream,
+        string? Path);
     private sealed class ArtifactEntry(
         Guid id,
         string handle,
@@ -1822,6 +2179,7 @@ public sealed class OutputStore :
         internal long ReservedBytes { get; set; }
         internal string? Path { get; set; }
         internal FileStream? Stream { get; set; }
+        internal bool DeleteClaimed { get; set; }
         internal long Bytes { get; set; }
         internal bool Complete { get; set; }
         internal OutputProvenance? Provenance { get; set; }

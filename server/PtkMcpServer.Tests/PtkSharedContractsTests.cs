@@ -39,7 +39,7 @@ public sealed class PtkSharedContractsTests
                 "object",
                 tool.InputSchema.GetProperty("type").GetString()));
         Assert.Equal(
-            "1c3a79c821e0367957891585644b52cedd7c56cecf5f4775766e87d155b94970",
+            "db732bfe3fb4b01ddb4d53d977414868f3fbbe2edea083c17a0194f3baa73e00",
             PublicToolContractResource.ComputeDigest().Value);
     }
 
