@@ -6,7 +6,7 @@ short and update it when important repo facts change.
 ## Now
 
 - **Reconciliation of published `origin/master` into
-  `feature/mcp-resilience-r1` is proposed and awaits owner approval.** A fresh
+  `feature/mcp-resilience-r1` is owner-approved and in progress.** A fresh
   fetch found local `master` exactly synchronized with `origin/master` at
   `e4d8d1e`, while the active feature is at `96d4af2` and published only
   through `68c5b34`. At those exact tips, master has 88 history commits absent

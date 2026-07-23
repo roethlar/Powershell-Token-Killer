@@ -1,13 +1,14 @@
 # Plan: reconcile published master into MCP resilience R1
 
-**Status:** PROPOSED; OWNER APPROVAL REQUIRED. Drafted after a fresh `origin`
+**Status:** APPROVED 2026-07-22. The owner approved the complete local
+reconciliation plan with `go`; push, merge into `master`, release, and
+installed-payload changes remain unauthorized. Drafted after a fresh `origin`
 fetch on 2026-07-22 against `origin/master`
 `e4d8d1e8a3c156106d2da02287c2c38923c5199c` and feature content/evidence head
 `96d4af28b39005135158da05121cf69c09b01039`; the plan and corresponding state
-record are the only permitted documentation descendant before approval. Do
-not start the merge or resolve product-code conflicts until the owner approves
-this plan. A push, merge into `master`, release, or installed-payload change is
-outside this plan.
+record are the only permitted documentation descendant before approval. A
+push, merge into `master`, release, or installed-payload change is outside
+this plan.
 
 ## Objective
 
