@@ -45,7 +45,26 @@ jobs:
           Invoke-Pester -Path tests/PwshTokenCompressor.Tests.ps1 -Output Detailed -CI
 
       - name: Server tests
-        run: dotnet test server/PtkMcpServer.slnx
+        shell: pwsh
+        run: |
+          $physicalTempRoot = $null
+          $serverTestExitCode = 0
+          try {
+            if ($IsMacOS) {
+              $physicalTempRoot = Join-Path '/private/tmp' "ptk-ci-$([guid]::NewGuid().ToString('N'))"
+              $null = New-Item -ItemType Directory -Path $physicalTempRoot -ErrorAction Stop
+              $env:TMPDIR = $physicalTempRoot
+            }
+
+            dotnet test server/PtkMcpServer.slnx
+            $serverTestExitCode = $LASTEXITCODE
+          }
+          finally {
+            if ($null -ne $physicalTempRoot) {
+              Remove-Item -LiteralPath $physicalTempRoot -Recurse -Force -ErrorAction Stop
+            }
+          }
+          exit $serverTestExitCode
 
       - name: Stdio handshake
         shell: pwsh
