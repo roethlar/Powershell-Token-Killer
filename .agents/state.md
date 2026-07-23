@@ -5,6 +5,18 @@ short and update it when important repo facts change.
 
 ## Now
 
+- **Reconciliation of published `origin/master` into
+  `feature/mcp-resilience-r1` is proposed and awaits owner approval.** A fresh
+  fetch found local `master` exactly synchronized with `origin/master` at
+  `e4d8d1e`, while the active feature is at `96d4af2` and published only
+  through `68c5b34`. At those exact tips, master has 88 history commits absent
+  from the feature and the feature has 173 absent from master. A read-only
+  merge preview reports ten conflicts spanning durable records, installer and
+  frozen contracts, guardian audit/output ownership, and server job
+  containment. The self-contained preservation and cross-platform validation
+  rules are in `.agents/plans/master-feature-reconciliation.md`. Do not merge,
+  resolve product code, push, or fold the three separately unlanded dormant
+  branch patches into this work without the approvals named there.
 - **Dependency hardening is locally complete at code head `d1d24e8` on
   `feature/mcp-resilience-r1`; the first hosted run proved the action runtime
   but exposed three CI portability findings whose corrective amendment awaits
