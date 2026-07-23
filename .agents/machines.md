@@ -1251,3 +1251,55 @@ snapshots named below). S4-S6 and PTK runtime sources were not changed._
   attempted. Two empty/test-content handshake roots discovered under
   `/Users/michael/.ptk` predated this run (creation 2026-07-14) and were
   preserved; the failed runs created no new retained root.
+
+## Master-to-feature reconciliation acceptance (Mac, Windows, and Linux, 2026-07-22)
+
+_Verified for ordinary merge commit
+`0b3b0deb543eadf614f581afd680a6882b462db9`, with parents feature
+`91ccf9defd688c327f916f1ccc0b49bc1d48ecea` and published master
+`e4d8d1e8a3c156106d2da02287c2c38923c5199c`. Exact tree
+`f0b5afcbc52fc7366f773cef980c86b629f5f524` was transferred as a
+2,105,934-byte ZIP whose SHA-256 was
+`1535ca9e9db4fe2cd89006a57eb5c20cef935605efbf744781a86636e7da75aa`._
+
+- On `nagatha.local` (Darwin arm64, .NET SDK 10.0.302/runtime 10.0.10), all
+  nine package queries were empty; builds were green; Architecture passed
+  73/73, Guardian 442/442, server 1,917/1,917, SIEM 247/247, and both
+  conformance modes 6/6. Exact Pester 6.0.1 passed 141 with two expected
+  platform skips and the stdio handshake passed. The same complete battery
+  passed again after commit at exact SHA `0b3b0de`. One precommit server run
+  found the escaped-orphan fixture's child already absent and left two exact
+  disposable PIDs; guarded cleanup terminated those PIDs, the identity passed
+  20/20 focused iterations, and the full server retry passed 1,917/1,917.
+- On `magneto` (Arch Linux x86_64, .NET SDK 10.0.110/runtime 10.0.10), the
+  transferred archive hash matched. All nine package queries and both builds
+  were green. Architecture passed 73/73, Guardian 442/442, server
+  1,917/1,917, SIEM 247/247, and both conformance modes 6/6. The audit-snapshot
+  identity that had failed with concurrent `List` enumeration passed 25/25
+  focused iterations before the full Guardian pass; the adjacent bounded
+  containment identity also passed. Pester 6.0.1 was saved only beneath the
+  disposable validation root, passed 141 with two expected skips, and the
+  handshake passed.
+- On `NETWATCH-01` (Windows 10.0.26200 x64, .NET SDK 10.0.302/runtime
+  10.0.10), the transferred archive hash matched and every package query was
+  clean. Under `NETWATCH-01\\michael`, Pester passed 142 with one expected
+  skip, the handshake passed, Architecture passed 73/73, Guardian passed
+  442/442, and the direct server run executed all 1,917 identities: 1,900
+  passed and the only 17 failures were the established current-user
+  DPAPI/PKCS#12 cases. A transient `NT AUTHORITY\\SYSTEM` task passed an
+  83-test selection and authoritative TRX matching proved coverage of every
+  one of those 17 identities. SYSTEM also passed SIEM 247/247 and both
+  conformance modes 6/6. The SYSTEM certificate delta was zero.
+- Cross-history validation exposed five integration defects and proved each
+  red-to-green: Windows Job Object escalation retained ownership after a
+  failed kill; conformance fixtures protected their TLS material; the
+  independent containment observer reacted without a duplicate grace delay;
+  Windows wrong-owner tests selected a SID foreign to the actual runner; and
+  the in-memory audit sink serialized state and returned line snapshots. The
+  last fix changed only the deterministic in-memory/fake composition, not the
+  production durable audit spool.
+- Guarded cleanup shut down scoped build servers and removed every enumerated
+  validation root, archive, result directory, log, transient module, and
+  scheduled task. Final local, Linux, and Windows probes each reported zero
+  scoped artifacts and zero scoped processes; Windows also reported zero
+  matching tasks. No installed payload or pre-existing checkout was changed.

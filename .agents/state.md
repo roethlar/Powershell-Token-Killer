@@ -5,18 +5,18 @@ short and update it when important repo facts change.
 
 ## Now
 
-- **Reconciliation of published `origin/master` into
-  `feature/mcp-resilience-r1` is owner-approved and in progress.** A fresh
-  fetch found local `master` exactly synchronized with `origin/master` at
-  `e4d8d1e`, while the active feature is at `96d4af2` and published only
-  through `68c5b34`. At those exact tips, master has 88 history commits absent
-  from the feature and the feature has 173 absent from master. A read-only
-  merge preview reports ten conflicts spanning durable records, installer and
-  frozen contracts, guardian audit/output ownership, and server job
-  containment. The self-contained preservation and cross-platform validation
-  rules are in `.agents/plans/master-feature-reconciliation.md`. Do not merge,
-  resolve product code, push, or fold the three separately unlanded dormant
-  branch patches into this work without the approvals named there.
+- **Published `origin/master` is reconciled locally into
+  `feature/mcp-resilience-r1` at ordinary merge commit `0b3b0de`.** Its parents
+  are feature head `91ccf9d` and `origin/master` `e4d8d1e`; exact tree
+  `f0b5afc` passed the complete macOS, x64 Linux `magneto`, and x64 Windows
+  `NETWATCH-01` acceptance matrix, then the complete macOS battery again at
+  the committed SHA. Integration guards from both histories remain covered,
+  all disposable validation residue was removed, and the exact evidence is
+  canonical in `.agents/plans/master-feature-reconciliation.md` and
+  `.agents/machines.md`. This completes only the feature-branch
+  reconciliation; landing it on `master`, publishing, releasing, changing an
+  installed payload, or folding the three dormant branch patches into it
+  requires the separate authority already recorded for those actions.
 - **Dependency hardening is locally complete at code head `d1d24e8` on
   `feature/mcp-resilience-r1`; the first hosted run proved the action runtime
   but exposed three CI portability findings whose corrective amendment awaits
@@ -413,36 +413,32 @@ short and update it when important repo facts change.
 
 ## Next
 
-1. Complete the approved `origin/master` into feature reconciliation under
-   `.agents/plans/master-feature-reconciliation.md`, validate the uncommitted
-   merge on macOS, Linux, and Windows, and commit it locally. Do not push or
-   merge the feature into `master` without separate authorization.
-2. Re-evaluate the dependency plan's unapproved hosted-CI correction against
+1. Re-evaluate the dependency plan's unapproved hosted-CI correction against
    the reconciled tree. Present any changed decision to the owner before code;
    a new exact-SHA hosted run still requires separate push authorization.
-3. After reconciliation and dependency acceptance, continue directly into the
+2. After dependency acceptance, continue directly into the
    already-authorized R6 and R7 sequence. Do not fold the separate ARM64
    MSBuild-only `protoc` investigation into resilience work.
-4. rbc-15 is closed and merged locally (`f0d17f6`); its residual
+3. rbc-15 is closed and merged locally (`f0d17f6`); its residual
    recycled-PID incarnation hardening is a tracked follow-up dev task (no
    further paid review rounds). Do not continue or commit the saved rbc-5
    post-start attach WIP.
-5. Close out the rbc batch remainders: rbc-8's targeted drain-replay guard
+4. Close out the rbc batch remainders: rbc-8's targeted drain-replay guard
    test lands in the worker-subsystem pass; rbc-11 stays gated on the owner's
    S3H land/park decision; rbc-5 closes via resilience R7. Reassess
    per-finding whether work is safeguard-sensitive and route out if so.
-6. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
+5. Hold mini-SIEM at the S4 fixture gate recorded under `## Open / Parked`.
    When producer-owned v3 request bytes land, execute S4 from the complete
    producer corpus; do not substitute receiver-authored fixtures. Do not begin
    S4–S6 or modify PTK runtime for SIEM work.
-7. Release-distribution slice 3 is ordered after resilience R7 and consumes
+6. Release-distribution slice 3 is ordered after resilience R7 and consumes
    only its matched guardian layout; there is no legacy migration path. Do not
    execute it before R7 lands. Re-present the hook-default choice before release
    slice 4.
-8. When the owner releases the decisions hold, reconcile the rejected
+7. When the owner releases the decisions hold, reconcile the rejected
    security mechanism, retired durable/shared staging, and PTK→RTK routing
    direction in `.agents/decisions.md`.
-9. On Microsoft's #7 verdict, execute the on-verdict steps in
+8. On Microsoft's #7 verdict, execute the on-verdict steps in
    `.agents/plans/defender-fp-submission.md`. Meanwhile the unblocked CI
    remainders are the Windows kill-path test diagnosis (2/1587 failures) and
    the pre-existing `tls_protection` SIEM conformance-host TLS-material

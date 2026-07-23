@@ -1,14 +1,12 @@
 # Plan: reconcile published master into MCP resilience R1
 
-**Status:** APPROVED 2026-07-22. The owner approved the complete local
-reconciliation plan with `go`; push, merge into `master`, release, and
-installed-payload changes remain unauthorized. Drafted after a fresh `origin`
-fetch on 2026-07-22 against `origin/master`
-`e4d8d1e8a3c156106d2da02287c2c38923c5199c` and feature content/evidence head
-`96d4af28b39005135158da05121cf69c09b01039`; the plan and corresponding state
-record are the only permitted documentation descendant before approval. A
-push, merge into `master`, release, or installed-payload change is outside
-this plan.
+**Status:** COMPLETE LOCALLY 2026-07-22. The owner approved the complete local
+reconciliation plan with `go`. Ordinary merge commit
+`0b3b0deb543eadf614f581afd680a6882b462db9` has parents
+`91ccf9defd688c327f916f1ccc0b49bc1d48ecea` and
+`e4d8d1e8a3c156106d2da02287c2c38923c5199c`, and exact tree
+`f0b5afcbc52fc7366f773cef980c86b629f5f524`. Push, merge into `master`,
+release, and installed-payload changes remain outside this plan.
 
 ## Objective
 
@@ -169,6 +167,39 @@ Before committing, run all checks from the uncommitted merge worktree.
 The dependency plan's proposed hosted-CI correction remains a separate,
 unapproved change. After this reconciliation lands locally, re-evaluate those
 three findings against the merged tree and request its approval separately.
+
+## Completion evidence
+
+- The exact staged tree was exported as a 2,105,934-byte ZIP with SHA-256
+  `1535ca9e9db4fe2cd89006a57eb5c20cef935605efbf744781a86636e7da75aa`.
+  That digest matched the copies extracted on x64 Linux `magneto` and x64
+  Windows `NETWATCH-01`.
+- macOS, Linux, and Windows each completed all nine package audits with zero
+  outdated, deprecated, or vulnerable entries. Architecture passed 73,
+  Guardian 442, server 1,917, SIEM 247, and both conformance modes 6 on every
+  applicable execution split. Exact Pester 6.0.1 passed 141 with two expected
+  skips on macOS/Linux and 142 with one expected skip on Windows; every stdio
+  handshake passed. Windows used the established ordinary-account/SYSTEM
+  credential split: the ordinary server run passed 1,900 and exposed only the
+  17 known PKCS#12 failures, while an 83-test SYSTEM selection passed and its
+  TRX identities covered all 17; SIEM passed 247 under SYSTEM. The complete
+  macOS battery passed again at exact merge commit `0b3b0de`.
+- Verification found and closed five integration defects without weakening a
+  product gate: Windows Job Object escalation no longer releases a still-live
+  root after an intentionally failed kill; the producer-conformance fixture
+  creates protected TLS material; the independent job containment observer
+  reacts immediately to its internal signal; Windows wrong-owner test seams
+  select a SID foreign to the actual runner; and the in-memory audit sink now
+  serializes mutation and exposes snapshots instead of a concurrently mutable
+  list. Each failing identity was captured before its repair and passed after
+  it; the last audit-snapshot race passed 25 focused Linux iterations before
+  the complete Guardian suite passed.
+- A single macOS escaped-orphan fixture run found its child already absent and
+  left two exact disposable PIDs. Those PIDs were identified and terminated;
+  the identity then passed 20 focused iterations and the complete server
+  retry passed 1,917. Final checks on all three hosts found zero scoped
+  processes, roots, archives, tasks, logs, result directories, or validation-
+  created certificates. All enumerated disposable artifacts were removed.
 
 ## Failure handling
 
