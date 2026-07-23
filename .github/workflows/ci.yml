@@ -56,8 +56,22 @@ jobs:
               $env:TMPDIR = $physicalTempRoot
             }
 
-            dotnet test server/PtkMcpServer.slnx
+            dotnet build server/PtkMcpServer.slnx
             $serverTestExitCode = $LASTEXITCODE
+            if ($serverTestExitCode -eq 0) {
+              $testAssemblies = @(
+                'server/PtkGuardianArchitecture.Tests/bin/Debug/net10.0/PtkGuardianArchitecture.Tests.dll'
+                'server/PtkMcpGuardian.Tests/bin/Debug/net10.0/PtkMcpGuardian.Tests.dll'
+                'server/PtkMcpServer.Tests/bin/Debug/net10.0/PtkMcpServer.Tests.dll'
+              )
+              foreach ($testAssembly in $testAssemblies) {
+                dotnet $testAssembly
+                $serverTestExitCode = $LASTEXITCODE
+                if ($serverTestExitCode -ne 0) {
+                  break
+                }
+              }
+            }
           }
           finally {
             if ($null -ne $physicalTempRoot) {
