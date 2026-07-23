@@ -1,6 +1,8 @@
 # Plan: dependency currency and advisory remediation
 
-**Status:** HOSTED CORRECTIVE AMENDMENT APPROVED; IMPLEMENTATION IN PROGRESS.
+**Status:** HOSTED CORRECTIVE AMENDMENT IMPLEMENTED LOCALLY AT CODE HEAD
+`8b5a66d781f3fff09df241d264b4a9ebb4dec2f2`; HOSTED ACCEPTANCE PENDING
+SEPARATE PUSH AUTHORIZATION.
 Local dependency implementation and acceptance are complete at code head
 `d1d24e8738fe145d473d0ed3c1de98c2acf96cf3`. Owner GO received 2026-07-22 for
 the first exact-SHA push. GitHub Actions run `29967333249` at documentation
@@ -8,7 +10,9 @@ descendant `68c5b3495c688704e47a4b60cc2ebcd8f9339b4e` proved
 `actions/setup-dotnet@v6` loads in all six jobs, but three product jobs exposed
 the independent CI portability findings specified in the approved amendment
 below. After reconciliation with `origin/master`, the owner approved all three
-corrective slices on 2026-07-22. Dependency inventory cutoff
+corrective slices on 2026-07-22. Approval is recorded at `16add75`; the three
+one-finding commits are `46335dc`, `81904c0`, and `8b5a66d`. Dependency
+inventory cutoff
 `2026-07-22T17:09:14Z` was frozen at baseline `637be3c`.
 The owner approved updating through current stable major versions, including
 the xUnit v2-to-v3, Coverlet 6-to-10, and SQLitePCLRaw 2-to-3 migrations. The
@@ -370,7 +374,7 @@ remaining acceptance item was the separately authorized six-job hosted run for
 not satisfy the green product-job requirement, so the approved corrective
 amendment below now gates final acceptance.
 
-## Approved hosted corrective amendment
+## Approved hosted corrective amendment — implemented locally
 
 Owner GO received 2026-07-22 after reconciliation confirmed all three findings
 remain present. Hosted run `29967333249` at exact SHA
@@ -436,6 +440,41 @@ ordinary-account/SYSTEM split only where credential-bound PKCS#12 coverage
 requires it. Re-run workflow syntax and structural checks. After a separate
 push authorization, require all six GitHub Actions jobs and all three
 handshakes to pass at one exact SHA; record the run ID and SHA.
+
+## Corrective amendment local acceptance
+
+- Slice 11 is committed at `46335dc`. On x64 Linux, the pre-fix source
+  reproduced all three fortified `-Werror=unused-result` failures with
+  `_FORTIFY_SOURCE=3`; the repaired source compiled cleanly under the same
+  flags. The focused Unix launcher/composition selection passed 15/15, and
+  complete Guardian and server runs passed 442/442 and 1,917/1,917 on macOS
+  and Linux.
+- Slice 12 is committed at `81904c0`. macOS reproduced the protected-storage
+  rejection through its symlink-traversing default temporary root. The
+  physical `/private/tmp` workflow root passed architecture 73/73, Guardian
+  442/442, and server 1,917/1,917. A deliberate nonzero child exit proved the
+  exact root is still removed; final root and scoped-process probes were zero.
+- Slice 13 is committed at `8b5a66d`. The exact workflow command was
+  transferred as a 2,108,354-byte ZIP with SHA-256
+  `f61321e7a007bd2990d9f39038caf3a3b23280452d700f5bb47a226e4bb3c3ed`;
+  the digest matched on macOS, x64 Linux `magneto`, and x64 Windows
+  `NETWATCH-01`. The single build followed by sequential xUnit v3 in-process
+  execution passed architecture 73/73, Guardian 442/442, and server
+  1,917/1,917 on macOS and Linux. Windows passed architecture and Guardian in
+  full; its ordinary SSH account executed all 1,917 server identities, passing
+  1,900 and exposing only the established 17 current-user DPAPI/PKCS#12
+  failures. A transient `NT AUTHORITY\SYSTEM` task passed exactly those 17;
+  authoritative TRX identity matching covered every ordinary-account failure,
+  and the complete SYSTEM CurrentUser certificate inventory was unchanged.
+  YAML parsing, one-build/no-solution-test structural checks, exact assembly
+  order, and fail-fast structure all passed.
+- Guarded cleanup removed every candidate archive and validation root on all
+  three platforms. Final probes found zero scoped processes and, on Windows,
+  zero transient scheduled tasks. No installed payload or pre-existing remote
+  checkout changed.
+- The corrective amendment is locally complete. A new exact-SHA push and one
+  green six-job GitHub Actions run, including all three product handshakes,
+  remain separately authorized acceptance work; no hosted-green claim is made.
 
 ## Completion and failure handling
 

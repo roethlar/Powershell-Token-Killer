@@ -16,13 +16,12 @@ short and update it when important repo facts change.
   `.agents/machines.md`. This completes only the feature-branch
   reconciliation; landing it on `master`, publishing, releasing, changing an
   installed payload, or beginning resilience R6 requires separate authority.
-  The owner approved the three hosted-CI corrective patches on 2026-07-22;
-  their implementation is now in progress under
+  The three hosted-CI corrective patches are locally complete at code head
+  `8b5a66d`; their evidence and remaining hosted gate are canonical in
   `.agents/plans/dependency-hardening.md`.
-- **Dependency hardening is locally complete at code head `d1d24e8` on
-  `feature/mcp-resilience-r1`; the first hosted run proved the action runtime
-  but exposed three CI portability findings whose corrective amendment was
-  approved on 2026-07-22 and is now in progress.** The
+- **Dependency hardening and its hosted corrective amendment are locally
+  complete at code head `8b5a66d` on `feature/mcp-resilience-r1`; final hosted
+  exact-SHA acceptance requires separate push authorization.** The
   frozen inventory, PowerShell security
   chain, Hosting, MCP, Roslyn, .NET test-platform, coverage-collector, SQLite,
   Pester, and GitHub Actions runtime slices are committed. Test SDK 17.14.1
@@ -62,13 +61,16 @@ short and update it when important repo facts change.
   tests: fortified Linux compilation rejects three discarded native `read`
   results, hosted macOS temp paths traverse a symlink rejected by secure
   storage, and Windows VSTest reproduces its known long-path failures while
-  also exposing two project-host state-observation failures. The approved
-  plan amendment preserves product security behavior, consumes the native
-  read result, supplies a physical macOS test temp root, and runs the three
-  xUnit v3 product assemblies in-process and sequentially. Reconciliation
-  recalibrated those product baselines to architecture 73, Guardian 442, and
-  server 1,917. A further push, merge into `master`, release, and
-  installed-payload changes remain unauthorized.
+  also exposing two project-host state-observation failures. Commits
+  `46335dc`, `81904c0`, and `8b5a66d` preserve product security behavior while
+  consuming the native read result, supplying a physical macOS test temp root,
+  and running the three xUnit v3 product assemblies in-process and
+  sequentially. The exact workflow command passed the reconciled architecture
+  73, Guardian 442, and server 1,917 identities on macOS and Linux; Windows
+  covered the same identities through its established ordinary-account/SYSTEM
+  DPAPI split with authoritative TRX matching. All disposable roots,
+  processes, and tasks were removed. A further push, merge into `master`,
+  release, and installed-payload changes remain unauthorized.
 - **Owner handoff contract (2026-07-22): Git workspace mechanics are entirely
   agent-owned.** An agent must inspect and resume the exact active workspace
   without asking the owner to fetch, switch, push, select, or recover it. The

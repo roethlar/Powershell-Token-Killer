@@ -1200,9 +1200,9 @@ _Run `29967333249` at exact pushed SHA
   Guardian, and server assemblies directly and sequentially instead of using
   concurrent solution-level VSTest hosts.
 - All three product handshakes were skipped after `Server tests` failed. No
-  green six-job hosted acceptance is claimed. The corrective plan amendment is
-  proposed but not approved, and a repaired exact-SHA push requires separate
-  authorization.
+  green six-job hosted acceptance is claimed. The corrective plan amendment
+  was subsequently approved and implemented locally; a repaired exact-SHA
+  push requires separate authorization.
 ## Mini-SIEM S3H storage-hardening verification (Mac, Windows, and Linux, 2026-07-16)
 
 _Verified at S3H code head `c726a33` (base `1f314a2` plus the exact source
@@ -1303,3 +1303,47 @@ _Verified for ordinary merge commit
   scheduled task. Final local, Linux, and Windows probes each reported zero
   scoped artifacts and zero scoped processes; Windows also reported zero
   matching tasks. No installed payload or pre-existing checkout was changed.
+
+## Dependency hosted corrective local acceptance (Mac, Windows, and Linux, 2026-07-22)
+
+_Verified at corrective code head
+`8b5a66d781f3fff09df241d264b4a9ebb4dec2f2`. Approval is recorded at
+`16add75`; one-finding commits are fortified-read repair `46335dc`, physical
+macOS CI temp storage `81904c0`, and sequential in-process product tests
+`8b5a66d`. The exact final candidate was a 2,108,354-byte ZIP with SHA-256
+`f61321e7a007bd2990d9f39038caf3a3b23280452d700f5bb47a226e4bb3c3ed`;
+the digest matched on all three machines._
+
+- On x64 Linux `magneto`, the pre-fix native broker reproduced all three
+  fortified `-Werror=unused-result` failures with `_FORTIFY_SOURCE=3`; the
+  repaired broker compiled cleanly under identical flags. Complete
+  post-repair Guardian and server runs passed 442/442 and 1,917/1,917. The
+  final workflow command built the solution once, then its direct xUnit v3
+  in-process assemblies passed architecture 73/73, Guardian 442/442, and
+  server 1,917/1,917 sequentially.
+- On `nagatha.local` (macOS 26.5.2 arm64, .NET SDK 10.0.302/runtime 10.0.10),
+  the default symlink-traversing temporary root reproduced protected-storage
+  rejection. A unique physical `/private/tmp` root passed the final direct
+  architecture 73/73, Guardian 442/442, and server 1,917/1,917 command. A
+  deliberate child exit 23 still removed its exact root; the accepted run also
+  removed its physical root in `finally`.
+- On `NETWATCH-01` (Windows 10.0.26200 x64, .NET SDK 10.0.302/runtime
+  10.0.10), the single build succeeded, then architecture passed 73/73 and
+  Guardian passed 442/442. The ordinary `NETWATCH-01\michael` direct server
+  run executed all 1,917 identities: 1,900 passed and the only 17 failures
+  were the established current-user DPAPI/PKCS#12 cases. A transient
+  `NT AUTHORITY\SYSTEM` task selected the 16 affected methods, executed exactly
+  those 17 identities, and passed 17/17. Authoritative TRX display-name
+  matching covered every ordinary-account failure after normalizing TRX quote
+  escaping; the complete SYSTEM CurrentUser certificate inventory was
+  byte-identical before and after.
+- Workflow YAML parsing passed. Structural checks found exactly one solution
+  build, no solution-level test command, one reference to each of the three
+  required assemblies in order, and one fail-fast break. The focused Unix
+  launcher/composition selection passed 15/15.
+- Guarded cleanup removed all three validation roots and candidate archives.
+  Final local, Linux, and Windows probes found zero scoped processes; Windows
+  also found zero matching transient tasks. No installed payload or
+  pre-existing remote checkout changed.
+- No green hosted claim is made. A new exact-SHA push and one six-job GitHub
+  Actions run with all three handshakes green require separate authorization.
